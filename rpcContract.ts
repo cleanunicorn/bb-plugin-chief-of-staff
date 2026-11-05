@@ -39,6 +39,34 @@ const stepResult = z.object({ index: z.number(), type: z.string(), status: z.str
 const runSchema = z.object({ id: z.string(), routine: z.string(), repo: z.string(), triggeredBy: z.string(), dryRun: z.boolean(), status: z.string(), startedAt: z.string(), finishedAt: z.string().nullable(), steps: z.array(stepResult) });
 const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), message: z.string(), actor: z.string() });
 
+/** Scalar plugin settings the configurator edits (everything except repos/routines/token). */
+export const generalSettingsSchema = z.object({
+  maxConcurrentTotal: z.number().int().min(0).max(100),
+  stallThresholdMinutes: z.number().int().min(1).max(1440),
+  maxFixRetries: z.number().int().min(0).max(10),
+  autoRetryStalled: z.boolean(),
+  intakeIntervalMinutes: z.number().int().min(1).max(1440),
+  ciPollIntervalMinutes: z.number().int().min(1).max(120),
+  defaultProviderId: z.string().max(200),
+  defaultModel: z.string().max(200),
+  notifyPush: z.boolean(),
+  notifyWebhookUrl: z.string().max(2000),
+});
+export type GeneralSettings = z.output<typeof generalSettingsSchema>;
+/** Read side: no range checks, so values set elsewhere (CLI, host fields) never break the configurator. */
+const generalSettingsValuesSchema = z.object({
+  maxConcurrentTotal: z.number(),
+  stallThresholdMinutes: z.number(),
+  maxFixRetries: z.number(),
+  autoRetryStalled: z.boolean(),
+  intakeIntervalMinutes: z.number(),
+  ciPollIntervalMinutes: z.number(),
+  defaultProviderId: z.string(),
+  defaultModel: z.string(),
+  notifyPush: z.boolean(),
+  notifyWebhookUrl: z.string(),
+});
+
 export const rpcContract = defineRpcContract({
   cos_overview: {
     input: z.null(),
@@ -78,4 +106,18 @@ export const rpcContract = defineRpcContract({
   cos_merge_preview: { input: z.object({ repo: z.string() }), output: z.object({ decisions: z.array(z.object({ number: z.number(), action: z.string(), reason: z.string(), title: z.string(), headRef: z.string() })) }) },
   cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), routines: z.string() }) },
   cos_set_config: { input: z.object({ repos: z.string().optional(), routines: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
+  cos_get_settings: {
+    input: z.null(),
+    output: z.object({
+      values: generalSettingsValuesSchema,
+      /** Whether a token is stored in settings. The value itself never leaves the server. */
+      token: z.object({ stored: z.boolean(), source: z.enum(["setting", "gh-cli", "none"]) }),
+      projects: z.array(z.object({ id: z.string(), name: z.string(), remote: z.string().nullable() })),
+      providers: z.array(z.object({ id: z.string(), displayName: z.string(), available: z.boolean(), enabled: z.boolean() })),
+    }),
+  },
+  cos_set_settings: {
+    input: generalSettingsSchema.partial().extend({ githubToken: z.string().min(1).max(500).optional(), clearGithubToken: z.boolean().optional() }),
+    output: z.object({ ok: z.literal(true), changed: z.array(z.string()) }),
+  },
 });

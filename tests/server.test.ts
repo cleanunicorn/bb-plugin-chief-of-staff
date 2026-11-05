@@ -94,6 +94,7 @@ describe("chief-of-staff server", () => {
         },
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
+        providers: { catalog: async () => [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true, info: {} }] as never },
       },
     });
     await plugin(host.bb);
@@ -207,6 +208,37 @@ describe("chief-of-staff server", () => {
     expect(after.stdout).toContain("[off] Nightly ship");
     const missing = await host.harness.behavior.runCli(["run", "Nope"]);
     expect(missing.exitCode).not.toBe(0);
+  });
+
+  it("reads and writes settings for the configurator without exposing the token", async () => {
+    const read = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { values: Record<string, unknown>; token: { stored: boolean; source: string }; projects: { id: string; remote: string | null }[] };
+    expect(JSON.stringify(read)).not.toContain("ghp_secret_token");
+    expect(read.token).toEqual({ stored: true, source: "setting" });
+    expect(read.values.intakeIntervalMinutes).toBe(10);
+    expect(read.projects).toEqual([{ id: "proj_1", name: "app", remote: "https://github.com/acme/app" }]);
+    expect((read as unknown as { providers: unknown[] }).providers).toEqual([{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true }]);
+
+    const saved = (await host.harness.behavior.callRpc("cos_set_settings", { maxFixRetries: 4, githubToken: "ghp_rotated_token" })) as { changed: string[] };
+    expect(saved.changed.sort()).toEqual(["githubToken", "maxFixRetries"]);
+    const after = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { values: Record<string, unknown> };
+    expect(after.values.maxFixRetries).toBe(4);
+    expect(JSON.stringify(after)).not.toContain("ghp_rotated_token");
+    const log = await host.harness.behavior.runCli(["log"]);
+    expect(log.stdout).toContain("settings updated");
+    expect(log.stdout).not.toContain("ghp_rotated_token");
+
+    await expect(host.harness.behavior.callRpc("cos_set_settings", { notifyWebhookUrl: "http://insecure.example" })).rejects.toThrow(/https/);
+    await expect(host.harness.behavior.callRpc("cos_set_settings", { githubToken: "x", clearGithubToken: true })).rejects.toThrow();
+    await expect(host.harness.behavior.callRpc("cos_set_settings", { maxFixRetries: 99 })).rejects.toThrow();
+
+    await host.harness.behavior.callRpc("cos_set_settings", { clearGithubToken: true });
+    const cleared = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { token: { stored: boolean } };
+    expect(cleared.token.stored).toBe(false);
+  });
+
+  it("rejects routines with an invalid cron on save", async () => {
+    const bad = JSON.stringify({ routines: [{ name: "Bad", enabled: true, cron: "99 * * * *", repo: "acme/app", steps: [{ type: "notify", title: "x" }] }] });
+    await expect(host.harness.behavior.callRpc("cos_set_config", { routines: bad })).rejects.toThrow(/cron/i);
   });
 
   it("skips merge when the repo does not allow it", async () => {

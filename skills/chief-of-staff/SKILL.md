@@ -24,9 +24,21 @@ lives under `bb cos`.
 
 Agents also have the `chief_of_staff_status` tool, which returns the same roster.
 
+## Configuration
+
+Configure visually in the dashboard's **Configure** tab (or the plugin's
+settings page): multiple repositories, per-repo allow flags, routines with a
+schedule and step editor, limits, notifications and a write-only GitHub token.
+Saves go through the `cos_set_config` / `cos_set_settings` RPCs, which validate
+before writing. The BB project id per repo is machine-specific.
+
+Install or update from GitHub:
+`bb plugin install git:github.com/cleanunicorn/bb-plugin-chief-of-staff --yes`,
+then `bb settings experiment pluginUpdates true` for automatic updates.
+
 ## Operating constraints
 
-- Only repositories listed in the plugin's Repositories JSON are touched. Merge,
+- Only repositories configured under Repositories are touched. Merge,
   release and deploy steps additionally require `allow.merge`, `allow.release`,
   `allow.deploy` on that repo; otherwise the step is skipped and logged.
 - GitHub auth comes from the `githubToken` secret setting, falling back to

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+- Visual configurator: Configure tab in the dashboard and on the plugin's
+  settings page. Edit repositories, routines, general limits and GitHub access
+  without touching JSON; validation before save; raw JSON still available.
+- Multiple repositories, each with its own project, filters, agent and
+  allow flags. New repos start least-privilege.
+- Write-only GitHub token field; the token is never returned or logged.
+- Incomplete repo entries load for editing instead of hiding the whole list.
+- Install from GitHub with automatic updates documented.
+
 ## 0.1.0
 
 - Initial release: agent roster with stall detection, GitHub issue intake into

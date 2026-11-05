@@ -17,6 +17,24 @@ An engineering chief of staff for one or more GitHub repositories. It
 
 ## Install
 
+From GitHub (recommended, every BB instance tracks the same repository):
+
+```sh
+bb plugin install git:github.com/cleanunicorn/bb-plugin-chief-of-staff --yes
+bb settings experiment pluginUpdates true   # opt in to automatic updates
+```
+
+With `pluginUpdates` on, BB checks the tracked source every 6 hours and pulls
+new commits on `main` automatically. To update right away:
+
+```sh
+bb plugin update chief-of-staff --yes
+```
+
+Pin a release instead of tracking `main` with `git:github.com/cleanunicorn/bb-plugin-chief-of-staff@v0.2.0`.
+
+From a local checkout (development):
+
 ```sh
 npm install
 bb plugin build
@@ -25,9 +43,34 @@ bb plugin install .
 
 Then open **Chief of Staff** in the sidebar, or run `bb cos status`.
 
+Note: `bb plugin remove` deletes the plugin's settings, so switch sources with
+`bb plugin install` rather than remove + install.
+
 ## Configure
 
-Settings (host-rendered fields on the plugin page):
+Use the visual configurator: the **Configure** tab in the Chief of Staff
+dashboard, or the plugin's page under Settings. It edits:
+
+- **Repositories**: add as many as you like. Paste `owner/repo` or a GitHub
+  URL, pick the BB project that holds the checkout (projects whose git remote
+  matches are suggested), and toggle what the plugin may do. New repos start
+  least-privilege: intake and pull requests only; merge, release and deploy
+  are off until you switch them on.
+- **Routines**: schedule (manual, every N minutes/hours/days, or cron with
+  presets and a timezone), steps you can add, reorder and remove, and warnings
+  when a step needs a permission the repo does not grant.
+- **General**: capacity, recovery, default agent and notifications.
+- **GitHub access**: a write-only token field. A stored token is never shown,
+  returned to the browser, or logged.
+- **Advanced JSON**: the raw documents, for bulk edits.
+
+Everything is validated before saving (duplicate repos, missing project,
+invalid cron, http webhooks) and every change is logged with who made it.
+
+The BB project id is specific to each BB instance, so after installing on a
+new machine, open Configure and pick the project for each repository.
+
+The same settings, as stored (also editable as host-rendered fields):
 
 | Setting | Purpose |
 | --- | --- |

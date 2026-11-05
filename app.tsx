@@ -11,6 +11,7 @@ import { ColumnChart, DataTable, Legend, Meter, Panel, PaletteProvider, STATUS, 
 import type { Tone } from "@/components/cos/viz";
 import { STAGES, STEPS, stageColor, stageOf, stepIndex } from "@/components/cos/stages";
 import type { StageKey } from "@/components/cos/stages";
+import { Configurator } from "@/components/cos/configurator";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -23,6 +24,7 @@ const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
   { id: "issues", label: "Repos & PRs", icon: "GitPullRequest" },
   { id: "routines", label: "Routines", icon: "CalendarClock" },
+  { id: "config", label: "Configure", icon: "SlidersHorizontal" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -642,7 +644,9 @@ function ReposTab() {
           </>
         }
       >
-        {data && !data.repos.length ? <Empty icon="FolderGit2" title="No repositories configured">Edit the Repositories JSON in this plugin's settings.</Empty> : null}
+        {data && !data.repos.length ? <Empty icon="FolderGit2" title="No repositories configured">
+            <ConfigureLink section="repos" label="Add a repository" />
+          </Empty> : null}
         <div className="grid gap-3 md:grid-cols-2">
           {(data?.repos ?? []).map((r) => (
             <article key={r.key} className="flex flex-col gap-3 rounded-lg border border-border p-3.5">
@@ -924,7 +928,9 @@ function RoutinesTab() {
         </Panel>
       ) : null}
       <Panel title="Routines" icon="CalendarClock" dim={routines.isFetching && !routines.isLoading}>
-        {routines.data && !list.length ? <Empty icon="CalendarClock" title="No routines yet">Define them in the Routines JSON in this plugin's settings.</Empty> : null}
+        {routines.data && !list.length ? <Empty icon="CalendarClock" title="No routines yet">
+            <ConfigureLink section="routines" label="Create a routine" />
+          </Empty> : null}
         <div className="grid gap-3 md:grid-cols-2">
           {list.map((x) => (
             <RoutineCard key={x.name} routine={x} now={now} busy={busy === x.name} lastRun={runList.find((run) => run.routine === x.name)} onRun={(dryRun) => void run(x.name, dryRun)} onToggle={() => void toggle(x.name, !x.enabled)} />
@@ -1055,64 +1061,43 @@ function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab goTab={goTab} /> : tab === "issues" ? <ReposTab /> : <RoutinesTab />}
-        <ActivityFeed />
+        {tab === "agents" ? <PipelineTab goTab={goTab} /> : tab === "issues" ? <ReposTab /> : tab === "routines" ? <RoutinesTab /> : <Configurator initialSection={configSection(subPath)} />}
+        {tab === "config" ? null : <ActivityFeed />}
       </div>
     </PaletteProvider>
   );
 }
 
-function SettingsSection() {
-  const rpc = useRpc<Contract>();
+function configSection(subPath: string): "repos" | "routines" | "general" | "access" | "advanced" {
+  const second = decodeURIComponent(subPath.split("/")[1] ?? "");
+  return second === "routines" || second === "general" || second === "access" || second === "advanced" ? second : "repos";
+}
+
+function ConfigureLink({ section, label }: { section: "repos" | "routines"; label: string }) {
   const navigate = useBbNavigate();
-  const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
-  const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
-  const [repos, setRepos] = useState<string | null>(null);
-  const [routines, setRoutines] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const save = async () => {
-    setStatus(null);
-    try {
-      const result = await rpc.call("cos_set_config", { ...(repos != null ? { repos } : {}), ...(routines != null ? { routines } : {}) });
-      setStatus(result.warnings.length ? `Saved. ${result.warnings.join("; ")}` : "Saved.");
-      setRepos(null);
-      setRoutines(null);
-      await Promise.all([overview.refetch(), config.refetch()]);
-    } catch (error) {
-      setStatus(errorText(error));
-    }
-  };
   return (
-    <div className="flex flex-col gap-3 text-sm">
-      {overview.data ? (
-        <p className="text-muted-foreground">
-          GitHub auth: {overview.data.tokenSource} · repos: {overview.data.repos.length} · stall threshold {overview.data.settings.stallThresholdMinutes} min · fix retries {overview.data.settings.maxFixRetries} · max concurrent {overview.data.settings.maxConcurrentTotal}
-        </p>
-      ) : null}
-      {overview.data?.errors.map((e) => <p key={e} className="text-destructive">{e}</p>)}
-      <label className="flex flex-col gap-1">
-        <span className="font-medium">Repositories (JSON)</span>
-        <textarea className="min-h-40 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs" value={repos ?? config.data?.repos ?? ""} onChange={(e) => setRepos(e.target.value)} spellCheck={false} />
-      </label>
-      <label className="flex flex-col gap-1">
-        <span className="font-medium">Routines (JSON)</span>
-        <textarea className="min-h-40 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs" value={routines ?? config.data?.routines ?? ""} onChange={(e) => setRoutines(e.target.value)} spellCheck={false} />
-      </label>
-      <div className="flex items-center gap-2">
-        <Button size="sm" disabled={repos === null && routines === null} onClick={() => void save()}>
-          Save
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => navigate.toPluginPanel("cos")}>
+    <Button size="sm" className="mt-2" onClick={() => navigate.toPluginPanel("cos", { subPath: `config/${section}` })}>
+      <Icon name="Plus" fallback="Circle" aria-hidden /> {label}
+    </Button>
+  );
+}
+
+function SettingsSection() {
+  const navigate = useBbNavigate();
+  return (
+    <PaletteProvider className="flex flex-col gap-3 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">Everything below saves to this plugin's settings. The dashboard has the same editor under Configure.</p>
+        <Button size="sm" variant="outline" onClick={() => navigate.toPluginPanel("cos", { subPath: "config" })}>
           Open dashboard
         </Button>
-        {status ? <span className="text-xs text-muted-foreground">{status}</span> : null}
       </div>
-      <p className="text-xs text-muted-foreground">The GitHub token, thresholds, retry limits and notification targets are the host-rendered fields above this section.</p>
-    </div>
+      <Configurator compact />
+    </PaletteProvider>
   );
 }
 
 export default definePluginApp((app) => {
   app.slots.navPanel({ id: "cos-dashboard", title: "Chief of Staff", icon: "ClipboardCheck", path: "cos", component: Dashboard });
-  app.slots.settingsSection({ id: "cos-config", title: "Repositories & routines", description: "Edit the JSON documents with validation; the dashboard shows the parsed result.", component: SettingsSection });
+  app.slots.settingsSection({ id: "cos-config", title: "Configure Chief of Staff", description: "Repositories, routines, limits and GitHub access, edited visually and validated before saving.", component: SettingsSection });
 });
