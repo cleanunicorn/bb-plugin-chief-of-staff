@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Fix installing from GitHub: `@get-bb/plugin-sdk` and `@radix-ui/react-slot`
+  are now runtime dependencies, so the production-only install that git
+  sources use can build the frontend bundle.
+
 ## 0.2.0
 
 - Visual configurator: Configure tab in the dashboard and on the plugin's
