@@ -16,15 +16,11 @@ import { QuestionSheet } from "@/components/cos/question";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
-type Run = PluginRpcResult<Contract["cos_runs"]>["runs"][number];
-type Routine = PluginRpcResult<Contract["cos_routines"]>["routines"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
-type MergeDecision = PluginRpcResult<Contract["cos_merge_preview"]>["decisions"][number];
 
 const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
   { id: "issues", label: "Repos & PRs", icon: "GitPullRequest" },
-  { id: "routines", label: "Routines", icon: "CalendarClock" },
   { id: "config", label: "Configure", icon: "SlidersHorizontal" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
@@ -384,10 +380,9 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
-  const routines = experimental_useRpcQuery<Contract, "cos_routines">({ contract: rpcContract, method: "cos_routines", input: null });
   const refetchAll = useCallback(async () => {
-    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch(), routines.refetch()]);
-  }, [roster, stats, overview, routines]);
+    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch()]);
+  }, [roster, stats, overview]);
   useLiveRefresh(refetchAll);
   const [busy, setBusy] = useState<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
@@ -429,7 +424,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   const tokens = active.reduce((a, e) => a + (e.usage?.totalTokens ?? 0), 0);
   const cost = active.reduce((a, e) => a + (e.usage?.cost?.amount ?? 0), 0);
   const currency = active.find((e) => e.usage?.cost)?.usage?.cost?.currency ?? "";
-  const nextRoutine = (routines.data?.routines ?? []).filter((r) => r.enabled && r.nextRunAt).sort((a, b) => a.nextRunAt!.localeCompare(b.nextRunAt!))[0];
   const visible = filter === "all" ? entries : entries.filter((e) => stageOf(e)?.key === filter);
   const parts = STAGES.map((st) => ({ key: st.key, label: st.label, value: byStage[st.key], color: stageColor(st, palette), icon: st.icon }));
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
@@ -446,7 +440,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
         <StatTile label="Open PRs" icon="GitPullRequest" tone="info" value={openPrs} sub={fixingCi ? `${fixingCi} back in build for fixes` : "CI green or running"} onClick={() => goTab("issues")} />
         <StatTile label={`Shipped · ${WINDOW_DAYS}d`} icon="CircleCheck" tone="good" value={s?.doneInWindow ?? "–"} sub={s?.medianCycleMinutes != null ? `median ${duration(s.medianCycleMinutes)} issue→done` : `${s?.startedInWindow ?? 0} started`} />
         <StatTile label={`Failed · ${WINDOW_DAYS}d`} icon={(s?.failedInWindow ?? 0) + stalled ? "CircleX" : "ShieldCheck"} tone={(s?.failedInWindow ?? 0) + stalled ? "critical" : "good"} value={s?.failedInWindow ?? "–"} sub={stalled ? `${stalled} stalled now` : "none stalled"} />
-        <StatTile label="Tokens in flight" icon="Coins" tone="neutral" value={compact(tokens)} sub={cost ? `${cost.toFixed(2)} ${currency} on active work` : nextRoutine ? `next: ${nextRoutine.name} ${relative(nextRoutine.nextRunAt, now)}` : "across active agents"} />
+        <StatTile label="Tokens in flight" icon="Coins" tone="neutral" value={compact(tokens)} sub={cost ? `${cost.toFixed(2)} ${currency} on active work` : "across active agents"} />
       </div>
 
       {/* Pipeline */}
@@ -541,16 +535,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                 <Meter size="sm" value={r.active} max={r.maxConcurrent} label={r.key} />
               </div>
             ))}
-            {nextRoutine ? (
-              <button type="button" onClick={() => goTab("routines")} className="mt-1 flex items-center gap-3 rounded-lg border border-border p-2.5 text-left hover:bg-state-hover">
-                <Icon name="CalendarClock" fallback="Clock" className="size-5 text-muted-foreground" aria-hidden />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium text-foreground">{nextRoutine.name}</span>
-                  <span className="block text-xs text-muted-foreground">{new Date(nextRoutine.nextRunAt!).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" })}</span>
-                </span>
-                <span className="text-sm font-semibold text-foreground tabular-nums">{relative(nextRoutine.nextRunAt, now)}</span>
-              </button>
-            ) : null}
           </div>
         </Panel>
       </div>
@@ -606,14 +590,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
 
 // ---------- repos & PRs tab ----------
 
-const ALLOW_FLAGS = [
-  ["intake", "Intake", "Inbox"],
-  ["openPr", "Open PRs", "GitPullRequest"],
-  ["merge", "Merge", "GitMerge"],
-  ["release", "Release", "Tag"],
-  ["deploy", "Deploy", "Rocket"],
-] as const;
-
 function IntakeSummary({ results, dryRun }: { results: IntakeResult[]; dryRun: boolean }) {
   return (
     <div className="flex flex-col gap-3">
@@ -663,50 +639,6 @@ function IntakeSummary({ results, dryRun }: { results: IntakeResult[]; dryRun: b
   );
 }
 
-function MergePreview({ repo, decisions, onClose }: { repo: string; decisions: MergeDecision[]; onClose: () => void }) {
-  const count = (a: string) => decisions.filter((d) => d.action === a).length;
-  const tone = (a: string): { tone: Tone; label: string; icon: string } => (a === "merge" ? { tone: "good", label: "Will merge", icon: "GitMerge" } : a === "conflict" ? { tone: "critical", label: "Conflict", icon: "CircleX" } : { tone: "neutral", label: "Skip", icon: "CircleMinus" });
-  return (
-    <Panel title={`Batch-merge preview · ${repo}`} icon="GitMerge" actions={<Button size="sm" variant="ghost" onClick={onClose}><Icon name="X" fallback="Circle" aria-hidden /> Close</Button>}>
-      {!decisions.length ? (
-        <Empty icon="GitPullRequest" title="No open pull requests" />
-      ) : (
-        <div className="flex flex-col gap-3">
-          <SegmentedBar
-            label="Batch-merge decisions"
-            unit="PRs"
-            parts={[
-              { key: "merge", label: "Will merge", value: count("merge"), color: STATUS.good },
-              { key: "skip", label: "Skip", value: count("skip"), color: "#898781" },
-              { key: "conflict", label: "Conflict", value: count("conflict"), color: STATUS.critical },
-            ]}
-          />
-          <Legend
-            items={[
-              { label: `Will merge · ${count("merge")}`, color: STATUS.good, icon: "GitMerge" },
-              { label: `Skip · ${count("skip")}`, color: "#898781", icon: "CircleMinus" },
-              { label: `Conflict · ${count("conflict")}`, color: STATUS.critical, icon: "CircleX" },
-            ]}
-          />
-          <ul className="divide-y divide-border">
-            {decisions.map((d) => {
-              const t = tone(d.action);
-              return (
-                <li key={d.number} className="flex flex-wrap items-center gap-2 py-2 text-sm">
-                  <StatusPill tone={t.tone} label={t.label} icon={t.icon} />
-                  <span className="font-medium text-foreground tabular-nums">#{d.number}</span>
-                  <span className="min-w-0 flex-1 truncate text-foreground">{d.title}</span>
-                  <span className="text-xs text-muted-foreground">{d.reason}</span>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-    </Panel>
-  );
-}
-
 function ReposTab() {
   const rpc = useRpc<Contract>();
   const now = useNow();
@@ -717,7 +649,6 @@ function ReposTab() {
   }, [overview, roster]);
   useLiveRefresh(refetchAll);
   const [intake, setIntake] = useState<{ results: IntakeResult[]; dryRun: boolean } | null>(null);
-  const [preview, setPreview] = useState<{ repo: string; decisions: MergeDecision[] } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const runIntake = async (repo?: string, dryRun = false) => {
@@ -727,18 +658,6 @@ function ReposTab() {
       const result = await rpc.call("cos_intake_now", repo ? { repo, dryRun } : { dryRun });
       setIntake({ results: result.results, dryRun });
       await refetchAll();
-    } catch (error) {
-      setMessage(errorText(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const mergePreview = async (repo: string) => {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const result = await rpc.call("cos_merge_preview", { repo });
-      setPreview({ repo, decisions: result.decisions });
     } catch (error) {
       setMessage(errorText(error));
     } finally {
@@ -809,30 +728,25 @@ function ReposTab() {
                 </div>
               </div>
               <Meter size="sm" value={r.active} max={r.maxConcurrent} label={`${r.key} agent slots`} />
-              <ul className="flex flex-wrap gap-1.5" aria-label="Permissions">
-                {ALLOW_FLAGS.map(([k, label, icon]) => {
-                  const on = r.allow[k];
-                  return (
-                    <li key={k} title={on ? `${label} allowed` : `${label} blocked (allow.${k} is off)`} className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px]", on ? "border-border text-foreground" : "border-dashed border-border text-muted-foreground")}>
-                      <Icon name={on ? icon : "Lock"} fallback="Circle" className="size-3" style={on ? { color: STATUS.good } : undefined} aria-hidden />
-                      {label}
-                      <span className="sr-only">{on ? "allowed" : "blocked"}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-              {r.checkCommand ? (
+              <ol className="flex flex-wrap items-center gap-1 text-[11px]" aria-label="Workflow">
+                {r.stages.map((st, i) => (
+                  <li key={st} className="flex items-center gap-1">
+                    <span className="rounded-md border border-border px-1.5 py-0.5 text-foreground">{STAGE_STEP_LABEL[st] ?? st}</span>
+                    {i < r.stages.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="size-3 text-muted-foreground" aria-hidden /> : null}
+                  </li>
+                ))}
+                <li className="pl-1 text-muted-foreground">· ships as {r.shipAction === "merge" ? "PR, merged when green" : r.shipAction === "push" ? "pushed branch" : "pull request"}</li>
+              </ol>
+              {r.verifyCommand ? (
                 <p className="flex items-center gap-1.5 truncate text-[11px] text-muted-foreground">
                   <Icon name="FlaskConical" fallback="Circle" className="size-3 shrink-0" aria-hidden />
-                  <code className="truncate">{r.checkCommand}</code>
+                  <code className="truncate">{r.verifyCommand}</code>
                 </p>
               ) : null}
+              {!r.intake ? <StatusPill tone="neutral" icon="Pause" label="Intake paused" /> : null}
               <div className="flex gap-1.5">
                 <Button size="sm" variant="outline" className="h-7 px-2" disabled={busy} onClick={() => void runIntake(r.key)}>
                   <Icon name="Inbox" fallback="Circle" aria-hidden /> Intake
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 px-2" disabled={busy} onClick={() => void mergePreview(r.key)}>
-                  <Icon name="GitMerge" fallback="Circle" aria-hidden /> Merge preview
                 </Button>
               </div>
             </article>
@@ -844,7 +758,6 @@ function ReposTab() {
           <IntakeSummary results={intake.results} dryRun={intake.dryRun} />
         </Panel>
       ) : null}
-      {preview ? <MergePreview repo={preview.repo} decisions={preview.decisions} onClose={() => setPreview(null)} /> : null}
       <Panel title="Pull requests" icon="GitPullRequest" dim={roster.isFetching && !roster.isLoading}>
         {!prs.length ? (
           <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
@@ -869,218 +782,6 @@ function ReposTab() {
             ))}
           </ul>
         )}
-      </Panel>
-    </div>
-  );
-}
-
-// ---------- routines tab ----------
-
-function StepChain({ steps, results }: { steps: string[]; results?: Run["steps"] }) {
-  const palette = usePalette();
-  return (
-    <ol className="flex flex-wrap items-center gap-1">
-      {steps.map((step, i) => {
-        const res = results?.find((r) => r.index === i);
-        const t = res ? STEP_TONE[res.status] : undefined;
-        return (
-          <li key={`${step}-${i}`} className="flex items-center gap-1">
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground" title={res ? `${STEP_LABEL[step] ?? step}: ${t?.label ?? res.status} — ${res.summary}` : STEP_LABEL[step] ?? step}>
-              <Icon name={STEP_ICON[step] ?? "Square"} fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-              {STEP_LABEL[step] ?? step}
-              {t ? <Icon name={t.icon} fallback="Circle" className="size-3.5" style={{ color: toneColor(t.tone, palette) }} aria-label={t.label} /> : null}
-            </span>
-            {i < steps.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden /> : null}
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-function RunRow({ run, now }: { run: Run; now: number }) {
-  const t = RUN_TONE[run.status] ?? { tone: "neutral" as Tone, label: run.status };
-  const [open, setOpen] = useState(false);
-  const took = run.finishedAt ? (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000 : null;
-  return (
-    <li className="py-2.5">
-      <button type="button" className="flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 text-left" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        <StatusPill tone={t.tone} label={t.label} pulse={run.status === "running"} />
-        <span className="text-sm font-medium text-foreground">{run.routine}</span>
-        {run.dryRun ? <StatusPill tone="info" icon="Eye" label="Dry run" /> : null}
-        <StepChain steps={run.steps.map((s) => s.type)} results={run.steps} />
-        <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span title={new Date(run.startedAt).toLocaleString()}>{relative(run.startedAt, now)}</span>
-          {took != null ? <span className="tabular-nums">· {took < 60 ? `${Math.round(took)}s` : duration(took / 60)}</span> : null}
-          <span>· {run.triggeredBy}</span>
-          <Icon name={open ? "ChevronUp" : "ChevronDown"} fallback="Circle" className="size-3.5" aria-hidden />
-        </span>
-      </button>
-      {open ? (
-        <ol className="mt-2 flex flex-col gap-1 border-l-2 border-border pl-3 text-xs">
-          {run.steps.map((s) => {
-            const st = STEP_TONE[s.status];
-            return (
-              <li key={s.index} className="flex items-start gap-2">
-                <StatusPill tone={st?.tone ?? "neutral"} icon={st?.icon} label={STEP_LABEL[s.type] ?? s.type} />
-                <span className="pt-0.5 text-foreground">{s.summary}</span>
-              </li>
-            );
-          })}
-        </ol>
-      ) : null}
-    </li>
-  );
-}
-
-function RoutineCard({ routine, now, busy, onRun, onToggle, lastRun }: { routine: Routine; now: number; busy: boolean; onRun: (dryRun: boolean) => void; onToggle: () => void; lastRun?: Run }) {
-  const last = lastRun ? RUN_TONE[lastRun.status] : undefined;
-  return (
-    <article className={cn("flex flex-col gap-3 rounded-lg border border-border p-3.5", !routine.enabled && "opacity-70")}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-            {routine.name}
-            {routine.dryRun ? <StatusPill tone="info" icon="Eye" label="Dry run" /> : null}
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            {routine.repo}
-            {routine.configured ? "" : " · repo not configured"}
-          </p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={routine.enabled}
-          aria-label={routine.enabled ? "Disable routine" : "Enable routine"}
-          disabled={busy}
-          onClick={onToggle}
-          className={cn("relative h-5 w-9 shrink-0 rounded-full transition-colors", routine.enabled ? "bg-foreground" : "bg-muted")}
-        >
-          <span className={cn("absolute left-0 top-0.5 size-4 rounded-full bg-background shadow-sm transition-transform", routine.enabled ? "translate-x-4" : "translate-x-0.5")} />
-        </button>
-      </div>
-      <StepChain steps={routine.steps} />
-      <div className="grid grid-cols-2 gap-2">
-        <div className="rounded-md bg-muted px-2.5 py-2">
-          <div className="text-[11px] text-muted-foreground">Next run</div>
-          <div className="text-lg font-semibold leading-tight text-foreground tabular-nums">{routine.running ? "running" : routine.enabled && routine.nextRunAt ? relative(routine.nextRunAt, now) : "–"}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{routine.schedule ?? "manual only"}</div>
-        </div>
-        <div className="rounded-md bg-muted px-2.5 py-2">
-          <div className="text-[11px] text-muted-foreground">Last run</div>
-          <div className="pt-0.5">{last ? <StatusPill tone={last.tone} label={last.label} /> : <span className="text-lg font-semibold text-foreground">–</span>}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{routine.lastRunAt ? relative(routine.lastRunAt, now) : "never"}</div>
-        </div>
-      </div>
-      <div className="flex gap-1.5">
-        <Button size="sm" variant="outline" className="h-7 px-2" disabled={busy || routine.running} onClick={() => onRun(true)}>
-          <Icon name="Eye" fallback="Circle" aria-hidden /> Dry run
-        </Button>
-        <Button size="sm" className="h-7 px-2" disabled={busy || routine.running || !routine.configured} onClick={() => onRun(false)}>
-          <Icon name="Play" fallback="Circle" aria-hidden /> Run now
-        </Button>
-      </div>
-    </article>
-  );
-}
-
-function RoutinesTab() {
-  const rpc = useRpc<Contract>();
-  const now = useNow();
-  const routines = experimental_useRpcQuery<Contract, "cos_routines">({ contract: rpcContract, method: "cos_routines", input: null });
-  const runs = experimental_useRpcQuery<Contract, "cos_runs">({ contract: rpcContract, method: "cos_runs", input: { limit: 30 } });
-  const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
-  const refetchAll = useCallback(async () => {
-    await Promise.all([routines.refetch(), runs.refetch(), stats.refetch()]);
-  }, [routines, runs, stats]);
-  useLiveRefresh(refetchAll);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<Run | null>(null);
-  const run = async (name: string, dryRun: boolean) => {
-    setBusy(name);
-    setMessage(null);
-    try {
-      setLastResult(await rpc.call("cos_run_routine", { name, dryRun }));
-      await refetchAll();
-    } catch (error) {
-      setMessage(errorText(error));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const toggle = async (name: string, enabled: boolean) => {
-    setBusy(name);
-    try {
-      await rpc.call("cos_set_routine_enabled", { name, enabled });
-      await routines.refetch();
-    } catch (error) {
-      setMessage(errorText(error));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const list = routines.data?.routines ?? [];
-  const runList = runs.data?.runs ?? [];
-  const r = stats.data?.runs;
-  const runTotal = r ? r.succeeded + r.failed + r.partial + r.running : 0;
-  return (
-    <div className="flex flex-col gap-4">
-      <ErrorLine error={routines.error ?? message} />
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatTile label="Enabled routines" icon="CalendarClock" tone="info" value={`${list.filter((x) => x.enabled).length}`} sub={`of ${list.length} defined`} />
-        <StatTile label={`Runs · ${WINDOW_DAYS}d`} icon="Activity" tone="neutral" value={runTotal} sub={r ? `${r.succeeded} ok · ${r.failed} failed · ${r.partial} partial` : ""} />
-        <div className="col-span-2 flex flex-col justify-center gap-2 rounded-xl border border-border bg-card p-4">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <Icon name="ChartBar" fallback="Circle" className="size-3.5" aria-hidden />
-            Run outcomes · {WINDOW_DAYS}d
-          </span>
-          <SegmentedBar
-            label="Routine run outcomes"
-            unit="runs"
-            parts={[
-              { key: "succeeded", label: "Succeeded", value: r?.succeeded ?? 0, color: STATUS.good },
-              { key: "partial", label: "Partial", value: r?.partial ?? 0, color: STATUS.warning },
-              { key: "failed", label: "Failed", value: r?.failed ?? 0, color: STATUS.critical },
-            ]}
-          />
-          <Legend
-            items={[
-              { label: "Succeeded", color: STATUS.good, icon: "CircleCheck" },
-              { label: "Partial", color: STATUS.warning, icon: "TriangleAlert" },
-              { label: "Failed", color: STATUS.critical, icon: "CircleX" },
-            ]}
-          />
-        </div>
-      </div>
-      {lastResult ? (
-        <Panel title={`Just ran · ${lastResult.routine}`} icon="Play" actions={<Button size="sm" variant="ghost" onClick={() => setLastResult(null)}><Icon name="X" fallback="Circle" aria-hidden /> Close</Button>}>
-          <ul>
-            <RunRow run={lastResult} now={now} />
-          </ul>
-        </Panel>
-      ) : null}
-      <Panel title="Routines" icon="CalendarClock" dim={routines.isFetching && !routines.isLoading}>
-        {routines.data && !list.length ? <Empty icon="CalendarClock" title="No routines yet">
-            <ConfigureLink section="routines" label="Create a routine" />
-          </Empty> : null}
-        <div className="grid gap-3 md:grid-cols-2">
-          {list.map((x) => (
-            <RoutineCard key={x.name} routine={x} now={now} busy={busy === x.name} lastRun={runList.find((run) => run.routine === x.name)} onRun={(dryRun) => void run(x.name, dryRun)} onToggle={() => void toggle(x.name, !x.enabled)} />
-          ))}
-        </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Routines are dispatched by this plugin's durable BB schedule. To run one from a BB Automation, create a script automation that calls <code>bb cos run &lt;routine&gt;</code>.
-        </p>
-      </Panel>
-      <Panel title="Recent runs" icon="History" dim={runs.isFetching && !runs.isLoading}>
-        {runs.data && !runList.length ? <Empty icon="History" title="No runs yet">Use Dry run on a routine to see what it would do without changing anything.</Empty> : null}
-        <ul className="divide-y divide-border">
-          {runList.map((x) => (
-            <RunRow key={x.id} run={x} now={now} />
-          ))}
-        </ul>
       </Panel>
     </div>
   );
@@ -1166,7 +867,7 @@ function Dashboard({ subPath }: { subPath: string }) {
             </span>
             <div>
               <h1 className="text-lg leading-tight font-semibold text-foreground">Chief of Staff</h1>
-              <p className="text-xs text-muted-foreground">Issues in, pull requests out. Live view of every agent.</p>
+              <p className="text-xs text-muted-foreground">Plan, build, verify, review, ship. Live view of every agent.</p>
             </div>
           </div>
           <nav className="flex rounded-lg border border-border bg-card p-1" aria-label="Dashboard tabs">
@@ -1195,19 +896,19 @@ function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab goTab={goTab} /> : tab === "issues" ? <ReposTab /> : tab === "routines" ? <RoutinesTab /> : <Configurator initialSection={configSection(subPath)} />}
+        {tab === "agents" ? <PipelineTab goTab={goTab} /> : tab === "issues" ? <ReposTab /> : <Configurator initialSection={configSection(subPath)} />}
         {tab === "config" ? null : <ActivityFeed />}
       </div>
     </PaletteProvider>
   );
 }
 
-function configSection(subPath: string): "repos" | "routines" | "general" | "access" | "advanced" {
+function configSection(subPath: string): "workflow" | "repos" | "general" | "access" | "advanced" {
   const second = decodeURIComponent(subPath.split("/")[1] ?? "");
-  return second === "routines" || second === "general" || second === "access" || second === "advanced" ? second : "repos";
+  return second === "repos" || second === "general" || second === "access" || second === "advanced" ? second : "workflow";
 }
 
-function ConfigureLink({ section, label }: { section: "repos" | "routines"; label: string }) {
+function ConfigureLink({ section, label }: { section: "repos"; label: string }) {
   const navigate = useBbNavigate();
   return (
     <Button size="sm" className="mt-2" onClick={() => navigate.toPluginPanel("cos", { subPath: `config/${section}` })}>
@@ -1233,5 +934,5 @@ function SettingsSection() {
 
 export default definePluginApp((app) => {
   app.slots.navPanel({ id: "cos-dashboard", title: "Chief of Staff", icon: "ChefHat", path: "cos", component: Dashboard });
-  app.slots.settingsSection({ id: "cos-config", title: "Configure Chief of Staff", description: "Repositories, routines, limits and GitHub access, edited visually and validated before saving.", component: SettingsSection });
+  app.slots.settingsSection({ id: "cos-config", title: "Configure Chief of Staff", description: "Workflow stages, repositories, limits and GitHub access, edited visually and validated before saving.", component: SettingsSection });
 });

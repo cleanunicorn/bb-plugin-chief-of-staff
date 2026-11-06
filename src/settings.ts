@@ -1,7 +1,7 @@
-// Plugin settings descriptors. Repos and routines are JSON documents in
+// Plugin settings descriptors. Repos and the workflow are JSON documents in
 // multiline fields; the dashboard edits them through RPC + experimental_set.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { SEED_REPOS, SEED_ROUTINES, parseRepos, parseRoutines } from "./config";
+import { SEED_REPOS, parseRepos } from "./config";
 import { DEFAULT_WORKFLOW, parseWorkflow, serializeWorkflow, workflowSchema } from "./workflow";
 
 const jsonSchema = (parse: (raw: string) => { ok: boolean; error?: string }) => ({
@@ -26,36 +26,25 @@ export const settingDescriptors = {
   repos: {
     type: "string",
     label: "Repositories (JSON)",
-    description: 'JSON: {"repos":[{projectId, owner?, repo?, issueFilter, maxConcurrent, checkCommand, deployCommand, allow:{intake,openPr,merge,release,deploy}, ...}]}. owner/repo default to the project\'s GitHub remote.',
+    description: 'JSON: {"repos":[{projectId, owner?, repo?, intake, issueFilter:{labels, assignee?}, maxConcurrent, providerId?, model?, permissionMode, reviewers, mergeStrategy, workflow?}]}. owner/repo default to the project\'s GitHub remote.',
     experimental_multiline: true,
     experimental_schema: jsonSchema(parseRepos),
     default: JSON.stringify(SEED_REPOS, null, 2),
   },
-  routines: {
-    type: "string",
-    label: "Routines (JSON)",
-    description: 'JSON: {"routines":[{name, cron|every, repo:"owner/repo", enabled, dryRun, steps:[{type:"batch_merge"|"release"|"deploy"|"run_agent"|"notify", ...}]}]}',
-    experimental_multiline: true,
-    experimental_schema: jsonSchema(parseRoutines),
-    default: JSON.stringify(SEED_ROUTINES, null, 2),
-  },
   workflow: {
     type: "string",
     label: "Workflow (JSON)",
-    description: 'JSON: {"workflow":{plan:{enabled,instructions,requireApproval}, build:{instructions}, verify:{enabled,instructions,command,timeoutMinutes,maxAttempts}, review:{enabled,instructions,mode:"agent"|"self",maxRounds}, ship:{enabled,instructions,action:"push"|"pr"|"merge",draft,maxCiFixes}}}. Repos override any field under their own "workflow".',
+    description: 'JSON: {"workflow":{plan:{enabled,instructions,requireApproval}, build:{instructions}, verify:{enabled,instructions,command,timeoutMinutes,maxAttempts}, review:{enabled,instructions,mode:"agent"|"self",maxRounds}, ship:{enabled,instructions,action:"push"|"pr"|"merge",draft,maxCiFixes,requireApproval}}}. Repos override any field under their own "workflow".',
     experimental_multiline: true,
     experimental_schema: jsonSchema(parseWorkflow),
     default: serializeWorkflow(workflowSchema.parse(DEFAULT_WORKFLOW)),
   },
   maxConcurrentTotal: { type: "number", label: "Max concurrent agent threads (all repos)", default: 4 },
   stallThresholdMinutes: { type: "number", label: "Stall threshold (minutes)", description: "A running agent with no activity for this long is reported as stalled.", default: 30 },
-  autoRetryStalled: { type: "boolean", label: "Auto-retry stalled or failed agents once", default: false },
   intakeIntervalMinutes: { type: "number", label: "Issue intake interval (minutes)", default: 10 },
-  ciPollIntervalMinutes: { type: "number", label: "CI poll interval (minutes)", default: 2 },
   defaultProviderId: { type: "string", label: "Default provider id", description: "Used when a repo does not set providerId (e.g. claude-code).", default: "" },
   defaultModel: { type: "string", label: "Default model", default: "" },
   notifyPush: { type: "boolean", label: "Send BB push notifications", description: "Uses the push-notifications plugin when installed.", default: true },
-  notifyWebhookUrl: { type: "string", label: "Notification webhook URL", description: "Optional HTTPS endpoint receiving JSON {title, body, threadId} on every alert.", default: "" },
 } as const;
 
 export function defineSettings(bb: BbPluginApi) {

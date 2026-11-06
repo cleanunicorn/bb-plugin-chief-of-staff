@@ -73,15 +73,13 @@ export interface Transition {
 }
 
 export interface MachinePolicy {
-  autoRetryStalled: boolean;
-  maxAutoRetries: number;
   /** Nudges per stage when the agent stops without reporting. */
   maxNudges: number;
   /** Infrastructure retries before asking a human. */
   maxInfraRetries: number;
 }
 
-export const DEFAULT_POLICY: MachinePolicy = { autoRetryStalled: false, maxAutoRetries: 1, maxNudges: 2, maxInfraRetries: 3 };
+export const DEFAULT_POLICY: MachinePolicy = { maxNudges: 2, maxInfraRetries: 3 };
 
 /** Backoff before infrastructure retry n (1-based): 1, 4, 9 minutes. */
 export function infraBackoffMs(attempt: number): number {
@@ -221,9 +219,6 @@ export function transition(item: WorkItem, event: MachineEvent, workflow: Workfl
           pendingEffect: JSON.stringify({ type: "prompt", target: "reviewer", kind: "review" } satisfies Effect),
         });
       }
-      if (policy.autoRetryStalled && item.retryCount < policy.maxAutoRetries && item.status === "agent") {
-        return { stage: item.stage, status: "agent", patch: { retryCount: item.retryCount + 1, lastError: event.error }, effects: [{ type: "prompt", target: "builder", kind: stagePromptKind(item.stage), fresh: true }] };
-      }
       return { stage: item.stage, status: "failed", patch: { lastError: event.error, finishedAt: "now" }, effects: [{ type: "notify", title: `Agent failed: ${label(item)}`, body: event.error.slice(0, 500) }] };
 
     case "verify_passed":
@@ -299,9 +294,6 @@ export function transition(item: WorkItem, event: MachineEvent, workflow: Workfl
 
     case "stalled":
       if (item.status !== "agent") return stay();
-      if (policy.autoRetryStalled && item.retryCount < policy.maxAutoRetries) {
-        return { stage: item.stage, status: "agent", patch: { retryCount: item.retryCount + 1, lastError: "stalled" }, effects: [{ type: "prompt", target: drivingRole, kind: stagePromptKind(item.stage), fresh: true }, { type: "notify", title: `Agent stalled, retrying: ${label(item)}`, body: "No activity past the stall threshold; starting a fresh thread." }] };
-      }
       return { stage: item.stage, status: "blocked", patch: { lastError: "stalled" }, effects: [{ type: "notify", title: `Agent stalled: ${label(item)}`, body: "No activity past the stall threshold." }] };
 
     case "approve":
@@ -309,6 +301,8 @@ export function transition(item: WorkItem, event: MachineEvent, workflow: Workfl
       if (item.stage === "done") return stay();
       // An open question is answered, not approved; Chief of Staff's own failure is retried.
       if (item.status === "waiting_on_human" && (item.waitingKind === "question" || item.waitingKind === "cos_error")) return stay();
+      // Shipping is not done while a PR is open: keep watching it.
+      if (item.stage === "ship" && item.prNumber) return { stage: "ship", status: "ready", patch: { waitingKind: null, waitingReason: null, lastError: null }, effects: [] };
       // Plan approved, or the human vouches for a stage that is stuck: move on.
       return advance(item.stage);
 

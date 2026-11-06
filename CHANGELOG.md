@@ -42,9 +42,24 @@
   `cos_start_task` RPC and agent tool start an item from a description.
 - Answer panel: plan approval and escalations get Approve / Send back with
   feedback. CLI: `bb cos item approve|revise --message …`.
-- Breaking: `maxFixRetries` is replaced by the per-stage budgets
-  (`verify.maxAttempts`, `review.maxRounds`, `ship.maxCiFixes`). Items in
-  flight are migrated onto stages in place.
+- **Removed: routines and everything that only served them.** The Routines
+  tab, `bb cos run` / `bb cos routines`, the routine RPCs and the batch-merge
+  preview are gone, along with the release, deploy and batch-merge steps.
+- **Fewer settings.** Repositories keep: project, issue labels / assignee,
+  intake on/off, max agents, agent (provider, model, permission mode),
+  reviewers, merge strategy, and per-stage workflow overrides. Removed:
+  `allow.*` flags (Ship's action decides), `checkCommand` (now Verify's
+  command), deploy / release / version / tag options, merge filters, conflict
+  handling, branch prefix and renaming, team reviewers, PR labels, milestone
+  and explicit-number filters. General drops the CI poll interval (fixed at 2
+  minutes), auto-retry of stalled agents, and the notification webhook.
+  Ship gains `requireApproval` for merging.
+- Existing settings keep working: `checkCommand` becomes the repo's verify
+  command, `allow.intake: false` pauses intake, `mergeFilter.requireApproval:
+  false` lifts the merge approval gate; other removed keys are ignored. Items in
+  flight are migrated onto stages in place. `maxFixRetries` is replaced by the
+  per-stage budgets (`verify.maxAttempts`, `review.maxRounds`,
+  `ship.maxCiFixes`).
 - Repo entries infer `owner`/`repo` from the BB project's GitHub remote;
   `{ "projectId": "proj_..." }` is enough. Explicit values still override.
 - Configurator: picking a BB project fills the GitHub repository from its

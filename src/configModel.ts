@@ -1,11 +1,8 @@
 // Editing model for the visual configurator. Pure functions only (zod + the
 // config schemas) so the frontend bundle can use it and tests can cover it.
 // The stored format stays the same JSON documents the server parses.
-import { parseGitHubRemote, repoConfigSchema, repoKey, reposDocumentSchema, routineSchema, routinesDocumentSchema } from "./config";
-import type { RepoConfig, Routine, RoutineStep } from "./config";
-
-export type StepType = RoutineStep["type"];
-export const STEP_TYPES: StepType[] = ["batch_merge", "release", "deploy", "run_agent", "notify"];
+import { migrateLegacyRepo, parseGitHubRemote, repoConfigSchema, repoKey, reposDocumentSchema } from "./config";
+import type { RepoConfig } from "./config";
 
 export type LoadResult<T> = { ok: true; items: T[] } | { ok: false; error: string };
 
@@ -35,20 +32,13 @@ export function loadRepos(raw: string): LoadResult<RepoConfig> {
     if (!Array.isArray(entries)) return r;
     const items: RepoConfig[] = [];
     for (const entry of entries) {
-      const e = (entry ?? {}) as Record<string, unknown>;
+      const e = (migrateLegacyRepo(entry ?? {}) ?? {}) as Record<string, unknown>;
       const ident = (k: string) => (typeof e[k] === "string" ? (e[k] as string).trim() : "");
       const filled = repoConfigSchema.safeParse({ ...e, owner: ident("owner") || "_", repo: ident("repo") || "_", projectId: ident("projectId") || "_" });
       if (!filled.success) return r;
       items.push({ ...filled.data, owner: ident("owner"), repo: ident("repo"), projectId: ident("projectId") });
     }
     return { success: true, data: items };
-  });
-}
-
-export function loadRoutines(raw: string): LoadResult<Routine> {
-  return load(raw, (json) => {
-    const r = routinesDocumentSchema.safeParse(json);
-    return r.success ? { success: true, data: r.data.routines } : r;
   });
 }
 
@@ -80,33 +70,11 @@ export function selectProject(repo: RepoConfig, projectId: string, projects: Pro
   return fromPrevious ? { ...repo, projectId, owner: "", repo: "" } : { ...repo, projectId };
 }
 
-/** A new repo starts least-privilege: intake + PRs only, nothing that ships. */
+/** A new repo with every default filled in and a blank identity. */
 export function blankRepo(projectId = ""): RepoConfig {
   // Parse a stub to get every schema default, then blank the identity fields.
   const defaults = repoConfigSchema.parse({ owner: "_", repo: "_", projectId: "_" });
   return { ...defaults, owner: "", repo: "", projectId };
-}
-
-export function blankStep(type: StepType): RoutineStep {
-  switch (type) {
-    case "batch_merge":
-      return { type };
-    case "release":
-      return { type, strategy: "patch", draft: false };
-    case "deploy":
-      return { type, pollTimeoutMinutes: 30 };
-    case "run_agent":
-      return { type, prompt: "", waitMinutes: 0 };
-    case "notify":
-      return { type, title: "" };
-  }
-}
-
-/** New routines are disabled dry runs, so nothing fires until the user opts in. */
-export function blankRoutine(repo: string, existingNames: string[] = []): Routine {
-  let name = "New routine";
-  for (let n = 2; existingNames.includes(name); n++) name = `New routine ${n}`;
-  return { name, enabled: false, every: "1d", repo, dryRun: true, continueOnError: false, steps: [blankStep("batch_merge")] };
 }
 
 /** "a, b ,,c" -> ["a","b","c"] */
@@ -144,26 +112,8 @@ export function cleanRepo(repo: RepoConfig): RepoConfig {
   return { ...base, issueFilter: dropEmpty(repo.issueFilter as unknown as Record<string, unknown>) as unknown as RepoConfig["issueFilter"] };
 }
 
-export function cleanStep(step: RoutineStep): RoutineStep {
-  const s = dropEmpty(step as unknown as Record<string, unknown>) as unknown as RoutineStep;
-  if ((s.type === "batch_merge") && s.labels && s.labels.length === 0) delete s.labels;
-  if (s.type === "deploy" && s.inputs && Object.keys(s.inputs).length === 0) delete s.inputs;
-  return s;
-}
-
-export function cleanRoutine(routine: Routine): Routine {
-  const base = dropEmpty(routine as unknown as Record<string, unknown>) as unknown as Routine;
-  // cron and every are alternatives; keep only the one in use.
-  if (base.cron) delete base.every;
-  return { ...base, steps: routine.steps.map(cleanStep) };
-}
-
 export function serializeRepos(repos: RepoConfig[]): string {
   return JSON.stringify({ repos: repos.map(cleanRepo) }, null, 2);
-}
-
-export function serializeRoutines(routines: Routine[]): string {
-  return JSON.stringify({ routines: routines.map(cleanRoutine) }, null, 2);
 }
 
 export type Issues = Record<number, string[]>;
@@ -189,62 +139,4 @@ export function validateRepos(repos: RepoConfig[]): Issues {
     if (unique.length) issues[i] = unique;
   });
   return issues;
-}
-
-const CRON_FIELD = /^[\d*,/\-A-Za-z?LW#]+$/;
-
-/** Cheap client-side cron shape check; the server validates fully on save. */
-export function cronShapeError(cron: string): string | null {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return "cron needs 5 fields: minute hour day month weekday";
-  if (!parts.every((p) => CRON_FIELD.test(p))) return "cron has invalid characters";
-  return null;
-}
-
-export function validateRoutines(routines: Routine[]): Issues {
-  const issues: Issues = {};
-  const seen = new Map<string, number>();
-  routines.forEach((routine, i) => {
-    const list = schemaIssues(routineSchema.safeParse(cleanRoutine(routine)));
-    if (routine.cron && routine.cron.trim()) {
-      const e = cronShapeError(routine.cron);
-      if (e) list.push(e);
-    }
-    routine.steps.forEach((step, si) => {
-      if (step.type === "run_agent" && !step.prompt.trim()) list.push(`step ${si + 1}: the agent needs a prompt`);
-      if (step.type === "notify" && !step.title.trim()) list.push(`step ${si + 1}: the notification needs a title`);
-    });
-    if (seen.has(routine.name)) list.push(`duplicate name (entry ${seen.get(routine.name)! + 1})`);
-    else seen.set(routine.name, i);
-    const unique = [...new Set(list)];
-    if (unique.length) issues[i] = unique;
-  });
-  return issues;
-}
-
-/** Non-blocking hints: routines on unconfigured repos or steps the repo does not allow. */
-export function routineHints(routine: Routine, repos: RepoConfig[]): string[] {
-  const repo = repos.find((r) => repoKey(r) === routine.repo);
-  if (!repo) return [`${routine.repo} is not a configured repository; the routine will not run`];
-  const hints: string[] = [];
-  const need: Partial<Record<StepType, keyof RepoConfig["allow"]>> = { batch_merge: "merge", release: "release", deploy: "deploy" };
-  for (const step of routine.steps) {
-    const flag = need[step.type];
-    if (flag && !repo.allow[flag]) hints.push(`${routine.repo} does not allow "${flag}", so the ${step.type.replace("_", " ")} step will be refused`);
-  }
-  if (!routine.cron && !routine.every) hints.push("no schedule: manual runs only");
-  return [...new Set(hints)];
-}
-
-export type ScheduleMode = "manual" | "every" | "cron";
-
-export function scheduleMode(routine: Pick<Routine, "cron" | "every">): ScheduleMode {
-  if (routine.cron !== undefined) return "cron";
-  if (routine.every !== undefined) return "every";
-  return "manual";
-}
-
-export function splitEvery(every: string | undefined): { amount: number; unit: "m" | "h" | "d" } {
-  const m = /^(\d+)(m|h|d)$/.exec(every ?? "");
-  return m ? { amount: Number(m[1]), unit: m[2] as "m" | "h" | "d" } : { amount: 1, unit: "d" };
 }

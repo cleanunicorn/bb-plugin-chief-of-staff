@@ -3,8 +3,7 @@ import { cliCommand, defineCli, PluginCliError, type BbPluginApi } from "@get-bb
 import type { Cos } from "./context";
 import { buildRoster, type RosterEntry } from "./roster";
 import { runIntake, startTask } from "./intake";
-import { describeRoutines, itemAction } from "./rpc";
-import { runRoutineGuarded } from "./sweep";
+import { itemAction } from "./rpc";
 
 const MAX_OUT = 60_000;
 const out = (text: string) => ({ exitCode: 0, stdout: text.length > MAX_OUT ? text.slice(0, MAX_OUT) + "\n…(truncated)\n" : text });
@@ -32,7 +31,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
   bb.cli.register(
     defineCli({
       name: "cos",
-      summary: "Chief of Staff: agent roster, GitHub issue intake, PR delivery, routines",
+      summary: "Chief of Staff: take issues and tasks through plan, build, verify, review, ship",
       commands: {
         status: cliCommand({
           summary: "Show the agent roster",
@@ -61,54 +60,6 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
                 .map((r) => `${r.repo}: considered ${r.considered}, started ${r.started.length}${r.started.length ? ` (#${r.started.map((s) => s.issue).join(", #")})` : ""}, skipped ${r.skipped.length}${r.error ? `\n  error: ${r.error}` : ""}${r.skipped.map((s) => `\n  #${s.issue}: ${s.reason}`).join("")}`)
                 .join("\n") + "\n",
             );
-          },
-        }),
-        run: cliCommand({
-          summary: "Run a routine now",
-          positionals: [{ name: "routine", description: "Routine name", required: true }],
-          options: { "dry-run": { type: "boolean", description: "Report what would happen without mutating anything" }, json: { type: "boolean", description: "JSON output" } },
-          async run(input, ctx) {
-            const { routines } = await cos.config();
-            const routine = routines.find((r) => r.name === input.positionals.routine);
-            if (!routine) throw new PluginCliError(`routine "${input.positionals.routine}" not found`, { hint: "bb cos routines list" });
-            const run = await runRoutineGuarded(cos, routine, { dryRun: input.options["dry-run"] || undefined, actor: `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`, signal: ctx.signal });
-            if (input.options.json) return json(run);
-            const lines = [`${run.routine} on ${run.repo}: ${run.status}${run.dryRun ? " (dry run)" : ""}`, ...run.steps.map((s) => `  ${s.index + 1}. ${s.type}: ${s.status} — ${s.summary}`)];
-            return { exitCode: run.status === "failed" ? 1 : 0, stdout: lines.join("\n") + "\n" };
-          },
-        }),
-        "routines list": cliCommand({
-          summary: "List routines",
-          options: { json: { type: "boolean", description: "JSON output" } },
-          async run(input) {
-            const routines = await describeRoutines(cos);
-            if (input.options.json) return json(routines);
-            if (!routines.length) return out("No routines configured.\n");
-            return out(routines.map((r) => `${r.enabled ? "[on ]" : "[off]"} ${r.name} — ${r.repo} — ${r.schedule ?? "manual"} — steps: ${r.steps.join(" → ")}${r.dryRun ? " (dry-run)" : ""}${r.nextRunAt ? ` — next ${r.nextRunAt}` : ""}${r.configured ? "" : " — repo not configured"}`).join("\n") + "\n");
-          },
-        }),
-        "routines enable": cliCommand({
-          summary: "Enable a routine",
-          positionals: [{ name: "routine", description: "Routine name", required: true }],
-          async run(input) {
-            await setEnabled(cos, input.positionals.routine, true);
-            return out(`enabled ${input.positionals.routine}\n`);
-          },
-        }),
-        "routines disable": cliCommand({
-          summary: "Disable a routine",
-          positionals: [{ name: "routine", description: "Routine name", required: true }],
-          async run(input) {
-            await setEnabled(cos, input.positionals.routine, false);
-            return out(`disabled ${input.positionals.routine}\n`);
-          },
-        }),
-        "routines runs": cliCommand({
-          summary: "Show recent routine runs",
-          options: { routine: { type: "string", description: "Filter by routine" }, limit: { type: "integer", description: "Max runs", default: 10, min: 1, max: 200 } },
-          async run(input) {
-            const runs = cos.store.listRuns({ routine: input.options.routine, limit: input.options.limit });
-            return out(runs.map((r) => `${r.startedAt} ${r.routine} (${r.repo}) ${r.status}${r.dryRun ? " dry-run" : ""} by ${r.triggeredBy}\n${r.steps.map((s) => `  ${s.type}: ${s.status} — ${s.summary}`).join("\n")}`).join("\n") + "\n");
           },
         }),
         item: cliCommand({
@@ -156,10 +107,3 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
   );
 }
 
-async function setEnabled(cos: Cos, name: string, enabled: boolean): Promise<void> {
-  const { routines } = await cos.config();
-  if (!routines.some((r) => r.name === name)) throw new PluginCliError(`routine "${name}" not found`);
-  cos.store.setEnabledOverride(name, enabled);
-  cos.store.log({ level: "info", kind: "routine", repo: null, workItemId: null, message: `routine "${name}" ${enabled ? "enabled" : "disabled"}`, actor: "cli" });
-  cos.invalidate();
-}

@@ -1,6 +1,8 @@
 # Chief of Staff — BB plugin
 
-An engineering chief of staff for one or more GitHub repositories. It
+An engineering chief of staff for one or more GitHub repositories. It takes
+each GitHub issue (or task you describe) through Plan → Build → Verify → Review
+→ Ship with an agent, and always knows where that agent is. It
 
 - **watches agents**: a live roster of the threads it spawned (status, repo,
   issue, PR, started-at, last activity, token usage when the provider reports
@@ -13,10 +15,7 @@ An engineering chief of staff for one or more GitHub repositories. It
   Review → Ship, each stage switchable and carrying your instructions, with
   questions and approvals pushed to you and failures looped back on a budget;
 - **knows where every agent is**: which stage, and who holds the ball (the
-  agent, Chief of Staff, you, or an infrastructure retry);
-- **runs routines**: operator-defined cron/interval routines made of
-  `batch_merge`, `release`, `deploy`, `run_agent` and `notify` steps, with
-  per-step logs and a dry-run mode.
+  agent, Chief of Staff, you, or an infrastructure retry).
 
 ## Install
 
@@ -93,36 +92,32 @@ or let another agent call the `cos_start_task` tool.
 Use the visual configurator: the **Configure** tab in the Chief of Staff
 dashboard, or the plugin's page under Settings. It edits:
 
-- **Repositories**: add as many as you like. Paste `owner/repo` or a GitHub
-  URL, pick the BB project that holds the checkout (projects whose git remote
-  matches are suggested), and toggle what the plugin may do. New repos start
-  least-privilege: intake and pull requests only; merge, release and deploy
-  are off until you switch them on.
-- **Routines**: schedule (manual, every N minutes/hours/days, or cron with
-  presets and a timezone), steps you can add, reorder and remove, and warnings
-  when a step needs a permission the repo does not grant.
-- **General**: capacity, recovery, default agent and notifications.
+- **Workflow**: the stages above, with their instructions and budgets.
+- **Repositories**: add as many as you like. Pick the BB project that holds
+  the checkout (its GitHub remote fills in the repository), the issue labels
+  to pick up, the agent, and any workflow stage you want to customise for
+  that repository.
+- **General**: capacity, intake cadence, stall threshold, default agent,
+  push notifications.
 - **GitHub access**: a write-only token field. A stored token is never shown,
   returned to the browser, or logged.
 - **Advanced JSON**: the raw documents, for bulk edits.
 
-Everything is validated before saving (duplicate repos, missing project,
-invalid cron, http webhooks) and every change is logged with who made it.
+Everything is validated before saving and every change is logged with who
+made it. The BB project id is specific to each BB instance, so after
+installing on a new machine, open Configure and pick the project for each
+repository.
 
-The BB project id is specific to each BB instance, so after installing on a
-new machine, open Configure and pick the project for each repository.
-
-The same settings, as stored (also editable as host-rendered fields):
+The same settings, as stored:
 
 | Setting | Purpose |
 | --- | --- |
-| `githubToken` (secret) | Token with `repo` + `workflow` scope. Empty → `gh auth token` on the server host. Never logged. |
-| `repos` (JSON) | Repository list, see below. |
-| `routines` (JSON) | Routine definitions, see below. |
+| `githubToken` (secret) | Token with `repo` scope. Empty → `gh auth token` on the server host. Never logged. |
 | `workflow` (JSON) | The global delivery workflow, see above. |
-| `maxConcurrentTotal`, `stallThresholdMinutes`, `autoRetryStalled`, `intakeIntervalMinutes`, `ciPollIntervalMinutes` | Limits and cadence. |
+| `repos` (JSON) | Repository list, see below. |
+| `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. |
 | `defaultProviderId`, `defaultModel` | Used when a repo does not set its own. |
-| `notifyPush`, `notifyWebhookUrl` | Notification targets (push-notifications plugin and/or a webhook). |
+| `notifyPush` | Push notifications through the push-notifications plugin. |
 
 ### Repositories
 
@@ -131,59 +126,27 @@ The same settings, as stored (also editable as host-rendered fields):
   "repos": [
     {
       "projectId": "proj_xxxxxxxxxx",
-      "owner": "acme", "repo": "app",
-      "issueFilter": { "labels": ["agent-ready"], "milestone": null, "assignee": null, "numbers": [] },
+      "intake": true,
+      "issueFilter": { "labels": ["agent-ready"], "assignee": null },
       "maxConcurrent": 2,
       "providerId": "claude-code", "model": "claude-opus-5-5",
-      "checkCommand": "npm test",
-      "workflow": { "review": { "mode": "self" } },
-      "deployCommand": "./scripts/deploy.sh",
-      "deployWorkflow": "deploy.yml",
-      "reviewers": ["alice"], "teamReviewers": ["platform"], "labels": ["agent"],
+      "reviewers": ["alice"],
       "mergeStrategy": "squash",
-      "conflictHandling": "skip",
-      "versionStrategy": "patch", "tagPrefix": "v",
-      "allow": { "intake": true, "openPr": true, "merge": false, "release": false, "deploy": false }
+      "workflow": { "verify": { "command": "npm test" }, "review": { "mode": "self" } }
     }
   ]
 }
 ```
 
 `projectId` is the BB project whose checkout hosts the work (`bb project list`).
-`owner` and `repo` are optional: they default to the project's GitHub remote
-(`gitRemoteUrl`), so `{ "projectId": "proj_..." }` is a complete entry. Set them
-only to target a different repository; a mismatch with the remote is reported as
-a warning. In the configurator, picking a BB project fills the GitHub
-repository from its remote.
-Merge, release and deploy steps run only when the matching `allow` flag is true.
+`owner` and `repo` are optional: they default to the project's GitHub remote,
+so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
+when they carry every label in `issueFilter.labels` (or are assigned to
+`issueFilter.assignee`); set `intake: false` to run only tasks you start.
 
-### Routines
-
-```json
-{
-  "routines": [
-    {
-      "name": "Nightly ship",
-      "enabled": true,
-      "cron": "0 2 * * *",
-      "timezone": "UTC",
-      "repo": "acme/app",
-      "dryRun": false,
-      "steps": [
-        { "type": "batch_merge", "strategy": "squash", "conflictHandling": "skip" },
-        { "type": "release", "strategy": "patch" },
-        { "type": "deploy", "workflow": "deploy.yml", "pollTimeoutMinutes": 30 },
-        { "type": "notify", "title": "Nightly ship done" }
-      ]
-    }
-  ]
-}
-```
-
-Use `every: "6h"` instead of `cron` for intervals. Routines are dispatched by
-the plugin's durable BB schedule (`cos-sweep`, visible in `bb plugin list`); to
-surface one as a BB Automation, create a script automation that runs
-`bb cos run <routine>`.
+Entries written for earlier versions keep working: `checkCommand` becomes the
+repo's verify command, `allow.intake: false` pauses intake, and options of the
+removed routines feature (deploy, release, merge filters) are ignored.
 
 ## CLI
 
@@ -192,8 +155,6 @@ bb cos status [--repo owner/repo] [--all] [--usage] [--json]
 bb cos intake [--repo owner/repo] [--dry-run]
 bb cos task "<title>" --repo owner/repo [--body "..."]
 bb cos item approve|revise|retry|rerun-checks|done|failed <id> [--message "..."]
-bb cos run <routine> [--dry-run]
-bb cos routines list | enable <name> | disable <name> | runs
 bb cos log [--limit n] [--item id]
 ```
 
@@ -203,11 +164,10 @@ Chief of Staff).
 
 ## How it works
 
-- State lives in the plugin's SQLite database (`work_items`, `routine_runs`,
-  `activity_log`). On startup the plugin reconciles every active item against
-  the live thread and GitHub.
+- State lives in the plugin's SQLite database (`work_items`, `activity_log`).
+  On startup the plugin reconciles every active item against its threads.
 - One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
-  stall detection and routine dispatch; cron matching uses `cron-parser`.
+  retries and stall detection.
 - Stage machine (`src/machine.ts`, pure): each item has a stage (plan, build,
   verify, review, ship, done) and a status saying who holds the ball (`agent`,
   `cos`, `ci`, `ready`, `waiting_on_human`, `retrying`, `blocked`). Events from
@@ -229,7 +189,7 @@ Chief of Staff).
   or open the thread. Questions, approvals and requests are resolved with
   `threads.interactions.resolve`; a plain-text question gets a reply message.
   The activity log records who answered, not what they wrote.
-- Commands on a checkout (git, check and deploy commands) run on the enrolled
+- Commands on a checkout (git and the verify command) run on the enrolled
   host through the plugin's `host.ts` entry; nothing opens user paths from the
   server process.
 - Worktree branches are named by BB when the thread is created (the thread
@@ -239,7 +199,7 @@ Chief of Staff).
 ## Development
 
 ```sh
-npm test            # vitest: stage machine, workflow config, batch-merge ordering, scheduling, fake plugin host
+npm test            # vitest: stage machine, workflow config, stats, fake plugin host
 npm run typecheck
 bb plugin dev       # build + install + reload on change
 ```

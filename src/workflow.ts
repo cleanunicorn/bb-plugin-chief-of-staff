@@ -19,14 +19,14 @@ const planFields = { enabled: z.boolean(), instructions, requireApproval: z.bool
 const buildFields = { instructions };
 const verifyFields = { enabled: z.boolean(), instructions, command: z.string().max(2000), timeoutMinutes: z.number().int().min(1).max(240), maxAttempts: attempts };
 const reviewFields = { enabled: z.boolean(), instructions, mode: z.enum(["agent", "self"]), maxRounds: attempts };
-const shipFields = { enabled: z.boolean(), instructions, action: z.enum(["push", "pr", "merge"]), draft: z.boolean(), maxCiFixes: attempts };
+const shipFields = { enabled: z.boolean(), instructions, action: z.enum(["push", "pr", "merge"]), draft: z.boolean(), maxCiFixes: attempts, requireApproval: z.boolean() };
 
 export const DEFAULT_WORKFLOW = {
   plan: { enabled: true, instructions: "", requireApproval: true },
   build: { instructions: "" },
   verify: { enabled: true, instructions: "", command: "", timeoutMinutes: 30, maxAttempts: 2 },
   review: { enabled: true, instructions: "", mode: "agent" as const, maxRounds: 2 },
-  ship: { enabled: true, instructions: "", action: "pr" as const, draft: false, maxCiFixes: 2 },
+  ship: { enabled: true, instructions: "", action: "pr" as const, draft: false, maxCiFixes: 2, requireApproval: true },
 };
 
 export const workflowSchema = z.object({
@@ -71,10 +71,9 @@ export function serializeWorkflow(workflow: Workflow): string {
 
 /**
  * The workflow one repo runs: the global workflow with the repo's overrides
- * merged over it field by field. A legacy `checkCommand` on the repo fills the
- * verify command when neither the override nor the global workflow sets one.
+ * merged over it field by field.
  */
-export function resolveWorkflow(global: Workflow, override: WorkflowOverride | undefined, legacy: { checkCommand?: string } = {}): Workflow {
+export function resolveWorkflow(global: Workflow, override: WorkflowOverride | undefined): Workflow {
   const o = override ?? {};
   const merged: Workflow = {
     plan: { ...global.plan, ...stripUndefined(o.plan) },
@@ -83,7 +82,6 @@ export function resolveWorkflow(global: Workflow, override: WorkflowOverride | u
     review: { ...global.review, ...stripUndefined(o.review) },
     ship: { ...global.ship, ...stripUndefined(o.ship) },
   };
-  if (!o.verify?.command?.trim() && legacy.checkCommand?.trim()) merged.verify.command = legacy.checkCommand.trim();
   return merged;
 }
 

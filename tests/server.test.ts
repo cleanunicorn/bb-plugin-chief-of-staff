@@ -1,5 +1,5 @@
-// End-to-end wiring through the SDK's fake plugin host: intake → spawn →
-// idle → checks → push → PR, plus CLI, agent tool, routines and the sweep.
+// End-to-end wiring through the SDK's fake plugin host: intake → stages →
+// push → PR, plus the CLI, agent tools, settings and the sweep.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
@@ -31,12 +31,6 @@ const minimalWorkflow = JSON.stringify({ workflow: { plan: { enabled: false }, r
 /** Every stage on: plan approval, verify command, independent reviewer, PR. */
 const fullWorkflow = JSON.stringify({ workflow: {} });
 
-const routines = JSON.stringify({
-  routines: [
-    { name: "Nightly ship", enabled: true, cron: "0 2 * * *", timezone: "UTC", repo: "acme/app", steps: [{ type: "batch_merge" }, { type: "notify", title: "shipped" }] },
-    { name: "Unconfigured", enabled: true, every: "1h", repo: "acme/other", steps: [{ type: "notify", title: "x" }] },
-  ],
-});
 
 const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "open", html_url: "https://github.com/acme/app/issues/12", labels: [{ name: "agent-ready" }], milestone: null, assignees: [], updated_at: "2026-11-05T00:00:00Z" };
 const pull: Record<string, unknown> & { merged: boolean; merged_at: string | null; state: string } = { number: 7, title: "Fix login (#12)", body: "Closes #12", state: "open", draft: false, merged: false, merged_at: null, html_url: "https://github.com/acme/app/pull/7", head: { ref: "cos/issue-12-fix-login", sha: "abc" }, base: { ref: "main" }, labels: [], created_at: "2026-11-05T01:00:00Z", updated_at: "2026-11-05T01:00:00Z", mergeable: true, mergeable_state: "clean", user: { login: "bot" } };
@@ -51,6 +45,10 @@ describe("chief-of-staff server", () => {
   let threadUpdatedAt = 0;
   let threadStatus: "idle" | "active" = "idle";
   let checkBlocks: Promise<void> | null = null;
+  let ghRoutes: Record<string, Route> = {};
+  /** Per-thread overrides of status / updatedAt for the fake thread list. */
+  let perThread: Record<string, { status?: "idle" | "active"; updatedAt?: number }> = {};
+  let prCreated = false;
   let clock = 0;
   let pending: unknown[] = [];
   let resolved: unknown[] = [];
@@ -74,28 +72,31 @@ describe("chief-of-staff server", () => {
     threadUpdatedAt = 0;
     clock = 0;
     assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
-    globalThis.fetch = fakeGitHub(
-      {
+    prCreated = false;
+    perThread = {};
+    ghRoutes = {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
         "GET /repos/acme/app/issues": () => ({ body: [issue] }),
         "GET /repos/acme/app/issues/12": () => ({ body: issue }),
         "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z" }] }),
         "GET /repos/acme/app/contents/AGENTS.md": () => ({ body: { content: Buffer.from("# Conventions\nUse pnpm").toString("base64") } }),
         "POST /repos/acme/app/issues/12/comments": () => ({ status: 201, body: { id: 2, body: "", user: null, created_at: "" } }),
-        "GET /repos/acme/app/pulls": (url) => ({ body: url.searchParams.get("head") ? [] : openPulls }),
-        "POST /repos/acme/app/pulls": () => ({ status: 201, body: currentPull }),
+        "GET /repos/acme/app/pulls": (url) => ({ body: url.searchParams.get("head") ? (prCreated ? [currentPull] : []) : openPulls }),
+        "POST /repos/acme/app/pulls": () => {
+          prCreated = true;
+          return { status: 201, body: currentPull };
+        },
         "GET /repos/acme/app/pulls/7": () => ({ body: currentPull }),
         "GET /repos/acme/app/pulls/7/reviews": () => ({ body: [{ state: "APPROVED", user: { login: "alice" }, submitted_at: "" }] }),
         "GET /repos/acme/app/commits/abc/check-runs": () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "success", html_url: "https://github.com/acme/app/actions/runs/99" }] } }),
         "GET /repos/acme/app/commits/abc/status": () => ({ body: { state: "success", total_count: 0 } }),
         "PUT /repos/acme/app/pulls/7/merge": () => ({ body: { merged: true, message: "ok", sha: "def" } }),
-      },
-      ghCalls,
-    ) as typeof fetch;
+    };
+    globalThis.fetch = fakeGitHub(ghRoutes, ghCalls) as typeof fetch;
 
     host = createFakePluginHost({
       pluginId: "chief-of-staff",
-      settings: { githubToken: "ghp_secret_token", repos, routines, workflow: minimalWorkflow, intakeIntervalMinutes: 10 },
+      settings: { githubToken: "ghp_secret_token", repos, workflow: minimalWorkflow, intakeIntervalMinutes: 10 },
       experimental_callHostRpc: async (call) => {
         hostCalls.push({ method: call.method, input: call.input, hostId: call.hostId });
         if (call.method === "readFile") return { exists: false, content: "", truncated: false };
@@ -123,7 +124,11 @@ describe("chief-of-staff server", () => {
               return { ok: true } as never;
             },
           },
-          list: async () => ["thr_1", "thr_r"].map((id) => ({ ...makeThreadResponse({ id, environmentId: "env_1", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus }, hasPendingInteraction: pending.length > 0 })),
+          list: async () =>
+            ["thr_1", "thr_r"].map((id) => {
+              const status = perThread[id]?.status ?? threadStatus;
+              return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0 };
+            }),
           output: async () => ({ output: assistantOutput }),
           send: async (args: unknown) => {
             sent.push(args);
@@ -487,6 +492,70 @@ describe("chief-of-staff server", () => {
     expect(ranChecks()).toBe(0);
   });
 
+  it("picks up a reply given in BB even when the thread.active event was missed", async () => {
+    const pause = () => new Promise((r) => setTimeout(r, 5));
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await pause();
+    // Realistic timestamps: BB's updatedAt is "now" when the idle fires.
+    await idle("Two options.\n\nShould I use Postgres?", "thr_1", Date.now());
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "question" });
+    // The human answered in BB; the agent finished and reported, but only the idle arrives.
+    await pause();
+    await report("build");
+    await pause();
+    await idle("Used Postgres.", "thr_1", Date.now());
+    expect(ranChecks()).toBe(1);
+    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+  });
+
+  it("does not nudge the idle builder while the independent reviewer works", async () => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false } } }) });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build");
+    await idle();
+    expect(await roster()).toMatchObject({ stage: "review", detail: "agent" });
+    const before = sent.length;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+        // The builder idles from before the review prompt; the reviewer is working.
+      perThread = { thr_1: { status: "idle", updatedAt: 1 }, thr_r: { status: "active", updatedAt: Date.now() } };
+      for (let i = 1; i <= 5; i++) {
+        vi.setSystemTime(Date.now() + 15 * 60_000);
+        await sweep();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await roster()).toMatchObject({ stage: "review", detail: "agent", counters: expect.objectContaining({ infraRetries: 0 }) });
+    expect(sent.slice(before).filter((m) => (m as { threadId: string }).threadId === "thr_1")).toHaveLength(0);
+  });
+
+  it("counts a CI failure again when a fix pushes no new commit", async () => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { maxCiFixes: 1 } } }) });
+    ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
+    ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
+    openPulls = [];
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build");
+    await idle();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await sweep();
+      expect(await roster()).toMatchObject({ stage: "build", counters: expect.objectContaining({ ciFixes: 1 }) });
+      // The agent decides it was a flake and reports without committing: same head sha.
+      currentPull = { ...currentPull };
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      await report("build");
+      await idle();
+      expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "escalation" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("revives a failed item when its thread is resumed", async () => {
     threadStatus = "active";
     await host.harness.behavior.callRpc("cos_intake_now", {});
@@ -572,41 +641,14 @@ describe("chief-of-staff server", () => {
 
   it("exposes the roster through the agent tool and CLI", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
-    const tool = await host.harness.behavior.callAgentTool("chief_of_staff_status", { includeRoutines: true });
+    const tool = await host.harness.behavior.callAgentTool("chief_of_staff_status", {});
     const text = typeof tool === "string" ? tool : tool.content.map((c) => (c.type === "text" ? c.text : "")).join("");
     expect(text).toContain("acme/app#12");
-    expect(text).toContain("Nightly ship");
+    expect(text).toContain("[build/agent]");
     const cli = await host.harness.behavior.runCli(["status"]);
     expect(cli.exitCode).toBe(0);
     expect(cli.stdout).toContain("acme/app#12");
     expect(cli.stdout).toContain("thr_1");
-  });
-
-  it("runs routines with dry-run and allow gating, and lists them", async () => {
-    openPulls = [pull];
-    const dry = await host.harness.behavior.runCli(["run", "Nightly ship", "--dry-run"]);
-    expect(dry.exitCode).toBe(0);
-    expect(dry.stdout).toContain("batch_merge: dry_run");
-    expect(dry.stdout).toContain("would merge 1 PR(s) [#7]");
-    expect(ghCalls.find((c) => c.method === "PUT")).toBeUndefined();
-
-    const real = (await host.harness.behavior.callRpc("cos_run_routine", { name: "Nightly ship" })) as { status: string; steps: { type: string; status: string; summary: string }[]; triggeredBy: string };
-    expect(real.status).toBe("succeeded");
-    expect(real.steps[0]).toMatchObject({ type: "batch_merge", status: "succeeded" });
-    expect(ghCalls.find((c) => c.method === "PUT" && c.path === "/repos/acme/app/pulls/7/merge")).toBeTruthy();
-    expect(real.triggeredBy).toBe("rpc:client");
-
-    const unconfigured = await host.harness.behavior.runCli(["run", "Unconfigured"]);
-    expect(unconfigured.exitCode).toBe(1);
-    expect(unconfigured.stdout).toContain("not configured");
-
-    const list = await host.harness.behavior.runCli(["routines", "list"]);
-    expect(list.stdout).toContain("[on ] Nightly ship");
-    await host.harness.behavior.runCli(["routines", "disable", "Nightly ship"]);
-    const after = await host.harness.behavior.runCli(["routines", "list"]);
-    expect(after.stdout).toContain("[off] Nightly ship");
-    const missing = await host.harness.behavior.runCli(["run", "Nope"]);
-    expect(missing.exitCode).not.toBe(0);
   });
 
   it("reads and writes settings for the configurator without exposing the token", async () => {
@@ -626,7 +668,6 @@ describe("chief-of-staff server", () => {
     expect(log.stdout).toContain("settings updated");
     expect(log.stdout).not.toContain("ghp_rotated_token");
 
-    await expect(host.harness.behavior.callRpc("cos_set_settings", { notifyWebhookUrl: "http://insecure.example" })).rejects.toThrow(/https/);
     await expect(host.harness.behavior.callRpc("cos_set_settings", { githubToken: "x", clearGithubToken: true })).rejects.toThrow();
     await expect(host.harness.behavior.callRpc("cos_set_settings", { stallThresholdMinutes: 99_999 })).rejects.toThrow();
 
@@ -642,35 +683,4 @@ describe("chief-of-staff server", () => {
     expect(JSON.parse(config.workflow).workflow.review).toEqual({ mode: "self", instructions: "Check a11y" });
   });
 
-  it("rejects routines with an invalid cron on save", async () => {
-    const bad = JSON.stringify({ routines: [{ name: "Bad", enabled: true, cron: "99 * * * *", repo: "acme/app", steps: [{ type: "notify", title: "x" }] }] });
-    await expect(host.harness.behavior.callRpc("cos_set_config", { routines: bad })).rejects.toThrow(/cron/i);
-  });
-
-  it("skips merge when the repo does not allow it", async () => {
-    const parsed = JSON.parse(repos) as { repos: { allow: { merge: boolean } }[] };
-    parsed.repos[0].allow.merge = false;
-    await host.harness.behavior.setSettings({ repos: JSON.stringify(parsed) });
-    openPulls = [pull];
-    const run = (await host.harness.behavior.callRpc("cos_run_routine", { name: "Nightly ship" })) as { steps: { status: string; summary: string }[] };
-    expect(run.steps[0]).toMatchObject({ status: "skipped" });
-    expect(run.steps[0].summary).toContain("allow.merge");
-    expect(ghCalls.find((c) => c.method === "PUT")).toBeUndefined();
-  });
-
-  it("dispatches due routines from the sweep exactly once", async () => {
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date("2026-11-06T02:00:30Z"));
-      await host.harness.behavior.runSchedule("cos-sweep");
-      await vi.runAllTimersAsync();
-      await host.harness.behavior.runSchedule("cos-sweep");
-      await vi.runAllTimersAsync();
-      const runs = (await host.harness.behavior.callRpc("cos_runs", { limit: 10 })) as { runs: { routine: string; triggeredBy: string }[] };
-      expect(runs.runs.filter((r) => r.routine === "Nightly ship")).toHaveLength(1);
-      expect(runs.runs[0].triggeredBy).toBe("schedule:Nightly ship");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });

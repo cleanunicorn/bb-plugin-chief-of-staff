@@ -182,8 +182,6 @@ export async function detectStalls(cos: Cos, actor: string): Promise<string[]> {
 
 /** After a restart: re-sync every thread, then restart lost jobs and due retries. */
 export async function reconcile(cos: Cos): Promise<void> {
-  const orphaned = cos.store.failOrphanRuns();
-  if (orphaned) cos.store.log({ level: "warn", kind: "reconcile", repo: null, workItemId: null, message: `${orphaned} routine run(s) were interrupted by a restart`, actor: "startup" });
   await syncThreads(cos, "startup");
   await tickItems(cos, "startup");
   // Items parked by our own failure get one fresh attempt after a restart or plugin update.

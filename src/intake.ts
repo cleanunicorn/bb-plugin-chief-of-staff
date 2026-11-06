@@ -3,7 +3,7 @@
 // agent thread (see delivery.ts), so starting is just a "start" event.
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
-import { issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
+import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
 import type { GitHubClient, GitHubIssue } from "./github";
 import { dispatch } from "./delivery";
 import type { WorkItem } from "./state";
@@ -22,16 +22,9 @@ const MAX_CONVENTIONS = 8_000;
 
 export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Promise<GitHubIssue[]> {
   const filter = repo.issueFilter;
-  if (filter.numbers.length) {
-    const issues: GitHubIssue[] = [];
-    for (const number of filter.numbers) {
-      const issue = await github.getIssue(repo.owner, repo.repo, number);
-      if (issue.state === "open" && !issue.pull_request) issues.push(issue);
-    }
-    return issues;
-  }
-  if (!filter.labels.length && !filter.milestone && !filter.assignee) return [];
-  return github.listOpenIssues(repo.owner, repo.repo, { labels: filter.labels, milestone: filter.milestone, assignee: filter.assignee });
+  // No filter would mean "every open issue": never do that implicitly.
+  if (!filter.labels.length && !filter.assignee) return [];
+  return github.listOpenIssues(repo.owner, repo.repo, { labels: filter.labels, assignee: filter.assignee });
 }
 
 /**
@@ -87,8 +80,8 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     if (opts.repo && opts.repo !== key) continue;
     const result: IntakeResult = { repo: key, considered: 0, started: [], skipped: [] };
     results.push(result);
-    if (!repo.allow.intake) {
-      result.error = "intake disabled for this repo (allow.intake=false)";
+    if (!repo.intake) {
+      result.error = "intake is paused for this repo";
       continue;
     }
     try {
@@ -99,7 +92,7 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
           result.skipped.push({ issue: issue.number, reason: "active thread exists" });
           continue;
         }
-        const pr = await github.findOpenPullForIssue(repo.owner, repo.repo, issue.number, repo.branchPrefix);
+        const pr = await github.findOpenPullForIssue(repo.owner, repo.repo, issue.number, BRANCH_PREFIX);
         if (pr) {
           result.skipped.push({ issue: issue.number, reason: `open PR #${pr.number}` });
           continue;
@@ -154,7 +147,7 @@ function newItem(repo: RepoConfig, fields: { issueNumber: number | null; issueTi
 }
 
 export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue, actor: string): Promise<WorkItem | null> {
-  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(repo, issue.number, issue.title), source: "intake" }));
+  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(issue.number, issue.title), source: "intake" }));
   cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `picked up issue #${issue.number}: ${issue.title}`, actor });
   return dispatch(cos, item.id, { type: "start" }, actor);
 }
@@ -169,7 +162,7 @@ export async function startTask(cos: Cos, input: { repo: string; title: string; 
     const capacity = capacityProblem(cos, repo, (await cos.config()).values.maxConcurrentTotal);
     if (capacity) throw new Error(`${capacity}; try again later`);
   }
-  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: null, issueTitle: title, branch: `${repo.branchPrefix}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: input.body.trim() || title }));
+  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: null, issueTitle: title, branch: `${BRANCH_PREFIX}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: input.body.trim() || title }));
   cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `started task: ${title}`, actor });
   cos.invalidate();
   return dispatch(cos, item.id, { type: "start" }, actor);

@@ -29,10 +29,3 @@ self-review; shipping means pushing, opening a PR, or merging it when CI is
 green. Agents report each finished stage explicitly, failures loop back to
 Build on a budget, and you always see who holds the ball: the agent, Chief of
 Staff, or you.
-
-## Routines
-
-Define named routines with a cron expression or interval and ordered steps:
-`batch_merge`, `release`, `deploy`, `run_agent`, `notify`. Every run logs each
-step's outcome, dry-run mode reports without mutating anything, and merge,
-release and deploy are gated behind per-repo allow flags.

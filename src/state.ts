@@ -1,5 +1,6 @@
 // Persistent state in the plugin's SQLite database (bb.storage.database()).
-// Tables: work_items (task -> stages -> PR), routine_runs, activity_log.
+// Tables: work_items (task -> stages -> PR) and activity_log. routine_runs and
+// routine_schedule are left over from the removed routines feature.
 import type { Database } from "better-sqlite3";
 import type { Stage, StageOrDone } from "./workflow";
 
@@ -95,28 +96,6 @@ export interface WorkItem {
   taskBody: string | null;
 }
 
-export interface RoutineRun {
-  id: string;
-  routine: string;
-  repo: string;
-  triggeredBy: string;
-  dryRun: boolean;
-  status: "running" | "succeeded" | "failed" | "partial";
-  startedAt: string;
-  finishedAt: string | null;
-  steps: RoutineStepResult[];
-}
-
-export interface RoutineStepResult {
-  index: number;
-  type: string;
-  status: "succeeded" | "failed" | "skipped" | "dry_run";
-  summary: string;
-  details?: unknown;
-  startedAt: string;
-  finishedAt: string;
-}
-
 export interface LogEntry {
   id: number;
   at: string;
@@ -206,6 +185,7 @@ export const MIGRATIONS = [
      WHEN status = 'waiting_on_human' AND last_error LIKE 'run_checks:%' THEN 'cos_error'
      WHEN status = 'waiting_on_human' THEN 'question'
      ELSE NULL END,
+   return_to = CASE WHEN status = 'fixing' AND pr_number IS NOT NULL THEN 'ship' ELSE NULL END,
    status = CASE
      WHEN status IN ('running', 'fixing') THEN 'agent'
      WHEN status = 'checking' THEN 'cos'
@@ -294,20 +274,6 @@ function toRow(item: WorkItem): Record<string, unknown> {
   };
 }
 
-function rowToRun(row: Row): RoutineRun {
-  return {
-    id: row.id as string,
-    routine: row.routine as string,
-    repo: row.repo as string,
-    triggeredBy: row.triggered_by as string,
-    dryRun: Boolean(row.dry_run),
-    status: row.status as RoutineRun["status"],
-    startedAt: row.started_at as string,
-    finishedAt: (row.finished_at as string | null) ?? null,
-    steps: JSON.parse((row.steps_json as string) || "[]") as RoutineStepResult[],
-  };
-}
-
 export class StateStore {
   constructor(private readonly db: Database, private readonly now: () => Date = () => new Date()) {}
 
@@ -385,60 +351,6 @@ export class StateStore {
   countActiveAll(): number {
     const row = this.db.prepare(`SELECT COUNT(*) AS n FROM work_items WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`).get(...ACTIVE_STATUSES) as { n: number };
     return row.n;
-  }
-
-  // ---- routine runs ----
-  insertRun(run: RoutineRun): void {
-    this.db
-      .prepare(`INSERT INTO routine_runs (id, routine, repo, triggered_by, dry_run, status, started_at, finished_at, steps_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(run.id, run.routine, run.repo, run.triggeredBy, run.dryRun ? 1 : 0, run.status, run.startedAt, run.finishedAt, JSON.stringify(run.steps));
-  }
-
-  updateRun(run: RoutineRun): void {
-    this.db.prepare(`UPDATE routine_runs SET status = ?, finished_at = ?, steps_json = ? WHERE id = ?`).run(run.status, run.finishedAt, JSON.stringify(run.steps), run.id);
-  }
-
-  listRuns(opts: { routine?: string; limit?: number } = {}): RoutineRun[] {
-    const rows = opts.routine
-      ? (this.db.prepare(`SELECT * FROM routine_runs WHERE routine = ? ORDER BY started_at DESC LIMIT ?`).all(opts.routine, opts.limit ?? 50) as Row[])
-      : (this.db.prepare(`SELECT * FROM routine_runs ORDER BY started_at DESC LIMIT ?`).all(opts.limit ?? 50) as Row[]);
-    return rows.map(rowToRun);
-  }
-
-  getRun(id: string): RoutineRun | null {
-    const row = this.db.prepare(`SELECT * FROM routine_runs WHERE id = ?`).get(id) as Row | undefined;
-    return row ? rowToRun(row) : null;
-  }
-
-  /** Mark runs left in "running" by a crash as failed. */
-  failOrphanRuns(): number {
-    const at = this.now().toISOString();
-    const result = this.db.prepare(`UPDATE routine_runs SET status = 'failed', finished_at = ? WHERE status = 'running'`).run(at);
-    return result.changes;
-  }
-
-  // ---- routine schedule bookkeeping ----
-  getLastRunAt(routine: string): string | null {
-    const row = this.db.prepare(`SELECT last_run_at FROM routine_schedule WHERE routine = ?`).get(routine) as { last_run_at: string | null } | undefined;
-    return row?.last_run_at ?? null;
-  }
-
-  setLastRunAt(routine: string, at: string): void {
-    this.db
-      .prepare(`INSERT INTO routine_schedule (routine, last_run_at) VALUES (?, ?) ON CONFLICT(routine) DO UPDATE SET last_run_at = excluded.last_run_at`)
-      .run(routine, at);
-  }
-
-  getEnabledOverride(routine: string): boolean | null {
-    const row = this.db.prepare(`SELECT enabled_override FROM routine_schedule WHERE routine = ?`).get(routine) as { enabled_override: number | null } | undefined;
-    if (!row || row.enabled_override === null || row.enabled_override === undefined) return null;
-    return Boolean(row.enabled_override);
-  }
-
-  setEnabledOverride(routine: string, enabled: boolean | null): void {
-    this.db
-      .prepare(`INSERT INTO routine_schedule (routine, enabled_override) VALUES (?, ?) ON CONFLICT(routine) DO UPDATE SET enabled_override = excluded.enabled_override`)
-      .run(routine, enabled === null ? null : enabled ? 1 : 0);
   }
 
   // ---- activity log ----

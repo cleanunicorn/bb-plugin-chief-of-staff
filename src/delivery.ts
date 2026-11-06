@@ -3,7 +3,7 @@
 // Long effects run as detached jobs so event handlers and the sweep never
 // block on a 30-minute test run; a job's result is dropped if the item moved on.
 import type { Cos } from "./context";
-import { repoKey, type RepoConfig } from "./config";
+import type { RepoConfig } from "./config";
 import { GitHubError } from "./github";
 import { EFFECT_LABEL, transition, type Effect, type MachineEvent } from "./machine";
 import { promptStage, reviewerBrief, splitShipReport, stagePrompt } from "./prompts";
@@ -262,7 +262,7 @@ async function runJob(cos: Cos, itemId: string, effect: Effect, report: (event: 
     case "ship":
       return ship(cos, item, repo, workflow, report, actor);
     case "merge":
-      return merge(cos, item, repo, report, actor);
+      return merge(cos, item, repo, workflow, report, actor);
     default:
       return;
   }
@@ -322,10 +322,6 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, workflow: Workfl
     await report({ type: "pushed" });
     return;
   }
-  if (!repo.allow.openPr) {
-    await report({ type: "ship_refused", reason: `Opening pull requests is not allowed for ${repoKey(repo)} (allow.openPr is off). Allow it, or set the ship action to "push".` });
-    return;
-  }
   const github = await cos.github();
   const info = await github.getRepo(repo.owner, repo.repo);
   const ahead = await git(cos, ws, ["rev-list", "--count", `origin/${info.default_branch}..HEAD`]);
@@ -336,6 +332,9 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, workflow: Workfl
   await pushBranch(cos, ws, item, actor);
   const existing = await github.findPullByHead(repo.owner, repo.repo, ws.branch);
   if (existing && existing.state === "open") {
+    // Back from a CI fix: forget the failure we already reacted to, so the same
+    // head failing again (a fix with no new commit) counts against the budget.
+    await cos.bb.storage.kv.delete(CI_MARKER(item.id));
     await report({ type: "pr_opened", prNumber: existing.number, prUrl: existing.html_url });
     return;
   }
@@ -345,11 +344,8 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, workflow: Workfl
   const body = await buildPrBody(cos, fresh, workflow, written?.body ?? null);
   const pr = await github.createPull(repo.owner, repo.repo, { title: title.slice(0, 250), body, head: ws.branch, base: info.default_branch, ...(workflow.ship.draft ? { draft: true } : {}) });
   cos.store.log({ level: "info", kind: "pr", repo: item.repo, workItemId: item.id, message: `opened PR #${pr.number} ${pr.html_url}`, actor });
-  if (repo.reviewers.length || repo.teamReviewers.length) {
-    await github.requestReviewers(repo.owner, repo.repo, pr.number, repo.reviewers, repo.teamReviewers).catch((error) => cos.bb.log.warn(`request reviewers failed: ${error instanceof Error ? error.message : String(error)}`));
-  }
-  if (repo.labels.length) {
-    await github.addLabels(repo.owner, repo.repo, pr.number, repo.labels).catch((error) => cos.bb.log.warn(`add labels failed: ${error instanceof Error ? error.message : String(error)}`));
+  if (repo.reviewers.length) {
+    await github.requestReviewers(repo.owner, repo.repo, pr.number, repo.reviewers, []).catch((error) => cos.bb.log.warn(`request reviewers failed: ${error instanceof Error ? error.message : String(error)}`));
   }
   if (fresh.issueNumber) {
     await github.createIssueComment(repo.owner, repo.repo, fresh.issueNumber, `🤖 Chief of Staff opened pull request #${pr.number}: ${pr.html_url}`).catch(() => undefined);
@@ -357,19 +353,15 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, workflow: Workfl
   await report({ type: "pr_opened", prNumber: pr.number, prUrl: pr.html_url });
 }
 
-async function merge(cos: Cos, item: WorkItem, repo: RepoConfig, report: (event: MachineEvent) => Promise<void>, actor: string): Promise<void> {
+async function merge(cos: Cos, item: WorkItem, repo: RepoConfig, workflow: Workflow, report: (event: MachineEvent) => Promise<void>, actor: string): Promise<void> {
   if (!item.prNumber) throw new Error("no pull request to merge");
-  if (!repo.allow.merge) {
-    await report({ type: "ship_refused", reason: `Merging is not allowed for ${repoKey(repo)} (allow.merge is off). Allow it, or set the ship action to "pr".` });
-    return;
-  }
   const github = await cos.github();
   const pr = await github.getPull(repo.owner, repo.repo, item.prNumber);
   if (pr.merged) {
     await report({ type: "pr_merged" });
     return;
   }
-  if (repo.mergeFilter.requireApproval) {
+  if (workflow.ship.requireApproval) {
     const latest = new Map<string, string>();
     for (const review of await github.listReviews(repo.owner, repo.repo, item.prNumber)) if (review.user && review.state !== "COMMENTED") latest.set(review.user.login, review.state);
     const states = [...latest.values()];

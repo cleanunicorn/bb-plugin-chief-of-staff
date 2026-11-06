@@ -80,7 +80,8 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
 
     // Parked on a question, but the thread moved on since: someone answered
     // in BB and we missed the turn starting.
-    if (item.status === "waiting_on_human" && (item.waitingKind === "question" || item.waitingKind === "no_report") && updatedAt > Date.parse(item.updatedAt)) {
+    // (item.updatedAt is bumped by every activity touch, so compare with the idle we parked on.)
+    if (item.status === "waiting_on_human" && (item.waitingKind === "question" || item.waitingKind === "no_report") && updatedAt && updatedAt > (item.idleSeenAt ?? 0)) {
       await dispatchLocked(cos, item.id, { type: "turn_started", role }, actor);
       item = cos.store.getWorkItem(itemId);
       if (!item) return;
@@ -166,7 +167,8 @@ export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnaps
   }
   if (snapshot.status === "idle") {
     const fresh = cos.store.getWorkItem(item.id) ?? item;
-    if (fresh.status === "agent" && fresh.promptSentAt && snapshot.updatedAt && snapshot.updatedAt < fresh.promptSentAt) {
+    const driving = fresh.stage === "review" && fresh.reviewThreadId ? "reviewer" : "builder";
+    if (fresh.status === "agent" && role === driving && fresh.promptSentAt && snapshot.updatedAt && snapshot.updatedAt < fresh.promptSentAt) {
       // We sent a prompt the thread never picked up: send it again.
       if (cos.now().getTime() - fresh.promptSentAt > PROMPT_PICKUP_MS) {
         await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "effect_error", effect: { type: "prompt", target: role, kind: "nudge" }, message: "the agent did not pick up its prompt" }, actor));
@@ -239,7 +241,7 @@ export async function tickItems(cos: Cos, actor: string): Promise<void> {
     } else if (item.status === "cos" && !jobRunning(item.id) && now - Date.parse(item.jobStartedAt ?? item.updatedAt) > LOST_JOB_GRACE_MS) {
       cos.store.log({ level: "warn", kind: "job", repo: item.repo, workItemId: item.id, message: `${item.stage} job was not running (restart?); starting it again`, actor });
       await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "resume_job" }, actor));
-    } else if (item.status === "queued" && !item.threadId && now - Date.parse(item.createdAt) > LOST_JOB_GRACE_MS) {
+    } else if (item.status === "queued" && now - Date.parse(item.updatedAt) > LOST_JOB_GRACE_MS) {
       await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "start" }, actor));
     }
   }

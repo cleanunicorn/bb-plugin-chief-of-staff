@@ -19,6 +19,9 @@ Implementation (one PR, milestones in order)
 - [x] M7 Dashboard: stage stepper per item, "who is acting" (agent / CoS / you), plan-approval + review UI in the answer panel; Workflow editor in Configure (needs M2, M4)
 - [x] M8 Migrate in-flight items, tests (machine table tests, sync races, migration), README / SKILL / CHANGELOG under Unreleased; version bump left to release (needs all)
 
+- [x] M9 Remove what does not serve the workflow: routines (batch-merge, release, deploy, run_agent, notify), their tab/CLI/RPCs, and most repo/general options; legacy keys folded in on parse (requested after M8)
+- [x] Fix the independent review's findings: builder nudged during independent review, missed-resume fallback never firing, CI fix without a new commit stalling, approve on a ship escalation dropping the PR, migration edge cases
+
 Before merge
 - [ ] Install the branch build on a BB instance and walk one real issue through every stage (not done: the live instance has in-flight canary items)
 - [ ] Open the PR, mirror final checkboxes to #4

@@ -2,7 +2,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract, type ExecInput, type ExecOutput } from "../contract";
-import { parseRepos, parseRoutines, type ProjectRemotes, type RepoConfig, type Routine } from "./config";
+import { parseRepos, type ProjectRemotes, type RepoConfig } from "./config";
 import { GitHubClient, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
@@ -12,7 +12,6 @@ import { parseWorkflow, resolveWorkflow, workflowSchema, type Workflow } from ".
 export interface LoadedConfig {
   values: SettingsValues;
   repos: RepoConfig[];
-  routines: Routine[];
   /** The global workflow (repos merge their overrides over it). */
   workflow: Workflow;
   errors: string[];
@@ -95,27 +94,19 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
       const remotes = await cos.projectRemotes();
       if (!remotes) warnings.push("BB project list unavailable; repos without explicit owner/repo are skipped");
       const reposResult = parseRepos(values.repos, remotes);
-      const routinesResult = parseRoutines(values.routines);
       if (!reposResult.ok) errors.push(`repos: ${reposResult.error}`);
       else warnings.push(...reposResult.warnings);
-      if (!routinesResult.ok) errors.push(`routines: ${routinesResult.error}`);
-      else warnings.push(...routinesResult.warnings);
       const workflowResult = parseWorkflow(values.workflow ?? "");
       if (!workflowResult.ok) errors.push(`workflow: ${workflowResult.error}`);
       const workflow = workflowResult.ok ? workflowResult.value : workflowSchema.parse({});
       const repos = reposResult.ok ? reposResult.value : [];
-      const routines = routinesResult.ok ? routinesResult.value : [];
-      for (const routine of routines) {
-        if (!repos.some((r) => `${r.owner}/${r.repo}` === routine.repo)) warnings.push(`routine ${routine.name} targets unconfigured repo ${routine.repo}; it will refuse to run`);
-      }
       const value: LoadedConfig = {
         values,
         repos,
-        routines,
         workflow,
         errors,
         warnings,
-        policy: { ...DEFAULT_POLICY, autoRetryStalled: values.autoRetryStalled },
+        policy: DEFAULT_POLICY,
       };
       configCache = { at: Date.now(), value };
       return value;
@@ -127,7 +118,7 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     async workflow(key) {
       const config = await cos.config();
       const repo = config.repos.find((r) => `${r.owner}/${r.repo}` === key);
-      return resolveWorkflow(config.workflow, repo?.workflow, { checkCommand: repo?.checkCommand });
+      return resolveWorkflow(config.workflow, repo?.workflow);
     },
     async projects() {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
@@ -180,13 +171,6 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
           });
         } catch (error) {
           bb.log.debug(`push notification skipped: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      if (values.notifyWebhookUrl && /^https?:\/\//.test(values.notifyWebhookUrl)) {
-        try {
-          await fetch(values.notifyWebhookUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: safeTitle, body: safeBody, threadId: threadId ?? null }) });
-        } catch (error) {
-          bb.log.warn(`notification webhook failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     },

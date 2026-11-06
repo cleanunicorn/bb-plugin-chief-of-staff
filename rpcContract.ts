@@ -44,34 +44,26 @@ const rosterEntry = z.object({
     .nullable(),
 });
 
-const stepResult = z.object({ index: z.number(), type: z.string(), status: z.string(), summary: z.string(), details: z.unknown().optional(), startedAt: z.string(), finishedAt: z.string() });
-const runSchema = z.object({ id: z.string(), routine: z.string(), repo: z.string(), triggeredBy: z.string(), dryRun: z.boolean(), status: z.string(), startedAt: z.string(), finishedAt: z.string().nullable(), steps: z.array(stepResult) });
 const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), message: z.string(), actor: z.string() });
 
-/** Scalar plugin settings the configurator edits (everything except repos/routines/token). */
+/** Scalar plugin settings the configurator edits (everything except repos/workflow/token). */
 export const generalSettingsSchema = z.object({
   maxConcurrentTotal: z.number().int().min(0).max(100),
   stallThresholdMinutes: z.number().int().min(1).max(1440),
-  autoRetryStalled: z.boolean(),
   intakeIntervalMinutes: z.number().int().min(1).max(1440),
-  ciPollIntervalMinutes: z.number().int().min(1).max(120),
   defaultProviderId: z.string().max(200),
   defaultModel: z.string().max(200),
   notifyPush: z.boolean(),
-  notifyWebhookUrl: z.string().max(2000),
 });
 export type GeneralSettings = z.output<typeof generalSettingsSchema>;
 /** Read side: no range checks, so values set elsewhere (CLI, host fields) never break the configurator. */
 const generalSettingsValuesSchema = z.object({
   maxConcurrentTotal: z.number(),
   stallThresholdMinutes: z.number(),
-  autoRetryStalled: z.boolean(),
   intakeIntervalMinutes: z.number(),
-  ciPollIntervalMinutes: z.number(),
   defaultProviderId: z.string(),
   defaultModel: z.string(),
   notifyPush: z.boolean(),
-  notifyWebhookUrl: z.string(),
 });
 
 const decision = z.enum(["allow_once", "allow_for_session", "deny"]);
@@ -126,20 +118,13 @@ export const rpcContract = defineRpcContract({
     input: z.null(),
     output: z.object({
       tokenSource: z.enum(["setting", "gh-cli", "none"]),
-      repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), allow: z.object({ intake: z.boolean(), openPr: z.boolean(), merge: z.boolean(), release: z.boolean(), deploy: z.boolean() }), checkCommand: z.string().nullable(), deployCommand: z.string().nullable(), deployWorkflow: z.string().nullable() })),
+      repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), intake: z.boolean(), stages: z.array(z.string()), shipAction: z.string(), verifyCommand: z.string().nullable() })),
       errors: z.array(z.string()),
       warnings: z.array(z.string()),
-      settings: z.object({ stallThresholdMinutes: z.number(), maxConcurrentTotal: z.number(), autoRetryStalled: z.boolean(), intakeIntervalMinutes: z.number() }),
+      settings: z.object({ stallThresholdMinutes: z.number(), maxConcurrentTotal: z.number(), intakeIntervalMinutes: z.number() }),
     }),
   },
   cos_roster: { input: z.object({ repo: z.string().optional(), includeDone: z.boolean().default(false), withUsage: z.boolean().default(false) }), output: z.object({ entries: z.array(rosterEntry) }) },
-  cos_routines: {
-    input: z.null(),
-    output: z.object({ routines: z.array(z.object({ name: z.string(), repo: z.string(), enabled: z.boolean(), schedule: z.string().nullable(), nextRunAt: z.string().nullable(), lastRunAt: z.string().nullable(), dryRun: z.boolean(), steps: z.array(z.string()), running: z.boolean(), configured: z.boolean() })) }),
-  },
-  cos_runs: { input: z.object({ routine: z.string().optional(), limit: z.number().int().min(1).max(200).default(30) }), output: z.object({ runs: z.array(runSchema) }) },
-  cos_run_routine: { input: z.object({ name: z.string(), dryRun: z.boolean().optional() }), output: runSchema },
-  cos_set_routine_enabled: { input: z.object({ name: z.string(), enabled: z.boolean() }), output: z.object({ ok: z.literal(true) }) },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: { input: z.object({ id: z.string(), action: z.enum(["retry", "resume", "rerun_checks", "approve", "mark_done", "mark_failed"]) }), output: z.object({ status: z.string() }) },
   cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().min(1).max(200), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), stage: z.string(), status: z.string() }) },
@@ -156,13 +141,11 @@ export const rpcContract = defineRpcContract({
       failedInWindow: z.number(),
       medianCycleMinutes: z.number().nullable(),
       totalTracked: z.number(),
-      runs: z.object({ succeeded: z.number(), failed: z.number(), partial: z.number(), running: z.number() }),
     }),
   },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional() }), output: z.object({ entries: z.array(logEntry) }) },
-  cos_merge_preview: { input: z.object({ repo: z.string() }), output: z.object({ decisions: z.array(z.object({ number: z.number(), action: z.string(), reason: z.string(), title: z.string(), headRef: z.string() })) }) },
-  cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), routines: z.string(), workflow: z.string() }) },
-  cos_set_config: { input: z.object({ repos: z.string().optional(), routines: z.string().optional(), workflow: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
+  cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), workflow: z.string() }) },
+  cos_set_config: { input: z.object({ repos: z.string().optional(), workflow: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
   cos_get_settings: {
     input: z.null(),
     output: z.object({

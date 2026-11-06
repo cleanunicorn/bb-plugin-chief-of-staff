@@ -55,13 +55,13 @@ describe("workflow config", () => {
     expect(activeStages(wf)).toEqual(["plan", "build", "review", "ship"]);
   });
 
-  it("merges repo overrides field by field and falls back to the legacy checkCommand", () => {
-    const global = workflowSchema.parse({ review: { instructions: "be strict" } });
-    const wf = resolveWorkflow(global, { review: { enabled: false }, plan: { requireApproval: false } }, { checkCommand: "pnpm test" });
+  it("merges repo overrides field by field", () => {
+    const global = workflowSchema.parse({ review: { instructions: "be strict" }, verify: { command: "npm test" } });
+    const wf = resolveWorkflow(global, { review: { enabled: false }, plan: { requireApproval: false } });
     expect(wf.review).toMatchObject({ enabled: false, instructions: "be strict" });
     expect(wf.plan).toMatchObject({ enabled: true, requireApproval: false });
-    expect(wf.verify.command).toBe("pnpm test");
-    expect(resolveWorkflow(global, { verify: { command: "make check" } }, { checkCommand: "pnpm test" }).verify.command).toBe("make check");
+    expect(wf.verify.command).toBe("npm test");
+    expect(resolveWorkflow(global, { verify: { command: "make check" } }).verify.command).toBe("make check");
   });
 
   it("finds the next enabled stage, optionally skipping review", () => {
@@ -168,6 +168,11 @@ describe("stage machine", () => {
       const t = transition({ ...base, status: "waiting_on_human", waitingKind }, { type: "approve" }, full);
       expect([t.stage, t.status]).toEqual(["build", "waiting_on_human"]);
     }
+  });
+
+  it("keeps watching an open PR when a ship escalation is approved", () => {
+    const t = transition({ ...base, stage: "ship", status: "waiting_on_human", waitingKind: "escalation", prNumber: 7 }, { type: "approve" }, full);
+    expect([t.stage, t.status]).toEqual(["ship", "ready"]);
   });
 
   it("says finished, not shipped, when shipping is off", () => {
