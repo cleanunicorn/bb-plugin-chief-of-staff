@@ -12,6 +12,7 @@ import { parseRepos, parseRoutines } from "./config";
 import { collectCandidates } from "./routines/batchMerge";
 import { planBatchMerge } from "./routines/batchMergePlan";
 import { computeStats } from "./stats";
+import { answerQuestion, getQuestion } from "./answer";
 
 export { rpcContract };
 
@@ -72,6 +73,12 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
       async cos_item_action(input) {
         const item = await itemAction(cos, input.id, input.action, "rpc:client");
         return { status: item?.status ?? "unknown" };
+      },
+      async cos_question(input) {
+        return getQuestion(cos, input.id);
+      },
+      async cos_answer(input, ctx) {
+        return answerQuestion(cos, input.id, input.answer, callerActor(ctx));
       },
       async cos_stats(input) {
         return computeStats(cos.store.listWorkItems({ limit: 5000 }), cos.store.listRuns({ limit: 500 }), cos.now(), input.windowDays);

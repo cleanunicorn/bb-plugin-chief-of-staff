@@ -16,7 +16,9 @@ lives under `bb cos`.
   repo, issue, PR, thread id, last activity, stall flag, and a "Waiting on you"
   list with the question or approval each waiting agent is blocked on.
   Answering or resuming the thread in BB moves the item back to running; the
-  plugin re-syncs every thread each minute.
+  plugin re-syncs every thread each minute. In the dashboard, clicking the
+  question opens it with its options and context and answers it in place
+  (RPCs `cos_question {id}` and `cos_answer {id, answer}`).
 - `bb cos intake [--repo owner/repo] [--dry-run]` — pick up eligible issues now.
 - `bb cos run <routine> [--dry-run]` — run a routine immediately. Dry run reports
   what each step would do without mutating GitHub or deploying.

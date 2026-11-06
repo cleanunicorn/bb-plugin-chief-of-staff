@@ -31,7 +31,7 @@ new commits on `main` automatically. To update right away:
 bb plugin update chief-of-staff --yes
 ```
 
-Pin a release instead of tracking `main` with `git:github.com/cleanunicorn/bb-plugin-chief-of-staff@v0.2.1`.
+Pin a release instead of tracking `main` with `git:github.com/cleanunicorn/bb-plugin-chief-of-staff@v0.4.0`.
 
 From a local checkout (development):
 
@@ -164,6 +164,11 @@ Agents get the `chief_of_staff_status` tool with the same roster.
   turn (you answered or resumed it in BB), the item returns to running; the
   next idle re-runs checks and pushes. BB has no "interaction resolved" event,
   so an answer is noticed by the next thread event or within a minute.
+- Answering from the dashboard: click the question on a waiting card to see
+  the question, its options and the agent's last message, then answer in place
+  or open the thread. Questions, approvals and requests are resolved with
+  `threads.interactions.resolve`; a plain-text question gets a reply message.
+  The activity log records who answered, not what they wrote.
 - Commands on a checkout (git, check and deploy commands) run on the enrolled
   host through the plugin's `host.ts` entry; nothing opens user paths from the
   server process.

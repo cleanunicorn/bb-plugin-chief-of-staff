@@ -68,6 +68,41 @@ const generalSettingsValuesSchema = z.object({
   notifyWebhookUrl: z.string(),
 });
 
+const decision = z.enum(["allow_once", "allow_for_session", "deny"]);
+const openQuestion = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("question"),
+    interactionId: z.string(),
+    questions: z.array(z.object({ id: z.string(), prompt: z.string(), shortLabel: z.string().nullable(), options: z.array(z.object({ label: z.string(), value: z.string(), description: z.string().nullable() })), allowFreeText: z.boolean(), multiSelect: z.boolean(), required: z.boolean() })),
+  }),
+  z.object({ kind: z.literal("approval"), interactionId: z.string(), subject: z.string(), reason: z.string().nullable(), detail: z.string().nullable(), decisions: z.array(decision) }),
+  z.object({ kind: z.literal("request"), interactionId: z.string(), title: z.string(), detail: z.string().nullable(), answerable: z.boolean() }),
+  z.object({ kind: z.literal("text"), question: z.string() }),
+]);
+export type OpenQuestion = z.output<typeof openQuestion>;
+const questionView = z.object({
+  itemId: z.string(),
+  repo: z.string(),
+  issueNumber: z.number().nullable(),
+  issueTitle: z.string(),
+  threadId: z.string().nullable(),
+  threadUrl: z.string().nullable(),
+  status: z.string(),
+  waitingReason: z.string().nullable(),
+  open: z.array(openQuestion),
+  lastMessage: z.string().nullable(),
+  checkOutput: z.string().nullable(),
+  lastError: z.string().nullable(),
+});
+export type QuestionView = z.output<typeof questionView>;
+const answerInput = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("question"), interactionId: z.string().max(200), answers: z.record(z.string().max(200), z.object({ selected: z.array(z.string().max(500)).max(50), freeText: z.string().max(10000).optional() })) }),
+  z.object({ kind: z.literal("approval"), interactionId: z.string().max(200), decision }),
+  z.object({ kind: z.literal("request"), interactionId: z.string().max(200), value: z.string().max(20000) }),
+  z.object({ kind: z.literal("text"), text: z.string().min(1).max(20000) }),
+]);
+export type AnswerPayload = z.input<typeof answerInput>;
+
 export const rpcContract = defineRpcContract({
   cos_overview: {
     input: z.null(),
@@ -89,6 +124,8 @@ export const rpcContract = defineRpcContract({
   cos_set_routine_enabled: { input: z.object({ name: z.string(), enabled: z.boolean() }), output: z.object({ ok: z.literal(true) }) },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: { input: z.object({ id: z.string(), action: z.enum(["retry", "resume", "rerun_checks", "mark_done", "mark_failed"]) }), output: z.object({ status: z.string() }) },
+  cos_question: { input: z.object({ id: z.string() }), output: questionView },
+  cos_answer: { input: z.object({ id: z.string(), answer: answerInput }), output: z.object({ status: z.string() }) },
   cos_stats: {
     input: z.object({ windowDays: z.number().int().min(1).max(90).default(14) }),
     output: z.object({

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- Answer agents from the dashboard. Click the question on a waiting card to
+  open it: the agent's question with its options (and their descriptions), a
+  free-text box when the question allows one, approval decisions with the
+  command or plan being approved, and the context around it (the agent's last
+  message, failing check output, last error). Send the answer, or open the
+  thread instead.
+- Answers go through `bb.sdk.threads.interactions.resolve` for questions,
+  approvals and namespaced requests; plain-text questions get a reply message
+  in the thread. Forms from other plugins link to the thread.
+- New RPCs `cos_question` and `cos_answer`. Answers are validated against the
+  open interaction (offered options, required questions, offered decisions),
+  logged with who answered, and never logged verbatim.
+
 ## 0.3.0
 
 - Thread state stays in sync with BB. Every minute the sweep re-reads each

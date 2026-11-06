@@ -12,6 +12,7 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, STEPS, stageColor, stageOf, stepIndex } from "@/components/cos/stages";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
+import { QuestionSheet } from "@/components/cos/question";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -150,7 +151,7 @@ function Stepper({ entry }: { entry: RosterEntry }) {
 
 type ItemAction = "retry" | "resume" | "rerun_checks" | "mark_done" | "mark_failed";
 
-function AgentCard({ entry, busy, onAction, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; now: number }) {
+function AgentCard({ entry, busy, onAction, onAnswer, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string) => void; now: number }) {
   const navigate = useBbNavigate();
   const [menu, setMenu] = useState(false);
   const finished = entry.detail === "done" || entry.detail === "failed";
@@ -176,11 +177,21 @@ function AgentCard({ entry, busy, onAction, now }: { entry: RosterEntry; busy: b
         <h3 className="line-clamp-2 text-sm font-semibold text-foreground">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
       </div>
       <Stepper entry={entry} />
-      {entry.waitingReason && !finished ? (
-        <p className="flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-xs text-foreground">
+      {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
+        <button
+          type="button"
+          onClick={() => onAnswer(entry.id)}
+          className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label="Open the question to answer it"
+        >
           <Icon name="MessageCircleQuestion" fallback="MessageSquare" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
-          <span className="line-clamp-3" title={entry.waitingReason}>{entry.waitingReason}</span>
-        </p>
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-3" title={entry.waitingReason ?? undefined}>{entry.waitingReason ?? "Waiting on you"}</span>
+            <span className="mt-1 inline-flex items-center gap-1 font-medium text-muted-foreground group-hover:text-foreground">
+              Answer here <Icon name="ChevronRight" fallback="Circle" className="size-3" aria-hidden />
+            </span>
+          </span>
+        </button>
       ) : null}
       {entry.lastError && !entry.lastError.startsWith("ci-failed:") && !finished ? (
         <p className="flex items-start gap-1.5 text-xs text-foreground">
@@ -279,6 +290,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   }, [roster, stats, overview, routines]);
   useLiveRefresh(refetchAll);
   const [busy, setBusy] = useState<string | null>(null);
+  const [answering, setAnswering] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const act = useCallback(
     async (id: string, action: ItemAction) => {
@@ -468,10 +480,11 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} />
+            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={setAnswering} />
           ))}
         </div>
       </Panel>
+      {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} /> : null}
     </div>
   );
 }
