@@ -1047,7 +1047,7 @@ function Dashboard({ subPath }: { subPath: string }) {
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <span className="flex size-9 items-center justify-center rounded-lg border border-border bg-card">
-              <Icon name="ClipboardCheck" fallback="Circle" className="size-5 text-foreground" aria-hidden />
+              <Icon name="ChefHat" fallback="Circle" className="size-5 text-foreground" aria-hidden />
             </span>
             <div>
               <h1 className="text-lg leading-tight font-semibold text-foreground">Chief of Staff</h1>
@@ -1117,6 +1117,6 @@ function SettingsSection() {
 }
 
 export default definePluginApp((app) => {
-  app.slots.navPanel({ id: "cos-dashboard", title: "Chief of Staff", icon: "ClipboardCheck", path: "cos", component: Dashboard });
+  app.slots.navPanel({ id: "cos-dashboard", title: "Chief of Staff", icon: "ChefHat", path: "cos", component: Dashboard });
   app.slots.settingsSection({ id: "cos-config", title: "Configure Chief of Staff", description: "Repositories, routines, limits and GitHub access, edited visually and validated before saving.", component: SettingsSection });
 });
