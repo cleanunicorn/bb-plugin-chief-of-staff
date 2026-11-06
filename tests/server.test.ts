@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
+import { settleJobs } from "../src/delivery";
 
 type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string } | undefined;
 
@@ -25,6 +26,11 @@ const repos = JSON.stringify({
     { owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } },
   ],
 });
+/** Build → Verify (npm test via checkCommand) → Ship: the old single-turn flow. */
+const minimalWorkflow = JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, verify: { maxAttempts: 1 } } });
+/** Every stage on: plan approval, verify command, independent reviewer, PR. */
+const fullWorkflow = JSON.stringify({ workflow: {} });
+
 const routines = JSON.stringify({
   routines: [
     { name: "Nightly ship", enabled: true, cron: "0 2 * * *", timezone: "UTC", repo: "acme/app", steps: [{ type: "batch_merge" }, { type: "notify", title: "shipped" }] },
@@ -44,6 +50,8 @@ describe("chief-of-staff server", () => {
   let checkHangs = false;
   let threadUpdatedAt = 0;
   let threadStatus: "idle" | "active" = "idle";
+  let checkBlocks: Promise<void> | null = null;
+  let clock = 0;
   let pending: unknown[] = [];
   let resolved: unknown[] = [];
   let sent: unknown[] = [];
@@ -62,12 +70,15 @@ describe("chief-of-staff server", () => {
     resolved = [];
     sent = [];
     checkHangs = false;
+    checkBlocks = null;
     threadUpdatedAt = 0;
+    clock = 0;
     assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
     globalThis.fetch = fakeGitHub(
       {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
         "GET /repos/acme/app/issues": () => ({ body: [issue] }),
+        "GET /repos/acme/app/issues/12": () => ({ body: issue }),
         "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z" }] }),
         "GET /repos/acme/app/contents/AGENTS.md": () => ({ body: { content: Buffer.from("# Conventions\nUse pnpm").toString("base64") } }),
         "POST /repos/acme/app/issues/12/comments": () => ({ status: 201, body: { id: 2, body: "", user: null, created_at: "" } }),
@@ -84,7 +95,7 @@ describe("chief-of-staff server", () => {
 
     host = createFakePluginHost({
       pluginId: "chief-of-staff",
-      settings: { githubToken: "ghp_secret_token", repos, routines, intakeIntervalMinutes: 10 },
+      settings: { githubToken: "ghp_secret_token", repos, routines, workflow: minimalWorkflow, intakeIntervalMinutes: 10 },
       experimental_callHostRpc: async (call) => {
         hostCalls.push({ method: call.method, input: call.input, hostId: call.hostId });
         if (call.method === "readFile") return { exists: false, content: "", truncated: false };
@@ -93,6 +104,7 @@ describe("chief-of-staff server", () => {
         if (input.command === "git" && input.args?.[0] === "status") return { ...ok, stdout: " M src/a.ts\n" };
         if (input.command === "git" && input.args?.[0] === "rev-list") return { ...ok, stdout: "2\n" };
         if (input.command === "npm test" && checkHangs) throw new Error("host plugin call 42b1 exceeded its deadline");
+        if (input.command === "npm test" && checkBlocks) await checkBlocks;
         if (input.command === "npm test") return { ...ok, exitCode: checkExit, stdout: checkExit ? "1 failing" : "all green" };
         return ok;
       },
@@ -100,8 +112,9 @@ describe("chief-of-staff server", () => {
         system: { config: async () => ({ primaryHostId: "host_1" }) as never },
         projects: { list: async () => [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never },
         threads: {
-          spawn: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code" }),
-          get: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }),
+          spawn: async (args: { environment: { type: string } }) =>
+            args.environment.type === "reuse" ? makeThreadResponse({ id: "thr_r", environmentId: "env_1", providerId: "claude-code" }) : makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code" }),
+          get: async (args: { threadId: string }) => ({ ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus } }),
           interactions: {
             list: async () => pending as never,
             resolve: async (args: unknown) => {
@@ -110,7 +123,7 @@ describe("chief-of-staff server", () => {
               return { ok: true } as never;
             },
           },
-          list: async () => [makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" })],
+          list: async () => ["thr_1", "thr_r"].map((id) => ({ ...makeThreadResponse({ id, environmentId: "env_1", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus }, hasPendingInteraction: pending.length > 0 })),
           output: async () => ({ output: assistantOutput }),
           send: async (args: unknown) => {
             sent.push(args);
@@ -126,12 +139,34 @@ describe("chief-of-staff server", () => {
     await plugin(host.bb);
   });
 
-  afterEach(async () => {
+  /** A strictly increasing thread timestamp, always after Chief of Staff's latest prompt. */
+  const tick = () => Date.now() + 60_000 + ++clock * 1000;
+  /** The agent files its stage report through the cos_report tool. */
+  const report = (stage: string, outcome = "done", summary = `${stage} done`, threadId = "thr_1", question?: string) =>
+    host.harness.behavior.callAgentTool("cos_report", { stage, outcome, summary, ...(question ? { question } : {}) }, { threadId });
+  /** A turn ends on a thread; wait for the jobs it starts. */
+  const idle = async (lastAssistantText: string | null = "done", threadId = "thr_1", updatedAt = tick()) => {
+    threadUpdatedAt = updatedAt;
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText });
+    await settleJobs();
+  };
+  type Entry = { id: string; status: string; detail: string; stage: string; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; fixAttempts: number; counters: Record<string, number> };
+  const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
+  const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
+  const sentTexts = () => (sent as { input: { text: string }[] }[]).map((s) => s.input[0].text);
+  const sweep = async () => {
+    await host.harness.behavior.runSchedule("cos-sweep");
+    await settleJobs();
+  };
+
+  afterEach(async (ctx) => {
+    if (process.env.COS_DEBUG && ctx.task.result?.state === "fail") console.log((await host.harness.behavior.runCli(["log", "--limit", "80"])).stdout);
+    await settleJobs();
     globalThis.fetch = originalFetch;
     await host.harness.lifecycle.dispose();
   });
 
-  it("takes an issue through spawn, checks, push and PR, never leaking the token", async () => {
+  it("takes an issue through build, verify and ship, never leaking the token", async () => {
     const intake = (await host.harness.behavior.callRpc("cos_intake_now", {})) as { results: { started: { issue: number; threadId: string }[] }[] };
     expect(intake.results[0].started).toEqual([{ issue: 12, threadId: "thr_1" }]);
 
@@ -143,34 +178,45 @@ describe("chief-of-staff server", () => {
     expect(spawnArgs.prompt).toContain("Fix login");
     expect(spawnArgs.prompt).toContain("please fix");
     expect(spawnArgs.prompt).toContain("Use pnpm");
+    // The first prompt names the stage and the reporting contract.
+    expect(spawnArgs.prompt).toContain("Build");
+    expect(spawnArgs.prompt).toContain("cos_report");
     expect(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/issues/12/comments")).toBeTruthy();
+    expect(await roster()).toMatchObject({ stage: "build", detail: "agent", actor: "agent" });
 
     // Dedupe: a second intake does not spawn again.
     await host.harness.behavior.callRpc("cos_intake_now", {});
     expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
 
-    // The agent finishes → checks run on the host → push → PR.
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" }), lastAssistantText: "done" });
+    // The agent reports Build done and ends its turn → verify → push → PR.
+    expect(await report("build", "done", "Fixed the login bug.\n\nnpm test → 12 passing")).toContain("Recorded");
+    await idle();
     const commands = hostCalls.map((c) => (c.input as { command: string; args?: string[] }).command + " " + ((c.input as { args?: string[] }).args ?? []).join(" "));
     expect(commands.some((c) => c.startsWith("npm test"))).toBe(true);
     expect(commands.some((c) => c.startsWith("git push --force-with-lease"))).toBe(true);
     const prCall = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls");
     expect(prCall).toBeTruthy();
-    const body = (prCall!.body as { body: string; head: string; base: string });
+    const body = prCall!.body as { body: string; head: string; base: string };
     expect(body.head).toBe("cos/issue-12-fix-login");
     expect(body.base).toBe("main");
     expect(body.body).toContain("Closes #12");
     expect(body.body).toContain("claude-code");
     expect(body.body).toContain("npm test → 12 passing");
+    expect(body.body).toContain("all green");
+    expect(await roster()).toMatchObject({ status: "running", stage: "ship", detail: "ci", prNumber: 7 });
 
-    const roster = (await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { status: string; detail: string; prNumber: number | null }[] };
-    expect(roster.entries[0]).toMatchObject({ status: "running", detail: "pr_open", prNumber: 7 });
-
-    // CI sweep sees the PR merged → done.
-    currentPull = { ...currentPull, merged: true, merged_at: "2026-11-05T02:00:00Z", state: "closed" };
-    await host.harness.behavior.runSchedule("cos-sweep");
-    const after = (await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { status: string }[] };
-    expect(after.entries[0].status).toBe("done");
+    // CI green → ready to merge; merged → done (CI is polled every 2 minutes).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await sweep();
+      expect(await roster()).toMatchObject({ stage: "ship", detail: "ready", actor: "human" });
+      currentPull = { ...currentPull, merged: true, merged_at: "2026-11-05T02:00:00Z", state: "closed" };
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "done", stage: "done" });
+    } finally {
+      vi.useRealTimers();
+    }
 
     // The token went to GitHub as a bearer header and nowhere else.
     expect(ghCalls.every((c) => c.auth === "Bearer ghp_secret_token")).toBe(true);
@@ -180,137 +226,288 @@ describe("chief-of-staff server", () => {
     expect(log.stdout).not.toContain("ghp_secret_token");
   });
 
-  it("feeds a failing check back to the thread once, then waits on a human", async () => {
+  it("runs the full pipeline: plan approval, independent reviewer in the builder's workspace, review loop", async () => {
+    await host.harness.behavior.setSettings({ workflow: fullWorkflow });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const first = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
+    expect(first.prompt).toContain("Plan");
+    expect(first.prompt).toContain("Do not change files");
+
+    await report("plan", "done", "1. Patch auth.ts\n2. Add a regression test");
+    await idle();
+    const { id } = await roster();
+    expect(await roster()).toMatchObject({ stage: "plan", detail: "waiting_on_human", waitingKind: "plan_approval", actor: "human" });
+    const view = (await host.harness.behavior.callRpc("cos_question", { id })) as { plan: string; decidable: boolean };
+    expect(view).toMatchObject({ plan: "1. Patch auth.ts\n2. Add a regression test", decidable: true });
+
+    // Approve from the dashboard → the builder gets the build prompt with the plan.
+    await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "approve" } });
+    expect(await roster()).toMatchObject({ stage: "build", detail: "agent" });
+    expect(sentTexts().at(-1)).toContain("Approved plan");
+    expect(sentTexts().at(-1)).toContain("Patch auth.ts");
+
+    await report("build", "done", "Patched auth.ts");
+    await idle();
+    expect(ranChecks()).toBe(1);
+    // Review: a reviewer thread in the builder's environment, nested under it.
+    const reviewerSpawn = host.harness.inspection.sdk.callsTo("threads.spawn")[1][0] as { environment: unknown; parentThreadId: string; prompt: string };
+    expect(reviewerSpawn.environment).toEqual({ type: "reuse", environmentId: "env_1" });
+    expect(reviewerSpawn.parentThreadId).toBe("thr_1");
+    expect(reviewerSpawn.prompt).toContain("You did not write it");
+    expect(reviewerSpawn.prompt).toContain("git diff origin/main...HEAD");
+    expect(await roster()).toMatchObject({ stage: "review", detail: "agent", activity: expect.stringContaining("Reviewer") });
+
+    // The builder may not report review; the reviewer requests changes.
+    expect(JSON.stringify(await report("review", "done", "lgtm", "thr_1"))).toContain("reviewer thread");
+    await report("review", "changes_requested", "1. auth.ts:12 misses the null case", "thr_r");
+    await idle("findings", "thr_r");
+    expect(await roster()).toMatchObject({ stage: "build", detail: "agent", counters: expect.objectContaining({ reviewRounds: 1 }) });
+    expect(sentTexts().at(-1)).toContain("auth.ts:12 misses the null case");
+
+    // Fix → verify again → re-review in the same reviewer thread → approve → PR.
+    await report("build", "done", "Handled null");
+    await idle();
+    expect(ranChecks()).toBe(2);
+    expect((sent.at(-1) as { threadId: string }).threadId).toBe("thr_r");
+    expect(sentTexts().at(-1)).toContain("Handled null");
+    await report("review", "done", "Looks right now", "thr_r");
+    await idle("ok", "thr_r");
+    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci", prNumber: 7 });
+    const pr = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")!.body as { body: string };
+    expect(pr.body).toContain("Plan: approved by a human");
+    expect(pr.body).toContain("independent reviewer agent, 1 round(s)");
+  });
+
+  it("handles a turn end once even when the event and the sweep both see it", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build");
+    let release!: () => void;
+    checkBlocks = new Promise<void>((resolve) => (release = resolve));
+    const updatedAt = tick();
+    threadUpdatedAt = updatedAt;
+    await Promise.all([
+      host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText: "done" }),
+      host.harness.behavior.runSchedule("cos-sweep"),
+      host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText: "done" }),
+    ]);
+    // The verify job runs detached: monitoring is not blocked while it runs.
+    expect(await roster()).toMatchObject({ stage: "verify", detail: "cos", actor: "cos" });
+    // A sweep while the job runs neither waits for it nor starts a second one.
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(ranChecks()).toBe(1);
+    release();
+    await settleJobs();
+    expect(ranChecks()).toBe(1);
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+  });
+
+  it("nudges an agent that stops without reporting, then hands it to a human", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await idle("I made some changes.");
+    expect(sentTexts()).toHaveLength(1);
+    expect(sentTexts()[0]).toContain("without reporting the Build stage");
+    expect(await roster()).toMatchObject({ detail: "agent", activity: expect.stringContaining("nudged 1×") });
+    // The same idle seen again by the sweep changes nothing.
+    await sweep();
+    expect(sentTexts()).toHaveLength(1);
+
+    await idle("Still working on it.");
+    await idle("Hmm.");
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "no_report" });
+    expect(ranChecks()).toBe(0);
+
+    // The human vouches for the stage → verify runs.
+    const { id } = await roster();
+    await host.harness.behavior.runCli(["item", "approve", id]);
+    await settleJobs();
+    expect(ranChecks()).toBe(1);
+  });
+
+  it("accepts a Stage report block from agents without the tool", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await idle("All set.\n\n## Stage report\nstage: build\noutcome: done\nsummary: Fixed login via text report");
+    expect(ranChecks()).toBe(1);
+    const pr = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")!.body as { body: string };
+    expect(pr.body).toContain("Fixed login via text report");
+  });
+
+  it("feeds a failing verify back to the agent on budget, then waits on a human", async () => {
     checkExit = 1;
     await host.harness.behavior.callRpc("cos_intake_now", {});
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" }), lastAssistantText: null });
-    const sends = host.harness.inspection.sdk.callsTo("threads.send");
-    expect(sends).toHaveLength(1);
-    expect(JSON.stringify(sends[0][0])).toContain("1 failing");
-    const first = (await host.harness.behavior.callRpc("cos_roster", {})) as { entries: { detail: string; fixAttempts: number }[] };
-    expect(first.entries[0]).toMatchObject({ detail: "fixing", fixAttempts: 1 });
+    await report("build");
+    await idle();
+    expect(sentTexts()).toHaveLength(1);
+    expect(sentTexts()[0]).toContain("1 failing");
+    expect(await roster()).toMatchObject({ stage: "build", detail: "agent", fixAttempts: 1 });
 
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" }), lastAssistantText: null });
-    const second = (await host.harness.behavior.callRpc("cos_roster", {})) as { entries: { detail: string; status: string }[] };
-    expect(second.entries[0]).toMatchObject({ status: "waiting on human", detail: "waiting_on_human" });
+    await report("build");
+    await idle();
+    expect(await roster()).toMatchObject({ status: "waiting on human", stage: "verify", waitingKind: "escalation" });
     expect(host.harness.inspection.sdk.callsTo("plugins.callRpc").length).toBeGreaterThan(0);
     expect(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toBeUndefined();
+
+    // Send it back with instructions from the dashboard.
+    const { id } = await roster();
+    checkExit = 0;
+    await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "revise", feedback: "The flaky test needs a retry" } });
+    expect(sentTexts().at(-1)).toContain("The flaky test needs a retry");
+    await report("build");
+    await idle();
+    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
   });
 
   it("tracks questions and resumes in step with the thread", async () => {
-    type Entry = { status: string; detail: string; waitingReason: string | null; fixAttempts: number };
-    const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
-    const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
     const question = { id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1, payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database should I use?", allowFreeText: true, multiSelect: false, required: true }] } };
 
     threadStatus = "active";
     await host.harness.behavior.callRpc("cos_intake_now", {});
-    expect(await roster()).toMatchObject({ detail: "running" });
+    expect(await roster()).toMatchObject({ detail: "agent" });
 
     // The agent asks through a BB interaction.
     pending = [question];
     await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
-    expect(await roster()).toMatchObject({ status: "waiting on human", waitingReason: "Question: Which database should I use?" });
+    expect(await roster()).toMatchObject({ status: "waiting on human", waitingKind: "question", waitingReason: "Question: Which database should I use?" });
 
     // The human answers in BB. No event says so; the sweep notices.
     pending = [];
-    await host.harness.behavior.runSchedule("cos-sweep");
-    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
+    await sweep();
+    expect(await roster()).toMatchObject({ detail: "agent", waitingReason: null });
 
     // A missed interaction event is also caught by the sweep.
     pending = [question];
-    await host.harness.behavior.runSchedule("cos-sweep");
+    await sweep();
     expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Which database should I use?" });
     pending = [];
     await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) });
-    expect(await roster()).toMatchObject({ detail: "running" });
+    expect(await roster()).toMatchObject({ detail: "agent" });
 
-    // The agent ends its turn with a plain-text question: wait, do not run checks.
+    // The agent ends its turn with a plain-text question: wait, do not verify.
     threadStatus = "idle";
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "I found two options.\n\nShould I use Postgres or SQLite?" });
+    await idle("I found two options.\n\nShould I use Postgres or SQLite?");
     expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Should I use Postgres or SQLite?" });
     expect(ranChecks()).toBe(0);
-    // An idle sweep does not mistake the parked item for finished work.
-    await host.harness.behavior.runSchedule("cos-sweep");
+    await sweep();
     expect(await roster()).toMatchObject({ detail: "waiting_on_human" });
 
-    // The human replies in the thread: it resumes, finishes, and ships.
+    // The human replies in the thread: it resumes, reports, and ships.
     await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) });
-    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "## Summary\nUsed Postgres." });
+    expect(await roster()).toMatchObject({ detail: "agent", waitingReason: null });
+    await report("build", "done", "Used Postgres.");
+    await idle("## Summary\nUsed Postgres.");
     expect(ranChecks()).toBe(1);
-    expect(await roster()).toMatchObject({ detail: "pr_open" });
+    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
   });
 
-  it("does not blame the human when its own check run dies, and picks the item up again", async () => {
-    type Entry = { detail: string; waitingReason: string | null };
-    const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
-    const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
+  it("retries its own infrastructure failures with backoff instead of blaming the human", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-06T10:00:00Z"));
+      checkHangs = true;
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      expect(await roster()).toMatchObject({ status: "running", detail: "retrying", actor: "system", waitingReason: null });
+      expect((await roster()).activity).toContain("exceeded its deadline");
 
-    checkHangs = true;
-    await host.harness.behavior.callRpc("cos_intake_now", {});
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" }), lastAssistantText: "## Summary\nDone." });
-    const parked = await roster();
-    expect(parked.detail).toBe("waiting_on_human");
-    expect(parked.waitingReason).toContain("Chief of Staff could not run the repository checks");
-    expect(parked.waitingReason).toContain("the agent is not asking anything");
+      // Not due yet: nothing re-runs.
+      await sweep();
+      expect(ranChecks()).toBe(1);
 
-    // A sweep with nothing new leaves it alone (no re-run loop).
-    await host.harness.behavior.runSchedule("cos-sweep");
-    expect(ranChecks()).toBe(1);
-
-    // The human sends another turn in BB and its events are missed: the
-    // thread is newer than the parked item, so the sweep re-runs checks.
-    checkHangs = false;
-    threadUpdatedAt = Date.now() + 60_000;
-    await host.harness.behavior.runSchedule("cos-sweep");
-    expect(ranChecks()).toBe(2);
-    expect(await roster()).toMatchObject({ detail: "pr_open", waitingReason: null });
+      checkHangs = false;
+      vi.setSystemTime(new Date("2026-11-06T10:02:00Z"));
+      await sweep();
+      expect(ranChecks()).toBe(2);
+      expect(await roster()).toMatchObject({ stage: "ship", detail: "ci", waitingReason: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("re-runs checks for items its own failure parked after a plugin update, keeping the database", async () => {
-    type Entry = { detail: string };
-    const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
-    checkHangs = true;
-    await host.harness.behavior.callRpc("cos_intake_now", {});
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" }), lastAssistantText: "## Summary\nDone." });
-    expect(ranChecks()).toBe(1);
+  it("asks for help after repeated infrastructure failures and says it is not the agent", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let now = Date.parse("2026-11-06T10:00:00Z");
+      vi.setSystemTime(now);
+      checkHangs = true;
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      for (let i = 0; i < 3; i++) {
+        now += 20 * 60_000;
+        vi.setSystemTime(now);
+        await sweep();
+      }
+      const parked = await roster();
+      expect(parked).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error" });
+      expect(parked.waitingReason).toContain("Chief of Staff could not run the verify command");
+      expect(parked.waitingReason).toContain("the agent is not asking anything");
+      expect(ranChecks()).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
-    checkHangs = false;
+  it("restarts a verify job lost to a plugin reload, keeping the database", async () => {
+    let release!: () => void;
+    checkBlocks = new Promise<void>((resolve) => (release = resolve));
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build");
+    threadUpdatedAt = tick();
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle", updatedAt: threadUpdatedAt }), lastAssistantText: "done" });
+    await vi.waitFor(() => expect(ranChecks()).toBe(1));
+
+    checkBlocks = null;
     host = await host.harness.lifecycle.reload(plugin);
-    await host.harness.behavior.runService("cos-reconcile").done;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      await host.harness.behavior.runService("cos-reconcile").done;
+      await settleJobs();
+    } finally {
+      vi.useRealTimers();
+    }
     expect(ranChecks()).toBe(2);
-    const entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
-    expect(entry.detail).toBe("pr_open");
+    // The old instance's late result is dropped.
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    const entry = await roster();
+    expect(entry.detail).toBe("ci");
+    expect(ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toHaveLength(1);
   });
 
-  it("keeps a plain-text question parked even when the thread changes", async () => {
+  it("keeps a plain-text question parked across a reload", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "Two options.\n\nShould I use Postgres?" });
     assistantOutput = "Two options.\n\nShould I use Postgres?";
-    threadUpdatedAt = Date.now() + 60_000;
+    await idle(assistantOutput);
     host = await host.harness.lifecycle.reload(plugin);
     await host.harness.behavior.runService("cos-reconcile").done;
-    await host.harness.behavior.runSchedule("cos-sweep");
-    const entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
-    expect(entry.detail).toBe("waiting_on_human");
-    expect(hostCalls.filter((c) => (c.input as { command: string }).command === "npm test")).toHaveLength(0);
+    await sweep();
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "question" });
+    expect(ranChecks()).toBe(0);
   });
 
   it("revives a failed item when its thread is resumed", async () => {
     threadStatus = "active";
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
-    let entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
-    expect(entry.detail).toBe("failed");
-    await host.harness.behavior.runSchedule("cos-sweep");
-    entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
-    expect(entry.detail).toBe("running");
+    expect((await roster()).detail).toBe("failed");
+    await sweep();
+    expect(await roster()).toMatchObject({ detail: "agent", stage: "build" });
+  });
+
+  it("starts an ad-hoc task described by the operator or another agent", async () => {
+    const started = (await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Add rate limiting", body: "Limit /login to 5 req/min" })) as { id: string; stage: string };
+    expect(started.stage).toBe("build");
+    const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
+    expect(spawn.prompt).toContain("Add rate limiting");
+    expect(spawn.prompt).toContain("Limit /login to 5 req/min");
+    await expect(host.harness.behavior.callRpc("cos_start_task", { repo: "acme/other", title: "x", body: "" })).rejects.toThrow(/not configured/);
+    const tool = await host.harness.behavior.callAgentTool("cos_start_task", { repo: "acme/app", title: "Second", description: "Do more" }, { threadId: "thr_parent" });
+    expect(JSON.stringify(tool)).toContain("Started");
   });
 
   it("shows the open question with options and context, and answers it from the dashboard", async () => {
-    type Entry = { id: string; detail: string; waitingReason: string | null };
-    const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
     const question = {
       id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1,
       payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database?", allowFreeText: true, multiSelect: false, required: true, options: [{ label: "Postgres", value: "pg", description: "Matches prod" }, { label: "SQLite", value: "sqlite" }] }] },
@@ -326,6 +523,9 @@ describe("chief-of-staff server", () => {
     expect(view).toMatchObject({
       threadId: "thr_1",
       issueNumber: 12,
+      stage: "build",
+      waitingKind: "question",
+      decidable: false,
       lastMessage: assistantOutput,
       open: [{ kind: "question", interactionId: "int_1", questions: [{ id: "q1", prompt: "Which database?", options: [{ label: "Postgres", value: "pg", description: "Matches prod" }, { label: "SQLite", value: "sqlite", description: null }] }] }],
     });
@@ -337,15 +537,15 @@ describe("chief-of-staff server", () => {
 
     const result = (await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "question", interactionId: "int_1", answers: { q1: { selected: ["pg"], freeText: "use the docker image" } } } })) as { status: string };
     expect(resolved).toEqual([{ threadId: "thr_1", interactionId: "int_1", resolution: { kind: "user_answer", answers: { q1: { selected: ["pg"], freeText: "use the docker image" } } } }]);
-    expect(result.status).toBe("running");
-    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
+    expect(result.status).toBe("agent");
+    expect(await roster()).toMatchObject({ detail: "agent", waitingReason: null });
     // Answering a question that is gone fails clearly.
     await expect(host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "question", interactionId: "int_1", answers: { q1: { selected: ["pg"] } } } })).rejects.toThrow(/no longer open/);
 
     // Approvals resolve with one of the offered decisions.
     const approval = { id: "int_2", status: "pending", threadId: "thr_1", createdAt: 2, payload: { kind: "approval", availableDecisions: ["allow_once", "deny"], reason: "Needs network", subject: { kind: "command", itemId: "x", command: "npm install", cwd: "/work", actions: [], sessionGrant: null } } };
     pending = [approval];
-    await host.harness.behavior.runSchedule("cos-sweep");
+    await sweep();
     const approvalView = (await host.harness.behavior.callRpc("cos_question", { id })) as { open: unknown[] };
     expect(approvalView.open).toEqual([{ kind: "approval", interactionId: "int_2", subject: "run a command", reason: "Needs network", detail: "npm install\nin /work", detailMarkdown: false, decisions: ["allow_once", "deny"] }]);
     await expect(host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "approval", interactionId: "int_2", decision: "allow_for_session" } })).rejects.toThrow(/not offered/);
@@ -355,13 +555,13 @@ describe("chief-of-staff server", () => {
     // A plain-text question is answered with a message in the thread.
     threadStatus = "idle";
     assistantOutput = "Two findings need a call.\n\nShould I fix them now or file issues?";
-    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: assistantOutput });
+    await idle(assistantOutput);
     const textView = (await host.harness.behavior.callRpc("cos_question", { id })) as { open: unknown[]; lastMessage: string };
     expect(textView.open).toEqual([{ kind: "text", question: "Should I fix them now or file issues?" }]);
     expect(textView.lastMessage).toContain("Two findings need a call.");
     await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "text", text: "Fix them now." } });
     expect(sent).toEqual([{ threadId: "thr_1", mode: "auto", input: [{ type: "text", text: "Fix them now.", mentions: [] }] }]);
-    expect(await roster()).toMatchObject({ detail: "running" });
+    expect(await roster()).toMatchObject({ detail: "agent" });
 
     // The activity log records who answered, never what they typed.
     const log = (await host.harness.behavior.callRpc("cos_log", { workItemId: id })) as { entries: { kind: string; message: string; actor: string }[] };
@@ -417,10 +617,10 @@ describe("chief-of-staff server", () => {
     expect(read.projects).toEqual([{ id: "proj_1", name: "app", remote: "https://github.com/acme/app" }]);
     expect((read as unknown as { providers: unknown[] }).providers).toEqual([{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true }]);
 
-    const saved = (await host.harness.behavior.callRpc("cos_set_settings", { maxFixRetries: 4, githubToken: "ghp_rotated_token" })) as { changed: string[] };
-    expect(saved.changed.sort()).toEqual(["githubToken", "maxFixRetries"]);
+    const saved = (await host.harness.behavior.callRpc("cos_set_settings", { stallThresholdMinutes: 45, githubToken: "ghp_rotated_token" })) as { changed: string[] };
+    expect(saved.changed.sort()).toEqual(["githubToken", "stallThresholdMinutes"]);
     const after = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { values: Record<string, unknown> };
-    expect(after.values.maxFixRetries).toBe(4);
+    expect(after.values.stallThresholdMinutes).toBe(45);
     expect(JSON.stringify(after)).not.toContain("ghp_rotated_token");
     const log = await host.harness.behavior.runCli(["log"]);
     expect(log.stdout).toContain("settings updated");
@@ -428,11 +628,18 @@ describe("chief-of-staff server", () => {
 
     await expect(host.harness.behavior.callRpc("cos_set_settings", { notifyWebhookUrl: "http://insecure.example" })).rejects.toThrow(/https/);
     await expect(host.harness.behavior.callRpc("cos_set_settings", { githubToken: "x", clearGithubToken: true })).rejects.toThrow();
-    await expect(host.harness.behavior.callRpc("cos_set_settings", { maxFixRetries: 99 })).rejects.toThrow();
+    await expect(host.harness.behavior.callRpc("cos_set_settings", { stallThresholdMinutes: 99_999 })).rejects.toThrow();
 
     await host.harness.behavior.callRpc("cos_set_settings", { clearGithubToken: true });
     const cleared = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { token: { stored: boolean } };
     expect(cleared.token.stored).toBe(false);
+  });
+
+  it("validates and stores the workflow from the configurator", async () => {
+    await expect(host.harness.behavior.callRpc("cos_set_config", { workflow: JSON.stringify({ workflow: { ship: { action: "deploy" } } }) })).rejects.toThrow(/workflow/);
+    await host.harness.behavior.callRpc("cos_set_config", { workflow: JSON.stringify({ workflow: { review: { mode: "self", instructions: "Check a11y" } } }) });
+    const config = (await host.harness.behavior.callRpc("cos_get_config", null)) as { workflow: string };
+    expect(JSON.parse(config.workflow).workflow.review).toEqual({ mode: "self", instructions: "Check a11y" });
   });
 
   it("rejects routines with an invalid cron on save", async () => {

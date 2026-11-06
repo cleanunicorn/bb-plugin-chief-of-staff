@@ -4,7 +4,8 @@ import type { Cos } from "./context";
 import { generalSettingsSchema, rpcContract } from "../rpcContract";
 import type { GeneralSettings } from "../rpcContract";
 import { buildRoster } from "./roster";
-import { runIntake } from "./intake";
+import { runIntake, startTask } from "./intake";
+import { parseWorkflow } from "./workflow";
 import { dispatch } from "./delivery";
 import { isRoutineRunning, runRoutineGuarded } from "./sweep";
 import { nextFireTime, validateCron } from "./schedule";
@@ -39,7 +40,6 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
           warnings: config.warnings,
           settings: {
             stallThresholdMinutes: config.values.stallThresholdMinutes,
-            maxFixRetries: config.values.maxFixRetries,
             maxConcurrentTotal: config.values.maxConcurrentTotal,
             autoRetryStalled: config.values.autoRetryStalled,
             intakeIntervalMinutes: config.values.intakeIntervalMinutes,
@@ -74,6 +74,11 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const item = await itemAction(cos, input.id, input.action, "rpc:client");
         return { status: item?.status ?? "unknown" };
       },
+      async cos_start_task(input, ctx) {
+        const item = await startTask(cos, { repo: input.repo, title: input.title, body: input.body }, callerActor(ctx));
+        if (!item) throw new Error("could not start the task");
+        return { id: item.id, stage: item.stage, status: item.status };
+      },
       async cos_question(input) {
         return getQuestion(cos, input.id);
       },
@@ -101,11 +106,16 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
       },
       async cos_get_config() {
         const values = await cos.settings.get();
-        return { repos: values.repos, routines: values.routines };
+        return { repos: values.repos, routines: values.routines, workflow: values.workflow ?? "" };
       },
       async cos_set_config(input, ctx) {
         const warnings: string[] = [];
-        const patch: { repos?: string; routines?: string } = {};
+        const patch: { repos?: string; routines?: string; workflow?: string } = {};
+        if (input.workflow !== undefined) {
+          const parsed = parseWorkflow(input.workflow);
+          if (!parsed.ok) throw new Error(`workflow: ${parsed.error}`);
+          patch.workflow = input.workflow;
+        }
         if (input.repos !== undefined) {
           const parsed = parseRepos(input.repos, await cos.projectRemotes());
           if (!parsed.ok) throw new Error(`repos: ${parsed.error}`);
@@ -192,21 +202,26 @@ export async function describeRoutines(cos: Cos) {
   });
 }
 
-export async function itemAction(cos: Cos, id: string, action: "retry" | "resume" | "rerun_checks" | "mark_done" | "mark_failed", actor: string) {
+export type ItemAction = "retry" | "resume" | "rerun_checks" | "approve" | "revise" | "mark_done" | "mark_failed";
+
+export async function itemAction(cos: Cos, id: string, action: ItemAction, actor: string, feedback?: string) {
   const item = cos.store.getWorkItem(id);
   if (!item) throw new Error(`work item ${id} not found`);
   switch (action) {
     case "retry":
-      return dispatch(cos, id, { type: "retry" }, actor);
     case "resume":
-      return dispatch(cos, id, { type: "human_resume" }, actor);
+      return dispatch(cos, id, { type: "retry" }, actor);
     case "rerun_checks":
-      cos.store.updateWorkItem(id, { status: "running" });
-      return dispatch(cos, id, { type: "thread_idle" }, actor);
+      return dispatch(cos, id, { type: "rerun_verify" }, actor);
+    case "approve":
+      return dispatch(cos, id, { type: "approve" }, actor);
+    case "revise":
+      if (!feedback?.trim()) throw new Error("revise needs feedback for the agent");
+      return dispatch(cos, id, { type: "revise", feedback }, actor);
     case "mark_done":
       cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked done", actor });
       cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "done", finishedAt: cos.now().toISOString() });
+      return cos.store.updateWorkItem(id, { status: "done", stage: "done", finishedAt: cos.now().toISOString() });
     case "mark_failed":
       cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked failed", actor });
       cos.invalidate();

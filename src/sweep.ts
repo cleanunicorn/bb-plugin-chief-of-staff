@@ -4,7 +4,7 @@ import type { Cos } from "./context";
 import { runIntake } from "./intake";
 import { watchCi } from "./delivery";
 import { detectStalls } from "./roster";
-import { syncThreads } from "./sync";
+import { syncThreads, tickItems } from "./sync";
 import { dueRoutines } from "./schedule";
 import { runRoutine } from "./routines/index";
 
@@ -51,6 +51,8 @@ export async function sweep(cos: Cos, signal?: AbortSignal): Promise<void> {
     // Before stall detection, so a thread resumed or answered in BB is not
     // mistaken for a stalled one.
     await syncThreads(cos, "schedule:sync").catch((error) => cos.bb.log.warn(`thread sync failed: ${error instanceof Error ? error.message : String(error)}`));
+
+    await tickItems(cos, "schedule:tick").catch((error) => cos.bb.log.warn(`item tick failed: ${error instanceof Error ? error.message : String(error)}`));
 
     await detectStalls(cos, "schedule:stall").catch((error) => cos.bb.log.warn(`stall detection failed: ${error instanceof Error ? error.message : String(error)}`));
 

@@ -7,6 +7,14 @@ const rosterEntry = z.object({
   id: z.string(),
   status: z.enum(["queued", "running", "waiting on human", "blocked", "done", "failed"]),
   detail: z.string(),
+  stage: z.enum(["plan", "build", "verify", "review", "ship", "done"]),
+  stages: z.array(z.enum(["plan", "build", "verify", "review", "ship"])),
+  actor: z.enum(["agent", "cos", "human", "system", "none"]),
+  activity: z.string(),
+  waitingKind: z.string().nullable(),
+  reviewThreadId: z.string().nullable(),
+  counters: z.object({ verifyFailures: z.number(), reviewRounds: z.number(), ciFixes: z.number(), nudges: z.number(), infraRetries: z.number() }),
+  retryAt: z.string().nullable(),
   repo: z.string(),
   issueNumber: z.number().nullable(),
   issueTitle: z.string(),
@@ -44,7 +52,6 @@ const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), k
 export const generalSettingsSchema = z.object({
   maxConcurrentTotal: z.number().int().min(0).max(100),
   stallThresholdMinutes: z.number().int().min(1).max(1440),
-  maxFixRetries: z.number().int().min(0).max(10),
   autoRetryStalled: z.boolean(),
   intakeIntervalMinutes: z.number().int().min(1).max(1440),
   ciPollIntervalMinutes: z.number().int().min(1).max(120),
@@ -58,7 +65,6 @@ export type GeneralSettings = z.output<typeof generalSettingsSchema>;
 const generalSettingsValuesSchema = z.object({
   maxConcurrentTotal: z.number(),
   stallThresholdMinutes: z.number(),
-  maxFixRetries: z.number(),
   autoRetryStalled: z.boolean(),
   intakeIntervalMinutes: z.number(),
   ciPollIntervalMinutes: z.number(),
@@ -88,7 +94,15 @@ const questionView = z.object({
   threadId: z.string().nullable(),
   threadUrl: z.string().nullable(),
   status: z.string(),
+  stage: z.string(),
+  waitingKind: z.string().nullable(),
   waitingReason: z.string().nullable(),
+  /** The plan the agent reported (for plan approval). */
+  plan: z.string().nullable(),
+  /** The latest review report (findings) when review is involved. */
+  review: z.string().nullable(),
+  /** Whether Approve / Send back apply (plan approval or an escalation). */
+  decidable: z.boolean(),
   open: z.array(openQuestion),
   lastMessage: z.string().nullable(),
   checkOutput: z.string().nullable(),
@@ -100,6 +114,10 @@ const answerInput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("approval"), interactionId: z.string().max(200), decision }),
   z.object({ kind: z.literal("request"), interactionId: z.string().max(200), value: z.string().max(20000) }),
   z.object({ kind: z.literal("text"), text: z.string().min(1).max(20000) }),
+  /** Approve the plan, or move past a stuck stage. */
+  z.object({ kind: z.literal("approve") }),
+  /** Send the plan (or the work) back to the agent with feedback. */
+  z.object({ kind: z.literal("revise"), feedback: z.string().min(1).max(20000) }),
 ]);
 export type AnswerPayload = z.input<typeof answerInput>;
 
@@ -111,7 +129,7 @@ export const rpcContract = defineRpcContract({
       repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), allow: z.object({ intake: z.boolean(), openPr: z.boolean(), merge: z.boolean(), release: z.boolean(), deploy: z.boolean() }), checkCommand: z.string().nullable(), deployCommand: z.string().nullable(), deployWorkflow: z.string().nullable() })),
       errors: z.array(z.string()),
       warnings: z.array(z.string()),
-      settings: z.object({ stallThresholdMinutes: z.number(), maxFixRetries: z.number(), maxConcurrentTotal: z.number(), autoRetryStalled: z.boolean(), intakeIntervalMinutes: z.number() }),
+      settings: z.object({ stallThresholdMinutes: z.number(), maxConcurrentTotal: z.number(), autoRetryStalled: z.boolean(), intakeIntervalMinutes: z.number() }),
     }),
   },
   cos_roster: { input: z.object({ repo: z.string().optional(), includeDone: z.boolean().default(false), withUsage: z.boolean().default(false) }), output: z.object({ entries: z.array(rosterEntry) }) },
@@ -123,7 +141,8 @@ export const rpcContract = defineRpcContract({
   cos_run_routine: { input: z.object({ name: z.string(), dryRun: z.boolean().optional() }), output: runSchema },
   cos_set_routine_enabled: { input: z.object({ name: z.string(), enabled: z.boolean() }), output: z.object({ ok: z.literal(true) }) },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
-  cos_item_action: { input: z.object({ id: z.string(), action: z.enum(["retry", "resume", "rerun_checks", "mark_done", "mark_failed"]) }), output: z.object({ status: z.string() }) },
+  cos_item_action: { input: z.object({ id: z.string(), action: z.enum(["retry", "resume", "rerun_checks", "approve", "mark_done", "mark_failed"]) }), output: z.object({ status: z.string() }) },
+  cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().min(1).max(200), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), stage: z.string(), status: z.string() }) },
   cos_question: { input: z.object({ id: z.string() }), output: questionView },
   cos_answer: { input: z.object({ id: z.string(), answer: answerInput }), output: z.object({ status: z.string() }) },
   cos_stats: {
@@ -142,8 +161,8 @@ export const rpcContract = defineRpcContract({
   },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional() }), output: z.object({ entries: z.array(logEntry) }) },
   cos_merge_preview: { input: z.object({ repo: z.string() }), output: z.object({ decisions: z.array(z.object({ number: z.number(), action: z.string(), reason: z.string(), title: z.string(), headRef: z.string() })) }) },
-  cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), routines: z.string() }) },
-  cos_set_config: { input: z.object({ repos: z.string().optional(), routines: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
+  cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), routines: z.string(), workflow: z.string() }) },
+  cos_set_config: { input: z.object({ repos: z.string().optional(), routines: z.string().optional(), workflow: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
   cos_get_settings: {
     input: z.null(),
     output: z.object({

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- **Delivery workflow: Plan → Build → Verify → Review → Ship.** Chief of Staff
+  takes every task through these stages and only moves on when the agent
+  reports the stage done. Each stage can be switched off (Build always runs) and
+  carries your own instructions. A global workflow (Configure → Workflow, or the
+  `workflow` setting) applies to every repository; a repository can customise
+  any stage. Defaults: plan with your approval, verify with the repo's check
+  command, an independent reviewer agent, then a pull request.
+  - Plan: the agent writes a plan without touching code; with "Wait for my
+    approval" it shows up in the dashboard with Approve / Send back.
+  - Verify: the verify command (falls back to the repo's `checkCommand`)
+    and/or agent verification with your instructions. Failures go back to Build
+    on a budget, then to you.
+  - Review: a fresh reviewer thread in the builder's own workspace (it sees
+    exactly what was built), or self-review. Requested changes go back to
+    Build → Verify → Review, on a budget.
+  - Ship: push only, open a PR (you merge), or open a PR and merge it when CI
+    is green. With instructions, the agent writes the PR description. Red CI
+    goes back to Build → Verify → Ship (no second review).
+- **Explicit stage reports.** Agents finish a stage with the new `cos_report`
+  tool (or a `## Stage report` block when the provider has no plugin tools).
+  An agent that stops without reporting is nudged twice, then handed to you.
+  This replaces guessing "finished vs asking" from the last message.
+- **Reliable tracking of where each agent is.**
+  - Every item now shows its stage and who holds the ball: the agent, Chief of
+    Staff, you, or an infrastructure retry, with a one-line "now" description.
+  - Thread events and the per-minute sync are serialized per item and each
+    turn end is handled once (no more double check runs).
+  - Long steps (verify command, push/PR, merge) run as detached jobs with their
+    own timeout, so event handling and the sweep never block; a job lost to a
+    restart is started again; a late result from a stale job is dropped.
+  - Chief of Staff's own failures (host timeouts, GitHub errors) are retried
+    with backoff (1, 4, 9 min) and only then reported to you, labelled as
+    Chief of Staff's problem rather than the agent's.
+  - The sync reads all tracked threads in one call and uses the runtime status
+    (`provisioning`, `waiting-for-host`, …), pending interactions and prompts
+    the thread never picked up.
+- **Tasks without an issue.** "New task" on the dashboard, `bb cos task`, the
+  `cos_start_task` RPC and agent tool start an item from a description.
+- Answer panel: plan approval and escalations get Approve / Send back with
+  feedback. CLI: `bb cos item approve|revise --message …`.
+- Breaking: `maxFixRetries` is replaced by the per-stage budgets
+  (`verify.maxAttempts`, `review.maxRounds`, `ship.maxCiFixes`). Items in
+  flight are migrated onto stages in place.
 - Repo entries infer `owner`/`repo` from the BB project's GitHub remote;
   `{ "projectId": "proj_..." }` is enough. Explicit values still override.
 - Configurator: picking a BB project fills the GitHub repository from its

@@ -109,6 +109,7 @@ async function spawnRebaseAgent(ctx: StepContext, prNumber: number, headRef: str
     prNumber,
     prUrl: `https://github.com/${key}/pull/${prNumber}`,
     status: "queued",
+    stage: "build",
     providerId: null,
     model: null,
     fixAttempts: 0,
@@ -133,7 +134,7 @@ async function spawnRebaseAgent(ctx: StepContext, prNumber: number, headRef: str
     ].join("\n"),
     pluginMetadata: { workItemId: item.id, repo: key, prNumber, branch: headRef },
   });
-  ctx.cos.store.updateWorkItem(item.id, { status: "pr_open", threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model, lastActivityAt: ctx.cos.now().toISOString() });
+  ctx.cos.store.updateWorkItem(item.id, { status: "agent", threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model, lastActivityAt: ctx.cos.now().toISOString() });
   ctx.cos.store.log({ level: "info", kind: "merge", repo: key, workItemId: item.id, message: `spawned rebase agent ${spawned.thread.id} for PR #${prNumber}`, actor: ctx.actor });
   return `spawned rebase agent (thread ${spawned.thread.id})`;
 }

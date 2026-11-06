@@ -6,12 +6,15 @@ import { parseRepos, parseRoutines, type ProjectRemotes, type RepoConfig, type R
 import { GitHubClient, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
-import type { MachinePolicy } from "./machine";
+import { DEFAULT_POLICY, type MachinePolicy } from "./machine";
+import { parseWorkflow, resolveWorkflow, workflowSchema, type Workflow } from "./workflow";
 
 export interface LoadedConfig {
   values: SettingsValues;
   repos: RepoConfig[];
   routines: Routine[];
+  /** The global workflow (repos merge their overrides over it). */
+  workflow: Workflow;
   errors: string[];
   warnings: string[];
   policy: MachinePolicy;
@@ -24,6 +27,8 @@ export interface Cos {
   now(): Date;
   config(): Promise<LoadedConfig>;
   repo(key: string): Promise<RepoConfig | null>;
+  /** The workflow a repo runs (global merged with the repo's overrides). */
+  workflow(repoKey: string): Promise<Workflow>;
   /** BB projects (non-personal) with their git remote, used to infer owner/repo. */
   projects(): Promise<Array<{ id: string; name: string; gitRemoteUrl: string | null }>>;
   /** projectId -> git remote URL, or undefined when the project list is unavailable. */
@@ -95,6 +100,9 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
       else warnings.push(...reposResult.warnings);
       if (!routinesResult.ok) errors.push(`routines: ${routinesResult.error}`);
       else warnings.push(...routinesResult.warnings);
+      const workflowResult = parseWorkflow(values.workflow ?? "");
+      if (!workflowResult.ok) errors.push(`workflow: ${workflowResult.error}`);
+      const workflow = workflowResult.ok ? workflowResult.value : workflowSchema.parse({});
       const repos = reposResult.ok ? reposResult.value : [];
       const routines = routinesResult.ok ? routinesResult.value : [];
       for (const routine of routines) {
@@ -104,9 +112,10 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
         values,
         repos,
         routines,
+        workflow,
         errors,
         warnings,
-        policy: { maxFixRetries: Math.max(0, values.maxFixRetries), autoRetryStalled: values.autoRetryStalled, maxAutoRetries: 1 },
+        policy: { ...DEFAULT_POLICY, autoRetryStalled: values.autoRetryStalled },
       };
       configCache = { at: Date.now(), value };
       return value;
@@ -114,6 +123,11 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     async repo(key) {
       const { repos } = await cos.config();
       return repos.find((r) => `${r.owner}/${r.repo}` === key) ?? null;
+    },
+    async workflow(key) {
+      const config = await cos.config();
+      const repo = config.repos.find((r) => `${r.owner}/${r.repo}` === key);
+      return resolveWorkflow(config.workflow, repo?.workflow, { checkCommand: repo?.checkCommand });
     },
     async projects() {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
@@ -135,7 +149,8 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
       return (await resolveToken()).source;
     },
     async hostExec(hostId, input, signal) {
-      const timeoutMs = Math.min(30 * 60_000, (input.timeoutMs ?? 10 * 60_000) + 15_000);
+      // The host enforces input.timeoutMs (and kills the process tree); the call deadline only adds slack.
+      const timeoutMs = Math.min(4 * 60 * 60_000 + 60_000, (input.timeoutMs ?? 10 * 60_000) + 30_000);
       return host.call("exec", input, { hostId, timeoutMs, signal });
     },
     async hostReadFile(hostId, path) {

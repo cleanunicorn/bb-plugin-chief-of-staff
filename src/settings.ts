@@ -2,6 +2,7 @@
 // multiline fields; the dashboard edits them through RPC + experimental_set.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { SEED_REPOS, SEED_ROUTINES, parseRepos, parseRoutines } from "./config";
+import { DEFAULT_WORKFLOW, parseWorkflow, serializeWorkflow, workflowSchema } from "./workflow";
 
 const jsonSchema = (parse: (raw: string) => { ok: boolean; error?: string }) => ({
   "~standard": {
@@ -38,9 +39,16 @@ export const settingDescriptors = {
     experimental_schema: jsonSchema(parseRoutines),
     default: JSON.stringify(SEED_ROUTINES, null, 2),
   },
+  workflow: {
+    type: "string",
+    label: "Workflow (JSON)",
+    description: 'JSON: {"workflow":{plan:{enabled,instructions,requireApproval}, build:{instructions}, verify:{enabled,instructions,command,timeoutMinutes,maxAttempts}, review:{enabled,instructions,mode:"agent"|"self",maxRounds}, ship:{enabled,instructions,action:"push"|"pr"|"merge",draft,maxCiFixes}}}. Repos override any field under their own "workflow".',
+    experimental_multiline: true,
+    experimental_schema: jsonSchema(parseWorkflow),
+    default: serializeWorkflow(workflowSchema.parse(DEFAULT_WORKFLOW)),
+  },
   maxConcurrentTotal: { type: "number", label: "Max concurrent agent threads (all repos)", default: 4 },
   stallThresholdMinutes: { type: "number", label: "Stall threshold (minutes)", description: "A running agent with no activity for this long is reported as stalled.", default: 30 },
-  maxFixRetries: { type: "number", label: "Max fix cycles per issue", description: "How many times failing checks/CI are fed back to the agent before escalating to a human.", default: 1 },
   autoRetryStalled: { type: "boolean", label: "Auto-retry stalled or failed agents once", default: false },
   intakeIntervalMinutes: { type: "number", label: "Issue intake interval (minutes)", default: 10 },
   ciPollIntervalMinutes: { type: "number", label: "CI poll interval (minutes)", default: 2 },

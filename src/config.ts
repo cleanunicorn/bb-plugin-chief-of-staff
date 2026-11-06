@@ -1,6 +1,7 @@
 // Typed configuration parsed from plugin settings. Repos and routines are
 // stored as JSON documents in multiline string settings (validated here).
 import { z } from "zod";
+import { workflowOverrideSchema } from "./workflow";
 
 export const issueFilterSchema = z.object({
   labels: z.array(z.string()).default([]),
@@ -34,8 +35,10 @@ export const repoConfigSchema = z.object({
   model: z.string().optional(),
   reasoningLevel: z.string().optional(),
   permissionMode: z.enum(["accept-edits", "auto", "full"]).default("auto"),
-  /** Shell command run in the branch workspace before a PR is opened. */
+  /** Legacy verify command; used when the workflow does not set `verify.command`. */
   checkCommand: z.string().optional(),
+  /** Per-stage overrides of the global workflow (any subset of fields). */
+  workflow: workflowOverrideSchema.optional(),
   /** Shell command run by the `deploy` step. */
   deployCommand: z.string().optional(),
   /** GitHub Actions workflow file name (e.g. deploy.yml) for workflow_dispatch. */

@@ -1,5 +1,5 @@
-// Visual configurator: repositories, routines, general settings and GitHub
-// access. Edits drafts locally, then saves through cos_set_config (the same
+// Visual configurator: the delivery workflow, repositories, routines, general
+// settings and GitHub access. Edits drafts locally, then saves through cos_set_config (the same
 // JSON documents the server parses) and cos_set_settings (scalar settings).
 import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -29,6 +29,8 @@ import {
   validateRoutines,
 } from "../../src/configModel";
 import type { ScheduleMode, StepType } from "../../src/configModel";
+import { DEFAULT_WORKFLOW, STAGES as WORKFLOW_STAGES, parseWorkflow, resolveWorkflow, serializeWorkflow, workflowSchema } from "../../src/workflow";
+import type { Stage as WorkflowStage, Workflow, WorkflowOverride } from "../../src/workflow";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
@@ -40,6 +42,7 @@ type Project = SettingsData["projects"][number];
 type Provider = SettingsData["providers"][number];
 
 const SECTIONS = [
+  { id: "workflow", label: "Workflow", icon: "Workflow" },
   { id: "repos", label: "Repositories", icon: "FolderGit2" },
   { id: "routines", label: "Routines", icon: "CalendarClock" },
   { id: "general", label: "General", icon: "SlidersHorizontal" },
@@ -339,7 +342,7 @@ function AllowBadges({ allow }: { allow: RepoConfig["allow"] }) {
   );
 }
 
-function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove, projects, providers, defaultProvider }: { repo: RepoConfig; index: number; problems: string[]; open: boolean; onToggle: () => void; onChange: (r: RepoConfig) => void; onRemove: () => void; projects: Project[]; providers: Provider[]; defaultProvider: string }) {
+function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove, projects, providers, defaultProvider, workflow }: { repo: RepoConfig; index: number; problems: string[]; open: boolean; onToggle: () => void; onChange: (r: RepoConfig) => void; onRemove: () => void; projects: Project[]; providers: Provider[]; defaultProvider: string; workflow: Workflow }) {
   const set = <K extends keyof RepoConfig>(key: K, value: RepoConfig[K]) => onChange({ ...repo, [key]: value });
   const project = projects.find((p) => p.id === repo.projectId);
   const title = repo.owner && repo.repo ? repoKey(repo) : `Repository ${index + 1}`;
@@ -418,8 +421,11 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
               )}
             </Field>
           </Group>
+          <Group title="Workflow for this repository" icon="Workflow" cols={1}>
+            <RepoWorkflowEditor repo={repo} global={workflow} onChange={(o) => set("workflow", o)} />
+          </Group>
           <Group title="Pull requests" icon="GitPullRequest" cols={3}>
-            <Field label="Check command" hint="Runs before a PR opens; failures go back to the agent.">{(id) => <TextInput id={id} value={repo.checkCommand ?? ""} onChange={(v) => set("checkCommand", v)} placeholder="npm test" mono />}</Field>
+            <Field label="Check command" hint="The Verify command when the workflow does not set one.">{(id) => <TextInput id={id} value={repo.checkCommand ?? ""} onChange={(v) => set("checkCommand", v)} placeholder="npm test" mono />}</Field>
             <Field label="Reviewers" hint="GitHub logins, comma separated.">{(id) => <ListInput id={id} value={repo.reviewers} onChange={(v) => set("reviewers", v)} />}</Field>
             <Field label="PR labels">{(id) => <ListInput id={id} value={repo.labels} onChange={(v) => set("labels", v)} />}</Field>
           </Group>
@@ -752,7 +758,6 @@ function GeneralEditor({ values, onChange, providers }: { values: GeneralSetting
       </Group>
       <Group title="Recovery" icon="LifeBuoy" cols={3}>
         <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled.">{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
-        <Field label="Fix cycles per issue" hint="Failing checks are sent back this many times.">{(id) => <NumberInput id={id} value={values.maxFixRetries} min={0} max={10} onChange={(v) => set("maxFixRetries", v)} />}</Field>
         <ToggleRow label="Auto-retry stalled agents once" checked={values.autoRetryStalled} onChange={(v) => set("autoRetryStalled", v)} />
       </Group>
       <Group title="Default agent" icon="Bot" cols={2}>
@@ -860,6 +865,190 @@ function AdvancedEditor({ repos, routines, locked, onSaved }: { repos: string; r
   );
 }
 
+// ---------- workflow ----------
+
+const STAGE_META: Record<WorkflowStage, { label: string; icon: string; what: string; placeholder: string }> = {
+  plan: { label: "Plan", icon: "ClipboardList", what: "The agent investigates and writes an implementation plan before touching code.", placeholder: "e.g. List the files you will change and the tests you will add. Flag anything that changes a public API." },
+  build: { label: "Build", icon: "Hammer", what: "The agent implements the change and commits on its branch. Always on.", placeholder: "e.g. Follow AGENTS.md. Keep changes minimal; add tests next to the code." },
+  verify: { label: "Verify", icon: "FlaskConical", what: "Chief of Staff runs the verify command; with instructions, the agent also verifies the behaviour and collects evidence. Failures go back to Build.", placeholder: "e.g. Start the dev server and exercise the changed flow in the browser; attach screenshots." },
+  review: { label: "Review", icon: "SearchCheck", what: "A fresh reviewer agent (in the same workspace) or the builder itself reviews the diff. Requested changes go back to Build.", placeholder: "e.g. Check error handling, missing tests, and security of any new endpoint." },
+  ship: { label: "Ship", icon: "Rocket", what: "What shipping means: push the branch, open a pull request, or open it and merge when CI is green. Red CI goes back to Build.", placeholder: "e.g. PR description: Why / What / How tested, with the issue link." },
+};
+
+function TextArea({ id, value, onChange, placeholder }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <textarea
+      id={id}
+      className="min-h-20 w-full rounded-md border border-input bg-transparent p-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+/** Fields of one stage. `stage` is a full stage object of the workflow. */
+function StageFields<S extends WorkflowStage>({ name, stage, onChange, legacyCommand }: { name: S; stage: Workflow[S]; onChange: (next: Workflow[S]) => void; legacyCommand?: string }) {
+  const meta = STAGE_META[name];
+  const set = (patch: Record<string, unknown>) => onChange({ ...stage, ...patch } as Workflow[S]);
+  const st = stage as Workflow[WorkflowStage] & Record<string, unknown>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="Instructions for the agent" hint="Added to this stage's prompt. Leave empty for the defaults.">
+        {(id) => <TextArea id={id} value={stage.instructions} onChange={(v) => set({ instructions: v })} placeholder={meta.placeholder} />}
+      </Field>
+      {name === "plan" ? <ToggleRow label="Wait for my approval" hint="The plan shows up in the dashboard with Approve / Send back. Off: Build starts right away." checked={Boolean(st.requireApproval)} onChange={(v) => set({ requireApproval: v })} /> : null}
+      {name === "verify" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Field className="sm:col-span-3" label="Verify command" hint={legacyCommand ? `Empty uses the repo's check command (${legacyCommand}).` : "Runs in the agent's worktree. Empty: agent verification only (needs instructions)."}>
+            {(id) => <TextInput id={id} value={String(st.command ?? "")} onChange={(v) => set({ command: v })} placeholder={legacyCommand || "npm test"} mono />}
+          </Field>
+          <Field label="Timeout (minutes)">{(id) => <NumberInput id={id} value={Number(st.timeoutMinutes)} min={1} max={240} onChange={(v) => set({ timeoutMinutes: v })} />}</Field>
+          <Field label="Fix attempts" hint="Failures sent back before asking you.">{(id) => <NumberInput id={id} value={Number(st.maxAttempts)} min={0} max={10} onChange={(v) => set({ maxAttempts: v })} />}</Field>
+        </div>
+      ) : null}
+      {name === "review" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Reviewer">
+            {(id) => (
+              <Select
+                id={id}
+                value={st.mode as "agent" | "self"}
+                onChange={(v) => set({ mode: v })}
+                options={[
+                  { value: "agent", label: "Fresh reviewer agent (independent)" },
+                  { value: "self", label: "Self-review by the builder" },
+                ]}
+              />
+            )}
+          </Field>
+          <Field label="Review rounds" hint="Rounds of requested changes before asking you.">{(id) => <NumberInput id={id} value={Number(st.maxRounds)} min={0} max={10} onChange={(v) => set({ maxRounds: v })} />}</Field>
+        </div>
+      ) : null}
+      {name === "ship" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Field className="sm:col-span-2" label="Shipping means">
+            {(id) => (
+              <Select
+                id={id}
+                value={st.action as "push" | "pr" | "merge"}
+                onChange={(v) => set({ action: v })}
+                options={[
+                  { value: "pr", label: "Open a pull request; I merge it" },
+                  { value: "merge", label: "Open a pull request and merge it when green" },
+                  { value: "push", label: "Push the branch only" },
+                ]}
+              />
+            )}
+          </Field>
+          <Field label="CI fix attempts">{(id) => <NumberInput id={id} value={Number(st.maxCiFixes)} min={0} max={10} onChange={(v) => set({ maxCiFixes: v })} />}</Field>
+          {st.action !== "push" ? <ToggleRow label="Open as draft" checked={Boolean(st.draft)} onChange={(v) => set({ draft: v })} /> : null}
+          {st.action === "merge" ? <p className="text-[11px] text-muted-foreground sm:col-span-3">Needs “Merge” allowed on the repository. Respects its merge strategy and “Require approval”.</p> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function StageCard({ name, enabled, onEnabled, children, badge }: { name: WorkflowStage; enabled: boolean; onEnabled?: (v: boolean) => void; children: ReactNode; badge?: ReactNode }) {
+  const meta = STAGE_META[name];
+  const index = WORKFLOW_STAGES.indexOf(name) + 1;
+  return (
+    <article className={cn("flex flex-col gap-3 rounded-lg border bg-background p-3", enabled ? "border-border" : "border-dashed border-border")}>
+      <header className="flex items-start gap-3">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold tabular-nums text-foreground">{index}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5 text-sm font-semibold text-foreground">
+            <Icon name={meta.icon} fallback="Circle" className="size-4" aria-hidden />
+            {meta.label}
+            {badge}
+          </div>
+          <p className="text-[11px] text-muted-foreground">{meta.what}</p>
+        </div>
+        {onEnabled ? <Switch checked={enabled} onChange={onEnabled} label={`${meta.label} enabled`} /> : <StatusPill tone="info" label="Always on" />}
+      </header>
+      {enabled ? children : null}
+    </article>
+  );
+}
+
+/** The global workflow every repository runs unless it overrides a stage. */
+function WorkflowEditor({ value, onChange }: { value: Workflow; onChange: (w: Workflow) => void }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-muted-foreground">
+        Chief of Staff takes every task (a GitHub issue or one you start from the dashboard) through these stages in order, and moves on only when the agent reports the stage done. Questions, plan approvals and anything out of attempts come to you. Repositories can override any stage.
+      </p>
+      <Pipeline workflow={value} />
+      {WORKFLOW_STAGES.map((name) => (
+        <StageCard
+          key={name}
+          name={name}
+          enabled={name === "build" ? true : ((value[name] as { enabled?: boolean }).enabled ?? true)}
+          onEnabled={name === "build" ? undefined : (v) => onChange({ ...value, [name]: { ...value[name], enabled: v } })}
+        >
+          <StageFields name={name} stage={value[name]} onChange={(next) => onChange({ ...value, [name]: next })} />
+        </StageCard>
+      ))}
+    </div>
+  );
+}
+
+function Pipeline({ workflow }: { workflow: Workflow }) {
+  return (
+    <ol className="flex flex-wrap items-center gap-1 text-xs" aria-label="Pipeline">
+      {WORKFLOW_STAGES.map((name, i) => {
+        const on = name === "build" || ((workflow[name] as { enabled?: boolean }).enabled ?? true);
+        return (
+          <li key={name} className="flex items-center gap-1">
+            <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium", on ? "border-border text-foreground" : "border-dashed border-border text-muted-foreground line-through")}>
+              <Icon name={STAGE_META[name].icon} fallback="Circle" className="size-3" aria-hidden />
+              {STAGE_META[name].label}
+            </span>
+            {i < WORKFLOW_STAGES.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="size-3 text-muted-foreground" aria-hidden /> : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Per-repo overrides: each stage either follows the global workflow or is customised here. */
+function RepoWorkflowEditor({ repo, global, onChange }: { repo: RepoConfig; global: Workflow; onChange: (override: WorkflowOverride | undefined) => void }) {
+  const override = repo.workflow ?? {};
+  const effective = resolveWorkflow(global, override, { checkCommand: repo.checkCommand });
+  const setStage = (name: WorkflowStage, value: Workflow[WorkflowStage] | undefined) => {
+    const next = { ...override, [name]: value } as WorkflowOverride;
+    if (value === undefined) delete (next as Record<string, unknown>)[name];
+    onChange(Object.keys(next).length ? next : undefined);
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      <Pipeline workflow={effective} />
+      {WORKFLOW_STAGES.map((name) => {
+        const custom = override[name] !== undefined;
+        const stage = custom ? ({ ...global[name], ...override[name] } as Workflow[typeof name]) : global[name];
+        const enabled = name === "build" ? true : ((stage as { enabled?: boolean }).enabled ?? true);
+        return (
+          <StageCard
+            key={name}
+            name={name}
+            enabled={custom ? enabled : false}
+            badge={custom ? <StatusPill tone="info" label="Customised" /> : <span className="text-[11px] font-normal text-muted-foreground">· {name === "build" || enabled ? "on" : "off"} (global)</span>}
+            onEnabled={(v) => setStage(name, v ? { ...global[name] } : undefined)}
+          >
+            <div className="flex flex-col gap-3">
+              {name !== "build" ? <ToggleRow label={`Run ${STAGE_META[name].label} for this repository`} checked={enabled} onChange={(v) => setStage(name, { ...stage, enabled: v } as Workflow[typeof name])} /> : null}
+              <StageFields name={name} stage={stage} onChange={(next) => setStage(name, next)} legacyCommand={name === "verify" ? repo.checkCommand : undefined} />
+            </div>
+          </StageCard>
+        );
+      })}
+      <p className="text-[11px] text-muted-foreground">The switch on each stage customises it for this repository; off follows the global workflow.</p>
+    </div>
+  );
+}
+
 // ---------- root ----------
 
 function generalDiff(a: GeneralSettings, b: GeneralSettings): Partial<GeneralSettings> {
@@ -868,7 +1057,7 @@ function generalDiff(a: GeneralSettings, b: GeneralSettings): Partial<GeneralSet
   return out;
 }
 
-export function Configurator({ initialSection = "repos", compact = false }: { initialSection?: Section; compact?: boolean }) {
+export function Configurator({ initialSection = "workflow", compact = false }: { initialSection?: Section; compact?: boolean }) {
   const rpc = useRpc<Contract>();
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
   const settings = experimental_useRpcQuery<Contract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
@@ -876,6 +1065,7 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
   const [repos, setRepos] = useState<RepoConfig[] | null>(null);
   const [routines, setRoutines] = useState<Routine[] | null>(null);
   const [general, setGeneral] = useState<GeneralSettings | null>(null);
+  const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [openRepo, setOpenRepo] = useState<number | null>(null);
   const [openRoutine, setOpenRoutine] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
@@ -884,6 +1074,8 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
   const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
   const loadedRoutines = useMemo(() => (config.data ? loadRoutines(config.data.routines) : null), [config.data]);
   const loadedGeneral = settings.data?.values ?? null;
+  const loadedWorkflow = useMemo(() => (config.data ? parseWorkflow(config.data.workflow) : null), [config.data]);
+  const workflowDraft: Workflow = workflow ?? (loadedWorkflow?.ok ? loadedWorkflow.value : workflowSchema.parse(DEFAULT_WORKFLOW));
 
   const projects = settings.data?.projects ?? [];
   // Entries saved without owner/repo show the repository inferred from their project.
@@ -891,8 +1083,8 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
   const routineDraft = routines ?? (loadedRoutines?.ok ? loadedRoutines.items : []);
   const generalDraft = general ?? loadedGeneral;
   const generalChanges = loadedGeneral && general ? generalDiff(loadedGeneral, general) : {};
-  const dirty = { repos: repos !== null, routines: routines !== null, general: Object.keys(generalChanges).length > 0 };
-  const anyDirty = dirty.repos || dirty.routines || dirty.general;
+  const dirty = { repos: repos !== null, routines: routines !== null, general: Object.keys(generalChanges).length > 0, workflow: workflow !== null };
+  const anyDirty = dirty.repos || dirty.routines || dirty.general || dirty.workflow;
 
   const repoIssues = useMemo(() => validateRepos(repoDraft), [repoDraft]);
   const routineIssues = useMemo(() => validateRoutines(routineDraft), [routineDraft]);
@@ -909,6 +1101,7 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
     setRepos(null);
     setRoutines(null);
     setGeneral(null);
+    setWorkflow(null);
     setStatus(null);
   };
 
@@ -917,8 +1110,12 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
     setStatus(null);
     try {
       const warnings: string[] = [];
-      if (dirty.repos || dirty.routines) {
-        const result = await rpc.call("cos_set_config", { ...(dirty.repos ? { repos: serializeRepos(repoDraft) } : {}), ...(dirty.routines ? { routines: serializeRoutines(routineDraft) } : {}) });
+      if (dirty.repos || dirty.routines || dirty.workflow) {
+        const result = await rpc.call("cos_set_config", {
+          ...(dirty.repos ? { repos: serializeRepos(repoDraft) } : {}),
+          ...(dirty.routines ? { routines: serializeRoutines(routineDraft) } : {}),
+          ...(dirty.workflow ? { workflow: serializeWorkflow(workflowDraft) } : {}),
+        });
         warnings.push(...result.warnings);
       }
       if (dirty.general) await rpc.call("cos_set_settings", generalChanges);
@@ -926,6 +1123,7 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
       setRepos(null);
       setRoutines(null);
       setGeneral(null);
+      setWorkflow(null);
       setStatus({ ok: true, text: warnings.length ? `Saved. ${warnings.join("; ")}` : "Saved. Changes apply on the next intake and sweep." });
     } catch (error) {
       setStatus({ ok: false, text: errorText(error) });
@@ -935,9 +1133,12 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
   };
 
   const providers = settings.data?.providers ?? [];
-  const counts: Record<Section, number | null> = { repos: repoDraft.length, routines: routineDraft.length, general: null, access: null, advanced: null };
-  const sectionDirty: Record<Section, boolean> = { repos: dirty.repos, routines: dirty.routines, general: dirty.general, access: false, advanced: false };
-  const loadError = (loadedRepos && !loadedRepos.ok ? `Repositories JSON: ${loadedRepos.error}` : null) ?? (loadedRoutines && !loadedRoutines.ok ? `Routines JSON: ${loadedRoutines.error}` : null);
+  const counts: Record<Section, number | null> = { workflow: null, repos: repoDraft.length, routines: routineDraft.length, general: null, access: null, advanced: null };
+  const sectionDirty: Record<Section, boolean> = { workflow: dirty.workflow, repos: dirty.repos, routines: dirty.routines, general: dirty.general, access: false, advanced: false };
+  const loadError =
+    (loadedRepos && !loadedRepos.ok ? `Repositories JSON: ${loadedRepos.error}` : null) ??
+    (loadedRoutines && !loadedRoutines.ok ? `Routines JSON: ${loadedRoutines.error}` : null) ??
+    (loadedWorkflow && !loadedWorkflow.ok ? `Workflow JSON: ${loadedWorkflow.error}` : null);
 
   if (config.error || settings.error) return <Problems items={[errorText(config.error ?? settings.error)]} />;
   if (!config.data || !settings.data || !generalDraft) return <p className="text-sm text-muted-foreground">Loading configuration…</p>;
@@ -964,6 +1165,7 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
         {loadError && section !== "advanced" ? (
           <Problems items={[`${loadError}. Fix it in Advanced JSON; the visual editor shows the last valid parts only.`]} />
         ) : null}
+        {section === "workflow" ? <WorkflowEditor value={workflowDraft} onChange={setWorkflow} /> : null}
         {section === "repos" ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -996,6 +1198,7 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
                   projects={projects}
                   providers={providers}
                   defaultProvider={generalDraft.defaultProviderId}
+                  workflow={workflowDraft}
                 />
               ))
             ) : (

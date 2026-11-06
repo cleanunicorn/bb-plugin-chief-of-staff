@@ -21,6 +21,7 @@ export async function runAgentStep(ctx: StepContext, step: RunAgentStep): Promis
     prNumber: null,
     prUrl: null,
     status: "queued",
+    stage: "build",
     providerId: null,
     model: null,
     fixAttempts: 0,
@@ -32,7 +33,7 @@ export async function runAgentStep(ctx: StepContext, step: RunAgentStep): Promis
     finishedAt: null,
   });
   const spawned = await spawnWorktreeThread(ctx.cos, { repo, title, prompt: step.prompt, pluginMetadata: { workItemId: item.id, repo: key, routine: ctx.routine.name } });
-  ctx.cos.store.updateWorkItem(item.id, { status: "running", threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model, lastActivityAt: ctx.cos.now().toISOString() });
+  ctx.cos.store.updateWorkItem(item.id, { status: "agent", threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model, lastActivityAt: ctx.cos.now().toISOString() });
   if (step.waitMinutes > 0) {
     const result = await ctx.cos.bb.sdk.threads.wait({ threadId: spawned.thread.id, status: "idle", timeoutMs: step.waitMinutes * 60_000, signal: ctx.signal });
     if (!result.matched) return { status: "failed", summary: `agent thread ${spawned.thread.id} did not finish within ${step.waitMinutes} min`, details: { threadId: spawned.thread.id } };

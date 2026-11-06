@@ -9,7 +9,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ColumnChart, DataTable, Legend, Meter, Panel, PaletteProvider, STATUS, SegmentedBar, StatTile, StatusPill, Swatch, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
-import { STAGES, STEPS, stageColor, stageOf, stepIndex } from "@/components/cos/stages";
+import { ACTOR, STAGES, STEP_LABEL as STAGE_STEP_LABEL, stageColor, stageOf, stepIndex, steps } from "@/components/cos/stages";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
@@ -72,22 +72,36 @@ function Empty({ icon, title, children }: { icon: string; title: string; childre
 
 // ---------- status helpers ----------
 
-function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string; color?: string } {
-  if (e.detail === "done") return { tone: "good", label: "Done", icon: "CircleCheck" };
+const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
+  plan_approval: { label: "Approve plan", icon: "ClipboardCheck" },
+  question: { label: "Question", icon: "MessageCircleQuestion" },
+  escalation: { label: "Your call", icon: "Hand" },
+  no_report: { label: "No report", icon: "MessageSquareWarning" },
+  cos_error: { label: "CoS stuck", icon: "OctagonAlert" },
+};
+
+function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
+  if (e.detail === "done") return { tone: "good", label: e.lastError ? "Closed" : "Shipped", icon: "CircleCheck" };
   if (e.detail === "failed") return { tone: "critical", label: "Failed", icon: "CircleX" };
-  const stage = stageOf(e.detail);
+  if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
+  if (e.detail === "waiting_on_human") {
+    const w = WAITING_LABEL[e.waitingKind ?? "question"] ?? WAITING_LABEL.question!;
+    return { tone: e.waitingKind === "cos_error" ? "serious" : "warning", ...w };
+  }
+  if (e.detail === "retrying") return { tone: "serious", label: `${STAGE_STEP_LABEL[e.stage] ?? e.stage} · retrying`, icon: "RefreshCw" };
+  if (e.detail === "ready") return { tone: "good", label: "Ready to merge", icon: "GitMerge" };
+  if (e.detail === "ci") return { tone: "info", label: "CI running", icon: "GitPullRequest" };
+  const stage = stageOf(e);
   if (!stage) return { tone: "neutral", label: e.detail, icon: "Circle" };
-  if (e.detail === "blocked") return { tone: "warning", label: "Blocked", icon: "OctagonAlert" };
-  if (e.detail === "ci_failed") return { tone: "serious", label: "CI failed", icon: "Wrench" };
   return { tone: stage.tone ?? "info", label: stage.label, icon: stage.icon };
 }
 
 function StagePill({ entry }: { entry: RosterEntry }) {
   const palette = usePalette();
   const t = entryTone(entry);
-  const stage = stageOf(entry.detail);
+  const stage = stageOf(entry);
   const color = stage && !stage.tone && t.tone === "info" ? stageColor(stage, palette) : toneColor(t.tone, palette);
-  const live = entry.detail === "running" || entry.detail === "checking" || entry.detail === "fixing";
+  const live = entry.actor === "agent" || entry.actor === "cos";
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-2 py-0.5 text-xs font-medium text-foreground">
       <span className="relative inline-flex">
@@ -96,6 +110,20 @@ function StagePill({ entry }: { entry: RosterEntry }) {
       </span>
       {t.label}
     </span>
+  );
+}
+
+/** Who holds the ball and what is happening, in one line. */
+function ActivityLine({ entry }: { entry: RosterEntry }) {
+  const a = ACTOR[entry.actor] ?? ACTOR.none!;
+  if (!a.label) return null;
+  return (
+    <p className="flex items-start gap-1.5 text-xs text-muted-foreground" title={entry.activity}>
+      <Icon name={a.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0">
+        <span className="font-medium text-foreground">{a.label}</span> · <span className="line-clamp-2 inline">{entry.activity}</span>
+      </span>
+    </p>
   );
 }
 
@@ -118,14 +146,15 @@ const STEP_LABEL: Record<string, string> = { batch_merge: "Batch merge", release
 
 function Stepper({ entry }: { entry: RosterEntry }) {
   const palette = usePalette();
-  const current = stepIndex(entry.detail, entry.prNumber != null);
+  const labels = steps(entry).map((k) => STAGE_STEP_LABEL[k] ?? k);
+  const current = stepIndex(entry);
   const t = entryTone(entry);
   const attention = t.tone === "warning" || t.tone === "serious" || t.tone === "critical";
   const doneAll = entry.detail === "done";
   const markColor = attention ? toneColor(t.tone, palette) : doneAll ? STATUS.good : palette.accent;
   return (
-    <ol className="flex items-center" aria-label={`Progress: ${STEPS[current]} (${t.label})`}>
-      {STEPS.map((label, i) => {
+    <ol className="flex items-center" aria-label={`Progress: ${labels[current]} (${t.label})`}>
+      {labels.map((label, i) => {
         const reached = i < current || (i === current && doneAll);
         const isCurrent = i === current && !doneAll;
         return (
@@ -139,7 +168,7 @@ function Stepper({ entry }: { entry: RosterEntry }) {
               </span>
               <span className={cn("text-[10px] leading-none", isCurrent ? "font-semibold text-foreground" : "text-muted-foreground")}>{label}</span>
             </span>
-            {i < STEPS.length - 1 ? <span aria-hidden className="mx-1 mb-3.5 h-0.5 flex-1 rounded-full" style={{ background: i < current || doneAll ? (doneAll ? STATUS.good : palette.accent) : "var(--border)" }} /> : null}
+            {i < labels.length - 1 ? <span aria-hidden className="mx-1 mb-3.5 h-0.5 flex-1 rounded-full" style={{ background: i < current || doneAll ? (doneAll ? STATUS.good : palette.accent) : "var(--border)" }} /> : null}
           </li>
         );
       })}
@@ -149,7 +178,7 @@ function Stepper({ entry }: { entry: RosterEntry }) {
 
 // ---------- agent card ----------
 
-type ItemAction = "retry" | "resume" | "rerun_checks" | "mark_done" | "mark_failed";
+type ItemAction = "retry" | "resume" | "rerun_checks" | "approve" | "mark_done" | "mark_failed";
 
 function AgentCard({ entry, busy, onAction, onAnswer, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string) => void; now: number }) {
   const navigate = useBbNavigate();
@@ -177,23 +206,24 @@ function AgentCard({ entry, busy, onAction, onAnswer, now }: { entry: RosterEntr
         <h3 className="line-clamp-2 text-sm font-semibold text-foreground">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
       </div>
       <Stepper entry={entry} />
+      {!finished ? <ActivityLine entry={entry} /> : null}
       {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
         <button
           type="button"
           onClick={() => onAnswer(entry.id)}
           className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
-          aria-label="Open the question to answer it"
+          aria-label={entry.waitingKind === "plan_approval" ? "Open the plan to approve it" : "Open the question to answer it"}
         >
           <Icon name="MessageCircleQuestion" fallback="MessageSquare" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
           <span className="min-w-0 flex-1">
             <span className="line-clamp-3" title={entry.waitingReason ?? undefined}>{entry.waitingReason ?? "Waiting on you"}</span>
             <span className="mt-1 inline-flex items-center gap-1 font-medium text-muted-foreground group-hover:text-foreground">
-              Answer here <Icon name="ChevronRight" fallback="Circle" className="size-3" aria-hidden />
+              {entry.waitingKind === "plan_approval" ? "Review plan" : entry.waitingKind === "escalation" || entry.waitingKind === "no_report" ? "Decide" : entry.waitingKind === "cos_error" ? "Details" : "Answer here"} <Icon name="ChevronRight" fallback="Circle" className="size-3" aria-hidden />
             </span>
           </span>
         </button>
       ) : null}
-      {entry.lastError && !entry.lastError.startsWith("ci-failed:") && !finished ? (
+      {entry.lastError && !finished && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
         <p className="flex items-start gap-1.5 text-xs text-foreground">
           <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
           <span className="line-clamp-2">{entry.lastError}</span>
@@ -228,9 +258,13 @@ function AgentCard({ entry, busy, onAction, onAnswer, now }: { entry: RosterEntr
             <UrlLink href={entry.prUrl}>#{entry.prNumber}</UrlLink>
           </span>
         ) : null}
-        {needsHuman ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "resume")}>
-            <Icon name="Play" fallback="Circle" aria-hidden /> Resume
+        {entry.waitingKind === "plan_approval" ? (
+          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
+            <Icon name="Check" fallback="Circle" aria-hidden /> Approve plan
+          </Button>
+        ) : needsHuman && entry.waitingKind !== "question" ? (
+          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
+            <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
           </Button>
         ) : null}
         {!finished || entry.detail === "failed" ? (
@@ -242,8 +276,8 @@ function AgentCard({ entry, busy, onAction, onAnswer, now }: { entry: RosterEntr
               <div role="menu" className="absolute right-0 bottom-full z-20 mb-1 flex w-44 flex-col rounded-lg border border-border p-1 shadow-md" style={{ background: "var(--popover, var(--card))" }} onMouseLeave={() => setMenu(false)}>
                 {(
                   [
-                    ["rerun_checks", "Re-run checks", "FlaskConical"],
-                    ["retry", "Retry in new thread", "RotateCcw"],
+                    ["rerun_checks", "Re-run verify", "FlaskConical"],
+                    ["retry", "Restart this stage", "RotateCcw"],
                     ["mark_done", "Mark done", "CircleCheck"],
                     ["mark_failed", "Mark failed", "CircleX"],
                   ] as const
@@ -271,6 +305,72 @@ function AgentCard({ entry, busy, onAction, onAnswer, now }: { entry: RosterEntr
   );
 }
 
+// ---------- new task ----------
+
+const fieldClass = "w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
+
+/** Hand Chief of Staff a task that has no GitHub issue; it runs the repo's workflow. */
+function NewTaskForm({ repos, onCancel, onStarted }: { repos: string[]; onCancel: () => void; onStarted: () => void | Promise<void> }) {
+  const rpc = useRpc<Contract>();
+  const [repo, setRepo] = useState(repos[0] ?? "");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const start = async () => {
+    setSending(true);
+    setError(null);
+    try {
+      await rpc.call("cos_start_task", { repo, title: title.trim(), body: body.trim() });
+      await onStarted();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setSending(false);
+    }
+  };
+  if (!repos.length) return <p className="mb-3 text-sm text-muted-foreground">Configure a repository first (Configure tab).</p>;
+  return (
+    <form
+      className="mb-4 flex flex-col gap-2 rounded-lg border border-border p-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (title.trim() && repo) void start();
+      }}
+    >
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_1fr]">
+        <label className="text-xs font-medium text-muted-foreground">
+          Repository
+          <select className={cn(fieldClass, "mt-1")} value={repo} disabled={sending} onChange={(e) => setRepo(e.target.value)}>
+            {repos.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs font-medium text-muted-foreground">
+          Title
+          <input className={cn(fieldClass, "mt-1")} value={title} disabled={sending} placeholder="Add rate limiting to /login" onChange={(e) => setTitle(e.target.value)} />
+        </label>
+      </div>
+      <label className="text-xs font-medium text-muted-foreground">
+        What needs doing
+        <textarea className={cn(fieldClass, "mt-1 min-h-24")} value={body} disabled={sending} placeholder="Context, acceptance criteria, constraints. The agent starts from this instead of an issue." onChange={(e) => setBody(e.target.value)} />
+      </label>
+      {error ? <p className="text-xs" style={{ color: STATUS.critical }}>{error}</p> : null}
+      <div className="flex justify-end gap-2">
+        <Button type="button" size="sm" variant="ghost" disabled={sending} onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" disabled={sending || !title.trim() || !repo}>
+          <Icon name="Play" fallback="Circle" aria-hidden /> {sending ? "Starting…" : "Start"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 // ---------- pipeline tab ----------
 
 function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
@@ -291,6 +391,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   useLiveRefresh(refetchAll);
   const [busy, setBusy] = useState<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
+  const [newTask, setNewTask] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const act = useCallback(
     async (id: string, action: ItemAction) => {
@@ -313,7 +414,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   const byStage = useMemo(() => {
     const counts = Object.fromEntries(STAGES.map((s) => [s.key, 0])) as Record<StageKey, number>;
     for (const e of active) {
-      const s = stageOf(e.detail);
+      const s = stageOf(e);
       if (s) counts[s.key]++;
     }
     return counts;
@@ -323,12 +424,13 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   const running = active.filter((e) => e.detail !== "queued").length;
   const needsYou = byStage.human;
   const stalled = active.filter((e) => e.stalled).length;
-  const openPrs = byStage.review + byStage.fixing + active.filter((e) => e.prNumber != null && stageOf(e.detail)?.key === "human").length;
+  const openPrs = active.filter((e) => e.prNumber != null).length;
+  const fixingCi = active.filter((e) => e.prNumber != null && e.stage !== "ship").length;
   const tokens = active.reduce((a, e) => a + (e.usage?.totalTokens ?? 0), 0);
   const cost = active.reduce((a, e) => a + (e.usage?.cost?.amount ?? 0), 0);
   const currency = active.find((e) => e.usage?.cost)?.usage?.cost?.currency ?? "";
   const nextRoutine = (routines.data?.routines ?? []).filter((r) => r.enabled && r.nextRunAt).sort((a, b) => a.nextRunAt!.localeCompare(b.nextRunAt!))[0];
-  const visible = filter === "all" ? entries : entries.filter((e) => stageOf(e.detail)?.key === filter);
+  const visible = filter === "all" ? entries : entries.filter((e) => stageOf(e)?.key === filter);
   const parts = STAGES.map((st) => ({ key: st.key, label: st.label, value: byStage[st.key], color: stageColor(st, palette), icon: st.icon }));
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
@@ -341,7 +443,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
           {maxTotal ? <div className="mt-2"><Meter value={running} max={maxTotal} label="Agent slots in use" /></div> : null}
         </StatTile>
         <StatTile label="Needs you" icon={needsYou ? "Hand" : "CircleCheck"} tone={needsYou ? "warning" : "good"} value={needsYou} sub={needsYou ? "waiting on a person" : "nothing blocked"} onClick={() => setFilter("human")} />
-        <StatTile label="Open PRs" icon="GitPullRequest" tone="info" value={openPrs} sub={byStage.fixing ? `${byStage.fixing} fixing CI` : "CI green or running"} onClick={() => goTab("issues")} />
+        <StatTile label="Open PRs" icon="GitPullRequest" tone="info" value={openPrs} sub={fixingCi ? `${fixingCi} back in build for fixes` : "CI green or running"} onClick={() => goTab("issues")} />
         <StatTile label={`Shipped · ${WINDOW_DAYS}d`} icon="CircleCheck" tone="good" value={s?.doneInWindow ?? "–"} sub={s?.medianCycleMinutes != null ? `median ${duration(s.medianCycleMinutes)} issue→done` : `${s?.startedInWindow ?? 0} started`} />
         <StatTile label={`Failed · ${WINDOW_DAYS}d`} icon={(s?.failedInWindow ?? 0) + stalled ? "CircleX" : "ShieldCheck"} tone={(s?.failedInWindow ?? 0) + stalled ? "critical" : "good"} value={s?.failedInWindow ?? "–"} sub={stalled ? `${stalled} stalled now` : "none stalled"} />
         <StatTile label="Tokens in flight" icon="Coins" tone="neutral" value={compact(tokens)} sub={cost ? `${cost.toFixed(2)} ${currency} on active work` : nextRoutine ? `next: ${nextRoutine.name} ${relative(nextRoutine.nextRunAt, now)}` : "across active agents"} />
@@ -354,7 +456,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
         ) : (
           <div className="flex flex-col gap-4">
             <SegmentedBar parts={parts} label="Active work by stage" unit="items" />
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
               {STAGES.map((st, i) => {
                 const color = stageColor(st, palette);
                 const selected = filter === st.key;
@@ -465,6 +567,9 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
+            <Button size="sm" variant="outline" aria-expanded={newTask} onClick={() => setNewTask((v) => !v)}>
+              <Icon name="Plus" fallback="Circle" aria-hidden /> New task
+            </Button>
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
@@ -472,6 +577,16 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
           </>
         }
       >
+        {newTask ? (
+          <NewTaskForm
+            repos={(overview.data?.repos ?? []).map((r) => r.key)}
+            onCancel={() => setNewTask(false)}
+            onStarted={async () => {
+              setNewTask(false);
+              await refetchAll();
+            }}
+          />
+        ) : null}
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
         {!roster.isLoading && !visible.length ? (
           <Empty icon="Bot" title={filter === "all" ? "No agents working right now" : "Nothing in this stage"}>

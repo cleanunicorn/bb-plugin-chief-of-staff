@@ -2,7 +2,7 @@
 import { cliCommand, defineCli, PluginCliError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Cos } from "./context";
 import { buildRoster, type RosterEntry } from "./roster";
-import { runIntake } from "./intake";
+import { runIntake, startTask } from "./intake";
 import { describeRoutines, itemAction } from "./rpc";
 import { runRoutineGuarded } from "./sweep";
 
@@ -13,17 +13,18 @@ const json = (value: unknown) => out(JSON.stringify(value, null, 2) + "\n");
 export function formatRoster(entries: RosterEntry[]): string {
   if (!entries.length) return "No agents tracked.\n";
   const rows = entries.map((e) => [
-    e.status + (e.stalled ? " (stalled)" : ""),
+    e.stage.toUpperCase(),
+    e.actor + (e.stalled ? " (stalled)" : ""),
     e.repo + (e.issueNumber ? `#${e.issueNumber}` : ""),
     e.prNumber ? `PR #${e.prNumber}` : "-",
     e.threadId ?? "-",
-    e.lastActivityAt ?? e.startedAt,
-    e.issueTitle.slice(0, 50),
+    e.activity.slice(0, 60),
+    e.issueTitle.slice(0, 40),
   ]);
-  const header = ["STATUS", "ISSUE", "PR", "THREAD", "LAST ACTIVITY", "TITLE"];
+  const header = ["STAGE", "BALL", "ISSUE", "PR", "THREAD", "NOW", "TITLE"];
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
   const line = (cols: string[]) => cols.map((c, i) => c.padEnd(widths[i])).join("  ").trimEnd();
-  const waiting = entries.filter((e) => e.waitingReason).map((e) => `  ${e.repo}${e.issueNumber ? `#${e.issueNumber}` : ""} (${e.threadId ?? "-"}): ${e.waitingReason}`);
+  const waiting = entries.filter((e) => e.waitingReason).map((e) => `  ${e.repo}${e.issueNumber ? `#${e.issueNumber}` : ""} [${e.id}] (${e.threadId ?? "-"}): ${e.waitingReason}`);
   return [line(header), ...rows.map(line), ...(waiting.length ? ["", "Waiting on you:", ...waiting] : [])].join("\n") + "\n";
 }
 
@@ -113,15 +114,33 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
         item: cliCommand({
           summary: "Act on a tracked work item",
           positionals: [
-            { name: "action", description: "retry | resume | rerun-checks | done | failed", required: true },
+            { name: "action", description: "approve | revise | retry | resume | rerun-checks | done | failed", required: true },
             { name: "id", description: "Work item id (see bb cos status --json)", required: true },
           ],
+          options: { message: { type: "string", description: "Feedback for revise: sent to the agent with the stage" } },
           async run(input, ctx) {
-            const map = { retry: "retry", resume: "resume", "rerun-checks": "rerun_checks", done: "mark_done", failed: "mark_failed" } as const;
+            const map = { approve: "approve", revise: "revise", retry: "retry", resume: "resume", "rerun-checks": "rerun_checks", "rerun-verify": "rerun_checks", done: "mark_done", failed: "mark_failed" } as const;
             const action = map[input.positionals.action as keyof typeof map];
-            if (!action) throw new PluginCliError(`unknown action ${input.positionals.action}`);
-            const item = await itemAction(cos, input.positionals.id, action, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`);
-            return out(`${input.positionals.id}: ${item?.status ?? "unknown"}\n`);
+            if (!action) throw new PluginCliError(`unknown action ${input.positionals.action}`, { hint: Object.keys(map).join(" | ") });
+            if (action === "revise" && !input.options.message) throw new PluginCliError("revise needs --message with feedback for the agent");
+            const item = await itemAction(cos, input.positionals.id, action, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`, input.options.message);
+            return out(`${input.positionals.id}: ${item ? `${item.stage}/${item.status}` : "unknown"}\n`);
+          },
+        }),
+        task: cliCommand({
+          summary: "Start a task without a GitHub issue and take it through the workflow",
+          positionals: [{ name: "title", description: "Short task title", required: true }],
+          options: {
+            repo: { type: "string", description: "owner/repo (required)" },
+            body: { type: "string", description: "What needs doing; defaults to the title" },
+            json: { type: "boolean", description: "JSON output" },
+          },
+          async run(input, ctx) {
+            if (!input.options.repo) throw new PluginCliError("--repo owner/repo is required");
+            const item = await startTask(cos, { repo: input.options.repo, title: input.positionals.title, body: input.options.body ?? "" }, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`);
+            if (!item) throw new PluginCliError("could not start the task");
+            if (input.options.json) return json(item);
+            return out(`started ${item.id} on ${item.repo}: ${item.stage}/${item.status}${item.threadId ? ` (thread ${item.threadId})` : ""}\n`);
           },
         }),
         log: cliCommand({
