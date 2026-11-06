@@ -6,6 +6,18 @@
   `{ "projectId": "proj_..." }` is enough. Explicit values still override.
 - Configurator: picking a BB project fills the GitHub repository from its
   remote, and a blank repository is accepted when the project has one.
+- Fix: a check command that times out is killed with its whole process tree
+  (`make`, test runners, docker clients) and reported as a failed check.
+  Before, surviving children held the output pipe open and the run surfaced as
+  "host plugin call exceeded its deadline".
+- When Chief of Staff's own step fails (checks, opening the PR), the roster
+  says so ("Chief of Staff could not run the repository checks (the agent is
+  not asking anything): ...") instead of a bare "waiting on human".
+- Better thread-state reading: an item parked as waiting on a human, with no
+  open interaction and no plain-text question, is re-evaluated when its thread
+  has moved on (a turn whose events were missed). On startup, including after
+  a plugin update, items parked by Chief of Staff's own failure re-run their
+  checks. The work-item database is kept across updates.
 
 ## 0.4.2
 
