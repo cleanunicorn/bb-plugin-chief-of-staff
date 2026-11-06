@@ -13,7 +13,12 @@ lives under `bb cos`.
 
 - `bb cos status [--repo owner/repo] [--all] [--usage] [--json]` — roster of tracked
   agents: status (queued / running / waiting on human / blocked / done / failed),
-  repo, issue, PR, thread id, last activity, stall flag.
+  repo, issue, PR, thread id, last activity, stall flag, and a "Waiting on you"
+  list with the question or approval each waiting agent is blocked on.
+  Answering or resuming the thread in BB moves the item back to running; the
+  plugin re-syncs every thread each minute. In the dashboard, clicking the
+  question opens it with its options and context and answers it in place
+  (RPCs `cos_question {id}` and `cos_answer {id, answer}`).
 - `bb cos intake [--repo owner/repo] [--dry-run]` — pick up eligible issues now.
 - `bb cos run <routine> [--dry-run]` — run a routine immediately. Dry run reports
   what each step would do without mutating GitHub or deploying.
@@ -24,9 +29,21 @@ lives under `bb cos`.
 
 Agents also have the `chief_of_staff_status` tool, which returns the same roster.
 
+## Configuration
+
+Configure visually in the dashboard's **Configure** tab (or the plugin's
+settings page): multiple repositories, per-repo allow flags, routines with a
+schedule and step editor, limits, notifications and a write-only GitHub token.
+Saves go through the `cos_set_config` / `cos_set_settings` RPCs, which validate
+before writing. The BB project id per repo is machine-specific.
+
+Install or update from GitHub:
+`bb plugin install git:github.com/cleanunicorn/bb-plugin-chief-of-staff --yes`,
+then `bb settings experiment pluginUpdates true` for automatic updates.
+
 ## Operating constraints
 
-- Only repositories listed in the plugin's Repositories JSON are touched. Merge,
+- Only repositories configured under Repositories are touched. Merge,
   release and deploy steps additionally require `allow.merge`, `allow.release`,
   `allow.deploy` on that repo; otherwise the step is skipped and logged.
 - GitHub auth comes from the `githubToken` secret setting, falling back to

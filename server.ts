@@ -8,6 +8,8 @@ import { registerCli } from "./src/cli";
 import { registerTools } from "./src/tools";
 import { dispatch } from "./src/delivery";
 import { reconcile } from "./src/roster";
+import { handleActive, handleIdle, syncItem } from "./src/sync";
+import { describeInteraction } from "./src/threads";
 import { sweep } from "./src/sweep";
 
 export type { rpcContract } from "./rpcContract";
@@ -34,23 +36,32 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.active", async ({ thread }) => {
     const item = touch(thread.id);
-    if (item) await dispatch(cos, item.id, { type: "thread_active" }, "event");
+    if (item) await handleActive(cos, item, "event");
   });
-  bb.events.on("thread.idle", async ({ thread }) => {
+  bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     const item = touch(thread.id);
-    if (item) await dispatch(cos, item.id, { type: "thread_idle" }, "event");
+    if (item) await handleIdle(cos, item, lastAssistantText, "event");
   });
   bb.events.on("thread.failed", async ({ thread, error }) => {
     const item = touch(thread.id);
     if (item) await dispatch(cos, item.id, { type: "thread_failed", error: error ?? "thread errored" }, "event");
   });
-  bb.events.on("interaction.pending", async ({ thread }) => {
+  bb.events.on("interaction.pending", async ({ thread, interaction }) => {
     const item = touch(thread.id);
-    if (item) await dispatch(cos, item.id, { type: "thread_waiting_on_human" }, "event");
+    if (item) await dispatch(cos, item.id, { type: "thread_waiting_on_human", reason: describeInteraction(interaction) }, "event");
   });
   bb.events.on("thread.archived", async ({ thread }) => {
     const item = store.getWorkItemByThread(thread.id);
     if (item && !["done", "failed"].includes(item.status)) await dispatch(cos, item.id, { type: "thread_failed", error: "thread archived" }, "event");
+  });
+  bb.events.on("thread.unarchived", async ({ thread }) => {
+    // Unarchiving brings the item back: resume it and let sync pick up the thread's state.
+    const item = store.getWorkItemByThread(thread.id);
+    if (item?.status === "failed" && item.lastError === "thread archived") {
+      await dispatch(cos, item.id, { type: "human_resume" }, "event");
+      const resumed = store.getWorkItem(item.id);
+      if (resumed) await syncItem(cos, resumed, "event");
+    }
   });
   bb.events.on("thread.deleted", async ({ thread }) => {
     const item = store.getWorkItemByThread(thread.id);

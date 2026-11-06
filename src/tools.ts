@@ -16,7 +16,7 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
     }),
     async execute(params) {
       const entries = await buildRoster(cos, { repo: params.repo, includeDone: params.includeDone });
-      const lines = entries.map((e) => `- ${e.status}${e.stalled ? " (stalled)" : ""}: ${e.repo}${e.issueNumber ? `#${e.issueNumber}` : ""} "${e.issueTitle}"${e.prNumber ? ` PR #${e.prNumber}` : ""} thread=${e.threadId ?? "-"} last=${e.lastActivityAt ?? e.startedAt}${e.lastError ? ` error=${e.lastError.slice(0, 120)}` : ""}`);
+      const lines = entries.map((e) => `- ${e.status}${e.stalled ? " (stalled)" : ""}: ${e.repo}${e.issueNumber ? `#${e.issueNumber}` : ""} "${e.issueTitle}"${e.prNumber ? ` PR #${e.prNumber}` : ""} thread=${e.threadId ?? "-"} last=${e.lastActivityAt ?? e.startedAt}${e.waitingReason ? ` waiting_on="${e.waitingReason.slice(0, 200)}"` : ""}${e.lastError ? ` error=${e.lastError.slice(0, 120)}` : ""}`);
       const text = [`${entries.length} tracked item(s)`, ...lines];
       if (params.includeRoutines) {
         const routines = await describeRoutines(cos);

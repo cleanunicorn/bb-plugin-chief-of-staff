@@ -17,6 +17,24 @@ An engineering chief of staff for one or more GitHub repositories. It
 
 ## Install
 
+From GitHub (recommended, every BB instance tracks the same repository):
+
+```sh
+bb plugin install git:github.com/cleanunicorn/bb-plugin-chief-of-staff --yes
+bb settings experiment pluginUpdates true   # opt in to automatic updates
+```
+
+With `pluginUpdates` on, BB checks the tracked source every 6 hours and pulls
+new commits on `main` automatically. To update right away:
+
+```sh
+bb plugin update chief-of-staff --yes
+```
+
+Pin a release instead of tracking `main` with `git:github.com/cleanunicorn/bb-plugin-chief-of-staff@v0.4.2`.
+
+From a local checkout (development):
+
 ```sh
 npm install
 bb plugin build
@@ -25,9 +43,34 @@ bb plugin install .
 
 Then open **Chief of Staff** in the sidebar, or run `bb cos status`.
 
+Note: `bb plugin remove` deletes the plugin's settings, so switch sources with
+`bb plugin install` rather than remove + install.
+
 ## Configure
 
-Settings (host-rendered fields on the plugin page):
+Use the visual configurator: the **Configure** tab in the Chief of Staff
+dashboard, or the plugin's page under Settings. It edits:
+
+- **Repositories**: add as many as you like. Paste `owner/repo` or a GitHub
+  URL, pick the BB project that holds the checkout (projects whose git remote
+  matches are suggested), and toggle what the plugin may do. New repos start
+  least-privilege: intake and pull requests only; merge, release and deploy
+  are off until you switch them on.
+- **Routines**: schedule (manual, every N minutes/hours/days, or cron with
+  presets and a timezone), steps you can add, reorder and remove, and warnings
+  when a step needs a permission the repo does not grant.
+- **General**: capacity, recovery, default agent and notifications.
+- **GitHub access**: a write-only token field. A stored token is never shown,
+  returned to the browser, or logged.
+- **Advanced JSON**: the raw documents, for bulk edits.
+
+Everything is validated before saving (duplicate repos, missing project,
+invalid cron, http webhooks) and every change is logged with who made it.
+
+The BB project id is specific to each BB instance, so after installing on a
+new machine, open Configure and pick the project for each repository.
+
+The same settings, as stored (also editable as host-rendered fields):
 
 | Setting | Purpose |
 | --- | --- |
@@ -66,8 +109,8 @@ Settings (host-rendered fields on the plugin page):
 `owner` and `repo` are optional: they default to the project's GitHub remote
 (`gitRemoteUrl`), so `{ "projectId": "proj_..." }` is a complete entry. Set them
 only to target a different repository; a mismatch with the remote is reported as
-a warning. The settings section also has an **Add a BB project** picker that
-appends an entry for any project with a GitHub remote.
+a warning. In the configurator, picking a BB project fills the GitHub
+repository from its remote.
 Merge, release and deploy steps run only when the matching `allow` flag is true.
 
 ### Routines
@@ -116,8 +159,21 @@ Agents get the `chief_of_staff_status` tool with the same roster.
 - State lives in the plugin's SQLite database (`work_items`, `routine_runs`,
   `activity_log`). On startup the plugin reconciles every active item against
   the live thread and GitHub.
-- One durable schedule (`* * * * *`) runs intake, CI polling, stall detection
-  and routine dispatch; cron matching uses `cron-parser`.
+- One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
+  stall detection and routine dispatch; cron matching uses `cron-parser`.
+- Thread sync: thread events drive the state machine, and the sweep re-reads
+  each tracked thread (`threads.get`) and its open interactions
+  (`threads.interactions.list`) every minute to catch anything missed. An open
+  interaction, or a turn that ends with a plain-text question, puts the item in
+  waiting on human with the question attached. When the thread starts a new
+  turn (you answered or resumed it in BB), the item returns to running; the
+  next idle re-runs checks and pushes. BB has no "interaction resolved" event,
+  so an answer is noticed by the next thread event or within a minute.
+- Answering from the dashboard: click the question on a waiting card to see
+  the question, its options and the agent's last message, then answer in place
+  or open the thread. Questions, approvals and requests are resolved with
+  `threads.interactions.resolve`; a plain-text question gets a reply message.
+  The activity log records who answered, not what they wrote.
 - Commands on a checkout (git, check and deploy commands) run on the enrolled
   host through the plugin's `host.ts` entry; nothing opens user paths from the
   server process.

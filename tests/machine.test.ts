@@ -24,6 +24,7 @@ const base: WorkItem = {
   updatedAt: "2026-11-05T00:00:00.000Z",
   lastActivityAt: null,
   finishedAt: null,
+  waitingReason: null,
 };
 const policy: MachinePolicy = { maxFixRetries: 1, autoRetryStalled: false, maxAutoRetries: 1 };
 
@@ -119,5 +120,31 @@ describe("issue → thread → PR state machine", () => {
     expect(resumed.patch.fixAttempts).toBe(0);
     const noPr = transition({ ...waiting, prNumber: null }, { type: "human_resume" }, policy);
     expect(noPr.status).toBe("running");
+  });
+
+  it("resumes parked items when the thread becomes active again", () => {
+    for (const status of ["waiting_on_human", "blocked", "failed"] as const) {
+      const parked = { ...base, status, fixAttempts: 1, lastError: "stalled", finishedAt: status === "failed" ? "2026-11-05T01:00:00Z" : null };
+      const next = transition(parked, { type: "thread_active" }, policy);
+      expect(next.status).toBe("running");
+      expect(next.patch).toMatchObject({ fixAttempts: 0, lastError: null, finishedAt: null });
+    }
+    // More work on an open PR: back to running so the next idle re-checks and pushes.
+    expect(transition({ ...base, status: "pr_open", prNumber: 7 }, { type: "thread_active" }, policy).status).toBe("running");
+    // Our own fix prompt or an in-flight check does not change state.
+    expect(transition({ ...base, status: "fixing" }, { type: "thread_active" }, policy).status).toBe("fixing");
+    expect(transition({ ...base, status: "checking" }, { type: "thread_active" }, policy).status).toBe("checking");
+    expect(transition({ ...base, status: "done" }, { type: "thread_active" }, policy).status).toBe("done");
+  });
+
+  it("records the question the agent is waiting on and notifies once per question", () => {
+    const asked = transition(base, { type: "thread_waiting_on_human", reason: "Question: Which DB?" }, policy);
+    expect(asked.status).toBe("waiting_on_human");
+    expect(asked.patch.waitingReason).toBe("Question: Which DB?");
+    expect(asked.effects[0]).toMatchObject({ type: "notify", body: "Question: Which DB?" });
+    const waiting = { ...base, status: "waiting_on_human" as const, waitingReason: "Question: Which DB?" };
+    expect(transition(waiting, { type: "thread_waiting_on_human", reason: "Question: Which DB?" }, policy).effects).toEqual([]);
+    expect(transition(waiting, { type: "thread_waiting_on_human" }, policy).effects).toEqual([]);
+    expect(transition(waiting, { type: "thread_waiting_on_human", reason: "Approval needed for command" }, policy).effects).toHaveLength(1);
   });
 });

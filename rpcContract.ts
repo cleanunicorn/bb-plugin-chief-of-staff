@@ -22,6 +22,7 @@ const rosterEntry = z.object({
   fixAttempts: z.number(),
   retryCount: z.number(),
   lastError: z.string().nullable(),
+  waitingReason: z.string().nullable(),
   providerId: z.string().nullable(),
   model: z.string().nullable(),
   source: z.string(),
@@ -38,6 +39,69 @@ const rosterEntry = z.object({
 const stepResult = z.object({ index: z.number(), type: z.string(), status: z.string(), summary: z.string(), details: z.unknown().optional(), startedAt: z.string(), finishedAt: z.string() });
 const runSchema = z.object({ id: z.string(), routine: z.string(), repo: z.string(), triggeredBy: z.string(), dryRun: z.boolean(), status: z.string(), startedAt: z.string(), finishedAt: z.string().nullable(), steps: z.array(stepResult) });
 const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), message: z.string(), actor: z.string() });
+
+/** Scalar plugin settings the configurator edits (everything except repos/routines/token). */
+export const generalSettingsSchema = z.object({
+  maxConcurrentTotal: z.number().int().min(0).max(100),
+  stallThresholdMinutes: z.number().int().min(1).max(1440),
+  maxFixRetries: z.number().int().min(0).max(10),
+  autoRetryStalled: z.boolean(),
+  intakeIntervalMinutes: z.number().int().min(1).max(1440),
+  ciPollIntervalMinutes: z.number().int().min(1).max(120),
+  defaultProviderId: z.string().max(200),
+  defaultModel: z.string().max(200),
+  notifyPush: z.boolean(),
+  notifyWebhookUrl: z.string().max(2000),
+});
+export type GeneralSettings = z.output<typeof generalSettingsSchema>;
+/** Read side: no range checks, so values set elsewhere (CLI, host fields) never break the configurator. */
+const generalSettingsValuesSchema = z.object({
+  maxConcurrentTotal: z.number(),
+  stallThresholdMinutes: z.number(),
+  maxFixRetries: z.number(),
+  autoRetryStalled: z.boolean(),
+  intakeIntervalMinutes: z.number(),
+  ciPollIntervalMinutes: z.number(),
+  defaultProviderId: z.string(),
+  defaultModel: z.string(),
+  notifyPush: z.boolean(),
+  notifyWebhookUrl: z.string(),
+});
+
+const decision = z.enum(["allow_once", "allow_for_session", "deny"]);
+const openQuestion = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("question"),
+    interactionId: z.string(),
+    questions: z.array(z.object({ id: z.string(), prompt: z.string(), shortLabel: z.string().nullable(), options: z.array(z.object({ label: z.string(), value: z.string(), description: z.string().nullable() })), allowFreeText: z.boolean(), multiSelect: z.boolean(), required: z.boolean() })),
+  }),
+  z.object({ kind: z.literal("approval"), interactionId: z.string(), subject: z.string(), reason: z.string().nullable(), detail: z.string().nullable(), detailMarkdown: z.boolean(), decisions: z.array(decision) }),
+  z.object({ kind: z.literal("request"), interactionId: z.string(), title: z.string(), detail: z.string().nullable(), answerable: z.boolean() }),
+  z.object({ kind: z.literal("text"), question: z.string() }),
+]);
+export type OpenQuestion = z.output<typeof openQuestion>;
+const questionView = z.object({
+  itemId: z.string(),
+  repo: z.string(),
+  issueNumber: z.number().nullable(),
+  issueTitle: z.string(),
+  threadId: z.string().nullable(),
+  threadUrl: z.string().nullable(),
+  status: z.string(),
+  waitingReason: z.string().nullable(),
+  open: z.array(openQuestion),
+  lastMessage: z.string().nullable(),
+  checkOutput: z.string().nullable(),
+  lastError: z.string().nullable(),
+});
+export type QuestionView = z.output<typeof questionView>;
+const answerInput = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("question"), interactionId: z.string().max(200), answers: z.record(z.string().max(200), z.object({ selected: z.array(z.string().max(500)).max(50), freeText: z.string().max(10000).optional() })) }),
+  z.object({ kind: z.literal("approval"), interactionId: z.string().max(200), decision }),
+  z.object({ kind: z.literal("request"), interactionId: z.string().max(200), value: z.string().max(20000) }),
+  z.object({ kind: z.literal("text"), text: z.string().min(1).max(20000) }),
+]);
+export type AnswerPayload = z.input<typeof answerInput>;
 
 export const rpcContract = defineRpcContract({
   cos_overview: {
@@ -60,6 +124,8 @@ export const rpcContract = defineRpcContract({
   cos_set_routine_enabled: { input: z.object({ name: z.string(), enabled: z.boolean() }), output: z.object({ ok: z.literal(true) }) },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: { input: z.object({ id: z.string(), action: z.enum(["retry", "resume", "rerun_checks", "mark_done", "mark_failed"]) }), output: z.object({ status: z.string() }) },
+  cos_question: { input: z.object({ id: z.string() }), output: questionView },
+  cos_answer: { input: z.object({ id: z.string(), answer: answerInput }), output: z.object({ status: z.string() }) },
   cos_stats: {
     input: z.object({ windowDays: z.number().int().min(1).max(90).default(14) }),
     output: z.object({
@@ -76,7 +142,20 @@ export const rpcContract = defineRpcContract({
   },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional() }), output: z.object({ entries: z.array(logEntry) }) },
   cos_merge_preview: { input: z.object({ repo: z.string() }), output: z.object({ decisions: z.array(z.object({ number: z.number(), action: z.string(), reason: z.string(), title: z.string(), headRef: z.string() })) }) },
-  cos_projects: { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), github: z.string().nullable(), configured: z.boolean() })) }) },
   cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), routines: z.string() }) },
   cos_set_config: { input: z.object({ repos: z.string().optional(), routines: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
+  cos_get_settings: {
+    input: z.null(),
+    output: z.object({
+      values: generalSettingsValuesSchema,
+      /** Whether a token is stored in settings. The value itself never leaves the server. */
+      token: z.object({ stored: z.boolean(), source: z.enum(["setting", "gh-cli", "none"]) }),
+      projects: z.array(z.object({ id: z.string(), name: z.string(), remote: z.string().nullable() })),
+      providers: z.array(z.object({ id: z.string(), displayName: z.string(), available: z.boolean(), enabled: z.boolean() })),
+    }),
+  },
+  cos_set_settings: {
+    input: generalSettingsSchema.partial().extend({ githubToken: z.string().min(1).max(500).optional(), clearGithubToken: z.boolean().optional() }),
+    output: z.object({ ok: z.literal(true), changed: z.array(z.string()) }),
+  },
 });

@@ -11,6 +11,8 @@ import { ColumnChart, DataTable, Legend, Meter, Panel, PaletteProvider, STATUS, 
 import type { Tone } from "@/components/cos/viz";
 import { STAGES, STEPS, stageColor, stageOf, stepIndex } from "@/components/cos/stages";
 import type { StageKey } from "@/components/cos/stages";
+import { Configurator } from "@/components/cos/configurator";
+import { QuestionSheet } from "@/components/cos/question";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -23,6 +25,7 @@ const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
   { id: "issues", label: "Repos & PRs", icon: "GitPullRequest" },
   { id: "routines", label: "Routines", icon: "CalendarClock" },
+  { id: "config", label: "Configure", icon: "SlidersHorizontal" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -148,7 +151,7 @@ function Stepper({ entry }: { entry: RosterEntry }) {
 
 type ItemAction = "retry" | "resume" | "rerun_checks" | "mark_done" | "mark_failed";
 
-function AgentCard({ entry, busy, onAction, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; now: number }) {
+function AgentCard({ entry, busy, onAction, onAnswer, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string) => void; now: number }) {
   const navigate = useBbNavigate();
   const [menu, setMenu] = useState(false);
   const finished = entry.detail === "done" || entry.detail === "failed";
@@ -174,6 +177,22 @@ function AgentCard({ entry, busy, onAction, now }: { entry: RosterEntry; busy: b
         <h3 className="line-clamp-2 text-sm font-semibold text-foreground">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
       </div>
       <Stepper entry={entry} />
+      {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
+        <button
+          type="button"
+          onClick={() => onAnswer(entry.id)}
+          className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label="Open the question to answer it"
+        >
+          <Icon name="MessageCircleQuestion" fallback="MessageSquare" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-3" title={entry.waitingReason ?? undefined}>{entry.waitingReason ?? "Waiting on you"}</span>
+            <span className="mt-1 inline-flex items-center gap-1 font-medium text-muted-foreground group-hover:text-foreground">
+              Answer here <Icon name="ChevronRight" fallback="Circle" className="size-3" aria-hidden />
+            </span>
+          </span>
+        </button>
+      ) : null}
       {entry.lastError && !entry.lastError.startsWith("ci-failed:") && !finished ? (
         <p className="flex items-start gap-1.5 text-xs text-foreground">
           <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
@@ -271,6 +290,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   }, [roster, stats, overview, routines]);
   useLiveRefresh(refetchAll);
   const [busy, setBusy] = useState<string | null>(null);
+  const [answering, setAnswering] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const act = useCallback(
     async (id: string, action: ItemAction) => {
@@ -460,10 +480,11 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} />
+            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={setAnswering} />
           ))}
         </div>
       </Panel>
+      {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} /> : null}
     </div>
   );
 }
@@ -642,7 +663,9 @@ function ReposTab() {
           </>
         }
       >
-        {data && !data.repos.length ? <Empty icon="FolderGit2" title="No repositories configured">Edit the Repositories JSON in this plugin's settings.</Empty> : null}
+        {data && !data.repos.length ? <Empty icon="FolderGit2" title="No repositories configured">
+            <ConfigureLink section="repos" label="Add a repository" />
+          </Empty> : null}
         <div className="grid gap-3 md:grid-cols-2">
           {(data?.repos ?? []).map((r) => (
             <article key={r.key} className="flex flex-col gap-3 rounded-lg border border-border p-3.5">
@@ -924,7 +947,9 @@ function RoutinesTab() {
         </Panel>
       ) : null}
       <Panel title="Routines" icon="CalendarClock" dim={routines.isFetching && !routines.isLoading}>
-        {routines.data && !list.length ? <Empty icon="CalendarClock" title="No routines yet">Define them in the Routines JSON in this plugin's settings.</Empty> : null}
+        {routines.data && !list.length ? <Empty icon="CalendarClock" title="No routines yet">
+            <ConfigureLink section="routines" label="Create a routine" />
+          </Empty> : null}
         <div className="grid gap-3 md:grid-cols-2">
           {list.map((x) => (
             <RoutineCard key={x.name} routine={x} now={now} busy={busy === x.name} lastRun={runList.find((run) => run.routine === x.name)} onRun={(dryRun) => void run(x.name, dryRun)} onToggle={() => void toggle(x.name, !x.enabled)} />
@@ -1022,7 +1047,7 @@ function Dashboard({ subPath }: { subPath: string }) {
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <span className="flex size-9 items-center justify-center rounded-lg border border-border bg-card">
-              <Icon name="ClipboardCheck" fallback="Circle" className="size-5 text-foreground" aria-hidden />
+              <Icon name="ChefHat" fallback="Circle" className="size-5 text-foreground" aria-hidden />
             </span>
             <div>
               <h1 className="text-lg leading-tight font-semibold text-foreground">Chief of Staff</h1>
@@ -1055,101 +1080,43 @@ function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab goTab={goTab} /> : tab === "issues" ? <ReposTab /> : <RoutinesTab />}
-        <ActivityFeed />
+        {tab === "agents" ? <PipelineTab goTab={goTab} /> : tab === "issues" ? <ReposTab /> : tab === "routines" ? <RoutinesTab /> : <Configurator initialSection={configSection(subPath)} />}
+        {tab === "config" ? null : <ActivityFeed />}
       </div>
     </PaletteProvider>
   );
 }
 
-function SettingsSection() {
-  const rpc = useRpc<Contract>();
+function configSection(subPath: string): "repos" | "routines" | "general" | "access" | "advanced" {
+  const second = decodeURIComponent(subPath.split("/")[1] ?? "");
+  return second === "routines" || second === "general" || second === "access" || second === "advanced" ? second : "repos";
+}
+
+function ConfigureLink({ section, label }: { section: "repos" | "routines"; label: string }) {
   const navigate = useBbNavigate();
-  const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
-  const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
-  const projects = experimental_useRpcQuery<Contract, "cos_projects">({ contract: rpcContract, method: "cos_projects", input: null });
-  const [repos, setRepos] = useState<string | null>(null);
-  const [routines, setRoutines] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  // Append a minimal entry for a BB project; owner/repo come from its GitHub remote.
-  const addProject = (projectId: string) => {
-    if (!projectId) return;
-    const current = repos ?? config.data?.repos ?? "";
-    try {
-      const doc = current.trim() ? (JSON.parse(current) as { repos?: Array<Record<string, unknown>> }) : {};
-      const list = (doc.repos ?? []).filter((r) => r.projectId !== "proj_xxxxxxxxxx");
-      if (list.some((r) => r.projectId === projectId)) {
-        setStatus("That project is already in the list.");
-        return;
-      }
-      list.push({ projectId, issueFilter: { labels: ["agent-ready"] }, maxConcurrent: 2 });
-      setRepos(JSON.stringify({ ...doc, repos: list }, null, 2));
-      setStatus("Added. Review the entry, then Save.");
-    } catch {
-      setStatus("Fix the Repositories JSON before adding a project.");
-    }
-  };
-  const addable = (projects.data?.projects ?? []).filter((p) => p.github && !p.configured);
-  const save = async () => {
-    setStatus(null);
-    try {
-      const result = await rpc.call("cos_set_config", { ...(repos != null ? { repos } : {}), ...(routines != null ? { routines } : {}) });
-      setStatus(result.warnings.length ? `Saved. ${result.warnings.join("; ")}` : "Saved.");
-      setRepos(null);
-      setRoutines(null);
-      await Promise.all([overview.refetch(), config.refetch(), projects.refetch()]);
-    } catch (error) {
-      setStatus(errorText(error));
-    }
-  };
   return (
-    <div className="flex flex-col gap-3 text-sm">
-      {overview.data ? (
-        <p className="text-muted-foreground">
-          GitHub auth: {overview.data.tokenSource} · repos: {overview.data.repos.length} · stall threshold {overview.data.settings.stallThresholdMinutes} min · fix retries {overview.data.settings.maxFixRetries} · max concurrent {overview.data.settings.maxConcurrentTotal}
-        </p>
-      ) : null}
-      {overview.data?.errors.map((e) => <p key={e} className="text-destructive">{e}</p>)}
-      <label className="flex flex-col gap-1">
-        <span className="font-medium">Add a BB project</span>
-        <select
-          className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-xs"
-          value=""
-          disabled={!addable.length}
-          onChange={(e) => addProject(e.target.value)}
-        >
-          <option value="">{projects.isLoading ? "Loading projects…" : addable.length ? "Pick a project with a GitHub remote…" : "No unconfigured projects with a GitHub remote"}</option>
-          {addable.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} · {p.github}
-            </option>
-          ))}
-        </select>
-        <span className="text-xs text-muted-foreground">The GitHub owner and repo are read from the project's git remote; set "owner"/"repo" only to override.</span>
-      </label>
-      <label className="flex flex-col gap-1">
-        <span className="font-medium">Repositories (JSON)</span>
-        <textarea className="min-h-40 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs" value={repos ?? config.data?.repos ?? ""} onChange={(e) => setRepos(e.target.value)} spellCheck={false} />
-      </label>
-      <label className="flex flex-col gap-1">
-        <span className="font-medium">Routines (JSON)</span>
-        <textarea className="min-h-40 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs" value={routines ?? config.data?.routines ?? ""} onChange={(e) => setRoutines(e.target.value)} spellCheck={false} />
-      </label>
-      <div className="flex items-center gap-2">
-        <Button size="sm" disabled={repos === null && routines === null} onClick={() => void save()}>
-          Save
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => navigate.toPluginPanel("cos")}>
+    <Button size="sm" className="mt-2" onClick={() => navigate.toPluginPanel("cos", { subPath: `config/${section}` })}>
+      <Icon name="Plus" fallback="Circle" aria-hidden /> {label}
+    </Button>
+  );
+}
+
+function SettingsSection() {
+  const navigate = useBbNavigate();
+  return (
+    <PaletteProvider className="flex flex-col gap-3 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">Everything below saves to this plugin's settings. The dashboard has the same editor under Configure.</p>
+        <Button size="sm" variant="outline" onClick={() => navigate.toPluginPanel("cos", { subPath: "config" })}>
           Open dashboard
         </Button>
-        {status ? <span className="text-xs text-muted-foreground">{status}</span> : null}
       </div>
-      <p className="text-xs text-muted-foreground">The GitHub token, thresholds, retry limits and notification targets are the host-rendered fields above this section.</p>
-    </div>
+      <Configurator compact />
+    </PaletteProvider>
   );
 }
 
 export default definePluginApp((app) => {
-  app.slots.navPanel({ id: "cos-dashboard", title: "Chief of Staff", icon: "ClipboardCheck", path: "cos", component: Dashboard });
-  app.slots.settingsSection({ id: "cos-config", title: "Repositories & routines", description: "Edit the JSON documents with validation; the dashboard shows the parsed result.", component: SettingsSection });
+  app.slots.navPanel({ id: "cos-dashboard", title: "Chief of Staff", icon: "ChefHat", path: "cos", component: Dashboard });
+  app.slots.settingsSection({ id: "cos-config", title: "Configure Chief of Staff", description: "Repositories, routines, limits and GitHub access, edited visually and validated before saving.", component: SettingsSection });
 });

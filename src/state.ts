@@ -27,6 +27,8 @@ export interface WorkItem {
   updatedAt: string;
   lastActivityAt: string | null;
   finishedAt: string | null;
+  /** What the agent is waiting on a human for (its question, an approval), or null. */
+  waitingReason: string | null;
 }
 
 export interface RoutineRun {
@@ -114,6 +116,7 @@ export const MIGRATIONS = [
     last_run_at TEXT,
     enabled_override INTEGER
   )`,
+  `ALTER TABLE work_items ADD COLUMN waiting_reason TEXT`,
 ];
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "running", "checking", "pr_open", "ci_failed", "fixing", "waiting_on_human", "blocked"];
@@ -145,6 +148,7 @@ function rowToWorkItem(row: Row): WorkItem {
     updatedAt: row.updated_at as string,
     lastActivityAt: (row.last_activity_at as string | null) ?? null,
     finishedAt: (row.finished_at as string | null) ?? null,
+    waitingReason: (row.waiting_reason as string | null) ?? null,
   };
 }
 
@@ -166,13 +170,13 @@ export class StateStore {
   constructor(private readonly db: Database, private readonly now: () => Date = () => new Date()) {}
 
   // ---- work items ----
-  insertWorkItem(item: Omit<WorkItem, "createdAt" | "updatedAt">): WorkItem {
+  insertWorkItem(item: Omit<WorkItem, "createdAt" | "updatedAt" | "waitingReason"> & { waitingReason?: string | null }): WorkItem {
     const at = this.now().toISOString();
-    const full: WorkItem = { ...item, createdAt: at, updatedAt: at };
+    const full: WorkItem = { ...item, waitingReason: item.waitingReason ?? null, createdAt: at, updatedAt: at };
     this.db
       .prepare(
-        `INSERT INTO work_items (id, repo, issue_number, issue_title, thread_id, environment_id, branch, pr_number, pr_url, status, provider_id, model, fix_attempts, retry_count, last_error, check_output, source, created_at, updated_at, last_activity_at, finished_at)
-         VALUES (@id, @repo, @issueNumber, @issueTitle, @threadId, @environmentId, @branch, @prNumber, @prUrl, @status, @providerId, @model, @fixAttempts, @retryCount, @lastError, @checkOutput, @source, @createdAt, @updatedAt, @lastActivityAt, @finishedAt)`,
+        `INSERT INTO work_items (id, repo, issue_number, issue_title, thread_id, environment_id, branch, pr_number, pr_url, status, provider_id, model, fix_attempts, retry_count, last_error, check_output, source, created_at, updated_at, last_activity_at, finished_at, waiting_reason)
+         VALUES (@id, @repo, @issueNumber, @issueTitle, @threadId, @environmentId, @branch, @prNumber, @prUrl, @status, @providerId, @model, @fixAttempts, @retryCount, @lastError, @checkOutput, @source, @createdAt, @updatedAt, @lastActivityAt, @finishedAt, @waitingReason)`,
       )
       .run(full);
     return full;
@@ -184,7 +188,7 @@ export class StateStore {
     const next: WorkItem = { ...current, ...patch, updatedAt: this.now().toISOString() };
     this.db
       .prepare(
-        `UPDATE work_items SET repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, check_output=@checkOutput, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt WHERE id=@id`,
+        `UPDATE work_items SET repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, check_output=@checkOutput, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason WHERE id=@id`,
       )
       .run(next);
     return next;

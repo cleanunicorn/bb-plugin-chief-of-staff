@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-chief-of-staff",
-  "version": "0.1.0",
+  "version": "0.4.2",
   "type": "module",
   "engines": {
     "bb": ">=0.48",
@@ -10,7 +10,7 @@
     "name": "Chief of Staff",
     "description": "Watches agents, turns GitHub issues into agent PRs, and runs scheduled batch-merge/release/deploy routines.",
     "branding": {
-      "icon": "ClipboardCheck"
+      "icon": "ChefHat"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
@@ -20,11 +20,12 @@
     ]
   },
   "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.104",
+    "@radix-ui/react-slot": "^1.2.4",
     "cron-parser": "^5.5.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.104",
     "@pierre/diffs": "^1.2.9",
     "@radix-ui/react-alert-dialog": "^1.1.19",
     "@radix-ui/react-context-menu": "^2.3.3",

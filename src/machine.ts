@@ -7,7 +7,7 @@ export type MachineEvent =
   | { type: "thread_active" }
   | { type: "thread_idle" }
   | { type: "thread_failed"; error: string }
-  | { type: "thread_waiting_on_human" }
+  | { type: "thread_waiting_on_human"; reason?: string | null }
   | { type: "checks_passed" }
   | { type: "checks_failed"; output: string }
   | { type: "pr_opened"; prNumber: number; prUrl: string }
@@ -50,11 +50,34 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "thread_spawned":
       return { status: "running", patch: { threadId: event.threadId, environmentId: event.environmentId, lastError: null }, effects: [] };
     case "thread_active":
-      if (item.status === "queued" || item.status === "blocked") return { status: "running", patch: {}, effects: [] };
-      return stay();
-    case "thread_waiting_on_human":
+      // The thread started a turn. Either we started it (spawn, fix prompt) or
+      // a human answered / resumed it in BB. Either way it is working again.
+      switch (item.status) {
+        case "queued":
+          return { status: "running", patch: {}, effects: [] };
+        case "waiting_on_human":
+        case "blocked":
+        case "failed":
+          // Human resume: fresh fix budget, clear the stale error.
+          return { status: "running", patch: { fixAttempts: 0, lastError: null, finishedAt: null }, effects: [] };
+        case "pr_open":
+        case "ci_failed":
+          // Someone is pushing more work onto an open PR; the next idle re-runs
+          // checks and pushes the new commits to the same branch.
+          return { status: "running", patch: {}, effects: [] };
+        default:
+          return stay();
+      }
+    case "thread_waiting_on_human": {
       if (["done", "failed"].includes(item.status)) return stay();
-      return { status: "waiting_on_human", patch: {}, effects: [{ type: "notify", title: `Agent needs input: ${label(item)}`, body: "The thread is waiting for a human decision." }] };
+      const reason = event.reason?.trim() || null;
+      if (item.status === "waiting_on_human" && (reason === null || reason === item.waitingReason)) return stay();
+      return {
+        status: "waiting_on_human",
+        patch: { waitingReason: reason ?? item.waitingReason ?? null },
+        effects: [{ type: "notify", title: `Agent needs input: ${label(item)}`, body: reason ? reason.slice(0, 500) : "The thread is waiting for a human decision." }],
+      };
+    }
     case "thread_idle": {
       // The agent finished a turn. From running/fixing we move to checking.
       if (item.status === "running" || item.status === "fixing") {

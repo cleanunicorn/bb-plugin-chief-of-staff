@@ -41,6 +41,11 @@ describe("chief-of-staff server", () => {
   let openPulls: unknown[] = [];
   let currentPull: typeof pull = { ...pull };
   let checkExit = 0;
+  let threadStatus: "idle" | "active" = "idle";
+  let pending: unknown[] = [];
+  let resolved: unknown[] = [];
+  let sent: unknown[] = [];
+  let assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
   let host: ReturnType<typeof createFakePluginHost>;
   const originalFetch: typeof fetch = globalThis.fetch;
 
@@ -50,6 +55,11 @@ describe("chief-of-staff server", () => {
     openPulls = [];
     currentPull = { ...pull };
     checkExit = 0;
+    threadStatus = "idle";
+    pending = [];
+    resolved = [];
+    sent = [];
+    assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
     globalThis.fetch = fakeGitHub(
       {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
@@ -86,14 +96,26 @@ describe("chief-of-staff server", () => {
         projects: { list: async () => [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never },
         threads: {
           spawn: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code" }),
-          get: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code", status: "idle" }),
+          get: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code", status: threadStatus }),
+          interactions: {
+            list: async () => pending as never,
+            resolve: async (args: unknown) => {
+              resolved.push(args);
+              pending = [];
+              return { ok: true } as never;
+            },
+          },
           list: async () => [makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" })],
-          output: async () => ({ output: "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing" }),
-          send: async () => ({ ok: true, delivery: "sent" }) as never,
+          output: async () => ({ output: assistantOutput }),
+          send: async (args: unknown) => {
+            sent.push(args);
+            return { ok: true, delivery: "sent" } as never;
+          },
           events: { list: async () => [] as never },
         },
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
+        providers: { catalog: async () => [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true, info: {} }] as never },
       },
     });
     await plugin(host.bb);
@@ -170,6 +192,124 @@ describe("chief-of-staff server", () => {
     expect(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toBeUndefined();
   });
 
+  it("tracks questions and resumes in step with the thread", async () => {
+    type Entry = { status: string; detail: string; waitingReason: string | null; fixAttempts: number };
+    const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
+    const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
+    const question = { id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1, payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database should I use?", allowFreeText: true, multiSelect: false, required: true }] } };
+
+    threadStatus = "active";
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    expect(await roster()).toMatchObject({ detail: "running" });
+
+    // The agent asks through a BB interaction.
+    pending = [question];
+    await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+    expect(await roster()).toMatchObject({ status: "waiting on human", waitingReason: "Question: Which database should I use?" });
+
+    // The human answers in BB. No event says so; the sweep notices.
+    pending = [];
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
+
+    // A missed interaction event is also caught by the sweep.
+    pending = [question];
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Which database should I use?" });
+    pending = [];
+    await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) });
+    expect(await roster()).toMatchObject({ detail: "running" });
+
+    // The agent ends its turn with a plain-text question: wait, do not run checks.
+    threadStatus = "idle";
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "I found two options.\n\nShould I use Postgres or SQLite?" });
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Should I use Postgres or SQLite?" });
+    expect(ranChecks()).toBe(0);
+    // An idle sweep does not mistake the parked item for finished work.
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human" });
+
+    // The human replies in the thread: it resumes, finishes, and ships.
+    await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) });
+    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "## Summary\nUsed Postgres." });
+    expect(ranChecks()).toBe(1);
+    expect(await roster()).toMatchObject({ detail: "pr_open" });
+  });
+
+  it("revives a failed item when its thread is resumed", async () => {
+    threadStatus = "active";
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
+    let entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
+    expect(entry.detail).toBe("failed");
+    await host.harness.behavior.runSchedule("cos-sweep");
+    entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
+    expect(entry.detail).toBe("running");
+  });
+
+  it("shows the open question with options and context, and answers it from the dashboard", async () => {
+    type Entry = { id: string; detail: string; waitingReason: string | null };
+    const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
+    const question = {
+      id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1,
+      payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database?", allowFreeText: true, multiSelect: false, required: true, options: [{ label: "Postgres", value: "pg", description: "Matches prod" }, { label: "SQLite", value: "sqlite" }] }] },
+    };
+    threadStatus = "active";
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    assistantOutput = "I compared both.\n\nPostgres matches production; SQLite is simpler.";
+    pending = [question];
+    await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+    const { id } = await roster();
+
+    const view = (await host.harness.behavior.callRpc("cos_question", { id })) as Record<string, unknown>;
+    expect(view).toMatchObject({
+      threadId: "thr_1",
+      issueNumber: 12,
+      lastMessage: assistantOutput,
+      open: [{ kind: "question", interactionId: "int_1", questions: [{ id: "q1", prompt: "Which database?", options: [{ label: "Postgres", value: "pg", description: "Matches prod" }, { label: "SQLite", value: "sqlite", description: null }] }] }],
+    });
+
+    // Unknown options and missing required answers are rejected before reaching BB.
+    await expect(host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "question", interactionId: "int_1", answers: { q1: { selected: ["mysql"] } } } })).rejects.toThrow(/unknown option/);
+    await expect(host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "question", interactionId: "int_1", answers: {} } })).rejects.toThrow(/needs an answer/);
+    expect(resolved).toHaveLength(0);
+
+    const result = (await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "question", interactionId: "int_1", answers: { q1: { selected: ["pg"], freeText: "use the docker image" } } } })) as { status: string };
+    expect(resolved).toEqual([{ threadId: "thr_1", interactionId: "int_1", resolution: { kind: "user_answer", answers: { q1: { selected: ["pg"], freeText: "use the docker image" } } } }]);
+    expect(result.status).toBe("running");
+    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
+    // Answering a question that is gone fails clearly.
+    await expect(host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "question", interactionId: "int_1", answers: { q1: { selected: ["pg"] } } } })).rejects.toThrow(/no longer open/);
+
+    // Approvals resolve with one of the offered decisions.
+    const approval = { id: "int_2", status: "pending", threadId: "thr_1", createdAt: 2, payload: { kind: "approval", availableDecisions: ["allow_once", "deny"], reason: "Needs network", subject: { kind: "command", itemId: "x", command: "npm install", cwd: "/work", actions: [], sessionGrant: null } } };
+    pending = [approval];
+    await host.harness.behavior.runSchedule("cos-sweep");
+    const approvalView = (await host.harness.behavior.callRpc("cos_question", { id })) as { open: unknown[] };
+    expect(approvalView.open).toEqual([{ kind: "approval", interactionId: "int_2", subject: "run a command", reason: "Needs network", detail: "npm install\nin /work", detailMarkdown: false, decisions: ["allow_once", "deny"] }]);
+    await expect(host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "approval", interactionId: "int_2", decision: "allow_for_session" } })).rejects.toThrow(/not offered/);
+    await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "approval", interactionId: "int_2", decision: "allow_once" } });
+    expect(resolved.at(-1)).toEqual({ threadId: "thr_1", interactionId: "int_2", resolution: { decision: "allow_once", grantedPermissions: null } });
+
+    // A plain-text question is answered with a message in the thread.
+    threadStatus = "idle";
+    assistantOutput = "Two findings need a call.\n\nShould I fix them now or file issues?";
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: assistantOutput });
+    const textView = (await host.harness.behavior.callRpc("cos_question", { id })) as { open: unknown[]; lastMessage: string };
+    expect(textView.open).toEqual([{ kind: "text", question: "Should I fix them now or file issues?" }]);
+    expect(textView.lastMessage).toContain("Two findings need a call.");
+    await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "text", text: "Fix them now." } });
+    expect(sent).toEqual([{ threadId: "thr_1", mode: "auto", input: [{ type: "text", text: "Fix them now.", mentions: [] }] }]);
+    expect(await roster()).toMatchObject({ detail: "running" });
+
+    // The activity log records who answered, never what they typed.
+    const log = (await host.harness.behavior.callRpc("cos_log", { workItemId: id })) as { entries: { kind: string; message: string; actor: string }[] };
+    const answers = log.entries.filter((e) => e.kind === "answer");
+    expect(answers.map((e) => e.actor)).toEqual(["rpc:client", "rpc:client", "rpc:client"]);
+    expect(JSON.stringify(answers)).not.toMatch(/docker image|Fix them now/);
+  });
+
   it("exposes the roster through the agent tool and CLI", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const tool = await host.harness.behavior.callAgentTool("chief_of_staff_status", { includeRoutines: true });
@@ -207,6 +347,37 @@ describe("chief-of-staff server", () => {
     expect(after.stdout).toContain("[off] Nightly ship");
     const missing = await host.harness.behavior.runCli(["run", "Nope"]);
     expect(missing.exitCode).not.toBe(0);
+  });
+
+  it("reads and writes settings for the configurator without exposing the token", async () => {
+    const read = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { values: Record<string, unknown>; token: { stored: boolean; source: string }; projects: { id: string; remote: string | null }[] };
+    expect(JSON.stringify(read)).not.toContain("ghp_secret_token");
+    expect(read.token).toEqual({ stored: true, source: "setting" });
+    expect(read.values.intakeIntervalMinutes).toBe(10);
+    expect(read.projects).toEqual([{ id: "proj_1", name: "app", remote: "https://github.com/acme/app" }]);
+    expect((read as unknown as { providers: unknown[] }).providers).toEqual([{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true }]);
+
+    const saved = (await host.harness.behavior.callRpc("cos_set_settings", { maxFixRetries: 4, githubToken: "ghp_rotated_token" })) as { changed: string[] };
+    expect(saved.changed.sort()).toEqual(["githubToken", "maxFixRetries"]);
+    const after = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { values: Record<string, unknown> };
+    expect(after.values.maxFixRetries).toBe(4);
+    expect(JSON.stringify(after)).not.toContain("ghp_rotated_token");
+    const log = await host.harness.behavior.runCli(["log"]);
+    expect(log.stdout).toContain("settings updated");
+    expect(log.stdout).not.toContain("ghp_rotated_token");
+
+    await expect(host.harness.behavior.callRpc("cos_set_settings", { notifyWebhookUrl: "http://insecure.example" })).rejects.toThrow(/https/);
+    await expect(host.harness.behavior.callRpc("cos_set_settings", { githubToken: "x", clearGithubToken: true })).rejects.toThrow();
+    await expect(host.harness.behavior.callRpc("cos_set_settings", { maxFixRetries: 99 })).rejects.toThrow();
+
+    await host.harness.behavior.callRpc("cos_set_settings", { clearGithubToken: true });
+    const cleared = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { token: { stored: boolean } };
+    expect(cleared.token.stored).toBe(false);
+  });
+
+  it("rejects routines with an invalid cron on save", async () => {
+    const bad = JSON.stringify({ routines: [{ name: "Bad", enabled: true, cron: "99 * * * *", repo: "acme/app", steps: [{ type: "notify", title: "x" }] }] });
+    await expect(host.harness.behavior.callRpc("cos_set_config", { routines: bad })).rejects.toThrow(/cron/i);
   });
 
   it("skips merge when the repo does not allow it", async () => {

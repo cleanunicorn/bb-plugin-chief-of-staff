@@ -18,6 +18,8 @@ export async function dispatch(cos: Cos, itemId: string, event: MachineEvent, ac
   const next = transition(item, event, policy);
   const patch = { ...next.patch } as Partial<WorkItem>;
   if (patch.finishedAt === "now") patch.finishedAt = cos.now().toISOString();
+  // A pending question only means something while the item waits on it.
+  if (next.status !== "waiting_on_human" && item.waitingReason) patch.waitingReason = null;
   const updated = cos.store.updateWorkItem(item.id, { ...patch, status: next.status });
   if (!updated) return null;
   if (next.status !== item.status) {

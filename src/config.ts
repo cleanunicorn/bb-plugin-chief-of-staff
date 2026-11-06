@@ -103,10 +103,13 @@ export const SEED_ROUTINES = {
   ],
 };
 
+/** projectId of the seeded example entry; ignored until edited. */
+export const PLACEHOLDER_PROJECT_ID = "proj_xxxxxxxxxx";
+
 export const SEED_REPOS = {
   repos: [
     {
-      projectId: "proj_xxxxxxxxxx",
+      projectId: PLACEHOLDER_PROJECT_ID,
       issueFilter: { labels: ["agent-ready"] },
       maxConcurrent: 2,
       checkCommand: "npm test",
@@ -131,7 +134,10 @@ function parseJsonDocument<T>(raw: string, schema: z.ZodType<T, any>, emptyValue
   return { ok: true, value: parsed.data, warnings: [] };
 }
 
-export const PLACEHOLDER_PROJECT_ID = "proj_xxxxxxxxxx";
+/** True for the seeded example entry (old seeds used owner/repo "owner/repo"). */
+export function isPlaceholderRepo(entry: { projectId: string; owner?: string; repo?: string }): boolean {
+  return entry.projectId === PLACEHOLDER_PROJECT_ID || (entry.owner === "owner" && entry.repo === "repo");
+}
 
 /** Parse "owner/repo" out of a github.com remote URL (https, ssh, or scp-style). */
 export function parseGitHubRemote(url: string | null | undefined): { owner: string; repo: string } | null {
@@ -157,7 +163,7 @@ export function parseRepos(raw: string, projects?: ProjectRemotes): ParseResult<
   const repos: RepoConfig[] = [];
   for (const entry of result.value.repos) {
     // Placeholder entries from the seed are ignored until edited.
-    if (entry.projectId === PLACEHOLDER_PROJECT_ID || (entry.owner === "owner" && entry.repo === "repo")) {
+    if (isPlaceholderRepo(entry)) {
       warnings.push("placeholder repo entry ignored");
       continue;
     }
