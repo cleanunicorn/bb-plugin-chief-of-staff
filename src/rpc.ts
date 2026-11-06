@@ -107,7 +107,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const warnings: string[] = [];
         const patch: { repos?: string; routines?: string } = {};
         if (input.repos !== undefined) {
-          const parsed = parseRepos(input.repos);
+          const parsed = parseRepos(input.repos, await cos.projectRemotes());
           if (!parsed.ok) throw new Error(`repos: ${parsed.error}`);
           warnings.push(...parsed.warnings);
           patch.repos = input.repos;
@@ -133,7 +133,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const general = pickGeneral(values) as GeneralSettings;
         // Pickers are a convenience: a failing lookup degrades to free-text inputs.
         const [projects, providers] = await Promise.all([
-          safely(async () => (await cos.bb.sdk.projects.list({ includePersonal: false })).map((p) => ({ id: p.id, name: p.name, remote: p.gitRemoteUrl ?? null }))),
+          safely(async () => (await cos.projects()).map((p) => ({ id: p.id, name: p.name, remote: p.gitRemoteUrl }))),
           safely(async () => (await cos.bb.sdk.providers.catalog()).map((p) => ({ id: p.id, displayName: p.displayName, available: p.available, enabled: p.enabled }))),
         ]);
         return { values: general, token: { stored: Boolean(values.githubToken && values.githubToken.trim()), source: await cos.tokenSource() }, projects, providers };

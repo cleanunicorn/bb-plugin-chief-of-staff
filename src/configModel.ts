@@ -1,7 +1,7 @@
 // Editing model for the visual configurator. Pure functions only (zod + the
 // config schemas) so the frontend bundle can use it and tests can cover it.
 // The stored format stays the same JSON documents the server parses.
-import { repoConfigSchema, repoKey, reposDocumentSchema, routineSchema, routinesDocumentSchema } from "./config";
+import { parseGitHubRemote, repoConfigSchema, repoKey, reposDocumentSchema, routineSchema, routinesDocumentSchema } from "./config";
 import type { RepoConfig, Routine, RoutineStep } from "./config";
 
 export type StepType = RoutineStep["type"];
@@ -27,7 +27,8 @@ function load<T>(raw: string, parse: (json: unknown) => { success: true; data: T
 export function loadRepos(raw: string): LoadResult<RepoConfig> {
   return load(raw, (json) => {
     const r = reposDocumentSchema.safeParse(json);
-    if (r.success) return { success: true, data: r.data.repos };
+    // owner/repo may be omitted (inferred from the project remote); edit them as "".
+    if (r.success) return { success: true, data: r.data.repos.map((e) => ({ ...e, owner: e.owner ?? "", repo: e.repo ?? "" })) };
     // Keep half-filled entries editable: an entry missing only its identity
     // (owner, repo, projectId) loads blank there and is flagged by validateRepos.
     const entries = (json as { repos?: unknown })?.repos;
@@ -49,6 +50,34 @@ export function loadRoutines(raw: string): LoadResult<Routine> {
     const r = routinesDocumentSchema.safeParse(json);
     return r.success ? { success: true, data: r.data.routines } : r;
   });
+}
+
+/** A BB project as the configurator sees it. */
+export type ProjectRef = { id: string; remote: string | null };
+
+/** Fill a blank owner/repo from the BB project's GitHub remote. */
+export function inferIdentity(repo: RepoConfig, projects: ProjectRef[]): RepoConfig {
+  if (repo.owner.trim() && repo.repo.trim()) return repo;
+  const remote = parseGitHubRemote(projects.find((p) => p.id === repo.projectId)?.remote);
+  if (!remote) return repo;
+  return { ...repo, owner: repo.owner.trim() || remote.owner, repo: repo.repo.trim() || remote.repo };
+}
+
+/**
+ * Point a repo entry at another BB project. The GitHub repository follows the
+ * project when it was blank or still matched the previous project's remote;
+ * a repository the user typed by hand is kept.
+ */
+export function selectProject(repo: RepoConfig, projectId: string, projects: ProjectRef[]): RepoConfig {
+  const remoteOf = (id: string) => parseGitHubRemote(projects.find((p) => p.id === id)?.remote);
+  const previous = remoteOf(repo.projectId);
+  const blank = !repo.owner.trim() || !repo.repo.trim();
+  const fromPrevious = Boolean(previous && previous.owner.toLowerCase() === repo.owner.toLowerCase() && previous.repo.toLowerCase() === repo.repo.toLowerCase());
+  if (!blank && !fromPrevious) return { ...repo, projectId };
+  const next = remoteOf(projectId);
+  if (next) return { ...repo, projectId, owner: next.owner, repo: next.repo };
+  // New project has no GitHub remote: drop the old project's repository, keep a partial manual one.
+  return fromPrevious ? { ...repo, projectId, owner: "", repo: "" } : { ...repo, projectId };
 }
 
 /** A new repo starts least-privilege: intake + PRs only, nothing that ships. */

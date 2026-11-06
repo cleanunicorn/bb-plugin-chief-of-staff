@@ -8,10 +8,11 @@ import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig, Routine, RoutineStep } from "../../src/config";
-import { repoKey } from "../../src/config";
+import { isPlaceholderRepo, repoKey } from "../../src/config";
 import {
   STEP_TYPES,
   blankRepo,
+  inferIdentity,
   blankRoutine,
   blankStep,
   loadRepos,
@@ -23,6 +24,7 @@ import {
   serializeRepos,
   serializeRoutines,
   splitEvery,
+  selectProject,
   validateRepos,
   validateRoutines,
 } from "../../src/configModel";
@@ -341,7 +343,7 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
   const set = <K extends keyof RepoConfig>(key: K, value: RepoConfig[K]) => onChange({ ...repo, [key]: value });
   const project = projects.find((p) => p.id === repo.projectId);
   const title = repo.owner && repo.repo ? repoKey(repo) : `Repository ${index + 1}`;
-  const placeholder = repo.owner === "owner" && repo.repo === "repo";
+  const placeholder = isPlaceholderRepo(repo);
   return (
     <article className={cn("rounded-lg border bg-background", problems.length ? "border-destructive/60" : "border-border")}>
       <header className="flex flex-wrap items-center gap-2 px-3 py-2.5">
@@ -363,9 +365,11 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
         <div className="flex flex-col gap-5 border-t border-border px-3 py-4">
           <Problems items={problems} />
           <Group title="Source" icon="FolderGit2">
-            <Field label="GitHub repository">{(id) => <RepoSlugInput id={id} repo={repo} onChange={(owner, name) => onChange({ ...repo, owner, repo: name })} />}</Field>
             <Field label="BB project" hint="The project whose checkout agents work in. Project ids are specific to this bb.">
-              {(id) => <ProjectPicker id={id} value={repo.projectId} projects={projects} repo={repo} onChange={(v) => set("projectId", v)} />}
+              {(id) => <ProjectPicker id={id} value={repo.projectId} projects={projects} repo={repo} onChange={(v) => onChange(selectProject(repo, v, projects))} />}
+            </Field>
+            <Field label="GitHub repository" hint="Filled in from the project's GitHub remote. Change it only to target a different repository.">
+              {(id) => <RepoSlugInput id={id} repo={repo} onChange={(owner, name) => onChange({ ...repo, owner, repo: name })} />}
             </Field>
           </Group>
           <Group title="What runs here" icon="ShieldCheck" cols={1}>
@@ -881,7 +885,9 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
   const loadedRoutines = useMemo(() => (config.data ? loadRoutines(config.data.routines) : null), [config.data]);
   const loadedGeneral = settings.data?.values ?? null;
 
-  const repoDraft = repos ?? (loadedRepos?.ok ? loadedRepos.items : []);
+  const projects = settings.data?.projects ?? [];
+  // Entries saved without owner/repo show the repository inferred from their project.
+  const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
   const routineDraft = routines ?? (loadedRoutines?.ok ? loadedRoutines.items : []);
   const generalDraft = general ?? loadedGeneral;
   const generalChanges = loadedGeneral && general ? generalDiff(loadedGeneral, general) : {};
@@ -928,7 +934,6 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
     }
   };
 
-  const projects = settings.data?.projects ?? [];
   const providers = settings.data?.providers ?? [];
   const counts: Record<Section, number | null> = { repos: repoDraft.length, routines: routineDraft.length, general: null, access: null, advanced: null };
   const sectionDirty: Record<Section, boolean> = { repos: dirty.repos, routines: dirty.routines, general: dirty.general, access: false, advanced: false };
@@ -966,7 +971,7 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
               <Button
                 size="sm"
                 onClick={() => {
-                  setRepos([...repoDraft, blankRepo(projects.length === 1 ? projects[0]!.id : "")]);
+                  setRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
                   setOpenRepo(repoDraft.length);
                   setSection("repos");
                 }}

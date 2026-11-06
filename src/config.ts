@@ -20,8 +20,10 @@ export const repoAllowSchema = z.object({
 });
 
 export const repoConfigSchema = z.object({
-  owner: z.string().min(1),
-  repo: z.string().min(1),
+  /** GitHub owner. Optional: inferred from the BB project's git remote. */
+  owner: z.string().min(1).optional(),
+  /** GitHub repository name. Optional: inferred from the BB project's git remote. */
+  repo: z.string().min(1).optional(),
   /** BB project id whose checkout hosts the work (see `bb project list`). */
   projectId: z.string().min(1),
   /** Host that owns the checkout. Defaults to the project's default source host. */
@@ -55,7 +57,8 @@ export const repoConfigSchema = z.object({
   versionFile: z.string().default("package.json"),
   tagPrefix: z.string().default("v"),
 });
-export type RepoConfig = z.output<typeof repoConfigSchema>;
+/** A repo entry with owner/repo resolved (explicitly or from the project remote). */
+export type RepoConfig = z.output<typeof repoConfigSchema> & { owner: string; repo: string };
 export type IssueFilter = z.output<typeof issueFilterSchema>;
 
 export const reposDocumentSchema = z.object({ repos: z.array(repoConfigSchema).default([]) });
@@ -100,12 +103,13 @@ export const SEED_ROUTINES = {
   ],
 };
 
+/** projectId of the seeded example entry; ignored until edited. */
+export const PLACEHOLDER_PROJECT_ID = "proj_xxxxxxxxxx";
+
 export const SEED_REPOS = {
   repos: [
     {
-      owner: "owner",
-      repo: "repo",
-      projectId: "proj_xxxxxxxxxx",
+      projectId: PLACEHOLDER_PROJECT_ID,
       issueFilter: { labels: ["agent-ready"] },
       maxConcurrent: 2,
       checkCommand: "npm test",
@@ -130,24 +134,61 @@ function parseJsonDocument<T>(raw: string, schema: z.ZodType<T, any>, emptyValue
   return { ok: true, value: parsed.data, warnings: [] };
 }
 
-export function parseRepos(raw: string): ParseResult<RepoConfig[]> {
+/** True for the seeded example entry (old seeds used owner/repo "owner/repo"). */
+export function isPlaceholderRepo(entry: { projectId: string; owner?: string; repo?: string }): boolean {
+  return entry.projectId === PLACEHOLDER_PROJECT_ID || (entry.owner === "owner" && entry.repo === "repo");
+}
+
+/** Parse "owner/repo" out of a github.com remote URL (https, ssh, or scp-style). */
+export function parseGitHubRemote(url: string | null | undefined): { owner: string; repo: string } | null {
+  if (!url) return null;
+  const match = /^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?|[^@/\s]+@)?(?:www\.)?github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(url.trim());
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+/** BB project id -> git remote URL, used to infer owner/repo. */
+export type ProjectRemotes = ReadonlyMap<string, string | null>;
+
+/**
+ * Parse the repos document. Entries without `owner`/`repo` take them from the
+ * BB project's GitHub remote. Without `projects` (synchronous settings
+ * validation) such entries still validate but are left out of the result.
+ */
+export function parseRepos(raw: string, projects?: ProjectRemotes): ParseResult<RepoConfig[]> {
   const result = parseJsonDocument(raw, reposDocumentSchema, { repos: [] });
   if (!result.ok) return result;
   const warnings: string[] = [];
   const seen = new Set<string>();
   const repos: RepoConfig[] = [];
-  for (const repo of result.value.repos) {
+  for (const entry of result.value.repos) {
+    // Placeholder entries from the seed are ignored until edited.
+    if (isPlaceholderRepo(entry)) {
+      warnings.push("placeholder repo entry ignored");
+      continue;
+    }
+    const remote = projects?.has(entry.projectId) ? parseGitHubRemote(projects.get(entry.projectId)) : null;
+    const owner = entry.owner ?? remote?.owner;
+    const name = entry.repo ?? remote?.repo;
+    if (!owner || !name) {
+      if (!projects) continue; // resolved later, when the project list is available
+      warnings.push(
+        projects.has(entry.projectId)
+          ? `project ${entry.projectId} has no GitHub remote; set owner and repo explicitly`
+          : `project ${entry.projectId} not found; set owner and repo explicitly or fix projectId`,
+      );
+      continue;
+    }
+    if (remote && (remote.owner.toLowerCase() !== owner.toLowerCase() || remote.repo.toLowerCase() !== name.toLowerCase())) {
+      warnings.push(`${owner}/${name} differs from project ${entry.projectId} remote ${remote.owner}/${remote.repo}`);
+    }
+    const repo: RepoConfig = { ...entry, owner, repo: name };
     const key = repoKey(repo);
     if (seen.has(key)) {
       warnings.push(`duplicate repo ${key} ignored`);
       continue;
     }
     seen.add(key);
-    // Placeholder entries from the seed are ignored until edited.
-    if (repo.owner === "owner" && repo.repo === "repo") {
-      warnings.push("placeholder repo owner/repo ignored");
-      continue;
-    }
     repos.push(repo);
   }
   return { ok: true, value: repos, warnings };

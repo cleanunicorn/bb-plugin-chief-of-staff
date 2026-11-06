@@ -6,12 +6,14 @@ import {
   blankStep,
   cleanRoutine,
   cronShapeError,
+  inferIdentity,
   loadRepos,
   loadRoutines,
   parseList,
   parseRepoSlug,
   routineHints,
   scheduleMode,
+  selectProject,
   serializeRepos,
   serializeRoutines,
   splitEvery,
@@ -124,5 +126,37 @@ describe("configModel", () => {
     expect(scheduleMode({ every: "2h" })).toBe("every");
     expect(scheduleMode({})).toBe("manual");
     expect(splitEvery("15m")).toEqual({ amount: 15, unit: "m" });
+  });
+});
+
+describe("project-inferred repository", () => {
+  const projects = [
+    { id: "proj_a", remote: "git@github.com:acme/app.git" },
+    { id: "proj_b", remote: "https://github.com/acme/api" },
+    { id: "proj_gl", remote: "https://gitlab.com/acme/x.git" },
+  ];
+
+  it("loads a projectId-only entry and shows the inferred repository", () => {
+    const loaded = loadRepos(JSON.stringify({ repos: [{ projectId: "proj_a" }] }));
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.items[0]).toMatchObject({ owner: "", repo: "" });
+    const shown = inferIdentity(loaded.items[0]!, projects);
+    expect(`${shown.owner}/${shown.repo}`).toBe("acme/app");
+    expect(validateRepos([shown])).toEqual({});
+  });
+
+  it("fills the repository when a project is picked, and follows project changes", () => {
+    const picked = selectProject(blankRepo(), "proj_a", projects);
+    expect(`${picked.owner}/${picked.repo}`).toBe("acme/app");
+    const moved = selectProject(picked, "proj_b", projects);
+    expect(`${moved.owner}/${moved.repo}`).toBe("acme/api");
+    const noRemote = selectProject(moved, "proj_gl", projects);
+    expect(noRemote).toMatchObject({ projectId: "proj_gl", owner: "", repo: "" });
+  });
+
+  it("keeps a repository the user typed by hand", () => {
+    const manual = { ...blankRepo("proj_a"), owner: "acme", repo: "fork" };
+    expect(selectProject(manual, "proj_b", projects)).toMatchObject({ projectId: "proj_b", owner: "acme", repo: "fork" });
   });
 });

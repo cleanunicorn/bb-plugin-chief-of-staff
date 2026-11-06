@@ -87,8 +87,8 @@ The same settings, as stored (also editable as host-rendered fields):
 {
   "repos": [
     {
-      "owner": "acme", "repo": "app",
       "projectId": "proj_xxxxxxxxxx",
+      "owner": "acme", "repo": "app",
       "issueFilter": { "labels": ["agent-ready"], "milestone": null, "assignee": null, "numbers": [] },
       "maxConcurrent": 2,
       "providerId": "claude-code", "model": "claude-opus-5-5",
@@ -106,6 +106,11 @@ The same settings, as stored (also editable as host-rendered fields):
 ```
 
 `projectId` is the BB project whose checkout hosts the work (`bb project list`).
+`owner` and `repo` are optional: they default to the project's GitHub remote
+(`gitRemoteUrl`), so `{ "projectId": "proj_..." }` is a complete entry. Set them
+only to target a different repository; a mismatch with the remote is reported as
+a warning. In the configurator, picking a BB project fills the GitHub
+repository from its remote.
 Merge, release and deploy steps run only when the matching `allow` flag is true.
 
 ### Routines

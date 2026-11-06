@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Repo entries infer `owner`/`repo` from the BB project's GitHub remote;
+  `{ "projectId": "proj_..." }` is enough. Explicit values still override.
+- Configurator: picking a BB project fills the GitHub repository from its
+  remote, and a blank repository is accepted when the project has one.
+
 ## 0.4.2
 
 - The answer panel is larger by default (up to 64rem wide, 85% of the window

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { issueBranchName, parseRepos, parseRoutines, SEED_REPOS, SEED_ROUTINES, slugify } from "../src/config";
+import { issueBranchName, parseGitHubRemote, parseRepos, parseRoutines, SEED_REPOS, SEED_ROUTINES, slugify } from "../src/config";
 import { nextVersion, conventionalBump } from "../src/version";
 
 describe("config parsing", () => {
@@ -16,6 +16,48 @@ describe("config parsing", () => {
     expect(result.value[0].allow).toEqual({ intake: true, openPr: true, merge: false, release: false, deploy: false });
     expect(result.value[0].issueFilter.labels).toEqual(["agent-ready"]);
     expect(result.value[0].branchPrefix).toBe("cos/");
+  });
+
+  it("parses GitHub remote URLs", () => {
+    expect(parseGitHubRemote("https://github.com/Theralexis/canary.git")).toEqual({ owner: "Theralexis", repo: "canary" });
+    expect(parseGitHubRemote("https://github.com/EdenBlockVC/deals")).toEqual({ owner: "EdenBlockVC", repo: "deals" });
+    expect(parseGitHubRemote("git@github.com:cleanunicorn/earheart.git")).toEqual({ owner: "cleanunicorn", repo: "earheart" });
+    expect(parseGitHubRemote("ssh://git@github.com/acme/app.git")).toEqual({ owner: "acme", repo: "app" });
+    expect(parseGitHubRemote("https://x-access-token:abc@github.com/acme/my.app/")).toEqual({ owner: "acme", repo: "my.app" });
+    expect(parseGitHubRemote("https://gitlab.com/acme/app.git")).toBeNull();
+    expect(parseGitHubRemote(null)).toBeNull();
+  });
+
+  it("infers owner/repo from the BB project remote", () => {
+    const projects = new Map([["proj_1", "git@github.com:acme/app.git"]]);
+    const result = parseRepos(JSON.stringify({ repos: [{ projectId: "proj_1" }] }), projects);
+    expect(result.ok && result.value.map((r) => `${r.owner}/${r.repo}`)).toEqual(["acme/app"]);
+    expect(result.ok && result.warnings).toEqual([]);
+  });
+
+  it("lets explicit owner/repo override the remote, with a mismatch warning", () => {
+    const projects = new Map([["proj_1", "https://github.com/acme/app"]]);
+    const result = parseRepos(JSON.stringify({ repos: [{ projectId: "proj_1", owner: "acme", repo: "fork" }] }), projects);
+    expect(result.ok && result.value[0].repo).toBe("fork");
+    expect(result.ok && result.warnings[0]).toMatch(/differs from project proj_1 remote acme\/app/);
+  });
+
+  it("skips entries it cannot resolve, warning only when projects are known", () => {
+    const doc = JSON.stringify({ repos: [{ projectId: "proj_none" }, { projectId: "proj_gl" }] });
+    const projects = new Map([["proj_gl", "https://gitlab.com/acme/app.git"]]);
+    const resolved = parseRepos(doc, projects);
+    expect(resolved.ok && resolved.value).toEqual([]);
+    expect(resolved.ok && resolved.warnings).toEqual([expect.stringMatching(/proj_none not found/), expect.stringMatching(/proj_gl has no GitHub remote/)]);
+    // Synchronous settings validation (no project list) accepts the document.
+    const validated = parseRepos(doc);
+    expect(validated.ok && validated.warnings).toEqual([]);
+  });
+
+  it("dedupes repos resolved to the same owner/repo", () => {
+    const projects = new Map([["proj_1", "https://github.com/acme/app"]]);
+    const result = parseRepos(JSON.stringify({ repos: [{ projectId: "proj_1" }, { projectId: "proj_2", owner: "acme", repo: "app" }] }), projects);
+    expect(result.ok && result.value).toHaveLength(1);
+    expect(result.ok && result.warnings[0]).toMatch(/duplicate repo acme\/app/);
   });
 
   it("rejects invalid JSON and schema errors", () => {
