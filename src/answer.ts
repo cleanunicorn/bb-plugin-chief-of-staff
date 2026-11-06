@@ -23,7 +23,7 @@ export type OpenQuestion =
       interactionId: string;
       questions: { id: string; prompt: string; shortLabel: string | null; options: QuestionOption[]; allowFreeText: boolean; multiSelect: boolean; required: boolean }[];
     }
-  | { kind: "approval"; interactionId: string; subject: string; reason: string | null; detail: string | null; decisions: ("allow_once" | "allow_for_session" | "deny")[] }
+  | { kind: "approval"; interactionId: string; subject: string; reason: string | null; detail: string | null; detailMarkdown: boolean; decisions: ("allow_once" | "allow_for_session" | "deny")[] }
   | { kind: "request"; interactionId: string; title: string; detail: string | null; answerable: boolean }
   | { kind: "text"; question: string };
 
@@ -47,6 +47,18 @@ export interface QuestionView {
 type Payload = Record<string, unknown>;
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
 const tail = (text: string | null, max: number): string | null => (text && text.length > max ? `…${text.slice(text.length - max + 1)}` : text);
+/**
+ * Tail-trim Markdown so it still renders: cut at a line break, and reopen a
+ * code fence when the cut lands inside one.
+ */
+export function markdownTail(text: string | null, max: number): string | null {
+  if (!text || text.length <= max) return text;
+  let cut = text.slice(text.length - max + 2);
+  const nl = cut.indexOf("\n");
+  if (nl >= 0 && nl < 400) cut = cut.slice(nl + 1);
+  const fences = text.slice(0, text.length - cut.length).match(/^\s*(```|~~~)/gm)?.length ?? 0;
+  return `…\n\n${fences % 2 === 1 ? "```\n" : ""}${cut}`;
+}
 const head = (text: string | null, max: number): string | null => (text && text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /** Normalize one pending interaction into something the UI can render. */
@@ -95,7 +107,7 @@ export function toOpenQuestion(interaction: { id: string; payload?: unknown }): 
     const decisions = Array.isArray(payload.availableDecisions)
       ? (payload.availableDecisions as unknown[]).filter((d): d is "allow_once" | "allow_for_session" | "deny" => d === "allow_once" || d === "allow_for_session" || d === "deny")
       : ["allow_once", "deny"] as ("allow_once" | "deny")[];
-    return { kind: "approval", interactionId: interaction.id, subject: label, reason: str(payload.reason), detail: head(detail, DETAIL_MAX), decisions };
+    return { kind: "approval", interactionId: interaction.id, subject: label, reason: str(payload.reason), detail: head(detail, DETAIL_MAX), detailMarkdown: subjectKind === "plan", decisions };
   }
   // Plugin forms and namespaced requests: show what we can, answer in the thread.
   const presentation = (payload.presentation ?? {}) as Payload;
@@ -137,7 +149,7 @@ export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionVie
     status: item.status,
     waitingReason: item.waitingReason,
     open,
-    lastMessage: tail(lastMessage, CONTEXT_MAX),
+    lastMessage: markdownTail(lastMessage, CONTEXT_MAX),
     checkOutput: tail(item.checkOutput, DETAIL_MAX),
     lastError: item.lastError,
   };

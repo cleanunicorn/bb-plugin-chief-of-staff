@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+- The answer panel renders Markdown with BB's chat message renderer: the
+  agent's last message, a plain-text question, question prompts, option
+  descriptions, approval reasons and plans now look as they do in the thread.
+  Commands and check output stay monospace. A trimmed last message is cut at a
+  line break, and a code fence is reopened when the cut lands inside one.
+
 ## 0.4.0
 
 - Answer agents from the dashboard. Click the question on a waiting card to

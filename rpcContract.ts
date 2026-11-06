@@ -75,7 +75,7 @@ const openQuestion = z.discriminatedUnion("kind", [
     interactionId: z.string(),
     questions: z.array(z.object({ id: z.string(), prompt: z.string(), shortLabel: z.string().nullable(), options: z.array(z.object({ label: z.string(), value: z.string(), description: z.string().nullable() })), allowFreeText: z.boolean(), multiSelect: z.boolean(), required: z.boolean() })),
   }),
-  z.object({ kind: z.literal("approval"), interactionId: z.string(), subject: z.string(), reason: z.string().nullable(), detail: z.string().nullable(), decisions: z.array(decision) }),
+  z.object({ kind: z.literal("approval"), interactionId: z.string(), subject: z.string(), reason: z.string().nullable(), detail: z.string().nullable(), detailMarkdown: z.boolean(), decisions: z.array(decision) }),
   z.object({ kind: z.literal("request"), interactionId: z.string(), title: z.string(), detail: z.string().nullable(), answerable: z.boolean() }),
   z.object({ kind: z.literal("text"), question: z.string() }),
 ]);

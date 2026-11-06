@@ -31,7 +31,7 @@ new commits on `main` automatically. To update right away:
 bb plugin update chief-of-staff --yes
 ```
 
-Pin a release instead of tracking `main` with `git:github.com/cleanunicorn/bb-plugin-chief-of-staff@v0.4.0`.
+Pin a release instead of tracking `main` with `git:github.com/cleanunicorn/bb-plugin-chief-of-staff@v0.4.1`.
 
 From a local checkout (development):
 

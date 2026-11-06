@@ -2,7 +2,7 @@
 // options, approval decisions, and the context around them (the agent's last
 // message, failing checks), then answers through cos_answer or opens the thread.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
+import { Markdown, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { AnswerPayload, OpenQuestion } from "../../rpcContract";
 import { Button } from "../ui/button";
@@ -139,8 +139,16 @@ function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: bo
     return (
       <section className="flex flex-col gap-3 rounded-lg border border-border p-4">
         <SectionTitle icon="ShieldQuestion" text={`Approval: ${q.subject}`} />
-        {q.reason ? <p className="text-sm whitespace-pre-wrap text-foreground">{q.reason}</p> : null}
-        {q.detail ? <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap text-foreground">{q.detail}</pre> : null}
+        {q.reason ? <Markdown content={q.reason} className="text-sm text-foreground" /> : null}
+        {q.detail ? (
+          q.detailMarkdown ? (
+            <div className="max-h-80 overflow-auto rounded-md bg-muted p-3">
+              <Markdown content={q.detail} className="text-sm text-foreground" />
+            </div>
+          ) : (
+            <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap text-foreground">{q.detail}</pre>
+          )
+        ) : null}
         <div className="flex flex-wrap gap-2">
           {q.decisions.map((d) => (
             <Button key={d} size="sm" variant={d === "deny" ? "outline" : "default"} disabled={sending} onClick={() => onSend({ kind: "approval", interactionId: q.interactionId, decision: d }, DECISION_LABEL[d])}>
@@ -167,7 +175,7 @@ function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: bo
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-border p-4">
       <SectionTitle icon="MessageCircleQuestion" text="The agent asked" />
-      <p className="text-sm whitespace-pre-wrap text-foreground">{q.question}</p>
+      <Markdown content={q.question} className="text-sm text-foreground" />
       <ReplyBox label="Your reply" placeholder="Answer the agent. It continues the thread with your reply." sending={sending} onSend={(text) => onSend({ kind: "text", text }, "reply")} />
     </section>
   );
@@ -207,10 +215,11 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
   };
   return (
     <fieldset className="flex flex-col gap-2" disabled={disabled}>
-      <legend className="mb-1 text-sm font-semibold whitespace-pre-wrap text-foreground">
-        {q.prompt}
-        {q.multiSelect ? <span className="ml-1.5 text-xs font-normal text-muted-foreground">(pick any)</span> : null}
-      </legend>
+      <legend className="sr-only">{q.shortLabel ?? q.prompt}</legend>
+      <div className="mb-1 text-foreground">
+        <Markdown content={q.prompt} className="text-sm font-medium" />
+        {q.multiSelect ? <span className="text-xs text-muted-foreground">(pick any)</span> : null}
+      </div>
       {q.options.length ? (
         <div className="flex flex-col gap-1.5" role={q.multiSelect ? "group" : "radiogroup"}>
           {q.options.map((o) => {
@@ -227,7 +236,7 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
                 <Icon name={on ? (q.multiSelect ? "SquareCheck" : "CircleDot") : q.multiSelect ? "Square" : "Circle"} fallback="Circle" className="mt-0.5 size-4 shrink-0 text-foreground" aria-hidden />
                 <span className="min-w-0">
                   <span className="block text-sm font-medium text-foreground">{o.label}</span>
-                  {o.description ? <span className="block text-xs whitespace-pre-wrap text-muted-foreground">{o.description}</span> : null}
+                  {o.description ? <Markdown content={o.description} className="block text-xs text-muted-foreground" /> : null}
                 </span>
               </button>
             );
@@ -295,7 +304,9 @@ function Context({ lastMessage, checkOutput, lastError }: { lastMessage: string 
       {lastMessage ? (
         <details open className="rounded-lg border border-border">
           <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-foreground">Agent's last message</summary>
-          <div className="max-h-80 overflow-auto border-t border-border px-3 py-2 text-sm whitespace-pre-wrap text-foreground">{lastMessage}</div>
+          <div className="max-h-96 overflow-auto border-t border-border px-3 py-2">
+            <Markdown content={lastMessage} className="text-sm text-foreground" />
+          </div>
         </details>
       ) : null}
       {checkOutput ? (
