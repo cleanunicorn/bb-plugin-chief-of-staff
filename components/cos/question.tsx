@@ -2,6 +2,7 @@
 // options, approval decisions, and the context around them (the agent's last
 // message, failing checks), then answers through cos_answer or opens the thread.
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Markdown, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { AnswerPayload, OpenQuestion } from "../../rpcContract";
@@ -17,6 +18,72 @@ type Draft = Record<string, { selected: string[]; freeText: string }>;
 const textareaClass =
   "min-h-20 w-full rounded-md border border-input bg-transparent p-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
 
+const SIZE_KEY = "cos.questionSheet.size";
+const MIN_W = 420;
+const MIN_H = 320;
+const MARGIN = 24;
+type Size = { w: number; h: number };
+
+function clampSize(size: Size): Size {
+  return {
+    w: Math.round(Math.min(Math.max(size.w, MIN_W), window.innerWidth - MARGIN * 2)),
+    h: Math.round(Math.min(Math.max(size.h, MIN_H), window.innerHeight - MARGIN * 2)),
+  };
+}
+
+function loadSize(): Size | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "null") as Partial<Size> | null;
+    return raw && typeof raw.w === "number" && typeof raw.h === "number" ? clampSize({ w: raw.w, h: raw.h }) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Width/height the user dragged to (remembered across opens), plus a maximize toggle. */
+function useResizableSize() {
+  const [size, setSize] = useState<Size | null>(() => (typeof window === "undefined" ? null : loadSize()));
+  const [maximized, setMaximized] = useState(false);
+  const save = (next: Size | null) => {
+    setSize(next);
+    try {
+      if (next) localStorage.setItem(SIZE_KEY, JSON.stringify(next));
+      else localStorage.removeItem(SIZE_KEY);
+    } catch {
+      /* storage unavailable: size lasts for this open only */
+    }
+  };
+  /** Drag from the corner. The panel is centred, so it grows on both sides: double the delta to keep the corner under the pointer. */
+  const startDrag = (e: ReactPointerEvent<HTMLElement>, panel: HTMLElement | null) => {
+    if (!panel || e.button !== 0) return;
+    e.preventDefault();
+    const rect = panel.getBoundingClientRect();
+    const start = { x: e.clientX, y: e.clientY, w: rect.width, h: rect.height };
+    setMaximized(false);
+    let latest: Size = { w: rect.width, h: rect.height };
+    const move = (ev: PointerEvent) => {
+      latest = clampSize({ w: start.w + (ev.clientX - start.x) * 2, h: start.h + (ev.clientY - start.y) * 2 });
+      setSize(latest);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.style.userSelect = "";
+      save(latest);
+    };
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const resizeBy = (dw: number, dh: number, panel: HTMLElement | null) => {
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    setMaximized(false);
+    save(clampSize({ w: rect.width + dw, h: rect.height + dh }));
+  };
+  return { size, maximized, setMaximized, startDrag, resizeBy, reset: () => { setMaximized(false); save(null); } };
+}
+
 const DECISION_LABEL = { allow_once: "Allow once", allow_for_session: "Allow for session", deny: "Deny" } as const;
 
 export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string; onClose: () => void; onAnswered: () => void }) {
@@ -27,6 +94,12 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const resize = useResizableSize();
+  const panelStyle: CSSProperties | undefined = resize.maximized
+    ? { width: `calc(100vw - ${MARGIN * 2}px)`, height: `calc(100vh - ${MARGIN * 2}px)`, maxWidth: "none", maxHeight: "none" }
+    : resize.size
+      ? { width: resize.size.w, height: resize.size.h, maxWidth: "none", maxHeight: "none" }
+      : undefined;
 
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -69,7 +142,8 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
         role="dialog"
         aria-modal="true"
         aria-labelledby="cos-question-title"
-        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-xl border border-border bg-background shadow-lg outline-none sm:rounded-xl"
+        style={panelStyle}
+        className="relative flex h-[90vh] max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-t-xl border border-border bg-background shadow-lg outline-none sm:h-[85vh] sm:rounded-xl"
       >
         <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0">
@@ -80,9 +154,20 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
               {data?.issueTitle || "Agent question"}
             </h2>
           </div>
-          <Button size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0" aria-label="Close" onClick={onClose}>
-            <Icon name="X" fallback="Circle" aria-hidden />
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="hidden h-7 w-7 p-0 sm:inline-flex"
+              aria-label={resize.maximized ? "Restore size" : "Maximize"}
+              onClick={() => resize.setMaximized(!resize.maximized)}
+            >
+              <Icon name={resize.maximized ? "Minimize2" : "Maximize2"} fallback="Square" aria-hidden />
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="Close" onClick={onClose}>
+              <Icon name="X" fallback="Circle" aria-hidden />
+            </Button>
+          </div>
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
@@ -119,6 +204,27 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
             </Button>
           ) : null}
         </footer>
+        <div
+          role="separator"
+          aria-label="Resize (drag, or arrow keys; double-click to reset)"
+          aria-orientation="horizontal"
+          tabIndex={0}
+          title="Drag to resize. Double-click to reset."
+          className="absolute right-0 bottom-0 hidden size-4 cursor-nwse-resize touch-none text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:block"
+          onPointerDown={(e) => resize.startDrag(e, panelRef.current)}
+          onDoubleClick={resize.reset}
+          onKeyDown={(e) => {
+            const step = e.shiftKey ? 80 : 20;
+            const delta = { ArrowRight: [step, 0], ArrowLeft: [-step, 0], ArrowDown: [0, step], ArrowUp: [0, -step] }[e.key];
+            if (!delta) return;
+            e.preventDefault();
+            resize.resizeBy(delta[0], delta[1], panelRef.current);
+          }}
+        >
+          <svg viewBox="0 0 16 16" className="size-4" aria-hidden>
+            <path d="M14 6 6 14M14 10l-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+          </svg>
+        </div>
       </div>
     </div>
   );
@@ -304,7 +410,7 @@ function Context({ lastMessage, checkOutput, lastError }: { lastMessage: string 
       {lastMessage ? (
         <details open className="rounded-lg border border-border">
           <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-foreground">Agent's last message</summary>
-          <div className="max-h-96 overflow-auto border-t border-border px-3 py-2">
+          <div className="max-h-[60vh] overflow-auto border-t border-border px-3 py-2">
             <Markdown content={lastMessage} className="text-sm text-foreground" />
           </div>
         </details>

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2
+
+- The answer panel is larger by default (up to 64rem wide, 85% of the window
+  tall) and resizable: drag the bottom-right corner (or focus it and use the
+  arrow keys, Shift for bigger steps), double-click it to reset. The size is
+  remembered. A maximize button in the header fills the window.
+
 ## 0.4.1
 
 - The answer panel renders Markdown with BB's chat message renderer: the
