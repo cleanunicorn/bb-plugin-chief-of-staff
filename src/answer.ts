@@ -5,7 +5,8 @@
 // message for plain-text questions.
 import type { Cos } from "./context";
 import type { WorkItem } from "./state";
-import { handleActive, syncItem } from "./sync";
+import { dispatch } from "./delivery";
+import { observeActive, snapshotOf, syncThread } from "./sync";
 import { lastAssistantText, plainTextQuestion, sendToThread, threadUrl } from "./threads";
 
 const CONTEXT_MAX = 6000;
@@ -35,7 +36,12 @@ export interface QuestionView {
   threadId: string | null;
   threadUrl: string | null;
   status: string;
+  stage: string;
+  waitingKind: string | null;
   waitingReason: string | null;
+  plan: string | null;
+  review: string | null;
+  decidable: boolean;
   open: OpenQuestion[];
   /** The agent's last message, tail-trimmed. */
   lastMessage: string | null;
@@ -127,14 +133,16 @@ export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionVie
   if (!item) throw new Error(`work item ${itemId} not found`);
   let open: OpenQuestion[] = [];
   let lastMessage: string | null = null;
-  if (item.threadId) {
+  // During review the reviewer's thread is the one asking.
+  const asking = item.stage === "review" && item.reviewThreadId ? item.reviewThreadId : item.threadId;
+  if (asking) {
     try {
-      open = (await openInteractions(cos, item.threadId)).map(toOpenQuestion);
+      open = (await openInteractions(cos, asking)).map(toOpenQuestion);
     } catch {
       open = [];
     }
-    lastMessage = await lastAssistantText(cos, item.threadId);
-    if (!open.length) {
+    lastMessage = await lastAssistantText(cos, asking);
+    if (!open.length && item.waitingKind === "question") {
       const question = plainTextQuestion(lastMessage);
       if (question) open = [{ kind: "text", question: question.replace(/^Question:\s*/, "") }];
     }
@@ -147,7 +155,12 @@ export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionVie
     threadId: item.threadId,
     threadUrl: item.threadId ? threadUrl(cos, item.threadId) : null,
     status: item.status,
+    stage: item.stage,
+    waitingKind: item.waitingKind,
     waitingReason: item.waitingReason,
+    plan: item.reports.plan?.summary ?? null,
+    review: item.reports.review?.summary ?? null,
+    decidable: item.status === "waiting_on_human" && ["plan_approval", "escalation", "no_report"].includes(item.waitingKind ?? ""),
     open,
     lastMessage: markdownTail(lastMessage, CONTEXT_MAX),
     checkOutput: tail(item.checkOutput, DETAIL_MAX),
@@ -159,14 +172,23 @@ export type AnswerInput =
   | { kind: "question"; interactionId: string; answers: Record<string, { selected: string[]; freeText?: string }> }
   | { kind: "approval"; interactionId: string; decision: "allow_once" | "allow_for_session" | "deny" }
   | { kind: "request"; interactionId: string; value: string }
-  | { kind: "text"; text: string };
+  | { kind: "text"; text: string }
+  | { kind: "approve" }
+  | { kind: "revise"; feedback: string };
 
 /** Answer the agent and move the item back in step with its thread. */
 export async function answerQuestion(cos: Cos, itemId: string, answer: AnswerInput, actor: string): Promise<{ status: string }> {
   const item = cos.store.getWorkItem(itemId);
   if (!item) throw new Error(`work item ${itemId} not found`);
-  if (!item.threadId) throw new Error("this item has no thread to answer");
-  const threadId = item.threadId;
+  // Workflow decisions go to the stage machine, not the thread.
+  if (answer.kind === "approve" || answer.kind === "revise") {
+    const next = await dispatch(cos, itemId, answer.kind === "approve" ? { type: "approve" } : { type: "revise", feedback: answer.feedback }, actor);
+    cos.store.log({ level: "info", kind: "answer", repo: item.repo, workItemId: item.id, message: answer.kind === "approve" ? `approved ${item.stage}` : `sent ${item.stage} back with feedback`, actor });
+    cos.invalidate();
+    return { status: next?.status ?? item.status };
+  }
+  const threadId = item.stage === "review" && item.reviewThreadId ? item.reviewThreadId : item.threadId;
+  if (!threadId) throw new Error("this item has no thread to answer");
 
   let summary: string;
   if (answer.kind === "text") {
@@ -222,22 +244,22 @@ export async function answerQuestion(cos: Cos, itemId: string, answer: AnswerInp
 
   // Never log the answer content; it may contain anything the operator typed.
   cos.store.log({ level: "info", kind: "answer", repo: item.repo, workItemId: item.id, message: summary, actor });
-  await resync(cos, item, actor);
+  await resync(cos, item, threadId, actor);
   cos.invalidate();
   return { status: cos.store.getWorkItem(itemId)?.status ?? item.status };
 }
 
 /** After answering, the thread either resumes or asks the next question. */
-async function resync(cos: Cos, item: WorkItem, actor: string): Promise<void> {
+async function resync(cos: Cos, item: WorkItem, threadId: string, actor: string): Promise<void> {
   const fresh = cos.store.getWorkItem(item.id) ?? item;
   try {
-    const remaining = fresh.threadId ? await openInteractions(cos, fresh.threadId) : [];
+    const remaining = await openInteractions(cos, threadId);
     if (remaining.length) {
-      await syncItem(cos, fresh, actor);
+      await syncThread(cos, fresh, snapshotOf((await cos.bb.sdk.threads.get({ threadId })) as never), actor);
       return;
     }
   } catch {
     /* fall through: treat as resumed */
   }
-  await handleActive(cos, fresh, actor);
+  await observeActive(cos, fresh.id, threadId, actor);
 }

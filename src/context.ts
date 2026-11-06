@@ -2,16 +2,18 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract, type ExecInput, type ExecOutput } from "../contract";
-import { parseRepos, parseRoutines, type ProjectRemotes, type RepoConfig, type Routine } from "./config";
+import { parseRepos, type ProjectRemotes, type RepoConfig } from "./config";
 import { GitHubClient, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
-import type { MachinePolicy } from "./machine";
+import { DEFAULT_POLICY, type MachinePolicy } from "./machine";
+import { parseWorkflow, resolveWorkflow, workflowSchema, type Workflow } from "./workflow";
 
 export interface LoadedConfig {
   values: SettingsValues;
   repos: RepoConfig[];
-  routines: Routine[];
+  /** The global workflow (repos merge their overrides over it). */
+  workflow: Workflow;
   errors: string[];
   warnings: string[];
   policy: MachinePolicy;
@@ -24,6 +26,8 @@ export interface Cos {
   now(): Date;
   config(): Promise<LoadedConfig>;
   repo(key: string): Promise<RepoConfig | null>;
+  /** The workflow a repo runs (global merged with the repo's overrides). */
+  workflow(repoKey: string): Promise<Workflow>;
   /** BB projects (non-personal) with their git remote, used to infer owner/repo. */
   projects(): Promise<Array<{ id: string; name: string; gitRemoteUrl: string | null }>>;
   /** projectId -> git remote URL, or undefined when the project list is unavailable. */
@@ -90,23 +94,19 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
       const remotes = await cos.projectRemotes();
       if (!remotes) warnings.push("BB project list unavailable; repos without explicit owner/repo are skipped");
       const reposResult = parseRepos(values.repos, remotes);
-      const routinesResult = parseRoutines(values.routines);
       if (!reposResult.ok) errors.push(`repos: ${reposResult.error}`);
       else warnings.push(...reposResult.warnings);
-      if (!routinesResult.ok) errors.push(`routines: ${routinesResult.error}`);
-      else warnings.push(...routinesResult.warnings);
+      const workflowResult = parseWorkflow(values.workflow ?? "");
+      if (!workflowResult.ok) errors.push(`workflow: ${workflowResult.error}`);
+      const workflow = workflowResult.ok ? workflowResult.value : workflowSchema.parse({});
       const repos = reposResult.ok ? reposResult.value : [];
-      const routines = routinesResult.ok ? routinesResult.value : [];
-      for (const routine of routines) {
-        if (!repos.some((r) => `${r.owner}/${r.repo}` === routine.repo)) warnings.push(`routine ${routine.name} targets unconfigured repo ${routine.repo}; it will refuse to run`);
-      }
       const value: LoadedConfig = {
         values,
         repos,
-        routines,
+        workflow,
         errors,
         warnings,
-        policy: { maxFixRetries: Math.max(0, values.maxFixRetries), autoRetryStalled: values.autoRetryStalled, maxAutoRetries: 1 },
+        policy: DEFAULT_POLICY,
       };
       configCache = { at: Date.now(), value };
       return value;
@@ -114,6 +114,11 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     async repo(key) {
       const { repos } = await cos.config();
       return repos.find((r) => `${r.owner}/${r.repo}` === key) ?? null;
+    },
+    async workflow(key) {
+      const config = await cos.config();
+      const repo = config.repos.find((r) => `${r.owner}/${r.repo}` === key);
+      return resolveWorkflow(config.workflow, repo?.workflow);
     },
     async projects() {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
@@ -135,7 +140,8 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
       return (await resolveToken()).source;
     },
     async hostExec(hostId, input, signal) {
-      const timeoutMs = Math.min(30 * 60_000, (input.timeoutMs ?? 10 * 60_000) + 15_000);
+      // The host enforces input.timeoutMs (and kills the process tree); the call deadline only adds slack.
+      const timeoutMs = Math.min(4 * 60 * 60_000 + 60_000, (input.timeoutMs ?? 10 * 60_000) + 30_000);
       return host.call("exec", input, { hostId, timeoutMs, signal });
     },
     async hostReadFile(hostId, path) {
@@ -165,13 +171,6 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
           });
         } catch (error) {
           bb.log.debug(`push notification skipped: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      if (values.notifyWebhookUrl && /^https?:\/\//.test(values.notifyWebhookUrl)) {
-        try {
-          await fetch(values.notifyWebhookUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: safeTitle, body: safeBody, threadId: threadId ?? null }) });
-        } catch (error) {
-          bb.log.warn(`notification webhook failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
     },

@@ -58,14 +58,6 @@ export interface CheckRun {
   details_url?: string;
 }
 
-export interface WorkflowRun {
-  id: number;
-  status: "queued" | "in_progress" | "completed" | string;
-  conclusion: string | null;
-  html_url: string;
-  created_at: string;
-}
-
 export interface Review {
   state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" | "PENDING";
   user: { login: string } | null;
@@ -210,10 +202,6 @@ export class GitHubClient {
     return this.request("POST", `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`, { reviewers, team_reviewers: teamReviewers });
   }
 
-  addLabels(owner: string, repo: string, number: number, labels: string[]): Promise<unknown> {
-    return this.request("POST", `/repos/${owner}/${repo}/issues/${number}/labels`, { labels });
-  }
-
   listReviews(owner: string, repo: string, number: number): Promise<Review[]> {
     return this.paginate(`/repos/${owner}/${repo}/pulls/${number}/reviews`, 2);
   }
@@ -258,54 +246,6 @@ export class GitHubClient {
 
   mergePull(owner: string, repo: string, number: number, method: "merge" | "squash" | "rebase", sha?: string): Promise<{ merged: boolean; message: string; sha?: string }> {
     return this.request("PUT", `/repos/${owner}/${repo}/pulls/${number}/merge`, { merge_method: method, sha });
-  }
-
-  listMergedPullsSince(owner: string, repo: string, sinceIso: string | null): Promise<GitHubPull[]> {
-    return this.paginate<GitHubPull>(`/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc`, 3).then((pulls) =>
-      pulls.filter((pr) => pr.merged_at && (!sinceIso || pr.merged_at > sinceIso)),
-    );
-  }
-
-  async latestTag(owner: string, repo: string): Promise<{ name: string; sha: string } | null> {
-    const tags = await this.request<{ name: string; commit: { sha: string } }[]>("GET", `/repos/${owner}/${repo}/tags?per_page=1`);
-    return tags[0] ? { name: tags[0].name, sha: tags[0].commit.sha } : null;
-  }
-
-  async latestRelease(owner: string, repo: string): Promise<{ tag_name: string; published_at: string | null; created_at: string } | null> {
-    try {
-      return await this.request("GET", `/repos/${owner}/${repo}/releases/latest`);
-    } catch (error) {
-      if (error instanceof GitHubError && error.status === 404) return null;
-      throw error;
-    }
-  }
-
-  getBranchHead(owner: string, repo: string, branch: string): Promise<{ object: { sha: string } }> {
-    return this.request("GET", `/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);
-  }
-
-  createTag(owner: string, repo: string, tag: string, sha: string): Promise<unknown> {
-    return this.request("POST", `/repos/${owner}/${repo}/git/refs`, { ref: `refs/tags/${tag}`, sha });
-  }
-
-  createRelease(owner: string, repo: string, input: { tag_name: string; name: string; body: string; draft?: boolean; target_commitish?: string }): Promise<{ html_url: string; id: number }> {
-    return this.request("POST", `/repos/${owner}/${repo}/releases`, input);
-  }
-
-  dispatchWorkflow(owner: string, repo: string, workflow: string, ref: string, inputs?: Record<string, string>): Promise<void> {
-    return this.request("POST", `/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs: inputs ?? {} });
-  }
-
-  async listWorkflowRuns(owner: string, repo: string, workflow: string, createdAfterIso: string): Promise<WorkflowRun[]> {
-    const result = await this.request<{ workflow_runs: WorkflowRun[] }>(
-      "GET",
-      `/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&created=>=${encodeURIComponent(createdAfterIso)}&per_page=10`,
-    );
-    return result.workflow_runs;
-  }
-
-  getWorkflowRun(owner: string, repo: string, runId: number): Promise<WorkflowRun> {
-    return this.request("GET", `/repos/${owner}/${repo}/actions/runs/${runId}`);
   }
 
   async getFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null> {

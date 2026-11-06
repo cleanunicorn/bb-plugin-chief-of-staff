@@ -1,6 +1,8 @@
 // Answer-from-dashboard sheet: shows the agent's open question(s) with their
 // options, approval decisions, and the context around them (the agent's last
 // message, failing checks), then answers through cos_answer or opens the thread.
+// Workflow gates (plan approval, a stage out of fix attempts) get a decision
+// block: approve and move on, or send it back to the agent with feedback.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Markdown, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
@@ -178,7 +180,8 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
 
           {data ? (
             <>
-              {data.open.length === 0 && !sent ? (
+              {data.decidable && !sent ? <Decision data={data} sending={sending} onSend={send} /> : null}
+              {data.open.length === 0 && !sent && !data.decidable ? (
                 <p className="text-sm text-muted-foreground">
                   {data.waitingReason
                     ? "No open question on the thread right now. It may have been answered in BB, or the item is waiting for another reason (see the context below). You can still send the agent a message."
@@ -188,16 +191,17 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
               {data.open.map((q, i) => (
                 <OpenQuestionView key={q.kind === "text" ? `text-${i}` : q.interactionId} q={q} sending={sending} onSend={send} />
               ))}
-              {data.open.length === 0 || data.open.every((q) => q.kind === "request" && !q.answerable) ? (
+              {!data.decidable && (data.open.length === 0 || data.open.every((q) => q.kind === "request" && !q.answerable)) ? (
                 <ReplyBox label="Message the agent" placeholder="Tell the agent what to do next." sending={sending} onSend={(text) => send({ kind: "text", text }, "message")} />
               ) : null}
+              {data.review && data.stage !== "plan" && data.waitingKind === "escalation" ? <Collapsible icon="SearchCheck" title="Latest review" markdown={data.review} /> : null}
               <Context lastMessage={data.lastMessage} checkOutput={data.checkOutput} lastError={data.lastError} />
             </>
           ) : null}
         </div>
 
         <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
-          <p className="text-xs text-muted-foreground">Answers go straight to the agent's thread.</p>
+          <p className="text-xs text-muted-foreground">{data?.decidable ? "Decisions move the task through its workflow; feedback goes to the agent's thread." : "Answers go straight to the agent's thread."}</p>
           {data?.threadId ? (
             <Button size="sm" variant="outline" onClick={openThread}>
               <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
@@ -358,6 +362,57 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
         />
       ) : null}
     </fieldset>
+  );
+}
+
+type DecisionData = { stage: string; waitingKind: string | null; waitingReason: string | null; plan: string | null };
+
+const DECISION_COPY: Record<string, { title: string; approve: string; back: string; placeholder: string }> = {
+  plan_approval: { title: "Approve the plan?", approve: "Approve plan", back: "Send plan back", placeholder: "What should change in the plan?" },
+  escalation: { title: "Out of fix attempts. Your call.", approve: "Continue anyway", back: "Send back to the agent", placeholder: "Instructions for the agent's next attempt." },
+  no_report: { title: "The agent stopped without reporting.", approve: "Treat stage as done", back: "Send back to the agent", placeholder: "What should the agent do next?" },
+};
+
+/** Approve and move on, or send it back with feedback. */
+function Decision({ data, sending, onSend }: { data: DecisionData; sending: boolean; onSend: (answer: AnswerPayload, label: string) => void }) {
+  const copy = DECISION_COPY[data.waitingKind ?? ""] ?? DECISION_COPY.escalation!;
+  const [feedback, setFeedback] = useState("");
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-border p-3">
+      <SectionTitle icon={data.waitingKind === "plan_approval" ? "ClipboardCheck" : "Hand"} text={copy.title} />
+      {data.waitingKind === "plan_approval" && data.plan ? (
+        <div className="max-h-[50vh] overflow-auto rounded-md bg-muted px-3 py-2">
+          <Markdown content={data.plan} className="text-sm text-foreground" />
+        </div>
+      ) : data.waitingReason ? (
+        <p className="text-sm text-foreground">{data.waitingReason}</p>
+      ) : null}
+      <label className="text-xs font-medium text-muted-foreground">
+        Feedback (for sending back)
+        <textarea className={cn(textareaClass, "mt-1")} placeholder={copy.placeholder} value={feedback} disabled={sending} onChange={(e) => setFeedback(e.target.value)} />
+      </label>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button size="sm" variant="outline" disabled={sending || !feedback.trim()} onClick={() => onSend({ kind: "revise", feedback: feedback.trim() }, copy.back.toLowerCase())}>
+          <Icon name="Undo2" fallback="Circle" aria-hidden /> {copy.back}
+        </Button>
+        <Button size="sm" disabled={sending} onClick={() => onSend({ kind: "approve" }, copy.approve.toLowerCase())}>
+          <Icon name="Check" fallback="Circle" aria-hidden /> {copy.approve}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function Collapsible({ icon, title, markdown }: { icon: string; title: string; markdown: string }) {
+  return (
+    <details className="rounded-lg border border-border">
+      <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-muted-foreground">
+        <Icon name={icon} fallback="Circle" className="size-3.5" aria-hidden /> {title}
+      </summary>
+      <div className="border-t border-border px-3 py-2">
+        <Markdown content={markdown} className="text-sm text-foreground" />
+      </div>
+    </details>
   );
 }
 

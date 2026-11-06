@@ -1,6 +1,6 @@
-// Aggregates for the dashboard: pipeline counts by stage, daily throughput, cycle time and routine outcomes.
+// Aggregates for the dashboard: pipeline counts by stage, daily throughput, and cycle time.
 // Pure over the stored rows so it is cheap to test.
-import { WORK_STATUSES, type RoutineRun, type WorkItem, type WorkStatus } from "./state";
+import { WORK_STATUSES, type WorkItem, type WorkStatus } from "./state";
 
 export interface DailyPoint {
   date: string; // YYYY-MM-DD (UTC)
@@ -18,12 +18,11 @@ export interface Stats {
   failedInWindow: number;
   medianCycleMinutes: number | null; // created -> finished for items done in the window
   totalTracked: number;
-  runs: { succeeded: number; failed: number; partial: number; running: number };
 }
 
 const day = (iso: string) => iso.slice(0, 10);
 
-export function computeStats(items: WorkItem[], runs: RoutineRun[], now: Date, windowDays = 14): Stats {
+export function computeStats(items: WorkItem[], now: Date, windowDays = 14): Stats {
   const byStatus = Object.fromEntries(WORK_STATUSES.map((s) => [s, 0])) as Record<WorkStatus, number>;
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (windowDays - 1)));
   const daily: DailyPoint[] = [];
@@ -66,7 +65,5 @@ export function computeStats(items: WorkItem[], runs: RoutineRun[], now: Date, w
   cycles.sort((a, b) => a - b);
   const mid = cycles.length >> 1;
   const medianCycleMinutes = cycles.length ? Math.round(cycles.length % 2 ? cycles[mid]! : (cycles[mid - 1]! + cycles[mid]!) / 2) : null;
-  const runCounts = { succeeded: 0, failed: 0, partial: 0, running: 0 };
-  for (const run of runs) if (run.startedAt >= startIso) runCounts[run.status]++;
-  return { byStatus, daily, windowDays, startedInWindow, doneInWindow, failedInWindow, medianCycleMinutes, totalTracked: items.length, runs: runCounts };
+  return { byStatus, daily, windowDays, startedInWindow, doneInWindow, failedInWindow, medianCycleMinutes, totalTracked: items.length };
 }

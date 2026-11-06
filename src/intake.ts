@@ -1,10 +1,12 @@
-// GitHub issue intake: find eligible issues, spawn one agent thread per issue.
+// Intake: turn GitHub issues (or a task typed by the operator) into work
+// items and start them on the workflow. The first stage prompt spawns the
+// agent thread (see delivery.ts), so starting is just a "start" event.
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
-import { issueBranchName, repoKey, type RepoConfig } from "./config";
+import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
 import type { GitHubClient, GitHubIssue } from "./github";
-import { spawnWorktreeThread, threadUrl } from "./threads";
-import { transition } from "./machine";
+import { dispatch } from "./delivery";
+import type { WorkItem } from "./state";
 
 export interface IntakeResult {
   repo: string;
@@ -20,52 +22,50 @@ const MAX_CONVENTIONS = 8_000;
 
 export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Promise<GitHubIssue[]> {
   const filter = repo.issueFilter;
-  if (filter.numbers.length) {
-    const issues: GitHubIssue[] = [];
-    for (const number of filter.numbers) {
-      const issue = await github.getIssue(repo.owner, repo.repo, number);
-      if (issue.state === "open" && !issue.pull_request) issues.push(issue);
-    }
-    return issues;
-  }
-  if (!filter.labels.length && !filter.milestone && !filter.assignee) return [];
-  return github.listOpenIssues(repo.owner, repo.repo, { labels: filter.labels, milestone: filter.milestone, assignee: filter.assignee });
+  // No filter would mean "every open issue": never do that implicitly.
+  if (!filter.labels.length && !filter.assignee) return [];
+  return github.listOpenIssues(repo.owner, repo.repo, { labels: filter.labels, assignee: filter.assignee });
 }
 
-export async function buildIssuePrompt(github: GitHubClient, repo: RepoConfig, issue: GitHubIssue, branch: string): Promise<string> {
-  const comments = await github.listIssueComments(repo.owner, repo.repo, issue.number).catch(() => []);
-  const conventions: string[] = [];
-  for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"]) {
-    const content = await github.getFileContent(repo.owner, repo.repo, file).catch(() => null);
-    if (content) conventions.push(`### ${file}\n${content.slice(0, MAX_CONVENTIONS)}`);
-    if (conventions.length >= 2) break;
+/**
+ * What the agent is asked to do and the repo's conventions. Sent once, when a
+ * thread is spawned; stage prompts that follow refer back to it.
+ */
+export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Promise<string> {
+  let github: GitHubClient | null = null;
+  try {
+    github = await cos.github();
+  } catch {
+    github = null;
   }
-  const lines = [
-    `You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.title}`,
-    ``,
-    `Your workspace is an isolated git worktree. Commit your work on the current branch (${branch}); do not push and do not open a pull request. The Chief of Staff plugin runs the repo checks, pushes the branch and opens the PR when you finish.`,
-    ``,
-    `When you are done, end your final message with two sections:`,
-    `## Summary` ,
-    `(what changed and why)`,
-    `## Test evidence`,
-    `(commands you ran and their results)`,
-    repo.checkCommand ? `\nThe check command that must pass before a PR is opened: \`${repo.checkCommand}\`` : ``,
-    ``,
-    `## Issue #${issue.number}: ${issue.title}`,
-    issue.html_url,
-    ``,
-    (issue.body ?? "(no description)").slice(0, MAX_BODY),
-  ];
-  if (comments.length) {
-    lines.push(``, `## Issue comments`);
-    for (const comment of comments.slice(-10)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
+  const lines: string[] = [];
+  const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(() => null) : null;
+  if (issue && github) {
+    const comments = await github.listIssueComments(repo.owner, repo.repo, issue.number).catch(() => []);
+    lines.push(`You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.title}`, issue.html_url, ``, (issue.body ?? "(no description)").slice(0, MAX_BODY));
+    if (comments.length) {
+      lines.push(``, `## Issue comments`);
+      for (const comment of comments.slice(-10)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
+    }
+  } else if (item.issueNumber) {
+    lines.push(`You are working on GitHub issue #${item.issueNumber} in ${repo.owner}/${repo.repo}: ${item.issueTitle}`, `(The issue could not be loaded; read it with \`gh issue view ${item.issueNumber}\`.)`);
+  } else {
+    lines.push(`You are working on a task in ${repo.owner}/${repo.repo}: ${item.issueTitle}`, ``, (item.taskBody ?? "(no description)").slice(0, MAX_BODY));
   }
-  if (conventions.length) lines.push(``, `## Repository conventions`, ...conventions);
+  lines.push(``, `Your workspace is an isolated git worktree. Chief of Staff (a BB plugin) takes this task through its delivery workflow one stage at a time and tells you which stage you are in.`);
+  if (github) {
+    const conventions: string[] = [];
+    for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"]) {
+      const content = await github.getFileContent(repo.owner, repo.repo, file).catch(() => null);
+      if (content) conventions.push(`### ${file}\n${content.slice(0, MAX_CONVENTIONS)}`);
+      if (conventions.length >= 2) break;
+    }
+    if (conventions.length) lines.push(``, `## Repository conventions`, ...conventions);
+  }
   return lines.join("\n");
 }
 
-export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string } ): Promise<IntakeResult[]> {
+export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
   const config = await cos.config();
   const results: IntakeResult[] = [];
   let github: GitHubClient;
@@ -80,8 +80,8 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     if (opts.repo && opts.repo !== key) continue;
     const result: IntakeResult = { repo: key, considered: 0, started: [], skipped: [] };
     results.push(result);
-    if (!repo.allow.intake) {
-      result.error = "intake disabled for this repo (allow.intake=false)";
+    if (!repo.intake) {
+      result.error = "intake is paused for this repo";
       continue;
     }
     try {
@@ -92,25 +92,22 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
           result.skipped.push({ issue: issue.number, reason: "active thread exists" });
           continue;
         }
-        const pr = await github.findOpenPullForIssue(repo.owner, repo.repo, issue.number, repo.branchPrefix);
+        const pr = await github.findOpenPullForIssue(repo.owner, repo.repo, issue.number, BRANCH_PREFIX);
         if (pr) {
           result.skipped.push({ issue: issue.number, reason: `open PR #${pr.number}` });
           continue;
         }
-        if (cos.store.countActive(key) >= repo.maxConcurrent) {
-          result.skipped.push({ issue: issue.number, reason: `repo at max concurrency (${repo.maxConcurrent})` });
-          continue;
-        }
-        if (cos.store.countActiveAll() >= config.values.maxConcurrentTotal) {
-          result.skipped.push({ issue: issue.number, reason: `global max concurrency (${config.values.maxConcurrentTotal})` });
+        const capacity = capacityProblem(cos, repo, config.values.maxConcurrentTotal);
+        if (capacity) {
+          result.skipped.push({ issue: issue.number, reason: capacity });
           continue;
         }
         if (opts.dryRun) {
           result.started.push({ issue: issue.number, threadId: "(dry-run)" });
           continue;
         }
-        const started = await startIssue(cos, github, repo, issue, opts.actor);
-        result.started.push({ issue: issue.number, threadId: started.threadId ?? "?" });
+        const item = await startIssue(cos, repo, issue, opts.actor);
+        result.started.push({ issue: issue.number, threadId: item?.threadId ?? "?" });
       }
     } catch (error) {
       result.error = await cos.safe(error instanceof Error ? error.message : String(error));
@@ -121,67 +118,54 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
   return results;
 }
 
-export async function startIssue(cos: Cos, github: GitHubClient, repo: RepoConfig, issue: GitHubIssue, actor: string) {
-  const key = repoKey(repo);
-  const branch = issueBranchName(repo, issue.number, issue.title);
-  const item = cos.store.insertWorkItem({
+function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number): string | null {
+  if (cos.store.countActive(repoKey(repo)) >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
+  if (cos.store.countActiveAll() >= maxTotal) return `global max concurrency (${maxTotal})`;
+  return null;
+}
+
+function newItem(repo: RepoConfig, fields: { issueNumber: number | null; issueTitle: string; branch: string; source: string; taskBody?: string | null }) {
+  return {
     id: randomUUID(),
-    repo: key,
-    issueNumber: issue.number,
-    issueTitle: issue.title,
+    repo: repoKey(repo),
     threadId: null,
     environmentId: null,
-    branch,
     prNumber: null,
     prUrl: null,
-    status: "queued",
+    status: "queued" as const,
+    stage: "build" as const,
     providerId: null,
     model: null,
     fixAttempts: 0,
     retryCount: 0,
     lastError: null,
     checkOutput: null,
-    source: "intake",
     lastActivityAt: null,
     finishedAt: null,
-  });
-  cos.store.log({ level: "info", kind: "intake", repo: key, workItemId: item.id, message: `picked up issue #${issue.number}: ${issue.title}`, actor });
-  return spawnForItem(cos, github, repo, item.id, issue, actor);
+    ...fields,
+  };
 }
 
-/** Spawn (or respawn) the agent thread for a queued work item. */
-export async function spawnForItem(cos: Cos, github: GitHubClient, repo: RepoConfig, itemId: string, issue: GitHubIssue | null, actor: string) {
-  const item = cos.store.getWorkItem(itemId);
-  if (!item) throw new Error(`work item ${itemId} not found`);
-  const key = repoKey(repo);
-  const resolvedIssue = issue ?? (item.issueNumber ? await github.getIssue(repo.owner, repo.repo, item.issueNumber) : null);
-  const branch = item.branch ?? (resolvedIssue ? issueBranchName(repo, resolvedIssue.number, resolvedIssue.title) : `${repo.branchPrefix}${item.id.slice(0, 8)}`);
-  const prompt = resolvedIssue ? await buildIssuePrompt(github, repo, resolvedIssue, branch) : `Continue the work tracked by Chief of Staff item ${item.id}.`;
-  try {
-    const spawned = await spawnWorktreeThread(cos, {
-      repo,
-      title: branch,
-      prompt,
-      pluginMetadata: { workItemId: item.id, repo: key, issueNumber: item.issueNumber, branch },
-    });
-    const next = transition(item, { type: "thread_spawned", threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null });
-    cos.store.updateWorkItem(item.id, { ...next.patch, status: next.status, providerId: spawned.providerId, model: spawned.model, lastActivityAt: cos.now().toISOString() });
-    cos.store.log({ level: "info", kind: "spawn", repo: key, workItemId: item.id, message: `spawned thread ${spawned.thread.id} on ${spawned.hostId} (${spawned.providerId ?? "default provider"}${spawned.model ? ` / ${spawned.model}` : ""})`, actor });
-    if (resolvedIssue && item.retryCount === 0) {
-      const url = threadUrl(cos, spawned.thread.id);
-      await github
-        .createIssueComment(repo.owner, repo.repo, resolvedIssue.number, `🤖 Chief of Staff started an agent on this issue.\n\nBB thread: ${url}\nBranch: \`${branch}\``)
-        .catch((error) => cos.bb.log.warn(`issue comment failed: ${error instanceof Error ? error.message : String(error)}`));
-    }
-    void recordEnvironmentBranch(cos, item.id, spawned.thread.id);
-    return { threadId: spawned.thread.id };
-  } catch (error) {
-    const message = await cos.safe(error instanceof Error ? error.message : String(error));
-    cos.store.updateWorkItem(item.id, { status: "failed", lastError: `spawn failed: ${message}`, finishedAt: cos.now().toISOString() });
-    cos.store.log({ level: "error", kind: "spawn", repo: key, workItemId: item.id, message: `spawn failed: ${message}`, actor });
-    await cos.notify(`Could not start agent for ${key}#${item.issueNumber ?? "?"}`, message);
-    return { threadId: null };
+export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue, actor: string): Promise<WorkItem | null> {
+  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(issue.number, issue.title), source: "intake" }));
+  cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `picked up issue #${issue.number}: ${issue.title}`, actor });
+  return dispatch(cos, item.id, { type: "start" }, actor);
+}
+
+/** Start a task the operator described, without a GitHub issue. */
+export async function startTask(cos: Cos, input: { repo: string; title: string; body: string; force?: boolean }, actor: string): Promise<WorkItem | null> {
+  const repo = await cos.repo(input.repo);
+  if (!repo) throw new Error(`repo ${input.repo} is not configured`);
+  const title = input.title.trim();
+  if (!title) throw new Error("the task needs a title");
+  if (!input.force) {
+    const capacity = capacityProblem(cos, repo, (await cos.config()).values.maxConcurrentTotal);
+    if (capacity) throw new Error(`${capacity}; try again later`);
   }
+  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: null, issueTitle: title, branch: `${BRANCH_PREFIX}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: input.body.trim() || title }));
+  cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `started task: ${title}`, actor });
+  cos.invalidate();
+  return dispatch(cos, item.id, { type: "start" }, actor);
 }
 
 /** BB names the worktree branch itself; record the real name once the environment is ready. */

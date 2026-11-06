@@ -19,16 +19,13 @@ prompt built from the issue, its comments and the repo's conventions, plus a
 comment on the issue linking the thread. An issue with an active thread or an
 open PR is never picked up twice.
 
-## PR delivery
+## Delivery workflow
 
-When the agent finishes, the repo's check command runs on the branch, the
-branch is pushed and a PR is opened with a summary, `Closes #n`, the agent and
-model used, and test evidence. CI failures are fed back to the same thread
-for a bounded number of fix cycles, then the item waits for a human.
-
-## Routines
-
-Define named routines with a cron expression or interval and ordered steps:
-`batch_merge`, `release`, `deploy`, `run_agent`, `notify`. Every run logs each
-step's outcome, dry-run mode reports without mutating anything, and merge,
-release and deploy are gated behind per-repo allow flags.
+Every task goes through Plan → Build → Verify → Review → Ship. Switch stages
+on or off and give each one your own instructions, globally or per repository.
+The plan can wait for your approval; verification runs the repo's command and
+can ask the agent to exercise the change; review uses a fresh reviewer agent or
+self-review; shipping means pushing, opening a PR, or merging it when CI is
+green. Agents report each finished stage explicitly, failures loop back to
+Build on a budget, and you always see who holds the ball: the agent, Chief of
+Staff, or you.

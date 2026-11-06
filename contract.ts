@@ -14,7 +14,7 @@ export const execInputSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   /** Run through `sh -c` with `command` as the script; `args` ignored. */
   shell: z.boolean().default(false),
-  timeoutMs: z.number().int().positive().max(30 * 60_000).default(10 * 60_000),
+  timeoutMs: z.number().int().positive().max(4 * 60 * 60_000).default(10 * 60_000),
   /** Bound output kept per stream (tail). */
   maxOutputBytes: z.number().int().positive().max(2_000_000).default(200_000),
 });

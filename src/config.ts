@@ -1,22 +1,12 @@
-// Typed configuration parsed from plugin settings. Repos and routines are
-// stored as JSON documents in multiline string settings (validated here).
+// Typed configuration parsed from plugin settings. Repos are stored as a JSON
+// document in a multiline string setting (validated here).
 import { z } from "zod";
+import { workflowOverrideSchema } from "./workflow";
 
 export const issueFilterSchema = z.object({
   labels: z.array(z.string()).default([]),
-  milestone: z.string().optional(),
   /** GitHub login the issue must be assigned to (e.g. a bot account). */
   assignee: z.string().optional(),
-  /** Explicit issue numbers; when set, only these are eligible. */
-  numbers: z.array(z.number().int().positive()).default([]),
-});
-
-export const repoAllowSchema = z.object({
-  intake: z.boolean().default(true),
-  openPr: z.boolean().default(true),
-  merge: z.boolean().default(false),
-  release: z.boolean().default(false),
-  deploy: z.boolean().default(false),
 });
 
 export const repoConfigSchema = z.object({
@@ -28,80 +18,50 @@ export const repoConfigSchema = z.object({
   projectId: z.string().min(1),
   /** Host that owns the checkout. Defaults to the project's default source host. */
   hostId: z.string().optional(),
-  issueFilter: issueFilterSchema.default({ labels: ["agent-ready"], numbers: [] }),
+  /** Pick up matching issues automatically. Off: only tasks you start. */
+  intake: z.boolean().default(true),
+  issueFilter: issueFilterSchema.default({ labels: ["agent-ready"] }),
   maxConcurrent: z.number().int().min(0).default(2),
   providerId: z.string().optional(),
   model: z.string().optional(),
   reasoningLevel: z.string().optional(),
   permissionMode: z.enum(["accept-edits", "auto", "full"]).default("auto"),
-  /** Shell command run in the branch workspace before a PR is opened. */
-  checkCommand: z.string().optional(),
-  /** Shell command run by the `deploy` step. */
-  deployCommand: z.string().optional(),
-  /** GitHub Actions workflow file name (e.g. deploy.yml) for workflow_dispatch. */
-  deployWorkflow: z.string().optional(),
-  branchPrefix: z.string().default("cos/"),
-  /** Rename the BB-created worktree branch to `<branchPrefix>issue-<n>-<slug>`. */
-  renameBranch: z.boolean().default(true),
-  allow: repoAllowSchema.default({ intake: true, openPr: true, merge: false, release: false, deploy: false }),
+  /** GitHub logins asked to review the pull requests Chief of Staff opens. */
   reviewers: z.array(z.string()).default([]),
-  teamReviewers: z.array(z.string()).default([]),
-  labels: z.array(z.string()).default([]),
+  /** How Ship merges when its action is "merge". */
   mergeStrategy: z.enum(["merge", "squash", "rebase"]).default("squash"),
-  /** Only merge PRs opened by this plugin (branch prefix match) by default. */
-  mergeFilter: z
-    .object({ labels: z.array(z.string()).default([]), onlyOwnBranches: z.boolean().default(true), requireApproval: z.boolean().default(true) })
-    .default({ labels: [], onlyOwnBranches: true, requireApproval: true }),
-  conflictHandling: z.enum(["skip", "rebase-via-agent"]).default("skip"),
-  versionStrategy: z.enum(["patch", "minor", "major", "calver", "conventional"]).default("patch"),
-  versionFile: z.string().default("package.json"),
-  tagPrefix: z.string().default("v"),
+  /** Per-stage overrides of the global workflow (any subset of fields). */
+  workflow: workflowOverrideSchema.optional(),
 });
 /** A repo entry with owner/repo resolved (explicitly or from the project remote). */
 export type RepoConfig = z.output<typeof repoConfigSchema> & { owner: string; repo: string };
 export type IssueFilter = z.output<typeof issueFilterSchema>;
 
-export const reposDocumentSchema = z.object({ repos: z.array(repoConfigSchema).default([]) });
+/** Branches Chief of Staff names start with this. */
+export const BRANCH_PREFIX = "cos/";
 
-export const routineStepSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("batch_merge"), strategy: z.enum(["merge", "squash", "rebase"]).optional(), labels: z.array(z.string()).optional(), conflictHandling: z.enum(["skip", "rebase-via-agent"]).optional(), requireApproval: z.boolean().optional() }),
-  z.object({ type: z.literal("release"), strategy: z.enum(["patch", "minor", "major", "calver", "conventional"]).optional(), draft: z.boolean().default(false) }),
-  z.object({ type: z.literal("deploy"), command: z.string().optional(), workflow: z.string().optional(), ref: z.string().optional(), inputs: z.record(z.string(), z.string()).optional(), pollTimeoutMinutes: z.number().int().positive().default(30) }),
-  z.object({ type: z.literal("run_agent"), prompt: z.string().min(1), title: z.string().optional(), providerId: z.string().optional(), model: z.string().optional(), waitMinutes: z.number().int().min(0).default(0) }),
-  z.object({ type: z.literal("notify"), title: z.string().min(1), body: z.string().optional() }),
-]);
-export type RoutineStep = z.output<typeof routineStepSchema>;
+/**
+ * Fold settings from before the workflow into the current shape: `checkCommand`
+ * becomes the repo's verify command, `allow.intake: false` pauses intake, and
+ * `mergeFilter.requireApproval: false` lifts the merge approval gate. Every
+ * other legacy key (deploy, release, routines-only options) is dropped.
+ */
+export function migrateLegacyRepo(entry: unknown): unknown {
+  if (!entry || typeof entry !== "object") return entry;
+  const e = { ...(entry as Record<string, unknown>) };
+  const workflow = { ...((e.workflow as Record<string, Record<string, unknown>> | undefined) ?? {}) };
+  if (typeof e.checkCommand === "string" && e.checkCommand.trim() && !workflow.verify?.command) workflow.verify = { ...workflow.verify, command: e.checkCommand.trim() };
+  const mergeFilter = e.mergeFilter as { requireApproval?: unknown } | undefined;
+  if (mergeFilter?.requireApproval === false && workflow.ship?.requireApproval === undefined) workflow.ship = { ...workflow.ship, requireApproval: false };
+  const allow = e.allow as { intake?: unknown } | undefined;
+  if (allow?.intake === false && e.intake === undefined) e.intake = false;
+  if (Object.keys(workflow).length) e.workflow = workflow;
+  const filter = e.issueFilter as Record<string, unknown> | undefined;
+  if (filter) e.issueFilter = { labels: filter.labels, ...(filter.assignee ? { assignee: filter.assignee } : {}) };
+  return e;
+}
 
-export const routineSchema = z.object({
-  name: z.string().min(1).regex(/^[a-zA-Z0-9][a-zA-Z0-9 _.-]*$/),
-  enabled: z.boolean().default(true),
-  /** 5-field cron expression (server local time unless `timezone` set). */
-  cron: z.string().optional(),
-  /** Interval alternative to cron, e.g. "30m", "6h", "1d". */
-  every: z.string().regex(/^\d+(m|h|d)$/).optional(),
-  timezone: z.string().optional(),
-  /** "owner/repo" this routine acts on. */
-  repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
-  dryRun: z.boolean().default(false),
-  /** Stop at the first failed step (default) or keep going. */
-  continueOnError: z.boolean().default(false),
-  steps: z.array(routineStepSchema).min(1),
-});
-export type Routine = z.output<typeof routineSchema>;
-export const routinesDocumentSchema = z.object({ routines: z.array(routineSchema).default([]) });
-
-export const SEED_ROUTINES = {
-  routines: [
-    {
-      name: "Nightly ship",
-      enabled: false,
-      cron: "0 2 * * *",
-      repo: "owner/repo",
-      dryRun: true,
-      steps: [{ type: "batch_merge" }, { type: "release", strategy: "patch" }, { type: "deploy" }],
-    },
-  ],
-};
+export const reposDocumentSchema = z.object({ repos: z.array(z.preprocess(migrateLegacyRepo, repoConfigSchema)).default([]) });
 
 /** projectId of the seeded example entry; ignored until edited. */
 export const PLACEHOLDER_PROJECT_ID = "proj_xxxxxxxxxx";
@@ -112,8 +72,6 @@ export const SEED_REPOS = {
       projectId: PLACEHOLDER_PROJECT_ID,
       issueFilter: { labels: ["agent-ready"] },
       maxConcurrent: 2,
-      checkCommand: "npm test",
-      allow: { intake: true, openPr: true, merge: false, release: false, deploy: false },
     },
   ],
 };
@@ -194,24 +152,6 @@ export function parseRepos(raw: string, projects?: ProjectRemotes): ParseResult<
   return { ok: true, value: repos, warnings };
 }
 
-export function parseRoutines(raw: string): ParseResult<Routine[]> {
-  const result = parseJsonDocument(raw, routinesDocumentSchema, { routines: [] });
-  if (!result.ok) return result;
-  const warnings: string[] = [];
-  const seen = new Set<string>();
-  const routines: Routine[] = [];
-  for (const routine of result.value.routines) {
-    if (seen.has(routine.name)) {
-      warnings.push(`duplicate routine ${routine.name} ignored`);
-      continue;
-    }
-    if (!routine.cron && !routine.every) warnings.push(`routine ${routine.name} has no cron/every; manual runs only`);
-    seen.add(routine.name);
-    routines.push(routine);
-  }
-  return { ok: true, value: routines, warnings };
-}
-
 export function repoKey(repo: { owner: string; repo: string }): string {
   return `${repo.owner}/${repo.repo}`;
 }
@@ -226,6 +166,6 @@ export function slugify(text: string, max = 40): string {
   return slug || "issue";
 }
 
-export function issueBranchName(repo: Pick<RepoConfig, "branchPrefix">, issueNumber: number, title: string): string {
-  return `${repo.branchPrefix}issue-${issueNumber}-${slugify(title)}`;
+export function issueBranchName(issueNumber: number, title: string): string {
+  return `${BRANCH_PREFIX}issue-${issueNumber}-${slugify(title)}`;
 }

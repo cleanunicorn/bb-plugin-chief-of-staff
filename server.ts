@@ -6,15 +6,16 @@ import { defineSettings } from "./src/settings";
 import { registerRpc } from "./src/rpc";
 import { registerCli } from "./src/cli";
 import { registerTools } from "./src/tools";
-import { dispatch } from "./src/delivery";
 import { reconcile } from "./src/roster";
-import { handleActive, handleIdle, syncItem } from "./src/sync";
+import { observeActive, observeFailure, observeIdle, observeInteraction, snapshotOf, syncThread } from "./src/sync";
 import { describeInteraction } from "./src/threads";
 import { sweep } from "./src/sweep";
+import { newJobGeneration } from "./src/delivery";
 
 export type { rpcContract } from "./rpcContract";
 
 export default async function plugin(bb: BbPluginApi) {
+  newJobGeneration();
   const settings = defineSettings(bb);
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
@@ -25,7 +26,8 @@ export default async function plugin(bb: BbPluginApi) {
   registerCli(bb, cos);
   registerTools(bb, cos);
 
-  // ---- thread lifecycle → state machine ----
+  // ---- thread lifecycle → stage machine ----
+  // Builder and reviewer threads both map to their work item.
   const touch = (threadId: string) => {
     const item = store.getWorkItemByThread(threadId);
     if (item) store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
@@ -36,36 +38,37 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.active", async ({ thread }) => {
     const item = touch(thread.id);
-    if (item) await handleActive(cos, item, "event");
+    if (item) await observeActive(cos, item.id, thread.id, "event");
   });
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     const item = touch(thread.id);
-    if (item) await handleIdle(cos, item, lastAssistantText, "event");
+    if (item) await observeIdle(cos, item.id, thread.id, snapshotOf(thread as never), lastAssistantText, "event");
   });
   bb.events.on("thread.failed", async ({ thread, error }) => {
     const item = touch(thread.id);
-    if (item) await dispatch(cos, item.id, { type: "thread_failed", error: error ?? "thread errored" }, "event");
+    if (item) await observeFailure(cos, item.id, thread.id, error ?? "thread errored", "event");
   });
   bb.events.on("interaction.pending", async ({ thread, interaction }) => {
     const item = touch(thread.id);
-    if (item) await dispatch(cos, item.id, { type: "thread_waiting_on_human", reason: describeInteraction(interaction) }, "event");
+    if (item) await observeInteraction(cos, item.id, thread.id, describeInteraction(interaction), "event");
   });
   bb.events.on("thread.archived", async ({ thread }) => {
     const item = store.getWorkItemByThread(thread.id);
-    if (item && !["done", "failed"].includes(item.status)) await dispatch(cos, item.id, { type: "thread_failed", error: "thread archived" }, "event");
+    // The reviewer's thread being archived after review is housekeeping, not a failure.
+    if (item && !(item.reviewThreadId === thread.id && item.stage !== "review")) await observeFailure(cos, item.id, thread.id, "thread archived", "event");
   });
   bb.events.on("thread.unarchived", async ({ thread }) => {
-    // Unarchiving brings the item back: resume it and let sync pick up the thread's state.
+    // Unarchiving brings the item back: let sync read the thread's state.
     const item = store.getWorkItemByThread(thread.id);
     if (item?.status === "failed" && item.lastError === "thread archived") {
-      await dispatch(cos, item.id, { type: "human_resume" }, "event");
-      const resumed = store.getWorkItem(item.id);
-      if (resumed) await syncItem(cos, resumed, "event");
+      store.updateWorkItem(item.id, { status: "blocked", finishedAt: null });
+      await syncThread(cos, store.getWorkItem(item.id) ?? item, snapshotOf(thread as never), "event");
+      cos.invalidate();
     }
   });
   bb.events.on("thread.deleted", async ({ thread }) => {
     const item = store.getWorkItemByThread(thread.id);
-    if (item && !["done", "failed"].includes(item.status)) await dispatch(cos, item.id, { type: "thread_failed", error: "thread deleted" }, "event");
+    if (item && !(item.reviewThreadId === thread.id && item.stage !== "review")) await observeFailure(cos, item.id, thread.id, "thread deleted", "event");
   });
 
   settings.onChange(() => cos.invalidate());

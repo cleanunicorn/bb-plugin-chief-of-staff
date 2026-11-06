@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { issueBranchName, parseGitHubRemote, parseRepos, parseRoutines, SEED_REPOS, SEED_ROUTINES, slugify } from "../src/config";
-import { nextVersion, conventionalBump } from "../src/version";
+import { issueBranchName, parseGitHubRemote, parseRepos, SEED_REPOS, slugify } from "../src/config";
 
 describe("config parsing", () => {
   it("ignores the seed placeholder repo with a warning", () => {
@@ -9,13 +8,29 @@ describe("config parsing", () => {
     expect(result.ok && result.warnings[0]).toMatch(/placeholder/);
   });
 
-  it("applies defaults and least-privilege allow flags", () => {
+  it("applies defaults", () => {
     const result = parseRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value[0].allow).toEqual({ intake: true, openPr: true, merge: false, release: false, deploy: false });
-    expect(result.value[0].issueFilter.labels).toEqual(["agent-ready"]);
-    expect(result.value[0].branchPrefix).toBe("cos/");
+    expect(result.value[0]).toMatchObject({ intake: true, maxConcurrent: 2, mergeStrategy: "squash", reviewers: [], issueFilter: { labels: ["agent-ready"] } });
+    expect(result.value[0].workflow).toBeUndefined();
+  });
+
+  it("folds legacy keys into the current shape and drops the rest", () => {
+    const legacy = {
+      owner: "acme", repo: "app", projectId: "proj_1",
+      checkCommand: "npm test", allow: { intake: false, openPr: true, merge: true, release: true, deploy: true },
+      mergeFilter: { requireApproval: false, onlyOwnBranches: true, labels: [] },
+      issueFilter: { labels: ["bot"], milestone: "v2", numbers: [3] },
+      deployCommand: "./deploy.sh", versionStrategy: "minor", branchPrefix: "x/",
+    };
+    const result = parseRepos(JSON.stringify({ repos: [legacy] }));
+    if (!result.ok) throw new Error(result.error);
+    const repo = result.value[0] as unknown as Record<string, unknown>;
+    expect(repo.intake).toBe(false);
+    expect(repo.workflow).toEqual({ verify: { command: "npm test" }, ship: { requireApproval: false } });
+    expect(repo.issueFilter).toEqual({ labels: ["bot"] });
+    for (const gone of ["checkCommand", "allow", "mergeFilter", "deployCommand", "versionStrategy", "branchPrefix"]) expect(repo[gone]).toBeUndefined();
   });
 
   it("parses GitHub remote URLs", () => {
@@ -62,39 +77,11 @@ describe("config parsing", () => {
 
   it("rejects invalid JSON and schema errors", () => {
     expect(parseRepos("{").ok).toBe(false);
-    const bad = parseRoutines(JSON.stringify({ routines: [{ name: "x", repo: "nope", steps: [] }] }));
-    expect(bad.ok).toBe(false);
-  });
-
-  it("parses the seeded Nightly ship routine", () => {
-    const result = parseRoutines(JSON.stringify(SEED_ROUTINES));
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value[0].steps.map((s) => s.type)).toEqual(["batch_merge", "release", "deploy"]);
-    expect(result.value[0].cron).toBe("0 2 * * *");
-    expect(result.value[0].enabled).toBe(false);
+    expect(parseRepos(JSON.stringify({ repos: [{ projectId: "p", maxConcurrent: "lots" }] })).ok).toBe(false);
   });
 
   it("builds branch names", () => {
     expect(slugify("Fix: Login Page crashes!!")).toBe("fix-login-page-crashes");
-    expect(issueBranchName({ branchPrefix: "cos/" }, 42, "Add OAuth support")).toBe("cos/issue-42-add-oauth-support");
-  });
-});
-
-describe("version strategies", () => {
-  it("bumps semver", () => {
-    expect(nextVersion("v1.2.3", "patch", { prefix: "v" })).toBe("1.2.4");
-    expect(nextVersion("v1.2.3", "minor", { prefix: "v" })).toBe("1.3.0");
-    expect(nextVersion(null, "major", { prefix: "v" })).toBe("1.0.0");
-  });
-  it("derives conventional bumps from merged PR titles", () => {
-    expect(conventionalBump(["fix: a", "feat: b"])).toBe("minor");
-    expect(conventionalBump(["feat!: breaking"])).toBe("major");
-    expect(nextVersion("v1.0.0", "conventional", { prefix: "v", mergedTitles: ["fix: x"] })).toBe("1.0.1");
-  });
-  it("produces calver with collision suffixes", () => {
-    const now = new Date("2026-11-05T10:00:00Z");
-    expect(nextVersion(null, "calver", { prefix: "v", now })).toBe("2026.11.05");
-    expect(nextVersion(null, "calver", { prefix: "v", now, existingCalverTags: ["v2026.11.05"] })).toBe("2026.11.05.1");
+    expect(issueBranchName(42, "Add OAuth support")).toBe("cos/issue-42-add-oauth-support");
   });
 });

@@ -37,6 +37,37 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
   return { thread, providerId: thread.providerId ?? providerId ?? null, model: model ?? null, hostId: checkout.hostId };
 }
 
+export interface ReviewerSpawnOptions {
+  repo: RepoConfig;
+  /** The builder's environment: the reviewer reads the same worktree. */
+  environmentId: string;
+  parentThreadId?: string;
+  title: string;
+  prompt: string;
+  pluginMetadata: Record<string, string | number | boolean | null>;
+}
+
+/** Spawn the independent reviewer in the builder's workspace (it sees exactly what was built). */
+export async function spawnReviewerThread(cos: Cos, opts: ReviewerSpawnOptions) {
+  const { values } = await cos.config();
+  const providerId = opts.repo.providerId || values.defaultProviderId || undefined;
+  const model = opts.repo.model || values.defaultModel || undefined;
+  const thread = await cos.bb.sdk.threads.spawn({
+    projectId: opts.repo.projectId,
+    environment: { type: "reuse", environmentId: opts.environmentId },
+    prompt: opts.prompt,
+    title: opts.title,
+    ...(providerId ? { providerId } : {}),
+    ...(model ? { model } : {}),
+    ...(opts.repo.reasoningLevel ? { reasoningLevel: opts.repo.reasoningLevel } : {}),
+    permissionMode: opts.repo.permissionMode,
+    visibility: "visible",
+    pluginMetadata: opts.pluginMetadata,
+    ...(opts.parentThreadId ? { parentThreadId: opts.parentThreadId } : {}),
+  });
+  return { thread };
+}
+
 export interface ThreadUsage {
   inputTokens: number | null;
   outputTokens: number | null;

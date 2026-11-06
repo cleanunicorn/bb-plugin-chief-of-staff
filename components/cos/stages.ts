@@ -1,14 +1,13 @@
-// Pipeline stages shown on the dashboard, grouped from the raw work-item status.
+// Dashboard grouping of work items by workflow stage, plus who holds the ball.
 // In-flight stages take the ordinal blue ramp; stages that need attention take a status color.
 import type { Palette, Tone } from "./viz";
 import { STATUS } from "./viz";
 
-export type StageKey = "queued" | "coding" | "checking" | "review" | "fixing" | "human";
+export type StageKey = "queued" | "plan" | "build" | "verify" | "review" | "ship" | "human";
 
 export interface Stage {
   key: StageKey;
   label: string;
-  details: string[];
   icon: string;
   ramp?: number;
   tone?: Exclude<Tone, "neutral" | "info">;
@@ -16,16 +15,25 @@ export interface Stage {
 }
 
 export const STAGES: Stage[] = [
-  { key: "queued", label: "Queued", details: ["queued"], icon: "Clock", ramp: 0, hint: "Waiting for a free agent slot" },
-  { key: "coding", label: "Coding", details: ["running"], icon: "Bot", ramp: 1, hint: "Agent is working in its thread" },
-  { key: "checking", label: "Checks", details: ["checking"], icon: "FlaskConical", ramp: 2, hint: "Running the repo's check command" },
-  { key: "review", label: "PR open", details: ["pr_open"], icon: "GitPullRequest", ramp: 3, hint: "Pull request open, CI running or green" },
-  { key: "fixing", label: "Fixing CI", details: ["ci_failed", "fixing"], icon: "Wrench", tone: "serious", hint: "CI failed; agent is fixing it" },
-  { key: "human", label: "Needs you", details: ["waiting_on_human", "blocked"], icon: "Hand", tone: "warning", hint: "Agent stopped and is waiting on a person" },
+  { key: "queued", label: "Queued", icon: "Clock", ramp: 0, hint: "Waiting for a free agent slot" },
+  { key: "plan", label: "Plan", icon: "ClipboardList", ramp: 1, hint: "Agent investigates and writes a plan" },
+  { key: "build", label: "Build", icon: "Hammer", ramp: 2, hint: "Agent implements and commits" },
+  { key: "verify", label: "Verify", icon: "FlaskConical", ramp: 3, hint: "Verify command and/or agent verification" },
+  { key: "review", label: "Review", icon: "SearchCheck", ramp: 4, hint: "Independent reviewer or self-review" },
+  { key: "ship", label: "Ship", icon: "GitPullRequest", ramp: 5, hint: "Push, pull request, CI, merge" },
+  { key: "human", label: "Needs you", icon: "Hand", tone: "warning", hint: "Waiting on a person: a question, a plan to approve, or an escalation" },
 ];
 
-export function stageOf(detail: string): Stage | null {
-  return STAGES.find((s) => s.details.includes(detail)) ?? null;
+export const STEP_LABEL: Record<string, string> = { plan: "Plan", build: "Build", verify: "Verify", review: "Review", ship: "Ship", done: "Done" };
+
+type EntryLike = { stage: string; detail: string };
+
+/** The dashboard group an entry belongs to (null for finished items). */
+export function stageOf(entry: EntryLike): Stage | null {
+  if (entry.detail === "done" || entry.detail === "failed") return null;
+  if (entry.detail === "waiting_on_human" || entry.detail === "blocked") return STAGES.find((s) => s.key === "human")!;
+  if (entry.detail === "queued") return STAGES.find((s) => s.key === "queued")!;
+  return STAGES.find((s) => s.key === entry.stage) ?? null;
 }
 
 export function stageColor(stage: Stage, palette: Palette): string {
@@ -33,24 +41,21 @@ export function stageColor(stage: Stage, palette: Palette): string {
   return palette.ramp[stage.ramp ?? 0] ?? palette.accent;
 }
 
-// Progress stepper positions: Queued -> Coding -> Checks -> PR -> Done.
-export const STEPS = ["Queued", "Coding", "Checks", "PR", "Done"] as const;
-
-export function stepIndex(detail: string, hasPr: boolean): number {
-  switch (detail) {
-    case "queued":
-      return 0;
-    case "running":
-      return 1;
-    case "checking":
-      return 2;
-    case "pr_open":
-    case "ci_failed":
-    case "fixing":
-      return 3;
-    case "done":
-      return 4;
-    default:
-      return hasPr ? 3 : 1;
-  }
+/** Stepper positions: the repo's enabled stages, then Done. */
+export function steps(entry: { stages: string[] }): string[] {
+  return [...entry.stages, "done"];
 }
+
+export function stepIndex(entry: { stage: string; stages: string[]; detail: string }): number {
+  if (entry.detail === "done") return entry.stages.length;
+  const i = entry.stages.indexOf(entry.stage);
+  return i >= 0 ? i : 0;
+}
+
+export const ACTOR: Record<string, { label: string; icon: string }> = {
+  agent: { label: "Agent", icon: "Bot" },
+  cos: { label: "Chief of Staff", icon: "Cog" },
+  human: { label: "You", icon: "Hand" },
+  system: { label: "Retrying", icon: "RefreshCw" },
+  none: { label: "", icon: "Circle" },
+};

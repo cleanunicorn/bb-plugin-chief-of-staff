@@ -1,5 +1,5 @@
-// Visual configurator: repositories, routines, general settings and GitHub
-// access. Edits drafts locally, then saves through cos_set_config (the same
+// Visual configurator: the delivery workflow, repositories, general settings
+// and GitHub access. Edits drafts locally, then saves through cos_set_config (the same
 // JSON documents the server parses) and cos_set_settings (scalar settings).
 import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -7,28 +7,11 @@ import { experimental_useRpcQuery, useRealtime, useRpc } from "@get-bb/plugin-sd
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
-import type { RepoConfig, Routine, RoutineStep } from "../../src/config";
+import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import {
-  STEP_TYPES,
-  blankRepo,
-  inferIdentity,
-  blankRoutine,
-  blankStep,
-  loadRepos,
-  loadRoutines,
-  parseList,
-  parseRepoSlug,
-  routineHints,
-  scheduleMode,
-  serializeRepos,
-  serializeRoutines,
-  splitEvery,
-  selectProject,
-  validateRepos,
-  validateRoutines,
-} from "../../src/configModel";
-import type { ScheduleMode, StepType } from "../../src/configModel";
+import { blankRepo, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { DEFAULT_WORKFLOW, STAGES as WORKFLOW_STAGES, parseWorkflow, resolveWorkflow, serializeWorkflow, workflowSchema } from "../../src/workflow";
+import type { Stage as WorkflowStage, Workflow, WorkflowOverride } from "../../src/workflow";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
@@ -40,36 +23,13 @@ type Project = SettingsData["projects"][number];
 type Provider = SettingsData["providers"][number];
 
 const SECTIONS = [
+  { id: "workflow", label: "Workflow", icon: "Workflow" },
   { id: "repos", label: "Repositories", icon: "FolderGit2" },
-  { id: "routines", label: "Routines", icon: "CalendarClock" },
   { id: "general", label: "General", icon: "SlidersHorizontal" },
   { id: "access", label: "GitHub access", icon: "KeyRound" },
   { id: "advanced", label: "Advanced JSON", icon: "Braces" },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
-
-const STEP_META: Record<StepType, { label: string; icon: string; hint: string }> = {
-  batch_merge: { label: "Batch merge", icon: "GitMerge", hint: "Merge ready PRs (green CI, approved, own branches by default)." },
-  release: { label: "Release", icon: "Tag", hint: "Bump the version, tag and publish a GitHub release." },
-  deploy: { label: "Deploy", icon: "Rocket", hint: "Run the deploy command or dispatch a workflow." },
-  run_agent: { label: "Run agent", icon: "Bot", hint: "Start an agent thread with a prompt." },
-  notify: { label: "Notify", icon: "Bell", hint: "Send a push or webhook notification." },
-};
-
-const ALLOW_META: { key: keyof RepoConfig["allow"]; label: string; hint: string; ships: boolean }[] = [
-  { key: "intake", label: "Issue intake", hint: "Start agent threads for matching issues.", ships: false },
-  { key: "openPr", label: "Open pull requests", hint: "Push branches and open PRs.", ships: false },
-  { key: "merge", label: "Merge", hint: "Let batch merge merge PRs.", ships: true },
-  { key: "release", label: "Release", hint: "Let routines tag and publish releases.", ships: true },
-  { key: "deploy", label: "Deploy", hint: "Let routines run deploys.", ships: true },
-];
-
-const CRON_PRESETS = [
-  { label: "Every night at 02:00", cron: "0 2 * * *" },
-  { label: "Weekdays at 09:00", cron: "0 9 * * 1-5" },
-  { label: "Every hour", cron: "0 * * * *" },
-  { label: "Mondays at 09:00", cron: "0 9 * * 1" },
-];
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -322,24 +282,7 @@ function ProviderPicker({ id, value, providers, onChange, allowDefault }: { id: 
   return <Select id={id} value={value} onChange={onChange} options={options} />;
 }
 
-function AllowBadges({ allow }: { allow: RepoConfig["allow"] }) {
-  return (
-    <span className="flex flex-wrap gap-1">
-      {ALLOW_META.map((a) => (
-        <span
-          key={a.key}
-          className={cn("inline-flex items-center gap-1 rounded-full border px-1.5 py-px text-[10px] font-medium", allow[a.key] ? "border-border text-foreground" : "border-dashed border-border text-muted-foreground line-through")}
-          title={`${a.label}: ${allow[a.key] ? "allowed" : "not allowed"}`}
-        >
-          {allow[a.key] ? <span aria-hidden className="size-1.5 rounded-full" style={{ background: a.ships ? STATUS.warning : STATUS.good }} /> : null}
-          {a.label}
-        </span>
-      ))}
-    </span>
-  );
-}
-
-function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove, projects, providers, defaultProvider }: { repo: RepoConfig; index: number; problems: string[]; open: boolean; onToggle: () => void; onChange: (r: RepoConfig) => void; onRemove: () => void; projects: Project[]; providers: Provider[]; defaultProvider: string }) {
+function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove, projects, providers, defaultProvider, workflow }: { repo: RepoConfig; index: number; problems: string[]; open: boolean; onToggle: () => void; onChange: (r: RepoConfig) => void; onRemove: () => void; projects: Project[]; providers: Provider[]; defaultProvider: string; workflow: Workflow }) {
   const set = <K extends keyof RepoConfig>(key: K, value: RepoConfig[K]) => onChange({ ...repo, [key]: value });
   const project = projects.find((p) => p.id === repo.projectId);
   const title = repo.owner && repo.repo ? repoKey(repo) : `Repository ${index + 1}`;
@@ -353,12 +296,11 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold text-foreground">{title}</span>
             <span className="block truncate text-[11px] text-muted-foreground">
-              {project ? `Project ${project.name}` : repo.projectId ? `Project ${repo.projectId}` : "No project selected"} · labels {repo.issueFilter.labels.length ? repo.issueFilter.labels.join(", ") : "any"} · up to {repo.maxConcurrent} agents
+              {project ? `Project ${project.name}` : repo.projectId ? `Project ${repo.projectId}` : "No project selected"} · {repo.intake ? `issues labelled ${repo.issueFilter.labels.join(", ") || "(none)"}` : "intake paused"} · up to {repo.maxConcurrent} agents
             </span>
           </span>
         </button>
         {placeholder ? <StatusPill tone="warning" label="Placeholder, ignored" /> : problems.length ? <StatusPill tone="critical" label={`${problems.length} to fix`} /> : null}
-        <AllowBadges allow={repo.allow} />
         <ConfirmRemove label={`Remove ${title}`} onConfirm={onRemove} />
       </header>
       {open ? (
@@ -372,33 +314,11 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
               {(id) => <RepoSlugInput id={id} repo={repo} onChange={(owner, name) => onChange({ ...repo, owner, repo: name })} />}
             </Field>
           </Group>
-          <Group title="What runs here" icon="ShieldCheck" cols={1}>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {ALLOW_META.map((a) => (
-                <ToggleRow
-                  key={a.key}
-                  label={a.label}
-                  hint={a.hint}
-                  checked={repo.allow[a.key]}
-                  onChange={(v) => set("allow", { ...repo.allow, [a.key]: v })}
-                  accent={a.ships ? <span className="rounded-sm px-1 text-[10px] font-semibold" style={{ color: STATUS.serious, border: `1px solid ${STATUS.serious}` }}>ships</span> : null}
-                />
-              ))}
-            </div>
-          </Group>
           <Group title="Issue intake" icon="Inbox" cols={3}>
+            <ToggleRow label="Pick up issues" hint="Off: only tasks you start." checked={repo.intake} onChange={(v) => set("intake", v)} />
             <Field label="Issue labels" hint="Issues must carry all of these. Comma separated.">{(id) => <ListInput id={id} value={repo.issueFilter.labels} onChange={(v) => set("issueFilter", { ...repo.issueFilter, labels: v })} placeholder="agent-ready" />}</Field>
             <Field label="Assignee" hint="Optional GitHub login.">{(id) => <TextInput id={id} value={repo.issueFilter.assignee ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, assignee: v })} placeholder="any" />}</Field>
-            <Field label="Milestone" hint="Optional milestone title.">{(id) => <TextInput id={id} value={repo.issueFilter.milestone ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, milestone: v })} placeholder="any" />}</Field>
             <Field label="Max concurrent agents">{(id) => <NumberInput id={id} value={repo.maxConcurrent} min={0} max={50} onChange={(v) => set("maxConcurrent", v)} />}</Field>
-            <Field label="Branch prefix">{(id) => <TextInput id={id} value={repo.branchPrefix} onChange={(v) => set("branchPrefix", v)} mono />}</Field>
-            <Field label="Rename branches" hint="Name branches after the issue.">
-              {() => (
-                <div className="flex h-8 items-center">
-                  <Switch checked={repo.renameBranch} onChange={(v) => set("renameBranch", v)} label="Rename branches" />
-                </div>
-              )}
-            </Field>
           </Group>
           <Group title="Agent" icon="Bot" cols={3}>
             <Field label="Provider">{(id) => <ProviderPicker id={id} value={repo.providerId ?? ""} providers={providers} allowDefault={`Default (${defaultProvider || "bb default"})`} onChange={(v) => set("providerId", v)} />}</Field>
@@ -418,319 +338,16 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
               )}
             </Field>
           </Group>
-          <Group title="Pull requests" icon="GitPullRequest" cols={3}>
-            <Field label="Check command" hint="Runs before a PR opens; failures go back to the agent.">{(id) => <TextInput id={id} value={repo.checkCommand ?? ""} onChange={(v) => set("checkCommand", v)} placeholder="npm test" mono />}</Field>
-            <Field label="Reviewers" hint="GitHub logins, comma separated.">{(id) => <ListInput id={id} value={repo.reviewers} onChange={(v) => set("reviewers", v)} />}</Field>
-            <Field label="PR labels">{(id) => <ListInput id={id} value={repo.labels} onChange={(v) => set("labels", v)} />}</Field>
+          <Group title="Workflow for this repository" icon="Workflow" cols={1}>
+            <RepoWorkflowEditor repo={repo} global={workflow} onChange={(o) => set("workflow", o)} />
           </Group>
-          <Group title="Merging" icon="GitMerge" cols={3}>
-            <Field label="Merge strategy">
+          <Group title="Pull requests" icon="GitPullRequest" cols={2}>
+            <Field label="Reviewers" hint="GitHub logins asked to review Chief of Staff's PRs.">{(id) => <ListInput id={id} value={repo.reviewers} onChange={(v) => set("reviewers", v)} />}</Field>
+            <Field label="Merge strategy" hint="Used when Ship merges.">
               {(id) => (
                 <Select id={id} value={repo.mergeStrategy} onChange={(v) => set("mergeStrategy", v)} options={[{ value: "squash", label: "Squash" }, { value: "merge", label: "Merge commit" }, { value: "rebase", label: "Rebase" }]} />
               )}
             </Field>
-            <Field label="On conflicts">
-              {(id) => (
-                <Select id={id} value={repo.conflictHandling} onChange={(v) => set("conflictHandling", v)} options={[{ value: "skip", label: "Skip the PR" }, { value: "rebase-via-agent", label: "Ask an agent to rebase" }]} />
-              )}
-            </Field>
-            <Field label="Merge only PRs with labels" hint="Optional, comma separated.">{(id) => <ListInput id={id} value={repo.mergeFilter.labels} onChange={(v) => set("mergeFilter", { ...repo.mergeFilter, labels: v })} />}</Field>
-            <ToggleRow label="Only this plugin's branches" hint={`Branches starting with ${repo.branchPrefix}`} checked={repo.mergeFilter.onlyOwnBranches} onChange={(v) => set("mergeFilter", { ...repo.mergeFilter, onlyOwnBranches: v })} />
-            <ToggleRow label="Require approval" hint="An approving review is needed." checked={repo.mergeFilter.requireApproval} onChange={(v) => set("mergeFilter", { ...repo.mergeFilter, requireApproval: v })} />
-          </Group>
-          <Group title="Release and deploy" icon="Rocket" cols={3}>
-            <Field label="Version bump">
-              {(id) => (
-                <Select
-                  id={id}
-                  value={repo.versionStrategy}
-                  onChange={(v) => set("versionStrategy", v)}
-                  options={[
-                    { value: "patch", label: "Patch" },
-                    { value: "minor", label: "Minor" },
-                    { value: "major", label: "Major" },
-                    { value: "conventional", label: "From conventional commits" },
-                    { value: "calver", label: "Calendar version" },
-                  ]}
-                />
-              )}
-            </Field>
-            <Field label="Version file">{(id) => <TextInput id={id} value={repo.versionFile} onChange={(v) => set("versionFile", v)} mono />}</Field>
-            <Field label="Tag prefix">{(id) => <TextInput id={id} value={repo.tagPrefix} onChange={(v) => set("tagPrefix", v)} mono />}</Field>
-            <Field label="Deploy command" hint="Runs in the checkout.">{(id) => <TextInput id={id} value={repo.deployCommand ?? ""} onChange={(v) => set("deployCommand", v)} placeholder="./scripts/deploy.sh" mono />}</Field>
-            <Field label="Deploy workflow" hint="Or a GitHub Actions file to dispatch.">{(id) => <TextInput id={id} value={repo.deployWorkflow ?? ""} onChange={(v) => set("deployWorkflow", v)} placeholder="deploy.yml" mono />}</Field>
-          </Group>
-        </div>
-      ) : null}
-    </article>
-  );
-}
-
-// ---------- routines ----------
-
-function StepEditor({ step, index, count, onChange, onMove, onRemove, providers }: { step: RoutineStep; index: number; count: number; onChange: (s: RoutineStep) => void; onMove: (dir: -1 | 1) => void; onRemove: () => void; providers: Provider[] }) {
-  const meta = STEP_META[step.type];
-  let body: ReactNode = null;
-  switch (step.type) {
-    case "batch_merge":
-      body = (
-        <>
-          <Field label="Strategy">
-            {(id) => (
-              <Select
-                id={id}
-                value={step.strategy ?? ""}
-                onChange={(v) => onChange({ ...step, strategy: v || undefined } as RoutineStep)}
-                options={[{ value: "", label: "Repository default" }, { value: "squash", label: "Squash" }, { value: "merge", label: "Merge commit" }, { value: "rebase", label: "Rebase" }]}
-              />
-            )}
-          </Field>
-          <Field label="Only PRs with labels">{(id) => <ListInput id={id} value={step.labels ?? []} onChange={(v) => onChange({ ...step, labels: v })} />}</Field>
-        </>
-      );
-      break;
-    case "release":
-      body = (
-        <>
-          <Field label="Version bump">
-            {(id) => (
-              <Select
-                id={id}
-                value={step.strategy ?? ""}
-                onChange={(v) => onChange({ ...step, strategy: v || undefined } as RoutineStep)}
-                options={[{ value: "", label: "Repository default" }, { value: "patch", label: "Patch" }, { value: "minor", label: "Minor" }, { value: "major", label: "Major" }, { value: "conventional", label: "Conventional commits" }, { value: "calver", label: "Calendar version" }]}
-              />
-            )}
-          </Field>
-          <ToggleRow label="Draft release" checked={step.draft} onChange={(v) => onChange({ ...step, draft: v })} />
-        </>
-      );
-      break;
-    case "deploy":
-      body = (
-        <>
-          <Field label="Command" hint="Empty uses the repository's deploy command.">{(id) => <TextInput id={id} value={step.command ?? ""} onChange={(v) => onChange({ ...step, command: v })} mono />}</Field>
-          <Field label="Workflow" hint="Empty uses the repository's workflow.">{(id) => <TextInput id={id} value={step.workflow ?? ""} onChange={(v) => onChange({ ...step, workflow: v })} mono />}</Field>
-          <Field label="Git ref">{(id) => <TextInput id={id} value={step.ref ?? ""} onChange={(v) => onChange({ ...step, ref: v })} placeholder="default branch" mono />}</Field>
-          <Field label="Timeout (minutes)">{(id) => <NumberInput id={id} value={step.pollTimeoutMinutes} min={1} onChange={(v) => onChange({ ...step, pollTimeoutMinutes: Math.max(1, v) })} />}</Field>
-        </>
-      );
-      break;
-    case "run_agent":
-      body = (
-        <>
-          <Field label="Prompt" className="sm:col-span-2">
-            {(id) => <textarea id={id} className={cn(inputClass, "h-20 py-1.5")} value={step.prompt} onChange={(e) => onChange({ ...step, prompt: e.target.value })} placeholder="Triage new issues and label the ones that are ready for an agent." />}
-          </Field>
-          <Field label="Thread title">{(id) => <TextInput id={id} value={step.title ?? ""} onChange={(v) => onChange({ ...step, title: v })} placeholder="optional" />}</Field>
-          <Field label="Provider">{(id) => <ProviderPicker id={id} value={step.providerId ?? ""} providers={providers} allowDefault="Default" onChange={(v) => onChange({ ...step, providerId: v })} />}</Field>
-          <Field label="Model">{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => onChange({ ...step, model: v })} placeholder="default" />}</Field>
-          <Field label="Wait for it (minutes)" hint="0 starts it and moves on.">{(id) => <NumberInput id={id} value={step.waitMinutes} min={0} onChange={(v) => onChange({ ...step, waitMinutes: Math.max(0, v) })} />}</Field>
-        </>
-      );
-      break;
-    case "notify":
-      body = (
-        <>
-          <Field label="Title">{(id) => <TextInput id={id} value={step.title} onChange={(v) => onChange({ ...step, title: v })} placeholder="Nightly ship done" />}</Field>
-          <Field label="Body">{(id) => <TextInput id={id} value={step.body ?? ""} onChange={(v) => onChange({ ...step, body: v })} placeholder="optional" />}</Field>
-        </>
-      );
-      break;
-  }
-  return (
-    <li className="flex gap-3 rounded-md border border-border bg-card p-3">
-      <div className="flex flex-col items-center gap-1">
-        <span className="flex size-7 items-center justify-center rounded-full border border-border bg-background text-xs font-semibold tabular-nums text-foreground">{index + 1}</span>
-        {index < count - 1 ? <span aria-hidden className="w-px flex-1 bg-border" /> : null}
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-              <Icon name={meta.icon} fallback="Circle" className="size-4" aria-hidden />
-              {meta.label}
-            </div>
-            <div className="text-[11px] text-muted-foreground">{meta.hint}</div>
-          </div>
-          <div className="flex items-center gap-0.5">
-            <Button size="sm" variant="ghost" className="h-7 px-1.5" disabled={index === 0} onClick={() => onMove(-1)} aria-label="Move step up">
-              <Icon name="ArrowUp" fallback="Circle" aria-hidden />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 px-1.5" disabled={index === count - 1} onClick={() => onMove(1)} aria-label="Move step down">
-              <Icon name="ArrowDown" fallback="Circle" aria-hidden />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 px-1.5 text-muted-foreground" disabled={count === 1} onClick={onRemove} aria-label="Remove step">
-              <Icon name="X" fallback="Circle" aria-hidden />
-            </Button>
-          </div>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{body}</div>
-      </div>
-    </li>
-  );
-}
-
-const TIMEZONES: string[] = (() => {
-  try {
-    const intl = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
-    return intl.supportedValuesOf?.("timeZone") ?? [];
-  } catch {
-    return [];
-  }
-})();
-
-function ScheduleEditor({ routine, onChange }: { routine: Routine; onChange: (r: Routine) => void }) {
-  const mode = scheduleMode(routine);
-  const every = splitEvery(routine.every);
-  const tzList = useId();
-  const setMode = (m: ScheduleMode) => {
-    const { cron: _c, every: _e, timezone: _t, ...rest } = routine;
-    if (m === "manual") onChange(rest as Routine);
-    else if (m === "every") onChange({ ...rest, every: routine.every ?? "1d" } as Routine);
-    else onChange({ ...rest, cron: routine.cron ?? "0 2 * * *", ...(routine.timezone ? { timezone: routine.timezone } : {}) } as Routine);
-  };
-  return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex w-fit rounded-md border border-border p-0.5" role="radiogroup" aria-label="Schedule type">
-        {(
-          [
-            ["manual", "Manual only"],
-            ["every", "Repeat every"],
-            ["cron", "Cron schedule"],
-          ] as const
-        ).map(([m, label]) => (
-          <button key={m} type="button" role="radio" aria-checked={mode === m} onClick={() => setMode(m)} className={cn("rounded px-2.5 py-1 text-xs font-medium", mode === m ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}>
-            {label}
-          </button>
-        ))}
-      </div>
-      {mode === "every" ? (
-        <div className="flex items-center gap-2">
-          <div className="w-24">
-            <NumberInput value={every.amount} min={1} onChange={(v) => onChange({ ...routine, every: `${Math.max(1, v)}${every.unit}` })} />
-          </div>
-          <div className="w-32">
-            <Select value={every.unit} onChange={(u) => onChange({ ...routine, every: `${every.amount}${u}` })} options={[{ value: "m", label: "minutes" }, { value: "h", label: "hours" }, { value: "d", label: "days" }]} />
-          </div>
-        </div>
-      ) : null}
-      {mode === "cron" ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Cron expression" hint="minute hour day month weekday">{(id) => <TextInput id={id} value={routine.cron ?? ""} onChange={(v) => onChange({ ...routine, cron: v })} mono />}</Field>
-          <Field label="Preset">
-            {(id) => (
-              <select id={id} className={cn(inputClass, "pr-7")} value={CRON_PRESETS.some((p) => p.cron === routine.cron) ? routine.cron : ""} onChange={(e) => e.target.value && onChange({ ...routine, cron: e.target.value })}>
-                <option value="">Custom</option>
-                {CRON_PRESETS.map((p) => (
-                  <option key={p.cron} value={p.cron}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <Field label="Timezone" hint="Empty uses the server's local time.">
-            {(id) => (
-              <>
-                <input id={id} list={tzList} className={inputClass} value={routine.timezone ?? ""} placeholder="e.g. Europe/Bucharest" onChange={(e) => onChange({ ...routine, timezone: e.target.value })} />
-                <datalist id={tzList}>
-                  {TIMEZONES.map((tz) => (
-                    <option key={tz} value={tz} />
-                  ))}
-                </datalist>
-              </>
-            )}
-          </Field>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function RoutineEditor({ routine, problems, hints, repos, open, onToggle, onChange, onRemove, providers }: { routine: Routine; problems: string[]; hints: string[]; repos: RepoConfig[]; open: boolean; onToggle: () => void; onChange: (r: Routine) => void; onRemove: () => void; providers: Provider[] }) {
-  const repoOptions = repos.filter((r) => r.owner && r.repo).map((r) => ({ value: repoKey(r), label: repoKey(r) }));
-  if (!repoOptions.some((o) => o.value === routine.repo)) repoOptions.unshift({ value: routine.repo, label: `${routine.repo} (not configured)` });
-  const [adding, setAdding] = useState(false);
-  const schedule = routine.cron ? `cron ${routine.cron}${routine.timezone ? ` ${routine.timezone}` : ""}` : routine.every ? `every ${routine.every}` : "manual only";
-  return (
-    <article className={cn("rounded-lg border bg-background", problems.length ? "border-destructive/60" : "border-border")}>
-      <header className="flex flex-wrap items-center gap-2 px-3 py-2.5">
-        <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onToggle} aria-expanded={open}>
-          <Icon name={open ? "ChevronDown" : "ChevronRight"} fallback="Circle" className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="min-w-0">
-            <span className="block truncate text-sm font-semibold text-foreground">{routine.name || "Untitled routine"}</span>
-            <span className="block truncate text-[11px] text-muted-foreground">
-              {routine.repo} · {schedule} · {routine.steps.map((s) => STEP_META[s.type].label).join(" → ")}
-            </span>
-          </span>
-        </button>
-        {problems.length ? <StatusPill tone="critical" label={`${problems.length} to fix`} /> : null}
-        {routine.dryRun ? <StatusPill tone="info" icon="Eye" label="Dry run" /> : null}
-        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {routine.enabled ? "On" : "Off"}
-          <Switch checked={routine.enabled} onChange={(v) => onChange({ ...routine, enabled: v })} label={routine.enabled ? "Disable routine" : "Enable routine"} />
-        </span>
-        <ConfirmRemove label={`Remove ${routine.name}`} onConfirm={onRemove} />
-      </header>
-      {open ? (
-        <div className="flex flex-col gap-5 border-t border-border px-3 py-4">
-          <Problems items={problems} />
-          <Problems items={hints} tone="warning" />
-          <Group title="Basics" icon="FileText" cols={2}>
-            <Field label="Name" hint="Letters, numbers, spaces, dots, dashes.">{(id) => <TextInput id={id} value={routine.name} onChange={(v) => onChange({ ...routine, name: v })} />}</Field>
-            <Field label="Repository">{(id) => <Select id={id} value={routine.repo} onChange={(v) => onChange({ ...routine, repo: v })} options={repoOptions} />}</Field>
-            <ToggleRow label="Dry run" hint="Plan and report only; nothing is merged, tagged or deployed." checked={routine.dryRun} onChange={(v) => onChange({ ...routine, dryRun: v })} />
-            <ToggleRow label="Continue after a failed step" checked={routine.continueOnError} onChange={(v) => onChange({ ...routine, continueOnError: v })} />
-          </Group>
-          <Group title="Schedule" icon="Clock" cols={1}>
-            <ScheduleEditor routine={routine} onChange={onChange} />
-          </Group>
-          <Group title="Steps" icon="ListOrdered" cols={1}>
-            <ol className="flex flex-col gap-2">
-              {routine.steps.map((step, i) => (
-                <StepEditor
-                  key={i}
-                  step={step}
-                  index={i}
-                  count={routine.steps.length}
-                  providers={providers}
-                  onChange={(s) => onChange({ ...routine, steps: routine.steps.map((x, j) => (j === i ? s : x)) })}
-                  onRemove={() => onChange({ ...routine, steps: routine.steps.filter((_, j) => j !== i) })}
-                  onMove={(dir) => {
-                    const steps = [...routine.steps];
-                    const [moved] = steps.splice(i, 1);
-                    steps.splice(i + dir, 0, moved!);
-                    onChange({ ...routine, steps });
-                  }}
-                />
-              ))}
-            </ol>
-            {adding ? (
-              <div className="flex flex-wrap gap-1.5">
-                {STEP_TYPES.map((t) => (
-                  <Button
-                    key={t}
-                    size="sm"
-                    variant="outline"
-                    className="h-7 px-2"
-                    onClick={() => {
-                      onChange({ ...routine, steps: [...routine.steps, blankStep(t)] });
-                      setAdding(false);
-                    }}
-                  >
-                    <Icon name={STEP_META[t].icon} fallback="Circle" aria-hidden /> {STEP_META[t].label}
-                  </Button>
-                ))}
-                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setAdding(false)}>
-                  Cancel
-                </Button>
-              </div>
-            ) : (
-              <Button size="sm" variant="outline" className="h-7 w-fit px-2" onClick={() => setAdding(true)}>
-                <Icon name="Plus" fallback="Circle" aria-hidden /> Add step
-              </Button>
-            )}
           </Group>
         </div>
       ) : null}
@@ -742,28 +359,19 @@ function RoutineEditor({ routine, problems, hints, repos, open, onToggle, onChan
 
 function GeneralEditor({ values, onChange, providers }: { values: GeneralSettings; onChange: (v: GeneralSettings) => void; providers: Provider[] }) {
   const set = <K extends keyof GeneralSettings>(key: K, value: GeneralSettings[K]) => onChange({ ...values, [key]: value });
-  const webhookError = values.notifyWebhookUrl && !/^https:\/\/\S+$/.test(values.notifyWebhookUrl) ? "Must start with https://" : null;
   return (
     <div className="flex flex-col gap-5">
       <Group title="Capacity" icon="Gauge" cols={3}>
         <Field label="Max agents across all repos">{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
         <Field label="Intake every (minutes)">{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
-        <Field label="Poll CI every (minutes)">{(id) => <NumberInput id={id} value={values.ciPollIntervalMinutes} min={1} max={120} onChange={(v) => set("ciPollIntervalMinutes", v)} />}</Field>
-      </Group>
-      <Group title="Recovery" icon="LifeBuoy" cols={3}>
         <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled.">{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
-        <Field label="Fix cycles per issue" hint="Failing checks are sent back this many times.">{(id) => <NumberInput id={id} value={values.maxFixRetries} min={0} max={10} onChange={(v) => set("maxFixRetries", v)} />}</Field>
-        <ToggleRow label="Auto-retry stalled agents once" checked={values.autoRetryStalled} onChange={(v) => set("autoRetryStalled", v)} />
       </Group>
       <Group title="Default agent" icon="Bot" cols={2}>
         <Field label="Provider">{(id) => <ProviderPicker id={id} value={values.defaultProviderId} providers={providers} allowDefault="bb default" onChange={(v) => set("defaultProviderId", v)} />}</Field>
         <Field label="Model" hint="Empty uses the provider's default.">{(id) => <TextInput id={id} value={values.defaultModel} onChange={(v) => set("defaultModel", v)} placeholder="default" />}</Field>
       </Group>
-      <Group title="Notifications" icon="Bell" cols={2}>
-        <ToggleRow label="BB push notifications" hint="Uses the push-notifications plugin when installed." checked={values.notifyPush} onChange={(v) => set("notifyPush", v)} />
-        <Field label="Webhook URL" hint="Receives JSON {title, body, threadId} for every alert." error={webhookError}>
-          {(id) => <TextInput id={id} value={values.notifyWebhookUrl} onChange={(v) => set("notifyWebhookUrl", v)} placeholder="https://…" mono />}
-        </Field>
+      <Group title="Notifications" icon="Bell" cols={1}>
+        <ToggleRow label="BB push notifications" hint="Questions, plans to approve, escalations and shipped work. Uses the push-notifications plugin when installed." checked={values.notifyPush} onChange={(v) => set("notifyPush", v)} />
       </Group>
     </div>
   );
@@ -822,7 +430,7 @@ function AccessEditor({ token, onSaved }: { token: SettingsData["token"]; onSave
   );
 }
 
-function AdvancedEditor({ repos, routines, locked, onSaved }: { repos: string; routines: string; locked: boolean; onSaved: () => Promise<void> }) {
+function AdvancedEditor({ repos, workflow, locked, onSaved }: { repos: string; workflow: string; locked: boolean; onSaved: () => Promise<void> }) {
   const rpc = useRpc<Contract>();
   const [r, setR] = useState<string | null>(null);
   const [t, setT] = useState<string | null>(null);
@@ -830,7 +438,7 @@ function AdvancedEditor({ repos, routines, locked, onSaved }: { repos: string; r
   const save = async () => {
     setStatus(null);
     try {
-      const result = await rpc.call("cos_set_config", { ...(r !== null ? { repos: r } : {}), ...(t !== null ? { routines: t } : {}) });
+      const result = await rpc.call("cos_set_config", { ...(r !== null ? { repos: r } : {}), ...(t !== null ? { workflow: t } : {}) });
       setStatus({ ok: true, text: result.warnings.length ? `Saved. ${result.warnings.join("; ")}` : "Saved." });
       setR(null);
       setT(null);
@@ -845,7 +453,7 @@ function AdvancedEditor({ repos, routines, locked, onSaved }: { repos: string; r
       {locked ? <Problems tone="warning" items={["You have unsaved visual changes. Save or discard them before editing the JSON."]} /> : null}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Field label="Repositories">{(id) => <textarea id={id} disabled={locked} className="min-h-72 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs text-foreground disabled:opacity-50" value={r ?? repos} onChange={(e) => setR(e.target.value)} spellCheck={false} />}</Field>
-        <Field label="Routines">{(id) => <textarea id={id} disabled={locked} className="min-h-72 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs text-foreground disabled:opacity-50" value={t ?? routines} onChange={(e) => setT(e.target.value)} spellCheck={false} />}</Field>
+        <Field label="Workflow">{(id) => <textarea id={id} disabled={locked} className="min-h-72 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs text-foreground disabled:opacity-50" value={t ?? workflow} onChange={(e) => setT(e.target.value)} spellCheck={false} />}</Field>
       </div>
       <div className="flex items-center gap-2">
         <Button size="sm" disabled={locked || (r === null && t === null)} onClick={() => void save()}>
@@ -860,6 +468,190 @@ function AdvancedEditor({ repos, routines, locked, onSaved }: { repos: string; r
   );
 }
 
+// ---------- workflow ----------
+
+const STAGE_META: Record<WorkflowStage, { label: string; icon: string; what: string; placeholder: string }> = {
+  plan: { label: "Plan", icon: "ClipboardList", what: "The agent investigates and writes an implementation plan before touching code.", placeholder: "e.g. List the files you will change and the tests you will add. Flag anything that changes a public API." },
+  build: { label: "Build", icon: "Hammer", what: "The agent implements the change and commits on its branch. Always on.", placeholder: "e.g. Follow AGENTS.md. Keep changes minimal; add tests next to the code." },
+  verify: { label: "Verify", icon: "FlaskConical", what: "Chief of Staff runs the verify command; with instructions, the agent also verifies the behaviour and collects evidence. Failures go back to Build.", placeholder: "e.g. Start the dev server and exercise the changed flow in the browser; attach screenshots." },
+  review: { label: "Review", icon: "SearchCheck", what: "A fresh reviewer agent (in the same workspace) or the builder itself reviews the diff. Requested changes go back to Build.", placeholder: "e.g. Check error handling, missing tests, and security of any new endpoint." },
+  ship: { label: "Ship", icon: "Rocket", what: "What shipping means: push the branch, open a pull request, or open it and merge when CI is green. Red CI goes back to Build.", placeholder: "e.g. PR description: Why / What / How tested, with the issue link." },
+};
+
+function TextArea({ id, value, onChange, placeholder }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <textarea
+      id={id}
+      className="min-h-20 w-full rounded-md border border-input bg-transparent p-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
+/** Fields of one stage. `stage` is a full stage object of the workflow. */
+function StageFields<S extends WorkflowStage>({ name, stage, onChange }: { name: S; stage: Workflow[S]; onChange: (next: Workflow[S]) => void }) {
+  const meta = STAGE_META[name];
+  const set = (patch: Record<string, unknown>) => onChange({ ...stage, ...patch } as Workflow[S]);
+  const st = stage as Workflow[WorkflowStage] & Record<string, unknown>;
+  return (
+    <div className="flex flex-col gap-3">
+      <Field label="Instructions for the agent" hint="Added to this stage's prompt. Leave empty for the defaults.">
+        {(id) => <TextArea id={id} value={stage.instructions} onChange={(v) => set({ instructions: v })} placeholder={meta.placeholder} />}
+      </Field>
+      {name === "plan" ? <ToggleRow label="Wait for my approval" hint="The plan shows up in the dashboard with Approve / Send back. Off: Build starts right away." checked={Boolean(st.requireApproval)} onChange={(v) => set({ requireApproval: v })} /> : null}
+      {name === "verify" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Field className="sm:col-span-3" label="Verify command" hint="Runs in the agent's worktree. Empty: agent verification only (needs instructions).">
+            {(id) => <TextInput id={id} value={String(st.command ?? "")} onChange={(v) => set({ command: v })} placeholder="npm test" mono />}
+          </Field>
+          <Field label="Timeout (minutes)">{(id) => <NumberInput id={id} value={Number(st.timeoutMinutes)} min={1} max={240} onChange={(v) => set({ timeoutMinutes: v })} />}</Field>
+          <Field label="Fix attempts" hint="Failures sent back before asking you.">{(id) => <NumberInput id={id} value={Number(st.maxAttempts)} min={0} max={10} onChange={(v) => set({ maxAttempts: v })} />}</Field>
+        </div>
+      ) : null}
+      {name === "review" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Reviewer">
+            {(id) => (
+              <Select
+                id={id}
+                value={st.mode as "agent" | "self"}
+                onChange={(v) => set({ mode: v })}
+                options={[
+                  { value: "agent", label: "Fresh reviewer agent (independent)" },
+                  { value: "self", label: "Self-review by the builder" },
+                ]}
+              />
+            )}
+          </Field>
+          <Field label="Review rounds" hint="Rounds of requested changes before asking you.">{(id) => <NumberInput id={id} value={Number(st.maxRounds)} min={0} max={10} onChange={(v) => set({ maxRounds: v })} />}</Field>
+        </div>
+      ) : null}
+      {name === "ship" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Field className="sm:col-span-2" label="Shipping means">
+            {(id) => (
+              <Select
+                id={id}
+                value={st.action as "push" | "pr" | "merge"}
+                onChange={(v) => set({ action: v })}
+                options={[
+                  { value: "pr", label: "Open a pull request; I merge it" },
+                  { value: "merge", label: "Open a pull request and merge it when green" },
+                  { value: "push", label: "Push the branch only" },
+                ]}
+              />
+            )}
+          </Field>
+          <Field label="CI fix attempts">{(id) => <NumberInput id={id} value={Number(st.maxCiFixes)} min={0} max={10} onChange={(v) => set({ maxCiFixes: v })} />}</Field>
+          {st.action !== "push" ? <ToggleRow label="Open as draft" checked={Boolean(st.draft)} onChange={(v) => set({ draft: v })} /> : null}
+          {st.action === "merge" ? <ToggleRow label="Wait for an approving review" hint="Merge only after a human approves the PR on GitHub." checked={Boolean(st.requireApproval)} onChange={(v) => set({ requireApproval: v })} /> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function StageCard({ name, enabled, onEnabled, children, badge }: { name: WorkflowStage; enabled: boolean; onEnabled?: (v: boolean) => void; children: ReactNode; badge?: ReactNode }) {
+  const meta = STAGE_META[name];
+  const index = WORKFLOW_STAGES.indexOf(name) + 1;
+  return (
+    <article className={cn("flex flex-col gap-3 rounded-lg border bg-background p-3", enabled ? "border-border" : "border-dashed border-border")}>
+      <header className="flex items-start gap-3">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold tabular-nums text-foreground">{index}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5 text-sm font-semibold text-foreground">
+            <Icon name={meta.icon} fallback="Circle" className="size-4" aria-hidden />
+            {meta.label}
+            {badge}
+          </div>
+          <p className="text-[11px] text-muted-foreground">{meta.what}</p>
+        </div>
+        {onEnabled ? <Switch checked={enabled} onChange={onEnabled} label={`${meta.label} enabled`} /> : <StatusPill tone="info" label="Always on" />}
+      </header>
+      {enabled ? children : null}
+    </article>
+  );
+}
+
+/** The global workflow every repository runs unless it overrides a stage. */
+function WorkflowEditor({ value, onChange }: { value: Workflow; onChange: (w: Workflow) => void }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-muted-foreground">
+        Chief of Staff takes every task (a GitHub issue or one you start from the dashboard) through these stages in order, and moves on only when the agent reports the stage done. Questions, plan approvals and anything out of attempts come to you. Repositories can override any stage.
+      </p>
+      <Pipeline workflow={value} />
+      {WORKFLOW_STAGES.map((name) => (
+        <StageCard
+          key={name}
+          name={name}
+          enabled={name === "build" ? true : ((value[name] as { enabled?: boolean }).enabled ?? true)}
+          onEnabled={name === "build" ? undefined : (v) => onChange({ ...value, [name]: { ...value[name], enabled: v } })}
+        >
+          <StageFields name={name} stage={value[name]} onChange={(next) => onChange({ ...value, [name]: next })} />
+        </StageCard>
+      ))}
+    </div>
+  );
+}
+
+function Pipeline({ workflow }: { workflow: Workflow }) {
+  return (
+    <ol className="flex flex-wrap items-center gap-1 text-xs" aria-label="Pipeline">
+      {WORKFLOW_STAGES.map((name, i) => {
+        const on = name === "build" || ((workflow[name] as { enabled?: boolean }).enabled ?? true);
+        return (
+          <li key={name} className="flex items-center gap-1">
+            <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium", on ? "border-border text-foreground" : "border-dashed border-border text-muted-foreground line-through")}>
+              <Icon name={STAGE_META[name].icon} fallback="Circle" className="size-3" aria-hidden />
+              {STAGE_META[name].label}
+            </span>
+            {i < WORKFLOW_STAGES.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="size-3 text-muted-foreground" aria-hidden /> : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Per-repo overrides: each stage either follows the global workflow or is customised here. */
+function RepoWorkflowEditor({ repo, global, onChange }: { repo: RepoConfig; global: Workflow; onChange: (override: WorkflowOverride | undefined) => void }) {
+  const override = repo.workflow ?? {};
+  const effective = resolveWorkflow(global, override);
+  const setStage = (name: WorkflowStage, value: Workflow[WorkflowStage] | undefined) => {
+    const next = { ...override, [name]: value } as WorkflowOverride;
+    if (value === undefined) delete (next as Record<string, unknown>)[name];
+    onChange(Object.keys(next).length ? next : undefined);
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      <Pipeline workflow={effective} />
+      {WORKFLOW_STAGES.map((name) => {
+        const custom = override[name] !== undefined;
+        const stage = custom ? ({ ...global[name], ...override[name] } as Workflow[typeof name]) : global[name];
+        const enabled = name === "build" ? true : ((stage as { enabled?: boolean }).enabled ?? true);
+        return (
+          <StageCard
+            key={name}
+            name={name}
+            enabled={custom ? enabled : false}
+            badge={custom ? <StatusPill tone="info" label="Customised" /> : <span className="text-[11px] font-normal text-muted-foreground">· {name === "build" || enabled ? "on" : "off"} (global)</span>}
+            onEnabled={(v) => setStage(name, v ? { ...global[name] } : undefined)}
+          >
+            <div className="flex flex-col gap-3">
+              {name !== "build" ? <ToggleRow label={`Run ${STAGE_META[name].label} for this repository`} checked={enabled} onChange={(v) => setStage(name, { ...stage, enabled: v } as Workflow[typeof name])} /> : null}
+              <StageFields name={name} stage={stage} onChange={(next) => setStage(name, next)} />
+            </div>
+          </StageCard>
+        );
+      })}
+      <p className="text-[11px] text-muted-foreground">The switch on each stage customises it for this repository; off follows the global workflow.</p>
+    </div>
+  );
+}
+
 // ---------- root ----------
 
 function generalDiff(a: GeneralSettings, b: GeneralSettings): Partial<GeneralSettings> {
@@ -868,35 +660,33 @@ function generalDiff(a: GeneralSettings, b: GeneralSettings): Partial<GeneralSet
   return out;
 }
 
-export function Configurator({ initialSection = "repos", compact = false }: { initialSection?: Section; compact?: boolean }) {
+export function Configurator({ initialSection = "workflow", compact = false }: { initialSection?: Section; compact?: boolean }) {
   const rpc = useRpc<Contract>();
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
   const settings = experimental_useRpcQuery<Contract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
   const [section, setSection] = useState<Section>(initialSection);
   const [repos, setRepos] = useState<RepoConfig[] | null>(null);
-  const [routines, setRoutines] = useState<Routine[] | null>(null);
   const [general, setGeneral] = useState<GeneralSettings | null>(null);
+  const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [openRepo, setOpenRepo] = useState<number | null>(null);
-  const [openRoutine, setOpenRoutine] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
 
   const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
-  const loadedRoutines = useMemo(() => (config.data ? loadRoutines(config.data.routines) : null), [config.data]);
   const loadedGeneral = settings.data?.values ?? null;
+  const loadedWorkflow = useMemo(() => (config.data ? parseWorkflow(config.data.workflow) : null), [config.data]);
+  const workflowDraft: Workflow = workflow ?? (loadedWorkflow?.ok ? loadedWorkflow.value : workflowSchema.parse(DEFAULT_WORKFLOW));
 
   const projects = settings.data?.projects ?? [];
   // Entries saved without owner/repo show the repository inferred from their project.
   const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
-  const routineDraft = routines ?? (loadedRoutines?.ok ? loadedRoutines.items : []);
   const generalDraft = general ?? loadedGeneral;
   const generalChanges = loadedGeneral && general ? generalDiff(loadedGeneral, general) : {};
-  const dirty = { repos: repos !== null, routines: routines !== null, general: Object.keys(generalChanges).length > 0 };
-  const anyDirty = dirty.repos || dirty.routines || dirty.general;
+  const dirty = { repos: repos !== null, general: Object.keys(generalChanges).length > 0, workflow: workflow !== null };
+  const anyDirty = dirty.repos || dirty.general || dirty.workflow;
 
   const repoIssues = useMemo(() => validateRepos(repoDraft), [repoDraft]);
-  const routineIssues = useMemo(() => validateRoutines(routineDraft), [routineDraft]);
-  const problemCount = Object.keys(repoIssues).length + Object.keys(routineIssues).length + (general?.notifyWebhookUrl && !/^https:\/\/\S+$/.test(general.notifyWebhookUrl) ? 1 : 0);
+  const problemCount = Object.keys(repoIssues).length;
 
   const refetchAll = async () => {
     await Promise.all([config.refetch(), settings.refetch()]);
@@ -907,8 +697,8 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
 
   const discard = () => {
     setRepos(null);
-    setRoutines(null);
     setGeneral(null);
+    setWorkflow(null);
     setStatus(null);
   };
 
@@ -917,15 +707,18 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
     setStatus(null);
     try {
       const warnings: string[] = [];
-      if (dirty.repos || dirty.routines) {
-        const result = await rpc.call("cos_set_config", { ...(dirty.repos ? { repos: serializeRepos(repoDraft) } : {}), ...(dirty.routines ? { routines: serializeRoutines(routineDraft) } : {}) });
+      if (dirty.repos || dirty.workflow) {
+        const result = await rpc.call("cos_set_config", {
+          ...(dirty.repos ? { repos: serializeRepos(repoDraft) } : {}),
+          ...(dirty.workflow ? { workflow: serializeWorkflow(workflowDraft) } : {}),
+        });
         warnings.push(...result.warnings);
       }
       if (dirty.general) await rpc.call("cos_set_settings", generalChanges);
       await refetchAll();
       setRepos(null);
-      setRoutines(null);
       setGeneral(null);
+      setWorkflow(null);
       setStatus({ ok: true, text: warnings.length ? `Saved. ${warnings.join("; ")}` : "Saved. Changes apply on the next intake and sweep." });
     } catch (error) {
       setStatus({ ok: false, text: errorText(error) });
@@ -935,9 +728,11 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
   };
 
   const providers = settings.data?.providers ?? [];
-  const counts: Record<Section, number | null> = { repos: repoDraft.length, routines: routineDraft.length, general: null, access: null, advanced: null };
-  const sectionDirty: Record<Section, boolean> = { repos: dirty.repos, routines: dirty.routines, general: dirty.general, access: false, advanced: false };
-  const loadError = (loadedRepos && !loadedRepos.ok ? `Repositories JSON: ${loadedRepos.error}` : null) ?? (loadedRoutines && !loadedRoutines.ok ? `Routines JSON: ${loadedRoutines.error}` : null);
+  const counts: Record<Section, number | null> = { workflow: null, repos: repoDraft.length, general: null, access: null, advanced: null };
+  const sectionDirty: Record<Section, boolean> = { workflow: dirty.workflow, repos: dirty.repos, general: dirty.general, access: false, advanced: false };
+  const loadError =
+    (loadedRepos && !loadedRepos.ok ? `Repositories JSON: ${loadedRepos.error}` : null) ??
+    (loadedWorkflow && !loadedWorkflow.ok ? `Workflow JSON: ${loadedWorkflow.error}` : null);
 
   if (config.error || settings.error) return <Problems items={[errorText(config.error ?? settings.error)]} />;
   if (!config.data || !settings.data || !generalDraft) return <p className="text-sm text-muted-foreground">Loading configuration…</p>;
@@ -964,10 +759,11 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
         {loadError && section !== "advanced" ? (
           <Problems items={[`${loadError}. Fix it in Advanced JSON; the visual editor shows the last valid parts only.`]} />
         ) : null}
+        {section === "workflow" ? <WorkflowEditor value={workflowDraft} onChange={setWorkflow} /> : null}
         {section === "repos" ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">Each repository is watched independently, with its own labels, limits and permissions. Anything that ships code (merge, release, deploy) is off until you turn it on.</p>
+              <p className="text-xs text-muted-foreground">Each repository has its own issue filter, agent and limits, and can customise any workflow stage.</p>
               <Button
                 size="sm"
                 onClick={() => {
@@ -996,6 +792,7 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
                   projects={projects}
                   providers={providers}
                   defaultProvider={generalDraft.defaultProviderId}
+                  workflow={workflowDraft}
                 />
               ))
             ) : (
@@ -1007,52 +804,9 @@ export function Configurator({ initialSection = "repos", compact = false }: { in
             )}
           </>
         ) : null}
-        {section === "routines" ? (
-          <>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">Routines chain steps on a schedule for one repository. New routines start disabled and in dry run.</p>
-              <Button
-                size="sm"
-                disabled={!repoDraft.some((r) => r.owner && r.repo)}
-                onClick={() => {
-                  const first = repoDraft.find((r) => r.owner && r.repo)!;
-                  setRoutines([...routineDraft, blankRoutine(repoKey(first), routineDraft.map((r) => r.name))]);
-                  setOpenRoutine(routineDraft.length);
-                }}
-              >
-                <Icon name="Plus" fallback="Circle" aria-hidden /> Add routine
-              </Button>
-            </div>
-            {routineDraft.length ? (
-              routineDraft.map((routine, i) => (
-                <RoutineEditor
-                  key={i}
-                  routine={routine}
-                  problems={routineIssues[i] ?? []}
-                  hints={routineHints(routine, repoDraft)}
-                  repos={repoDraft}
-                  open={openRoutine === i}
-                  onToggle={() => setOpenRoutine(openRoutine === i ? null : i)}
-                  onChange={(r) => setRoutines(routineDraft.map((x, j) => (j === i ? r : x)))}
-                  onRemove={() => {
-                    setRoutines(routineDraft.filter((_, j) => j !== i));
-                    setOpenRoutine(null);
-                  }}
-                  providers={providers}
-                />
-              ))
-            ) : (
-              <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-8 text-center">
-                <Icon name="CalendarClock" fallback="Circle" className="size-6 text-muted-foreground" aria-hidden />
-                <p className="text-sm font-medium text-foreground">No routines yet</p>
-                <p className="max-w-md text-xs text-muted-foreground">Example: every night, batch merge green PRs, cut a patch release, then deploy.</p>
-              </div>
-            )}
-          </>
-        ) : null}
         {section === "general" ? <GeneralEditor values={generalDraft} onChange={setGeneral} providers={providers} /> : null}
         {section === "access" ? <AccessEditor token={settings.data.token} onSaved={refetchAll} /> : null}
-        {section === "advanced" ? <AdvancedEditor repos={config.data.repos} routines={config.data.routines} locked={anyDirty} onSaved={refetchAll} /> : null}
+        {section === "advanced" ? <AdvancedEditor repos={config.data.repos} workflow={config.data.workflow} locked={anyDirty} onSaved={refetchAll} /> : null}
 
         {anyDirty || status ? (
           <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
