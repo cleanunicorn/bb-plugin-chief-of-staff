@@ -24,7 +24,7 @@ Implementation (one PR, milestones in order)
 
 Before merge
 - [ ] Install the branch build on a BB instance and walk one real issue through every stage (not done: the live instance has in-flight canary items)
-- [ ] Open the PR, mirror final checkboxes to #4
+- [x] Open the PR (#5), mirror final checkboxes to #4
 
 Deferred
 - [ ] Per-stage provider/model (e.g. cheaper model for review)
