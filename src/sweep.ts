@@ -4,6 +4,7 @@ import type { Cos } from "./context";
 import { runIntake } from "./intake";
 import { watchCi } from "./delivery";
 import { detectStalls } from "./roster";
+import { syncThreads } from "./sync";
 import { dueRoutines } from "./schedule";
 import { runRoutine } from "./routines/index";
 
@@ -46,6 +47,10 @@ export async function sweep(cos: Cos, signal?: AbortSignal): Promise<void> {
       await kv.set(KV_LAST_CI, now.toISOString());
       await watchCi(cos, "schedule:ci").catch((error) => cos.bb.log.warn(`ci watch failed: ${error instanceof Error ? error.message : String(error)}`));
     }
+
+    // Before stall detection, so a thread resumed or answered in BB is not
+    // mistaken for a stalled one.
+    await syncThreads(cos, "schedule:sync").catch((error) => cos.bb.log.warn(`thread sync failed: ${error instanceof Error ? error.message : String(error)}`));
 
     await detectStalls(cos, "schedule:stall").catch((error) => cos.bb.log.warn(`stall detection failed: ${error instanceof Error ? error.message : String(error)}`));
 

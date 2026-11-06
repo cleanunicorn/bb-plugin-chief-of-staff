@@ -154,8 +154,16 @@ Agents get the `chief_of_staff_status` tool with the same roster.
 - State lives in the plugin's SQLite database (`work_items`, `routine_runs`,
   `activity_log`). On startup the plugin reconciles every active item against
   the live thread and GitHub.
-- One durable schedule (`* * * * *`) runs intake, CI polling, stall detection
-  and routine dispatch; cron matching uses `cron-parser`.
+- One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
+  stall detection and routine dispatch; cron matching uses `cron-parser`.
+- Thread sync: thread events drive the state machine, and the sweep re-reads
+  each tracked thread (`threads.get`) and its open interactions
+  (`threads.interactions.list`) every minute to catch anything missed. An open
+  interaction, or a turn that ends with a plain-text question, puts the item in
+  waiting on human with the question attached. When the thread starts a new
+  turn (you answered or resumed it in BB), the item returns to running; the
+  next idle re-runs checks and pushes. BB has no "interaction resolved" event,
+  so an answer is noticed by the next thread event or within a minute.
 - Commands on a checkout (git, check and deploy commands) run on the enrolled
   host through the plugin's `host.ts` entry; nothing opens user paths from the
   server process.

@@ -6,6 +6,7 @@ import type { WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { dispatch } from "./delivery";
 import { spawnForItem } from "./intake";
+import { syncItem } from "./sync";
 
 export interface RosterEntry {
   id: string;
@@ -26,6 +27,7 @@ export interface RosterEntry {
   fixAttempts: number;
   retryCount: number;
   lastError: string | null;
+  waitingReason: string | null;
   providerId: string | null;
   model: string | null;
   source: string;
@@ -71,6 +73,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       fixAttempts: item.fixAttempts,
       retryCount: item.retryCount,
       lastError: item.lastError,
+      waitingReason: item.status === "waiting_on_human" ? item.waitingReason : null,
       providerId: item.providerId,
       model: item.model,
       source: item.source,
@@ -125,30 +128,7 @@ export async function reconcile(cos: Cos): Promise<void> {
         }
         continue;
       }
-      let thread;
-      try {
-        thread = await cos.bb.sdk.threads.get({ threadId: item.threadId });
-      } catch {
-        await dispatch(cos, item.id, { type: "thread_failed", error: "thread no longer exists" }, "startup");
-        continue;
-      }
-      if (thread.deletedAt || thread.archivedAt) {
-        await dispatch(cos, item.id, { type: "thread_failed", error: thread.deletedAt ? "thread deleted" : "thread archived" }, "startup");
-        continue;
-      }
-      if (thread.status === "error") {
-        await dispatch(cos, item.id, { type: "thread_failed", error: "thread is in error state" }, "startup");
-        continue;
-      }
-      if (thread.status === "idle" && (item.status === "running" || item.status === "fixing")) {
-        await dispatch(cos, item.id, { type: "thread_idle" }, "startup");
-        continue;
-      }
-      if (item.status === "checking") {
-        // We crashed mid-check; run it again.
-        cos.store.updateWorkItem(item.id, { status: "running" });
-        await dispatch(cos, item.id, { type: "thread_idle" }, "startup");
-      }
+      await syncItem(cos, item, "startup", { rerunChecks: true });
     } catch (error) {
       cos.bb.log.warn(`reconcile ${item.id} failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
     }

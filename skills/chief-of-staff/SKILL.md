@@ -13,7 +13,10 @@ lives under `bb cos`.
 
 - `bb cos status [--repo owner/repo] [--all] [--usage] [--json]` — roster of tracked
   agents: status (queued / running / waiting on human / blocked / done / failed),
-  repo, issue, PR, thread id, last activity, stall flag.
+  repo, issue, PR, thread id, last activity, stall flag, and a "Waiting on you"
+  list with the question or approval each waiting agent is blocked on.
+  Answering or resuming the thread in BB moves the item back to running; the
+  plugin re-syncs every thread each minute.
 - `bb cos intake [--repo owner/repo] [--dry-run]` — pick up eligible issues now.
 - `bb cos run <routine> [--dry-run]` — run a routine immediately. Dry run reports
   what each step would do without mutating GitHub or deploying.

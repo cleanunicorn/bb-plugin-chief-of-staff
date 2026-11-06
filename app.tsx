@@ -176,6 +176,12 @@ function AgentCard({ entry, busy, onAction, now }: { entry: RosterEntry; busy: b
         <h3 className="line-clamp-2 text-sm font-semibold text-foreground">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
       </div>
       <Stepper entry={entry} />
+      {entry.waitingReason && !finished ? (
+        <p className="flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-xs text-foreground">
+          <Icon name="MessageCircleQuestion" fallback="MessageSquare" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
+          <span className="line-clamp-3" title={entry.waitingReason}>{entry.waitingReason}</span>
+        </p>
+      ) : null}
       {entry.lastError && !entry.lastError.startsWith("ci-failed:") && !finished ? (
         <p className="flex items-start gap-1.5 text-xs text-foreground">
           <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />

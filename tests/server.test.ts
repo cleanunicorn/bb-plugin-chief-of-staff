@@ -41,6 +41,8 @@ describe("chief-of-staff server", () => {
   let openPulls: unknown[] = [];
   let currentPull: typeof pull = { ...pull };
   let checkExit = 0;
+  let threadStatus: "idle" | "active" = "idle";
+  let pending: unknown[] = [];
   let host: ReturnType<typeof createFakePluginHost>;
   const originalFetch: typeof fetch = globalThis.fetch;
 
@@ -50,6 +52,8 @@ describe("chief-of-staff server", () => {
     openPulls = [];
     currentPull = { ...pull };
     checkExit = 0;
+    threadStatus = "idle";
+    pending = [];
     globalThis.fetch = fakeGitHub(
       {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
@@ -86,7 +90,8 @@ describe("chief-of-staff server", () => {
         projects: { list: async () => [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never },
         threads: {
           spawn: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code" }),
-          get: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code", status: "idle" }),
+          get: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code", status: threadStatus }),
+          interactions: { list: async () => pending as never },
           list: async () => [makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" })],
           output: async () => ({ output: "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing" }),
           send: async () => ({ ok: true, delivery: "sent" }) as never,
@@ -169,6 +174,62 @@ describe("chief-of-staff server", () => {
     expect(second.entries[0]).toMatchObject({ status: "waiting on human", detail: "waiting_on_human" });
     expect(host.harness.inspection.sdk.callsTo("plugins.callRpc").length).toBeGreaterThan(0);
     expect(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toBeUndefined();
+  });
+
+  it("tracks questions and resumes in step with the thread", async () => {
+    type Entry = { status: string; detail: string; waitingReason: string | null; fixAttempts: number };
+    const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
+    const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
+    const question = { id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1, payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database should I use?", allowFreeText: true, multiSelect: false, required: true }] } };
+
+    threadStatus = "active";
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    expect(await roster()).toMatchObject({ detail: "running" });
+
+    // The agent asks through a BB interaction.
+    pending = [question];
+    await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+    expect(await roster()).toMatchObject({ status: "waiting on human", waitingReason: "Question: Which database should I use?" });
+
+    // The human answers in BB. No event says so; the sweep notices.
+    pending = [];
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
+
+    // A missed interaction event is also caught by the sweep.
+    pending = [question];
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Which database should I use?" });
+    pending = [];
+    await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) });
+    expect(await roster()).toMatchObject({ detail: "running" });
+
+    // The agent ends its turn with a plain-text question: wait, do not run checks.
+    threadStatus = "idle";
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "I found two options.\n\nShould I use Postgres or SQLite?" });
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Should I use Postgres or SQLite?" });
+    expect(ranChecks()).toBe(0);
+    // An idle sweep does not mistake the parked item for finished work.
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human" });
+
+    // The human replies in the thread: it resumes, finishes, and ships.
+    await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) });
+    expect(await roster()).toMatchObject({ detail: "running", waitingReason: null });
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "## Summary\nUsed Postgres." });
+    expect(ranChecks()).toBe(1);
+    expect(await roster()).toMatchObject({ detail: "pr_open" });
+  });
+
+  it("revives a failed item when its thread is resumed", async () => {
+    threadStatus = "active";
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
+    let entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
+    expect(entry.detail).toBe("failed");
+    await host.harness.behavior.runSchedule("cos-sweep");
+    entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
+    expect(entry.detail).toBe("running");
   });
 
   it("exposes the roster through the agent tool and CLI", async () => {

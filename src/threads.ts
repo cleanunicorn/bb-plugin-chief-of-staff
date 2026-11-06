@@ -90,3 +90,59 @@ export function threadUrl(cos: Cos, threadId: string): string {
   const base = cos.bb.server.experimental_appUrl;
   return base ? `${base.replace(/\/$/, "")}/threads/${threadId}` : `bb://threads/${threadId}`;
 }
+
+const REASON_MAX = 600;
+
+/**
+ * One-line, human-readable description of a pending interaction: the agent's
+ * question, the approval it wants, or the request title. Reads the payload
+ * defensively because interaction kinds are open-ended (`<ns>/<name>`).
+ */
+export function describeInteraction(interaction: unknown): string {
+  const payload = (interaction as { payload?: Record<string, unknown> } | null)?.payload ?? {};
+  const kind = typeof payload.kind === "string" ? payload.kind : "";
+  if (kind === "user_question" && Array.isArray(payload.questions)) {
+    const prompts = payload.questions.map((q) => (q && typeof (q as { prompt?: unknown }).prompt === "string" ? (q as { prompt: string }).prompt.trim() : "")).filter(Boolean);
+    if (prompts.length) return clip(`Question: ${prompts.join(" / ")}`);
+    return "The agent asked a question.";
+  }
+  if (kind === "approval") {
+    const subject = payload.subject as { kind?: unknown } | undefined;
+    const what = typeof subject?.kind === "string" ? subject.kind.replace(/_/g, " ") : "an action";
+    const reason = typeof payload.reason === "string" && payload.reason.trim() ? `: ${payload.reason.trim()}` : "";
+    return clip(`Approval needed for ${what}${reason}`);
+  }
+  if (typeof payload.title === "string" && payload.title.trim()) return clip(`Input needed: ${payload.title.trim()}`);
+  const detail = (payload.presentation as { detail?: unknown } | undefined)?.detail;
+  if (typeof detail === "string" && detail.trim()) return clip(`Input needed: ${detail.trim()}`);
+  return "The agent is waiting for a human decision.";
+}
+
+/** Pending (unanswered) interactions on a thread, described. Null when the read fails. */
+export async function pendingInteractions(cos: Cos, threadId: string): Promise<string[] | null> {
+  try {
+    const list = await cos.bb.sdk.threads.interactions.list({ threadId });
+    return list.filter((i) => i.status === "pending" || i.status === "resolving").map(describeInteraction);
+  } catch (error) {
+    cos.bb.log.debug(`interactions.list ${threadId} failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Did the agent end its turn by asking a question in plain text instead of
+ * reporting a finished result? True when the reply has no "Summary" section
+ * and its last paragraph ends with a question mark. Returns the question.
+ */
+export function plainTextQuestion(text: string | null | undefined): string | null {
+  if (!text) return null;
+  if (/^#{1,4}\s*Summary\s*$/im.test(text)) return null;
+  const paragraphs = text.trim().split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const last = paragraphs[paragraphs.length - 1];
+  if (!last || !/\?\s*(\*\*|_|`)?\s*$/.test(last)) return null;
+  return clip(`Question: ${last.replace(/\s+/g, " ")}`);
+}
+
+function clip(text: string): string {
+  return text.length > REASON_MAX ? `${text.slice(0, REASON_MAX - 1)}…` : text;
+}

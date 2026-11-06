@@ -23,7 +23,8 @@ export function formatRoster(entries: RosterEntry[]): string {
   const header = ["STATUS", "ISSUE", "PR", "THREAD", "LAST ACTIVITY", "TITLE"];
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
   const line = (cols: string[]) => cols.map((c, i) => c.padEnd(widths[i])).join("  ").trimEnd();
-  return [line(header), ...rows.map(line)].join("\n") + "\n";
+  const waiting = entries.filter((e) => e.waitingReason).map((e) => `  ${e.repo}${e.issueNumber ? `#${e.issueNumber}` : ""} (${e.threadId ?? "-"}): ${e.waitingReason}`);
+  return [line(header), ...rows.map(line), ...(waiting.length ? ["", "Waiting on you:", ...waiting] : [])].join("\n") + "\n";
 }
 
 export function registerCli(bb: BbPluginApi, cos: Cos): void {

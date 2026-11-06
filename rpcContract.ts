@@ -22,6 +22,7 @@ const rosterEntry = z.object({
   fixAttempts: z.number(),
   retryCount: z.number(),
   lastError: z.string().nullable(),
+  waitingReason: z.string().nullable(),
   providerId: z.string().nullable(),
   model: z.string().nullable(),
   source: z.string(),
