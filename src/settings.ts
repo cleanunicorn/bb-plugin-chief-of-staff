@@ -25,7 +25,7 @@ export const settingDescriptors = {
   repos: {
     type: "string",
     label: "Repositories (JSON)",
-    description: 'JSON: {"repos":[{owner, repo, projectId, issueFilter, maxConcurrent, checkCommand, deployCommand, allow:{intake,openPr,merge,release,deploy}, ...}]}',
+    description: 'JSON: {"repos":[{projectId, owner?, repo?, issueFilter, maxConcurrent, checkCommand, deployCommand, allow:{intake,openPr,merge,release,deploy}, ...}]}. owner/repo default to the project\'s GitHub remote.',
     experimental_multiline: true,
     experimental_schema: jsonSchema(parseRepos),
     default: JSON.stringify(SEED_REPOS, null, 2),

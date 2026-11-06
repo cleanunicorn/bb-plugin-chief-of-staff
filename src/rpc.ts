@@ -7,7 +7,7 @@ import { runIntake } from "./intake";
 import { dispatch } from "./delivery";
 import { isRoutineRunning, runRoutineGuarded } from "./sweep";
 import { nextFireTime } from "./schedule";
-import { parseRepos, parseRoutines } from "./config";
+import { parseGitHubRemote, parseRepos, parseRoutines } from "./config";
 import { collectCandidates } from "./routines/batchMerge";
 import { planBatchMerge } from "./routines/batchMergePlan";
 import { computeStats } from "./stats";
@@ -91,6 +91,15 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
           }),
         };
       },
+      async cos_projects() {
+        const configured = new Set((await cos.config()).repos.map((r) => r.projectId));
+        return {
+          projects: (await cos.projects()).map((p) => {
+            const remote = parseGitHubRemote(p.gitRemoteUrl);
+            return { id: p.id, name: p.name, github: remote ? `${remote.owner}/${remote.repo}` : null, configured: configured.has(p.id) };
+          }),
+        };
+      },
       async cos_get_config() {
         const values = await cos.settings.get();
         return { repos: values.repos, routines: values.routines };
@@ -99,7 +108,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const warnings: string[] = [];
         const patch: { repos?: string; routines?: string } = {};
         if (input.repos !== undefined) {
-          const parsed = parseRepos(input.repos);
+          const parsed = parseRepos(input.repos, await cos.projectRemotes());
           if (!parsed.ok) throw new Error(`repos: ${parsed.error}`);
           warnings.push(...parsed.warnings);
           patch.repos = input.repos;

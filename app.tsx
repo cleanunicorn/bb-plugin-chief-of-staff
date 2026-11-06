@@ -1067,9 +1067,29 @@ function SettingsSection() {
   const navigate = useBbNavigate();
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
+  const projects = experimental_useRpcQuery<Contract, "cos_projects">({ contract: rpcContract, method: "cos_projects", input: null });
   const [repos, setRepos] = useState<string | null>(null);
   const [routines, setRoutines] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  // Append a minimal entry for a BB project; owner/repo come from its GitHub remote.
+  const addProject = (projectId: string) => {
+    if (!projectId) return;
+    const current = repos ?? config.data?.repos ?? "";
+    try {
+      const doc = current.trim() ? (JSON.parse(current) as { repos?: Array<Record<string, unknown>> }) : {};
+      const list = (doc.repos ?? []).filter((r) => r.projectId !== "proj_xxxxxxxxxx");
+      if (list.some((r) => r.projectId === projectId)) {
+        setStatus("That project is already in the list.");
+        return;
+      }
+      list.push({ projectId, issueFilter: { labels: ["agent-ready"] }, maxConcurrent: 2 });
+      setRepos(JSON.stringify({ ...doc, repos: list }, null, 2));
+      setStatus("Added. Review the entry, then Save.");
+    } catch {
+      setStatus("Fix the Repositories JSON before adding a project.");
+    }
+  };
+  const addable = (projects.data?.projects ?? []).filter((p) => p.github && !p.configured);
   const save = async () => {
     setStatus(null);
     try {
@@ -1077,7 +1097,7 @@ function SettingsSection() {
       setStatus(result.warnings.length ? `Saved. ${result.warnings.join("; ")}` : "Saved.");
       setRepos(null);
       setRoutines(null);
-      await Promise.all([overview.refetch(), config.refetch()]);
+      await Promise.all([overview.refetch(), config.refetch(), projects.refetch()]);
     } catch (error) {
       setStatus(errorText(error));
     }
@@ -1090,6 +1110,23 @@ function SettingsSection() {
         </p>
       ) : null}
       {overview.data?.errors.map((e) => <p key={e} className="text-destructive">{e}</p>)}
+      <label className="flex flex-col gap-1">
+        <span className="font-medium">Add a BB project</span>
+        <select
+          className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-xs"
+          value=""
+          disabled={!addable.length}
+          onChange={(e) => addProject(e.target.value)}
+        >
+          <option value="">{projects.isLoading ? "Loading projects…" : addable.length ? "Pick a project with a GitHub remote…" : "No unconfigured projects with a GitHub remote"}</option>
+          {addable.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} · {p.github}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-muted-foreground">The GitHub owner and repo are read from the project's git remote; set "owner"/"repo" only to override.</span>
+      </label>
       <label className="flex flex-col gap-1">
         <span className="font-medium">Repositories (JSON)</span>
         <textarea className="min-h-40 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs" value={repos ?? config.data?.repos ?? ""} onChange={(e) => setRepos(e.target.value)} spellCheck={false} />

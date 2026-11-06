@@ -2,7 +2,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract, type ExecInput, type ExecOutput } from "../contract";
-import { parseRepos, parseRoutines, type RepoConfig, type Routine } from "./config";
+import { parseRepos, parseRoutines, type ProjectRemotes, type RepoConfig, type Routine } from "./config";
 import { GitHubClient, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
@@ -24,6 +24,10 @@ export interface Cos {
   now(): Date;
   config(): Promise<LoadedConfig>;
   repo(key: string): Promise<RepoConfig | null>;
+  /** BB projects (non-personal) with their git remote, used to infer owner/repo. */
+  projects(): Promise<Array<{ id: string; name: string; gitRemoteUrl: string | null }>>;
+  /** projectId -> git remote URL, or undefined when the project list is unavailable. */
+  projectRemotes(): Promise<ProjectRemotes | undefined>;
   github(): Promise<GitHubClient>;
   /** Token source for display: "setting" | "gh-cli" | "none". Never the token itself. */
   tokenSource(): Promise<"setting" | "gh-cli" | "none">;
@@ -83,7 +87,9 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
       const values = await settings.get();
       const errors: string[] = [];
       const warnings: string[] = [];
-      const reposResult = parseRepos(values.repos);
+      const remotes = await cos.projectRemotes();
+      if (!remotes) warnings.push("BB project list unavailable; repos without explicit owner/repo are skipped");
+      const reposResult = parseRepos(values.repos, remotes);
       const routinesResult = parseRoutines(values.routines);
       if (!reposResult.ok) errors.push(`repos: ${reposResult.error}`);
       else warnings.push(...reposResult.warnings);
@@ -108,6 +114,18 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     async repo(key) {
       const { repos } = await cos.config();
       return repos.find((r) => `${r.owner}/${r.repo}` === key) ?? null;
+    },
+    async projects() {
+      const projects = await bb.sdk.projects.list({ includePersonal: false });
+      return projects.map((p) => ({ id: p.id, name: p.name, gitRemoteUrl: p.gitRemoteUrl ?? null }));
+    },
+    async projectRemotes() {
+      try {
+        return new Map((await cos.projects()).map((p) => [p.id, p.gitRemoteUrl]));
+      } catch (error) {
+        bb.log.warn(`project list failed: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      }
     },
     async github() {
       const token = await resolveToken();

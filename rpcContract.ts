@@ -76,6 +76,7 @@ export const rpcContract = defineRpcContract({
   },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional() }), output: z.object({ entries: z.array(logEntry) }) },
   cos_merge_preview: { input: z.object({ repo: z.string() }), output: z.object({ decisions: z.array(z.object({ number: z.number(), action: z.string(), reason: z.string(), title: z.string(), headRef: z.string() })) }) },
+  cos_projects: { input: z.null(), output: z.object({ projects: z.array(z.object({ id: z.string(), name: z.string(), github: z.string().nullable(), configured: z.boolean() })) }) },
   cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), routines: z.string() }) },
   cos_set_config: { input: z.object({ repos: z.string().optional(), routines: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
 });
