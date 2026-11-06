@@ -41,6 +41,8 @@ describe("chief-of-staff server", () => {
   let openPulls: unknown[] = [];
   let currentPull: typeof pull = { ...pull };
   let checkExit = 0;
+  let checkHangs = false;
+  let threadUpdatedAt = 0;
   let threadStatus: "idle" | "active" = "idle";
   let pending: unknown[] = [];
   let resolved: unknown[] = [];
@@ -59,6 +61,8 @@ describe("chief-of-staff server", () => {
     pending = [];
     resolved = [];
     sent = [];
+    checkHangs = false;
+    threadUpdatedAt = 0;
     assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
     globalThis.fetch = fakeGitHub(
       {
@@ -88,6 +92,7 @@ describe("chief-of-staff server", () => {
         const ok = { exitCode: 0, signal: null, stdout: "", stderr: "", truncated: false, durationMs: 5, timedOut: false };
         if (input.command === "git" && input.args?.[0] === "status") return { ...ok, stdout: " M src/a.ts\n" };
         if (input.command === "git" && input.args?.[0] === "rev-list") return { ...ok, stdout: "2\n" };
+        if (input.command === "npm test" && checkHangs) throw new Error("host plugin call 42b1 exceeded its deadline");
         if (input.command === "npm test") return { ...ok, exitCode: checkExit, stdout: checkExit ? "1 failing" : "all green" };
         return ok;
       },
@@ -96,7 +101,7 @@ describe("chief-of-staff server", () => {
         projects: { list: async () => [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never },
         threads: {
           spawn: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code" }),
-          get: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code", status: threadStatus }),
+          get: async () => makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }),
           interactions: {
             list: async () => pending as never,
             resolve: async (args: unknown) => {
@@ -235,6 +240,61 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "## Summary\nUsed Postgres." });
     expect(ranChecks()).toBe(1);
     expect(await roster()).toMatchObject({ detail: "pr_open" });
+  });
+
+  it("does not blame the human when its own check run dies, and picks the item up again", async () => {
+    type Entry = { detail: string; waitingReason: string | null };
+    const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
+    const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
+
+    checkHangs = true;
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" }), lastAssistantText: "## Summary\nDone." });
+    const parked = await roster();
+    expect(parked.detail).toBe("waiting_on_human");
+    expect(parked.waitingReason).toContain("Chief of Staff could not run the repository checks");
+    expect(parked.waitingReason).toContain("the agent is not asking anything");
+
+    // A sweep with nothing new leaves it alone (no re-run loop).
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(ranChecks()).toBe(1);
+
+    // The human sends another turn in BB and its events are missed: the
+    // thread is newer than the parked item, so the sweep re-runs checks.
+    checkHangs = false;
+    threadUpdatedAt = Date.now() + 60_000;
+    await host.harness.behavior.runSchedule("cos-sweep");
+    expect(ranChecks()).toBe(2);
+    expect(await roster()).toMatchObject({ detail: "pr_open", waitingReason: null });
+  });
+
+  it("re-runs checks for items its own failure parked after a plugin update, keeping the database", async () => {
+    type Entry = { detail: string };
+    const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
+    checkHangs = true;
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle" }), lastAssistantText: "## Summary\nDone." });
+    expect(ranChecks()).toBe(1);
+
+    checkHangs = false;
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(ranChecks()).toBe(2);
+    const entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
+    expect(entry.detail).toBe("pr_open");
+  });
+
+  it("keeps a plain-text question parked even when the thread changes", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", status: "idle" }), lastAssistantText: "Two options.\n\nShould I use Postgres?" });
+    assistantOutput = "Two options.\n\nShould I use Postgres?";
+    threadUpdatedAt = Date.now() + 60_000;
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    await host.harness.behavior.runSchedule("cos-sweep");
+    const entry = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { detail: string }[] }).entries[0];
+    expect(entry.detail).toBe("waiting_on_human");
+    expect(hostCalls.filter((c) => (c.input as { command: string }).command === "npm test")).toHaveLength(0);
   });
 
   it("revives a failed item when its thread is resumed", async () => {

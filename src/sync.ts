@@ -12,6 +12,11 @@ const BUSY = new Set(["active", "starting"]);
 /** Failed items are still re-synced this long after failing, so a resumed thread revives them. */
 const FAILED_LOOKBACK_MS = 3 * 24 * 60 * 60_000;
 
+/** The item is parked because one of our own effects failed, not because the agent asked anything. */
+export function isEffectFailure(item: WorkItem): boolean {
+  return item.status === "waiting_on_human" && /^(run_checks|open_pr|send_fix_prompt|respawn): /.test(item.lastError ?? "");
+}
+
 function waitingReason(pending: string[]): string {
   return pending.length > 1 ? `${pending[0]} (+${pending.length - 1} more)` : pending[0];
 }
@@ -90,7 +95,22 @@ export async function syncItem(cos: Cos, item: WorkItem, actor: string, opts: { 
   }
 
   if (thread.status === "idle") {
-    if (item.status === "running" || item.status === "fixing") {
+    if (item.status === "waiting_on_human") {
+      // Parked, but nothing is actually asking the human (no pending
+      // interaction, checked above). Re-evaluate when the item was parked by
+      // our own failure (a check run that crashed or timed out) and we are
+      // starting up, or when the thread has moved on since we parked it (a
+      // turn whose events we missed). A plain-text question keeps it parked.
+      const parkedByUs = isEffectFailure(item);
+      const movedOn = thread.updatedAt > Date.parse(item.updatedAt);
+      if ((parkedByUs && opts.rerunChecks) || movedOn) {
+        const lastText = await lastAssistantText(cos, item.threadId);
+        if (plainTextQuestion(lastText)) return;
+        await dispatch(cos, item.id, { type: "thread_active" }, actor);
+        const fresh = cos.store.getWorkItem(item.id) ?? item;
+        await handleIdle(cos, fresh, lastText, actor);
+      }
+    } else if (item.status === "running" || item.status === "fixing") {
       // Missed the idle event.
       const fresh = cos.store.getWorkItem(item.id) ?? item;
       await handleIdle(cos, fresh, await lastAssistantText(cos, item.threadId), actor);

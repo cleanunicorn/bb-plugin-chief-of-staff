@@ -10,6 +10,15 @@ import { spawnForItem } from "./intake";
 
 const OUTPUT_TAIL = 12_000;
 
+const EFFECT_LABEL: Record<Effect["type"], string> = {
+  run_checks: "run the repository checks",
+  open_pr: "open the pull request",
+  send_fix_prompt: "send the fix prompt",
+  notify: "send a notification",
+  respawn: "respawn the thread",
+  watch_ci: "watch CI",
+};
+
 /** Apply a machine event to a stored item and run the resulting effects. */
 export async function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: string): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(itemId);
@@ -32,7 +41,12 @@ export async function dispatch(cos: Cos, itemId: string, event: MachineEvent, ac
     } catch (error) {
       const message = await cos.safe(error instanceof Error ? error.message : String(error));
       cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}`, actor });
-      cos.store.updateWorkItem(item.id, { status: "waiting_on_human", lastError: `${effect.type}: ${message}` });
+      cos.store.updateWorkItem(item.id, {
+        status: "waiting_on_human",
+        lastError: `${effect.type}: ${message}`,
+        // Say plainly that the agent is done and Chief of Staff is the one stuck.
+        waitingReason: `Chief of Staff could not ${EFFECT_LABEL[effect.type]} (the agent is not asking anything): ${message}`.slice(0, 600),
+      });
       await cos.notify(`Chief of Staff needs help: ${item.repo}#${item.issueNumber ?? "?"}`, `${effect.type} failed: ${message}`, updated.threadId ?? undefined);
       cos.invalidate();
     }
