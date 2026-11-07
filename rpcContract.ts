@@ -181,6 +181,11 @@ export const rpcContract = defineRpcContract({
       providers: z.array(z.object({ id: z.string(), displayName: z.string(), available: z.boolean(), enabled: z.boolean() })),
     }),
   },
+  /** Skills agents can use, for the `/` typeahead in step instructions: those of the configured repos' projects, by name. */
+  cos_skills: {
+    input: z.null(),
+    output: z.object({ skills: z.array(z.object({ name: z.string(), description: z.string().nullable(), scope: z.string().nullable() })) }),
+  },
   cos_set_settings: {
     input: generalSettingsSchema.partial().extend({ githubToken: z.string().min(1).max(500).optional(), clearGithubToken: z.boolean().optional() }),
     output: z.object({ ok: z.literal(true), changed: z.array(z.string()) }),

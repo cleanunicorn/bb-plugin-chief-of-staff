@@ -1,11 +1,30 @@
 // Helpers around bb.sdk.threads for spawning and inspecting agent threads.
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
+import type { KnownSkill, SkillMention } from "./skills";
+
+/** A prompt as `prompt`, or as text input carrying skill mentions when there are any. */
+function promptArgs(prompt: string, mentions: SkillMention[] | undefined) {
+  return mentions?.length ? { input: [{ type: "text" as const, text: prompt, mentions }] } : { prompt };
+}
+
+/** Skills available to agents in a workspace; empty when bb cannot list them. */
+export async function listSkills(cos: Cos, projectId: string, environmentId: string | null): Promise<KnownSkill[]> {
+  try {
+    const { skills } = await cos.bb.sdk.skills.list({ projectId, environmentId });
+    return skills.map((s) => ({ name: s.name, description: s.description, scope: s.scope }));
+  } catch (error) {
+    cos.bb.log.debug(`skills list failed: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+}
 
 export interface SpawnOptions {
   repo: RepoConfig;
   title: string;
   prompt: string;
+  /** Skill mentions inside `prompt`. */
+  mentions?: SkillMention[];
   /** Base the worktree on this branch instead of the default branch. */
   baseBranch?: string;
   pluginMetadata: Record<string, string | number | boolean | null>;
@@ -24,7 +43,7 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
       hostId: checkout.hostId,
       workspace: { type: "managed-worktree", baseBranch: opts.baseBranch ? { kind: "named", name: opts.baseBranch } : { kind: "default" } },
     },
-    prompt: opts.prompt,
+    ...promptArgs(opts.prompt, opts.mentions),
     title: opts.title,
     ...(providerId ? { providerId } : {}),
     ...(model ? { model } : {}),
@@ -44,6 +63,7 @@ export interface StepSpawnOptions {
   parentThreadId?: string;
   title: string;
   prompt: string;
+  mentions?: SkillMention[];
   pluginMetadata: Record<string, string | number | boolean | null>;
 }
 
@@ -53,14 +73,14 @@ export interface StepSpawnOptions {
  * built yet, so there is nothing to see but the repository).
  */
 export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
-  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
+  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
   const { values } = await cos.config();
   const providerId = opts.repo.providerId || values.defaultProviderId || undefined;
   const model = opts.repo.model || values.defaultModel || undefined;
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
     environment: { type: "reuse", environmentId: opts.environmentId },
-    prompt: opts.prompt,
+    ...promptArgs(opts.prompt, opts.mentions),
     title: opts.title,
     ...(providerId ? { providerId } : {}),
     ...(model ? { model } : {}),
@@ -109,8 +129,8 @@ export async function readThreadUsage(cos: Cos, threadId: string): Promise<Threa
   return usage;
 }
 
-export async function sendToThread(cos: Cos, threadId: string, text: string): Promise<void> {
-  await cos.bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions: [] }] });
+export async function sendToThread(cos: Cos, threadId: string, text: string, mentions: SkillMention[] = []): Promise<void> {
+  await cos.bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions }] });
 }
 
 export async function lastAssistantText(cos: Cos, threadId: string): Promise<string | null> {

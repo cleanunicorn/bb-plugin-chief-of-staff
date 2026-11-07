@@ -10,6 +10,8 @@ import { dispatch } from "./delivery";
 import { parseRepos } from "./config";
 import { computeStats } from "./stats";
 import { answerQuestion, getQuestion } from "./answer";
+import { listSkills } from "./threads";
+import { isReferenceable } from "./skills";
 
 export { rpcContract };
 
@@ -113,6 +115,14 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
           safely(async () => (await cos.bb.sdk.providers.catalog()).map((p) => ({ id: p.id, displayName: p.displayName, available: p.available, enabled: p.enabled }))),
         ]);
         return { values: general, token: { stored: Boolean(values.githubToken && values.githubToken.trim()), source: await cos.tokenSource() }, projects, providers };
+      },
+      async cos_skills() {
+        const { repos } = await cos.config();
+        const projectIds = [...new Set(repos.map((r) => r.projectId).filter(Boolean))];
+        const lists = await Promise.all(projectIds.map((id) => listSkills(cos, id, null)));
+        const byName = new Map<string, { name: string; description: string | null; scope: string | null }>();
+        for (const skill of lists.flat()) if (isReferenceable(skill.name) && !byName.has(skill.name)) byName.set(skill.name, { name: skill.name, description: skill.description ?? null, scope: skill.scope ?? null });
+        return { skills: [...byName.values()].sort((a, b) => a.name.localeCompare(b.name)) };
       },
       async cos_set_settings(input, ctx) {
         const { githubToken, clearGithubToken, ...rest } = input;

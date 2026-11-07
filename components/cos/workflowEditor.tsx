@@ -4,6 +4,10 @@
 // type (agent, check, ship) adds the rest.
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
+import { rpcContract } from "../../rpcContract";
+import type { KnownSkill } from "../../src/skills";
+import { SkillTextarea } from "./skillTextarea";
 import {
   DEFAULT_WORKFLOW,
   blankStep,
@@ -44,6 +48,9 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
   const [current, setCurrent] = useState(doc.default);
   const [view, setView] = useState<"canvas" | "list">("canvas");
   const [selected, setSelected] = useState<string | null>(null);
+  // The `/` typeahead is a convenience: without the list, instructions are plain text.
+  const skillsQuery = experimental_useRpcQuery<typeof rpcContract, "cos_skills">({ contract: rpcContract, method: "cos_skills", input: null });
+  const skills: KnownSkill[] | null = skillsQuery.data?.skills ?? null;
   const wf = doc.workflows.find((w) => w.id === current) ?? doc.workflows[0]!;
   const problems = useMemo(() => validateWorkflow(wf), [wf]);
   const docProblems = useMemo(() => validateDocument(doc).filter((p) => !p.startsWith(`${wf.name}: `)), [doc, wf.name]);
@@ -134,7 +141,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
           <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} className="h-[520px]" />
           <div className="min-w-0">
             {selected && wf.steps.some((s) => s.id === selected) ? (
-              <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} narrow />
+              <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
             ) : (
               <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                 <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
@@ -147,7 +154,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
         <div className="flex flex-col gap-2">
           {topoOrder(wf).map((id) => {
             const step = wf.steps.find((s) => s.id === id)!;
-            return <StepPanel key={id} workflow={wf} step={step} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} collapsible />;
+            return <StepPanel key={id} workflow={wf} step={step} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} skills={skills} collapsible />;
           })}
           <div className="flex flex-wrap gap-1.5">
             {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
@@ -178,7 +185,7 @@ function Row({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
 }
 
 /** Edit one step: the common fields, then its type's fields. */
-export function StepPanel({ workflow, step, onChange, onRemove, collapsible = false, narrow = false }: { workflow: Workflow; step: Step; onChange: (s: Step) => void; onRemove: () => void; collapsible?: boolean; narrow?: boolean }) {
+export function StepPanel({ workflow, step, onChange, onRemove, skills = null, collapsible = false, narrow = false }: { workflow: Workflow; step: Step; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean }) {
   const two = narrow ? "grid grid-cols-1 gap-2" : "grid grid-cols-1 gap-2 sm:grid-cols-2";
   const [open, setOpen] = useState(!collapsible);
   const set = (patch: Record<string, unknown>) => onChange({ ...step, ...patch } as Step);
@@ -214,8 +221,14 @@ export function StepPanel({ workflow, step, onChange, onRemove, collapsible = fa
               )}
             </Field>
           </Row>
-          <Field label={step.type === "agent" ? "Instructions for the agent" : "Notes"} hint={step.type === "agent" ? "What this step should achieve. The agent also gets the reports of the steps before it." : "Shown in prompts that follow; optional."}>
-            {(id) => <textarea id={id} className={textareaClass} value={step.instructions} onChange={(e) => set({ instructions: e.target.value })} placeholder={step.type === "agent" ? "e.g. Investigate the codebase and write a plan…" : ""} />}
+          <Field label={step.type === "agent" ? "Instructions for the agent" : "Notes"} hint={step.type === "agent" ? <>What this step should achieve. Type <code>/</code> to use an agent skill. The agent also gets the reports of the steps before it.</> : "Shown in prompts that follow; optional."}>
+            {(id) =>
+              step.type === "agent" ? (
+                <SkillTextarea id={id} className={textareaClass} value={step.instructions} onChange={(v) => set({ instructions: v })} placeholder="e.g. Investigate the codebase and write a plan… (type / for skills)" skills={skills} />
+              ) : (
+                <textarea id={id} className={textareaClass} value={step.instructions} onChange={(e) => set({ instructions: e.target.value })} />
+              )
+            }
           </Field>
 
           {step.type === "agent" ? (
