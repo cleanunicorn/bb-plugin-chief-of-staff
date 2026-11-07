@@ -19,13 +19,10 @@ prompt built from the issue, its comments and the repo's conventions, plus a
 comment on the issue linking the thread. An issue with an active thread or an
 open PR is never picked up twice.
 
-## Delivery workflow
+## Workflows
 
-Every task goes through Plan → Build → Verify → Review → Ship. Switch stages
-on or off and give each one your own instructions, globally or per repository.
-The plan can wait for your approval; verification runs the repo's command and
-can ask the agent to exercise the change; review uses a fresh reviewer agent or
-self-review; shipping means pushing, opening a PR, or merging it when CI is
-green. Agents report each finished stage explicitly, failures loop back to
-Build on a budget, and you always see who holds the ball: the agent, Chief of
-Staff, or you.
+Define how work gets done: a graph of steps on a canvas. Agent steps run agents
+on your instructions (read-only ones can run several agents in parallel, e.g.
+two planners), check steps run a command, ship steps push, open or merge the
+PR. Steps can need your approval, pass/fail verdicts and failed checks send the
+work back to an earlier step, and every task shows live where it is.

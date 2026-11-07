@@ -1,7 +1,7 @@
 // Typed configuration parsed from plugin settings. Repos are stored as a JSON
 // document in a multiline string setting (validated here).
 import { z } from "zod";
-import { workflowOverrideSchema } from "./workflow";
+import { legacyStagesSchema } from "./workflow";
 
 export const issueFilterSchema = z.object({
   labels: z.array(z.string()).default([]),
@@ -30,8 +30,12 @@ export const repoConfigSchema = z.object({
   reviewers: z.array(z.string()).default([]),
   /** How Ship merges when its action is "merge". */
   mergeStrategy: z.enum(["merge", "squash", "rebase"]).default("squash"),
-  /** Per-stage overrides of the global workflow (any subset of fields). */
-  workflow: workflowOverrideSchema.optional(),
+  /**
+   * The workflow this repository runs (an id from the workflow setting; empty
+   * = the default). Older configs hold per-stage overrides here instead; they
+   * are converted into a workflow of their own.
+   */
+  workflow: z.union([z.string().min(1), legacyStagesSchema]).optional(),
 });
 /** A repo entry with owner/repo resolved (explicitly or from the project remote). */
 export type RepoConfig = z.output<typeof repoConfigSchema> & { owner: string; repo: string };
@@ -49,6 +53,11 @@ export const BRANCH_PREFIX = "cos/";
 export function migrateLegacyRepo(entry: unknown): unknown {
   if (!entry || typeof entry !== "object") return entry;
   const e = { ...(entry as Record<string, unknown>) };
+  // A workflow id (current format) is left alone; stage overrides (older) absorb the legacy keys.
+  if (typeof e.workflow === "string") {
+    delete e.checkCommand;
+    return e;
+  }
   const workflow = { ...((e.workflow as Record<string, Record<string, unknown>> | undefined) ?? {}) };
   if (typeof e.checkCommand === "string" && e.checkCommand.trim() && !workflow.verify?.command) workflow.verify = { ...workflow.verify, command: e.checkCommand.trim() };
   const mergeFilter = e.mergeFilter as { requireApproval?: unknown } | undefined;

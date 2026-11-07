@@ -12,7 +12,7 @@ const json = (value: unknown) => out(JSON.stringify(value, null, 2) + "\n");
 export function formatRoster(entries: RosterEntry[]): string {
   if (!entries.length) return "No agents tracked.\n";
   const rows = entries.map((e) => [
-    e.stage.toUpperCase(),
+    (e.current.join("+") || e.detail).slice(0, 24),
     e.actor + (e.stalled ? " (stalled)" : ""),
     e.repo + (e.issueNumber ? `#${e.issueNumber}` : ""),
     e.prNumber ? `PR #${e.prNumber}` : "-",
@@ -20,7 +20,7 @@ export function formatRoster(entries: RosterEntry[]): string {
     e.activity.slice(0, 60),
     e.issueTitle.slice(0, 40),
   ]);
-  const header = ["STAGE", "BALL", "ISSUE", "PR", "THREAD", "NOW", "TITLE"];
+  const header = ["STEP", "BALL", "ISSUE", "PR", "THREAD", "NOW", "TITLE"];
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
   const line = (cols: string[]) => cols.map((c, i) => c.padEnd(widths[i])).join("  ").trimEnd();
   const waiting = entries.filter((e) => e.waitingReason).map((e) => `  ${e.repo}${e.issueNumber ? `#${e.issueNumber}` : ""} [${e.id}] (${e.threadId ?? "-"}): ${e.waitingReason}`);
@@ -31,7 +31,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
   bb.cli.register(
     defineCli({
       name: "cos",
-      summary: "Chief of Staff: take issues and tasks through plan, build, verify, review, ship",
+      summary: "Chief of Staff: take issues and tasks through your agent workflows",
       commands: {
         status: cliCommand({
           summary: "Show the agent roster",
@@ -65,17 +65,21 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
         item: cliCommand({
           summary: "Act on a tracked work item",
           positionals: [
-            { name: "action", description: "approve | revise | retry | resume | rerun-checks | done | failed", required: true },
+            { name: "action", description: "approve | revise | retry | rerun | done | failed", required: true },
             { name: "id", description: "Work item id (see bb cos status --json)", required: true },
           ],
-          options: { message: { type: "string", description: "Feedback for revise: sent to the agent with the stage" } },
+          options: {
+            step: { type: "string", description: "Step id (defaults to the step waiting on you; required for rerun)" },
+            message: { type: "string", description: "Feedback for revise / rerun: sent to the agent" },
+          },
           async run(input, ctx) {
-            const map = { approve: "approve", revise: "revise", retry: "retry", resume: "resume", "rerun-checks": "rerun_checks", "rerun-verify": "rerun_checks", done: "mark_done", failed: "mark_failed" } as const;
+            const map = { approve: "approve", revise: "revise", retry: "retry", resume: "retry", rerun: "rerun_step", done: "mark_done", failed: "mark_failed" } as const;
             const action = map[input.positionals.action as keyof typeof map];
             if (!action) throw new PluginCliError(`unknown action ${input.positionals.action}`, { hint: Object.keys(map).join(" | ") });
             if (action === "revise" && !input.options.message) throw new PluginCliError("revise needs --message with feedback for the agent");
-            const item = await itemAction(cos, input.positionals.id, action, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`, input.options.message);
-            return out(`${input.positionals.id}: ${item ? `${item.stage}/${item.status}` : "unknown"}\n`);
+            if (action === "rerun_step" && !input.options.step) throw new PluginCliError("rerun needs --step <id>");
+            const item = await itemAction(cos, input.positionals.id, action, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`, { step: input.options.step, feedback: input.options.message });
+            return out(`${input.positionals.id}: ${item?.status ?? "unknown"}\n`);
           },
         }),
         task: cliCommand({
@@ -91,7 +95,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
             const item = await startTask(cos, { repo: input.options.repo, title: input.positionals.title, body: input.options.body ?? "" }, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`);
             if (!item) throw new PluginCliError("could not start the task");
             if (input.options.json) return json(item);
-            return out(`started ${item.id} on ${item.repo}: ${item.stage}/${item.status}${item.threadId ? ` (thread ${item.threadId})` : ""}\n`);
+            return out(`started ${item.id} on ${item.repo} (workflow ${item.workflow.name}): ${item.status}${item.threadId ? ` (thread ${item.threadId})` : ""}\n`);
           },
         }),
         log: cliCommand({

@@ -1,8 +1,9 @@
 # Chief of Staff — BB plugin
 
 An engineering chief of staff for one or more GitHub repositories. It takes
-each GitHub issue (or task you describe) through Plan → Build → Verify → Review
-→ Ship with an agent, and always knows where that agent is. It
+each GitHub issue (or task you describe) through a workflow you define, a graph
+of agent, check and ship steps that can run in parallel, and always knows
+where each agent is. It
 
 - **watches agents**: a live roster of the threads it spawned (status, repo,
   issue, PR, started-at, last activity, token usage when the provider reports
@@ -11,11 +12,12 @@ each GitHub issue (or task you describe) through Plan → Build → Verify → R
   matching a per-repo filter become isolated worktree threads with a prompt
   built from the issue, its comments and the repo's `AGENTS.md` /
   `CONTRIBUTING.md`;
-- **drives every task through a delivery workflow**: Plan → Build → Verify →
-  Review → Ship, each stage switchable and carrying your instructions, with
-  questions and approvals pushed to you and failures looped back on a budget;
-- **knows where every agent is**: which stage, and who holds the ball (the
-  agent, Chief of Staff, you, or an infrastructure retry).
+- **runs your workflows**: steps you define on a canvas or as a list, each an
+  agent (with your instructions), a check command, or shipping; parallel
+  read-only steps; approvals and questions pushed to you; failures sent back
+  to an earlier step on a budget;
+- **knows where every agent is**: which steps are running, and who holds the
+  ball (an agent, Chief of Staff, you, or an infrastructure retry).
 
 ## Install
 
@@ -48,55 +50,80 @@ Then open **Chief of Staff** in the sidebar, or run `bb cos status`.
 Note: `bb plugin remove` deletes the plugin's settings, so switch sources with
 `bb plugin install` rather than remove + install.
 
-## Workflow
+## Workflows
 
-Every task goes through these stages, in order. Chief of Staff moves to the
-next one only when the agent reports the current one done (the `cos_report`
-tool, or a `## Stage report` block), and nudges an agent that stops without
-reporting.
+A workflow is the path every task takes: a set of **steps** connected by
+arrows. A step starts when every step pointing at it is done; steps side by
+side run in parallel, and a step with several arrows into it waits for all of
+them. Chief of Staff moves on only when the agent reports its step (the
+`cos_report` tool, or a `## Step report` block), and nudges an agent that stops
+without reporting. Each step's prompt carries its instructions plus the reports
+of the steps before it.
 
-| Stage | What happens | Options |
+Every step has a name, instructions and arrows to the steps after it. Its
+**type** adds the rest:
+
+| Type | What runs | Options |
 | --- | --- | --- |
-| Plan | The agent investigates and writes a plan, no code changes. | `enabled`, `instructions`, `requireApproval` (Approve / Send back in the dashboard) |
-| Build | The agent implements and commits. Always on. | `instructions` |
-| Verify | Chief of Staff runs the verify command in the worktree; with instructions, the agent also verifies behaviour and collects evidence. Failures go back to Build. | `enabled`, `instructions`, `command` (defaults to the repo's `checkCommand`), `timeoutMinutes`, `maxAttempts` |
-| Review | A fresh reviewer agent in the builder's workspace (`agent`) or the builder (`self`) reviews the diff. Requested changes go back to Build → Verify → Review. | `enabled`, `instructions`, `mode`, `maxRounds` |
-| Ship | `push` the branch, open a `pr` (you merge), or `merge` it when CI is green. With instructions the agent writes the PR description. Red CI goes back to Build → Verify → Ship. | `enabled`, `instructions`, `action`, `draft`, `maxCiFixes` |
+| Agent | Agents work on the instructions. | **Writes code** (runs in the task's main thread, one code-writing step at a time; off = read-only, may run in parallel), **agents in parallel** (read-only steps, e.g. two planners), **needs my approval** (approve the report or send it back), **pass/fail verdict** (fail sends the work back), on fail → step, rounds |
+| Check | Chief of Staff runs a command in the worktree; non-zero exit fails it. | command, timeout, on fail → step, attempts |
+| Ship | Push the branch, open a PR (you merge), or open it and merge when CI is green. | action, draft, wait for an approving review, when CI is red → step, attempts |
 
-Out of attempts, a question, a plan to approve: the item waits on you, and the
-dashboard's answer panel shows the plan, findings or question with the right
-buttons. Chief of Staff's own failures (host timeouts, GitHub errors) are
-retried with backoff before they reach you, and are labelled as such.
+“On fail” goes back to an earlier step: that step and everything after it run
+again, with the failure (check output, review findings, CI log) as feedback.
+Past the limit, the task waits on you: approve to continue anyway, or send
+instructions back. Read-only steps run in their own threads, in the task's
+workspace once code exists, so a reviewer sees exactly what was built.
 
-The global workflow lives in **Configure → Workflow** (setting `workflow`):
+The default workflow is **Plan** (needs approval) → **Build** (writes code) →
+**Review** (pass/fail, back to Build) → **Ship** (PR). Edit it, or add your own,
+under **Configure → Workflows**: drag steps on the canvas, connect a step's
+right edge to another step, select an arrow and press Backspace to remove it,
+or use the list view. Each repository picks a workflow; a task keeps the
+workflow it started with. On a task card, **Workflow** shows the task live on
+the canvas and lets you run any step again from there.
+
+Stored in the `workflow` setting:
 
 ```json
 {
-  "workflow": {
-    "plan":   { "enabled": true, "requireApproval": true, "instructions": "" },
-    "build":  { "instructions": "Follow AGENTS.md." },
-    "verify": { "enabled": true, "command": "npm test", "instructions": "Exercise the changed flow.", "timeoutMinutes": 30, "maxAttempts": 2 },
-    "review": { "enabled": true, "mode": "agent", "instructions": "", "maxRounds": 2 },
-    "ship":   { "enabled": true, "action": "pr", "draft": false, "instructions": "", "maxCiFixes": 2 }
-  }
+  "workflows": [
+    {
+      "id": "careful",
+      "name": "Careful",
+      "steps": [
+        { "id": "plan", "name": "Plan", "type": "agent", "agents": 2, "approval": true, "instructions": "Write a plan.", "next": ["build"] },
+        { "id": "build", "name": "Build", "type": "agent", "writes": true, "instructions": "Implement the plan.", "next": ["test"] },
+        { "id": "test", "name": "Tests", "type": "check", "command": "npm test", "onFail": "build", "maxAttempts": 2, "next": ["review", "docs"] },
+        { "id": "review", "name": "Review", "type": "agent", "verdict": true, "onFail": "build", "maxRounds": 2, "next": ["ship"] },
+        { "id": "docs", "name": "Docs", "type": "agent", "instructions": "Check the docs cover the change.", "next": ["ship"] },
+        { "id": "ship", "name": "Ship", "type": "ship", "action": "pr", "onFail": "build" }
+      ]
+    }
+  ],
+  "default": "careful"
 }
 ```
 
-A repository overrides any field of any stage under its own `workflow`
-(`{"review": {"enabled": false}}`). Start a task without an issue from the
-dashboard (**New task**), with `bb cos task "Title" --repo owner/repo --body …`,
-or let another agent call the `cos_start_task` tool.
+Workflows are validated before saving: no loops through arrows (use “on fail”
+to go back), code-writing steps, checks and ship must run one after another,
+“on fail” must point back to an earlier step, and checks and ship need a
+code-writing step before them. The fixed-stage config from earlier versions is
+converted automatically.
+
+Start a task without an issue from the dashboard (**New task**), with
+`bb cos task "Title" --repo owner/repo --body …`, or let another agent call the
+`cos_start_task` tool.
 
 ## Configure
 
 Use the visual configurator: the **Configure** tab in the Chief of Staff
 dashboard, or the plugin's page under Settings. It edits:
 
-- **Workflow**: the stages above, with their instructions and budgets.
+- **Workflows**: the canvas / list editor above.
 - **Repositories**: add as many as you like. Pick the BB project that holds
   the checkout (its GitHub remote fills in the repository), the issue labels
-  to pick up, the agent, and any workflow stage you want to customise for
-  that repository.
+  to pick up, the agent, and which workflow it runs.
 - **General**: capacity, intake cadence, stall threshold, default agent,
   push notifications.
 - **GitHub access**: a write-only token field. A stored token is never shown,
@@ -113,7 +140,7 @@ The same settings, as stored:
 | Setting | Purpose |
 | --- | --- |
 | `githubToken` (secret) | Token with `repo` scope. Empty → `gh auth token` on the server host. Never logged. |
-| `workflow` (JSON) | The global delivery workflow, see above. |
+| `workflow` (JSON) | Your workflows and which one is the default, see above. |
 | `repos` (JSON) | Repository list, see below. |
 | `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. |
 | `defaultProviderId`, `defaultModel` | Used when a repo does not set its own. |
@@ -132,7 +159,7 @@ The same settings, as stored:
       "providerId": "claude-code", "model": "claude-opus-5-5",
       "reviewers": ["alice"],
       "mergeStrategy": "squash",
-      "workflow": { "verify": { "command": "npm test" }, "review": { "mode": "self" } }
+      "workflow": "careful"
     }
   ]
 }
@@ -144,9 +171,10 @@ so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
 when they carry every label in `issueFilter.labels` (or are assigned to
 `issueFilter.assignee`); set `intake: false` to run only tasks you start.
 
-Entries written for earlier versions keep working: `checkCommand` becomes the
-repo's verify command, `allow.intake: false` pauses intake, and options of the
-removed routines feature (deploy, release, merge filters) are ignored.
+`workflow` names one of your workflows (empty: the default). Entries written
+for earlier versions keep working: per-stage overrides and `checkCommand` are
+converted into a workflow for that repository, `allow.intake: false` pauses
+intake, and options of the removed routines feature are ignored.
 
 ## CLI
 
@@ -154,33 +182,40 @@ removed routines feature (deploy, release, merge filters) are ignored.
 bb cos status [--repo owner/repo] [--all] [--usage] [--json]
 bb cos intake [--repo owner/repo] [--dry-run]
 bb cos task "<title>" --repo owner/repo [--body "..."]
-bb cos item approve|revise|retry|rerun-checks|done|failed <id> [--message "..."]
+bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message "..."]
 bb cos log [--limit n] [--item id]
 ```
 
 Agents get three tools: `chief_of_staff_status` (the roster), `cos_report`
-(workflow agents report a finished stage) and `cos_start_task` (hand a task to
+(workflow agents report a finished step) and `cos_start_task` (hand a task to
 Chief of Staff).
 
 ## How it works
 
-- State lives in the plugin's SQLite database (`work_items`, `activity_log`).
-  On startup the plugin reconciles every active item against its threads.
+- State lives in the plugin's SQLite database: `work_items` (each task with a
+  snapshot of its workflow and the state of every step), `item_threads` (which
+  agent thread works on which step) and `activity_log`. On startup the plugin
+  reconciles every active item against its threads.
 - One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
   retries and stall detection.
-- Stage machine (`src/machine.ts`, pure): each item has a stage (plan, build,
-  verify, review, ship, done) and a status saying who holds the ball (`agent`,
-  `cos`, `ci`, `ready`, `waiting_on_human`, `retrying`, `blocked`). Events from
-  threads, jobs, CI and you produce the next stage and the effects to run.
-- Thread sync: thread events drive the machine, and the sweep re-reads every
-  tracked builder and reviewer thread in one `threads.list` call each minute
+- Workflow engine (`src/machine.ts`, pure): each step has a state (pending,
+  running, waiting, done), a round and a failure count. Events from threads,
+  jobs, CI and you produce new step states and the effects to run; a pending
+  step starts once every step before it is done. The item's status (who holds
+  the ball: `agent`, `cos`, `ci`, `ready`, `waiting_on_human`, `retrying`,
+  `blocked`) is derived from its steps.
+- Threads: code-writing steps share the task's builder thread (a managed
+  worktree); every agent on a read-only step gets its own thread, in the
+  builder's workspace once it exists, reused for later rounds.
+- Thread sync: thread events drive the engine, and the sweep re-reads every
+  tracked thread in one `threads.list` call each minute
   (runtime status, pending interactions) to catch anything missed. All
   observations of one item run under a per-item lock, and a turn end is
   handled once (keyed on the thread's `updatedAt`, ignoring turns older than
-  Chief of Staff's latest prompt). When a turn ends, the agent's stage report
+  Chief of Staff's latest prompt to that thread). When a turn ends, the agent's step report
   decides what happens; without one, an open interaction or a plain-text
   question parks the item on you, otherwise the agent is nudged.
-- Jobs: the verify command, push/PR and merge run detached from event handlers
+- Jobs: check commands, push/PR and merge run detached from event handlers
   with their own timeout. Their result is applied only if the item is still
   waiting on that job; a job lost to a restart is started again by the sweep.
   Errors are retried with backoff before they reach you.
@@ -189,7 +224,7 @@ Chief of Staff).
   or open the thread. Questions, approvals and requests are resolved with
   `threads.interactions.resolve`; a plain-text question gets a reply message.
   The activity log records who answered, not what they wrote.
-- Commands on a checkout (git and the verify command) run on the enrolled
+- Commands on a checkout (git and check commands) run on the enrolled
   host through the plugin's `host.ts` entry; nothing opens user paths from the
   server process.
 - Worktree branches are named by BB when the thread is created (the thread
@@ -199,7 +234,7 @@ Chief of Staff).
 ## Development
 
 ```sh
-npm test            # vitest: stage machine, workflow config, stats, fake plugin host
+npm test            # vitest: workflow engine and validation, stats, fake plugin host e2e
 npm run typecheck
 bb plugin dev       # build + install + reload on change
 ```

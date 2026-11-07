@@ -1,337 +1,352 @@
 import { describe, expect, it } from "vitest";
-import { actorOf, DEFAULT_POLICY, rosterStatus, transition, type MachineEvent, type Transition } from "../src/machine";
-import { NEW_ITEM_STAGE_FIELDS, type StageReport, type WorkItem } from "../src/state";
-import { activeStages, nextStage, parseWorkflow, resolveWorkflow, workflowSchema, type Workflow } from "../src/workflow";
+import { DEFAULT_POLICY, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import type { WorkItem } from "../src/state";
+import { DEFAULT_WORKFLOW, fromStages, parseWorkflows, validateWorkflow, workflowSchema, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
+import { pipelineLine } from "../src/prompts";
 
-const base: WorkItem = {
-  ...NEW_ITEM_STAGE_FIELDS,
-  id: "w1",
-  repo: "acme/app",
-  issueNumber: 12,
-  issueTitle: "Fix login",
-  threadId: "thr_1",
-  environmentId: "env_1",
-  branch: "cos/issue-12-fix-login",
-  prNumber: null,
-  prUrl: null,
-  status: "agent",
-  stage: "build",
-  providerId: "claude-code",
-  model: null,
-  fixAttempts: 0,
-  retryCount: 0,
-  lastError: null,
-  checkOutput: null,
-  source: "intake",
-  createdAt: "2026-11-05T00:00:00.000Z",
-  updatedAt: "2026-11-05T00:00:00.000Z",
-  lastActivityAt: null,
-  finishedAt: null,
-};
+const NOW = new Date("2026-11-07T10:00:00.000Z");
 
-const full: Workflow = workflowSchema.parse({ verify: { command: "npm test" } });
-const minimal: Workflow = workflowSchema.parse({ plan: { enabled: false }, verify: { enabled: false }, review: { enabled: false } });
-
-const report = (stage: StageReport["stage"], outcome: StageReport["outcome"] = "done", summary = `${stage} summary`): StageReport => ({ stage, outcome, summary, at: "2026-11-05T01:00:00.000Z", via: "tool" });
-const ended = (r: StageReport | null, role: "builder" | "reviewer" = "builder", question: string | null = null): MachineEvent => ({ type: "turn_ended", role, report: r, question });
-
-/** Apply a transition the way the dispatcher does. */
-function apply(item: WorkItem, t: Transition): WorkItem {
-  return { ...item, ...t.patch, status: t.status, stage: t.stage } as WorkItem;
-}
-function run(item: WorkItem, event: MachineEvent, workflow: Workflow = full): [WorkItem, Transition] {
-  const t = transition(item, event, workflow, DEFAULT_POLICY);
-  return [apply(item, t), t];
+function itemFor(workflow: Workflow, over: Partial<WorkItem> = {}): WorkItem {
+  return {
+    id: "w1",
+    repo: "acme/app",
+    issueNumber: 12,
+    issueTitle: "Fix login",
+    threadId: null,
+    environmentId: null,
+    branch: "cos/issue-12-fix-login",
+    prNumber: null,
+    prUrl: null,
+    status: "queued",
+    providerId: null,
+    model: null,
+    fixAttempts: 0,
+    retryCount: 0,
+    lastError: null,
+    source: "intake",
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+    lastActivityAt: null,
+    finishedAt: null,
+    waitingReason: null,
+    waitingKind: null,
+    jobStartedAt: null,
+    taskBody: null,
+    workflow,
+    nodes: initialNodes(workflow),
+    ...over,
+  };
 }
 
-describe("workflow config", () => {
-  it("defaults to the full pipeline with plan approval and an independent reviewer", () => {
-    const wf = workflowSchema.parse({});
-    expect(wf.plan).toMatchObject({ enabled: true, requireApproval: true });
-    expect(wf.review).toMatchObject({ enabled: true, mode: "agent" });
-    expect(wf.ship.action).toBe("pr");
-    // Verify with neither a command nor instructions has nothing to do.
-    expect(activeStages(wf)).toEqual(["plan", "build", "review", "ship"]);
+const report = (outcome: StepReport["outcome"] = "done", summary = "ok"): StepReport => ({ outcome, summary, at: NOW.toISOString(), via: "tool" });
+
+/** Apply an event the way the dispatcher does; returns the new item and the effects. */
+function run(item: WorkItem, event: MachineEvent): [WorkItem, Effect[]] {
+  const t = transition(item, event, DEFAULT_POLICY, NOW);
+  const explicit = "status" in t.patch ? t.patch.status : item.status;
+  const derived = deriveStatus({ status: explicit === "failed" ? "failed" : "queued", workflow: item.workflow }, t.nodes);
+  const status = explicit === "failed" ? "failed" : t.patch.status === "done" ? "done" : derived.status;
+  return [{ ...item, ...t.patch, nodes: t.nodes, status, waitingKind: derived.waitingKind, waitingReason: derived.waitingReason }, t.effects];
+}
+const ended = (step: string, r: StepReport | null, item: WorkItem, agent = 0, question: string | null = null): MachineEvent => ({ type: "turn_ended", step, agent, round: item.nodes[step]!.round, report: r, question });
+const agentFx = (e: Effect[]) => e.filter((x) => x.type === "agent");
+const st = (item: WorkItem) => Object.fromEntries(Object.entries(item.nodes).map(([k, v]) => [k, v.status]));
+
+const wf = (steps: unknown[]) => workflowSchema.parse({ id: "t", name: "Test", steps });
+
+describe("workflow definition", () => {
+  it("ships a valid default: Plan (approval) → Build → Review (verdict) → Ship", () => {
+    expect(validateWorkflow(DEFAULT_WORKFLOW)).toEqual([]);
+    expect(pipelineLine(DEFAULT_WORKFLOW, "build")).toBe("Plan → **Build** → Review → Ship");
   });
 
-  it("merges repo overrides field by field", () => {
-    const global = workflowSchema.parse({ review: { instructions: "be strict" }, verify: { command: "npm test" } });
-    const wf = resolveWorkflow(global, { review: { enabled: false }, plan: { requireApproval: false } });
-    expect(wf.review).toMatchObject({ enabled: false, instructions: "be strict" });
-    expect(wf.plan).toMatchObject({ enabled: true, requireApproval: false });
-    expect(wf.verify.command).toBe("npm test");
-    expect(resolveWorkflow(global, { verify: { command: "make check" } }).verify.command).toBe("make check");
+  it("rejects loops, parallel writers, bad back-jumps, checks without a writer, and writing fan-out", () => {
+    const loop = wf([
+      { id: "a", name: "A", type: "agent", writes: true, next: ["b"] },
+      { id: "b", name: "B", type: "agent", next: ["a"] },
+    ]);
+    expect(validateWorkflow(loop).join(" ")).toMatch(/loop/);
+    const parallelWriters = wf([
+      { id: "p", name: "P", type: "agent", next: ["a", "b"] },
+      { id: "a", name: "A", type: "agent", writes: true },
+      { id: "b", name: "B", type: "agent", writes: true },
+    ]);
+    expect(validateWorkflow(parallelWriters).join(" ")).toMatch(/A and B could run at the same time/);
+    const badJump = wf([
+      { id: "a", name: "A", type: "agent", writes: true, next: ["b"] },
+      { id: "b", name: "B", type: "agent", verdict: true, onFail: "c", next: ["c"] },
+      { id: "c", name: "C", type: "agent" },
+    ]);
+    expect(validateWorkflow(badJump).join(" ")).toMatch(/must go back to a step before it/);
+    const noWriter = wf([{ id: "c", name: "Tests", type: "check", command: "npm test" }]);
+    expect(validateWorkflow(noWriter).join(" ")).toMatch(/needs a step that writes code before it/);
+    const many = wf([{ id: "a", name: "A", type: "agent", writes: true, agents: 2 }]);
+    expect(validateWorkflow(many).join(" ")).toMatch(/only read-only steps can run several agents/);
   });
 
-  it("finds the next enabled stage, optionally skipping review", () => {
-    expect(nextStage(full, "build")).toBe("verify");
-    expect(nextStage(full, "verify")).toBe("review");
-    expect(nextStage(full, "verify", { skipReview: true })).toBe("ship");
-    expect(nextStage(minimal, "build")).toBe("ship");
-    expect(nextStage(workflowSchema.parse({ ship: { enabled: false } }), "review")).toBe("done");
-  });
-
-  it("parses the stored setting and rejects bad values", () => {
-    expect(parseWorkflow("").ok).toBe(true);
-    const parsed = parseWorkflow(JSON.stringify({ workflow: { ship: { action: "merge" } } }));
-    expect(parsed.ok && parsed.value.ship.action).toBe("merge");
-    expect(parseWorkflow(JSON.stringify({ workflow: { ship: { action: "yolo" } } })).ok).toBe(false);
+  it("converts the stage config from before custom workflows", () => {
+    const converted = fromStages({ plan: { requireApproval: false }, verify: { command: "npm test", maxAttempts: 3 }, review: { enabled: false }, ship: { action: "merge" } });
+    expect(converted.steps.map((s) => s.id)).toEqual(["plan", "build", "verify", "ship"]);
+    expect(converted.steps[0]).toMatchObject({ type: "agent", approval: false, next: ["build"] });
+    expect(converted.steps[2]).toMatchObject({ type: "check", command: "npm test", onFail: "build", maxAttempts: 3 });
+    expect(converted.steps[3]).toMatchObject({ type: "ship", action: "merge" });
+    expect(validateWorkflow(converted)).toEqual([]);
+    const parsed = parseWorkflows(JSON.stringify({ workflow: { review: { enabled: false } } }));
+    expect(parsed.ok && parsed.value.workflows[0]!.steps.map((s) => s.id)).toEqual(["plan", "build", "ship"]);
+    expect(parseWorkflows("").ok).toBe(true);
+    expect(parseWorkflows(JSON.stringify({ workflows: [loop()], default: "t" })).ok).toBe(false);
   });
 });
 
-describe("stage machine", () => {
-  it("walks plan → approval → build → verify → review → ship → CI → merged", () => {
-    let item: WorkItem = { ...base, status: "queued", stage: "build", threadId: null, environmentId: null };
-    let t: Transition;
+function loop() {
+  return { id: "t", name: "T", steps: [{ id: "a", name: "A", type: "agent", writes: true, next: ["a"] }] };
+}
 
-    [item, t] = run(item, { type: "start" });
-    expect([item.stage, item.status]).toEqual(["plan", "agent"]);
-    expect(t.effects).toEqual([{ type: "prompt", target: "builder", kind: "plan", detail: undefined }]);
-    item = { ...item, threadId: "thr_1", environmentId: "env_1" };
+describe("workflow engine", () => {
+  it("walks the default workflow to a merged PR", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "start" });
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "plan", agent: 0, kind: "start" }]);
+    expect(item.status).toBe("agent");
 
-    [item, t] = run(item, ended(report("plan", "done", "1. change auth.ts")));
-    expect([item.stage, item.status, item.waitingKind]).toEqual(["plan", "waiting_on_human", "plan_approval"]);
-    expect(item.reports.plan?.summary).toBe("1. change auth.ts");
-    expect(t.effects[0]).toMatchObject({ type: "notify" });
+    [item, fx] = run(item, ended("plan", report("done", "1. patch auth.ts"), item));
+    expect([item.status, item.waitingKind]).toEqual(["waiting_on_human", "approval"]);
+    expect(fx[0]).toMatchObject({ type: "notify" });
 
-    [item, t] = run(item, { type: "approve" });
-    expect([item.stage, item.status, item.waitingKind]).toEqual(["build", "agent", null]);
-    expect(t.effects).toEqual([{ type: "prompt", target: "builder", kind: "build", detail: undefined }]);
+    [item, fx] = run(item, { type: "approve" });
+    expect(st(item)).toMatchObject({ plan: "done", build: "running" });
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "build", agent: 0, kind: "start" }]);
 
-    [item, t] = run(item, ended(report("build")));
-    expect([item.stage, item.status]).toEqual(["verify", "cos"]);
-    expect(item.jobStartedAt).toBe("now");
-    expect(t.effects).toEqual([{ type: "verify_command" }]);
+    [item, fx] = run(item, ended("build", report(), item));
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "review", agent: 0, kind: "start" }]);
 
-    [item, t] = run(item, { type: "verify_passed", output: "all green" });
-    expect([item.stage, item.status]).toEqual(["review", "agent"]);
-    expect(t.effects).toEqual([{ type: "prompt", target: "reviewer", kind: "review" }]);
+    [item, fx] = run(item, ended("review", report("done", "LGTM"), item));
+    expect(fx).toEqual([{ type: "ship", step: "ship" }]);
+    expect([item.status, item.jobStartedAt]).toEqual(["cos", NOW.toISOString()]);
 
-    // The builder idling during an independent review is not the stage's signal.
-    expect(transition(item, ended(null), full).effects).toEqual([]);
-
-    [item, t] = run(item, ended(report("review", "done", "LGTM"), "reviewer"));
-    expect([item.stage, item.status]).toEqual(["ship", "cos"]);
-    expect(t.effects).toEqual([{ type: "ship" }]);
-
-    [item] = run(item, { type: "pr_opened", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
-    expect([item.stage, item.status, item.prNumber]).toEqual(["ship", "ci", 7]);
-
-    [item, t] = run(item, { type: "ci_passing" });
-    expect([item.stage, item.status]).toEqual(["ship", "ready"]);
-    expect(t.effects[0]).toMatchObject({ type: "notify" });
-
-    [item] = run(item, { type: "pr_merged" });
-    expect([item.stage, item.status]).toEqual(["done", "done"]);
-    expect(rosterStatus(item)).toBe("done");
+    [item] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
+    expect([item.status, item.prNumber, item.nodes.ship!.phase]).toEqual(["ci", 7, "ci"]);
+    [item] = run(item, { type: "ci_passing" });
+    expect(item.status).toBe("ready");
+    [item, fx] = run(item, { type: "pr_merged" });
+    expect(item.status).toBe("done");
+    expect(fx.at(-1)).toMatchObject({ type: "notify", title: expect.stringContaining("Shipped") });
   });
 
-  it("skips disabled stages: build straight to ship", () => {
-    let item: WorkItem = { ...base, status: "queued", threadId: null };
-    let t: Transition;
-    [item, t] = run(item, { type: "start" }, minimal);
-    expect([item.stage, t.effects[0]]).toEqual(["build", { type: "prompt", target: "builder", kind: "build", detail: undefined }]);
-    [item, t] = run(item, ended(report("build")), minimal);
-    expect([item.stage, item.status, t.effects]).toEqual(["ship", "cos", [{ type: "ship" }]]);
+  it("runs parallel read-only agents and joins before the next step", () => {
+    const w = wf([
+      { id: "plan", name: "Plan", type: "agent", agents: 2, next: ["build"] },
+      { id: "build", name: "Build", type: "agent", writes: true },
+    ]);
+    let item = itemFor(w);
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "start" });
+    expect(agentFx(fx)).toEqual([
+      { type: "agent", step: "plan", agent: 0, kind: "start" },
+      { type: "agent", step: "plan", agent: 1, kind: "start" },
+    ]);
+    [item, fx] = run(item, ended("plan", report("done", "plan A"), item, 1));
+    expect([st(item).plan, fx]).toEqual(["running", []]);
+    // The same agent reporting twice counts once.
+    [item, fx] = run(item, ended("plan", report("done", "again"), item, 1));
+    expect(item.nodes.plan!.reports.filter(Boolean)).toHaveLength(1);
+    [item, fx] = run(item, ended("plan", report("done", "plan B"), item, 0));
+    expect(st(item)).toEqual({ plan: "done", build: "running" });
   });
 
-  it("continues without a human when plan approval is off", () => {
-    const wf = workflowSchema.parse({ plan: { requireApproval: false }, verify: { enabled: false }, review: { enabled: false } });
-    const [item] = run({ ...base, stage: "plan" }, ended(report("plan")), wf);
-    expect([item.stage, item.status]).toEqual(["build", "agent"]);
+  it("fans out to parallel steps and waits for all of them (join)", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["review", "docs"] },
+      { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", next: ["ship"] },
+      { id: "docs", name: "Docs check", type: "agent", next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship" },
+    ]);
+    expect(validateWorkflow(w)).toEqual([]);
+    expect(pipelineLine(w)).toBe("Build → (Review ∥ Docs check) → Ship");
+    let item = itemFor(w);
+    let fx: Effect[];
+    [item] = run(item, { type: "start" });
+    [item, fx] = run(item, ended("build", report(), item));
+    expect(agentFx(fx).map((e) => (e as { step: string }).step)).toEqual(["review", "docs"]);
+    [item, fx] = run(item, ended("review", report(), item));
+    expect([st(item).ship, fx]).toEqual(["pending", []]);
+    [item, fx] = run(item, ended("docs", report(), item));
+    expect(fx).toEqual([{ type: "ship", step: "ship" }]);
   });
 
-  it("sends the plan back with feedback", () => {
-    const waiting = { ...base, stage: "plan" as const, status: "waiting_on_human" as const, waitingKind: "plan_approval" as const };
-    const [item, t] = run(waiting, { type: "revise", feedback: "use the existing session store" });
-    expect([item.stage, item.status]).toEqual(["plan", "agent"]);
-    expect(t.effects).toEqual([{ type: "prompt", target: "builder", kind: "plan_revise", detail: "use the existing session store" }]);
+  it("loops a failing verdict back with the findings, then escalates past its limit", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["review"] },
+      { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", maxRounds: 1 },
+    ]);
+    let item = itemFor(w);
+    let fx: Effect[];
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    [item, fx] = run(item, ended("review", report("failed", "1. auth.ts:12 null case"), item));
+    expect(st(item)).toEqual({ build: "running", review: "pending" });
+    expect(item.nodes.build!.feedback).toContain("auth.ts:12 null case");
+    expect(item.nodes.build!.round).toBe(2);
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "build", agent: 0, kind: "start" }]);
+    [item] = run(item, ended("build", report(), item));
+    expect(item.nodes.build!.feedback).toBeNull();
+    [item] = run(item, ended("review", report("failed", "still broken"), item));
+    expect([item.status, item.waitingKind, item.nodes.review!.attempts]).toEqual(["waiting_on_human", "escalation", 2]);
+    // Send it back with instructions: budget resets, re-run from build with the feedback.
+    [item, fx] = run(item, { type: "revise", feedback: "use the session store" });
+    expect([st(item).build, item.nodes.review!.attempts]).toEqual(["running", 0]);
+    expect(item.nodes.build!.feedback).toContain("use the session store");
   });
 
-  it("nudges an agent that stops without reporting, then asks a human", () => {
-    let item: WorkItem = { ...base };
-    let t: Transition;
-    [item, t] = run(item, ended(null));
-    expect(t.effects).toEqual([{ type: "prompt", target: "builder", kind: "nudge" }]);
-    expect(item.counters.nudges).toBe(1);
-    [item] = run(item, ended(null));
-    [item, t] = run(item, ended(null));
-    expect([item.status, item.waitingKind]).toEqual(["waiting_on_human", "no_report"]);
-    // The human vouches for the stage: move on.
-    [item] = run(item, { type: "approve" });
-    expect([item.stage, item.status, item.counters.nudges]).toEqual(["verify", "cos", 0]);
+  it("ignores reports from an older round", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["r1", "r2"] },
+      { id: "r1", name: "R1", type: "agent", verdict: true, onFail: "build" },
+      { id: "r2", name: "R2", type: "agent" },
+    ]);
+    let item = itemFor(w);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    const staleRound = item.nodes.r2!.round;
+    [item] = run(item, ended("r1", report("failed", "nope"), item)); // resets build, r1, r2
+    [item] = run(item, { type: "turn_ended", step: "r2", agent: 0, round: staleRound, report: report(), question: null });
+    expect(st(item)).toEqual({ build: "running", r1: "pending", r2: "pending" });
   });
 
-  it("does not let approve skip an open question or Chief of Staff's own failure", () => {
-    for (const waitingKind of ["question", "cos_error"] as const) {
-      const t = transition({ ...base, status: "waiting_on_human", waitingKind }, { type: "approve" }, full);
-      expect([t.stage, t.status]).toEqual(["build", "waiting_on_human"]);
-    }
-  });
-
-  it("keeps watching an open PR when a ship escalation is approved", () => {
-    const t = transition({ ...base, stage: "ship", status: "waiting_on_human", waitingKind: "escalation", prNumber: 7 }, { type: "approve" }, full);
-    expect([t.stage, t.status]).toEqual(["ship", "ready"]);
-  });
-
-  it("says finished, not shipped, when shipping is off", () => {
-    const wf = workflowSchema.parse({ plan: { enabled: false }, verify: { enabled: false }, review: { enabled: false }, ship: { enabled: false } });
-    const t = transition(base, ended(report("build")), wf);
-    expect([t.stage, t.effects[0]]).toEqual(["done", expect.objectContaining({ title: expect.stringContaining("Finished") })]);
-  });
-
-  it("treats a report for another stage as no report", () => {
-    const [, t] = run({ ...base, stage: "build" }, ended(report("plan")));
-    expect(t.effects).toEqual([{ type: "prompt", target: "builder", kind: "nudge" }]);
-  });
-
-  it("parks on a plain-text question and resumes when the thread starts a turn", () => {
-    let [item] = run(base, ended(null, "builder", "Question: which DB?"));
-    expect([item.status, item.waitingKind, item.waitingReason]).toEqual(["waiting_on_human", "question", "Question: which DB?"]);
-    [item] = run(item, { type: "turn_started", role: "builder" });
-    expect([item.stage, item.status]).toEqual(["build", "agent"]);
-  });
-
-  it("asks a human when the agent reports needs_input", () => {
-    const [item] = run(base, ended({ ...report("build", "needs_input"), question: "Keep the v1 API?" }));
-    expect([item.status, item.waitingKind, item.waitingReason]).toEqual(["waiting_on_human", "question", "Keep the v1 API?"]);
-  });
-
-  it("loops review findings back to build, then re-reviews, then escalates", () => {
-    let item: WorkItem = { ...base, stage: "review", reviewThreadId: "thr_r" };
-    let t: Transition;
-    [item, t] = run(item, ended(report("review", "changes_requested", "1. missing test"), "reviewer"));
-    expect([item.stage, item.counters.reviewRounds, t.effects]).toEqual(["build", 1, [{ type: "prompt", target: "builder", kind: "fix_review", detail: "1. missing test" }]]);
-    [item] = run(item, ended(report("build")));
-    [item, t] = run(item, { type: "verify_passed", output: "ok" });
-    expect(t.effects).toEqual([{ type: "prompt", target: "reviewer", kind: "rereview" }]);
-    [item] = run(item, ended(report("review", "changes_requested"), "reviewer"));
-    [item] = run(item, ended(report("build")));
-    [item] = run(item, { type: "verify_passed", output: "ok" });
-    [item, t] = run(item, ended(report("review", "changes_requested"), "reviewer"));
-    expect([item.stage, item.status, item.waitingKind]).toEqual(["review", "waiting_on_human", "escalation"]);
-    // Approving ships anyway.
-    [item] = run(item, { type: "approve" });
-    expect(item.stage).toBe("ship");
-  });
-
-  it("uses the builder thread for self-review", () => {
-    const wf = workflowSchema.parse({ review: { mode: "self" } });
-    const [, t] = run({ ...base, stage: "verify", status: "agent" }, ended(report("verify")), wf);
-    expect(t.effects).toEqual([{ type: "prompt", target: "builder", kind: "review" }]);
-  });
-
-  it("feeds verify failures back on a budget", () => {
-    let item: WorkItem = { ...base, stage: "verify", status: "cos" };
-    let t: Transition;
-    [item, t] = run(item, { type: "verify_failed", output: "1 failing" });
-    expect([item.stage, item.status, item.fixAttempts]).toEqual(["build", "agent", 1]);
-    expect(t.effects).toEqual([{ type: "prompt", target: "builder", kind: "fix_verify", detail: "1 failing" }]);
-    [item] = run({ ...item, stage: "verify", status: "cos" }, { type: "verify_failed", output: "1 failing" });
-    [item] = run({ ...item, stage: "verify", status: "cos" }, { type: "verify_failed", output: "still" });
+  it("feeds a failing check back, and escalates when there is nowhere to go back to", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
+      { id: "test", name: "Tests", type: "check", command: "npm test", onFail: "build", maxAttempts: 1, next: ["lint"] },
+      { id: "lint", name: "Lint", type: "check", command: "npm run lint" },
+    ]);
+    let item = itemFor(w);
+    let fx: Effect[];
+    [item] = run(item, { type: "start" });
+    [item, fx] = run(item, ended("build", report(), item));
+    expect(fx).toEqual([{ type: "check", step: "test" }]);
+    [item] = run(item, { type: "check_result", step: "test", ok: false, output: "1 failing" });
+    expect([st(item).build, item.nodes.build!.feedback]).toEqual(["running", "Tests failed:\n\n1 failing"]);
+    [item] = run(item, ended("build", report(), item));
+    [item, fx] = run(item, { type: "check_result", step: "test", ok: true, output: "ok" });
+    expect(fx).toEqual([{ type: "check", step: "lint" }]);
+    [item] = run(item, { type: "check_result", step: "lint", ok: false, output: "lint error" });
     expect([item.status, item.waitingKind]).toEqual(["waiting_on_human", "escalation"]);
+    [item] = run(item, { type: "approve" });
+    expect(item.status).toBe("done");
   });
 
-  it("an agent-run verification can fail the stage", () => {
-    const wf = workflowSchema.parse({ verify: { instructions: "click through login" } });
-    const [item, t] = run({ ...base, stage: "verify", status: "agent" }, ended(report("verify", "failed", "login button dead")), wf);
-    expect(item.stage).toBe("build");
-    expect(t.effects[0]).toMatchObject({ kind: "fix_verify", detail: "login button dead" });
+  it("sends red CI back to its onFail step and ships again to the same PR", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    const done = (id: string) => ({ ...item.nodes[id]!, status: "done" as const, round: 1 });
+    item = { ...item, prNumber: 7, nodes: { plan: done("plan"), build: done("build"), review: done("review"), ship: { ...item.nodes.ship!, status: "running", round: 1, phase: "ci" } } };
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "ci_failing", log: "lint failed" });
+    expect(st(item)).toEqual({ plan: "done", build: "running", review: "pending", ship: "pending" });
+    expect(agentFx(fx)).toHaveLength(1);
+    expect(item.nodes.ship!.attempts).toBe(1);
   });
 
-  it("fixes red CI through build and verify, skipping a second review", () => {
-    let item: WorkItem = { ...base, stage: "ship", status: "ci", prNumber: 7 };
-    let t: Transition;
-    [item, t] = run(item, { type: "ci_failing", log: "lint failed" });
-    expect([item.stage, item.returnTo, t.effects[0]]).toEqual(["build", "ship", { type: "prompt", target: "builder", kind: "fix_ci", detail: "lint failed" }]);
-    [item] = run(item, ended(report("build")));
-    expect(item.stage).toBe("verify");
-    [item, t] = run(item, { type: "verify_passed", output: "ok" });
-    expect([item.stage, item.status, item.returnTo, t.effects]).toEqual(["ship", "cos", null, [{ type: "ship" }]]);
-  });
-
-  it("merges when the ship action is merge, and waits for approval when needed", () => {
-    const wf = workflowSchema.parse({ ship: { action: "merge" } });
-    let item: WorkItem = { ...base, stage: "ship", status: "ci", prNumber: 7 };
-    let t: Transition;
-    [item, t] = run(item, { type: "ci_passing" }, wf);
-    expect([item.status, t.effects]).toEqual(["cos", [{ type: "merge" }]]);
-    [item] = run(item, { type: "merge_waiting", reason: "Waiting for an approving review" }, wf);
-    expect([item.status, item.lastError]).toEqual(["ready", "Waiting for an approving review"]);
-    [item, t] = run(item, { type: "ci_passing" }, wf);
-    expect(t.effects).toEqual([{ type: "merge" }]);
-  });
-
-  it("asks the agent for the PR description when ship has instructions", () => {
-    const wf = workflowSchema.parse({ plan: { enabled: false }, verify: { enabled: false }, review: { enabled: false }, ship: { instructions: "Use the PR template" } });
-    let [item, t] = run(base, ended(report("build")), wf);
-    expect([item.stage, item.status, t.effects]).toEqual(["ship", "agent", [{ type: "prompt", target: "builder", kind: "ship" }]]);
-    [item, t] = run(item, ended(report("ship", "done", "Title: Fix login\n\nBody")), wf);
-    expect([item.status, t.effects]).toEqual(["cos", [{ type: "ship" }]]);
-  });
-
-  it("retries infrastructure errors with backoff, then asks for help, then re-runs the failed effect", () => {
-    let item: WorkItem = { ...base, stage: "verify", status: "cos" };
-    const effect = { type: "verify_command" } as const;
-    for (let n = 1; n <= 3; n++) {
-      [item] = run(item, { type: "effect_error", effect, message: "host call exceeded its deadline" });
-      expect([item.status, item.counters.infraRetries, item.retryAt]).toEqual(["retrying", n, `+${n * n * 60_000}`]);
-      let t: Transition;
-      [item, t] = run(item, { type: "retry_due" });
-      expect([item.status, t.effects]).toEqual(["cos", [effect]]);
-    }
-    [item] = run(item, { type: "effect_error", effect, message: "host call exceeded its deadline" });
-    expect([item.status, item.waitingKind, actorOf(item)]).toEqual(["waiting_on_human", "cos_error", "human"]);
-    expect(item.waitingReason).toContain("the agent is not asking anything");
-    const [after, t] = run(item, { type: "retry" });
-    expect([after.status, t.effects]).toEqual(["cos", [effect]]);
-  });
-
-  it("restarts a lost job for its stage", () => {
-    expect(transition({ ...base, stage: "verify", status: "cos" }, { type: "resume_job" }, full).effects).toEqual([{ type: "verify_command" }]);
-    expect(transition({ ...base, stage: "ship", status: "cos" }, { type: "resume_job" }, full).effects).toEqual([{ type: "ship" }]);
-  });
-
-  it("brings a failed reviewer back through a human retry", () => {
-    let [item] = run({ ...base, stage: "review", reviewThreadId: "thr_r" }, { type: "thread_failed", role: "reviewer", error: "boom" });
-    expect([item.status, item.waitingKind, item.reviewThreadId]).toEqual(["waiting_on_human", "cos_error", null]);
-    let t: Transition;
-    [item, t] = run(item, { type: "retry" });
-    expect([item.status, t.effects]).toEqual(["agent", [{ type: "prompt", target: "reviewer", kind: "review" }]]);
-  });
-
-  it("marks stalls blocked, and resumes when a human restarts the thread", () => {
-    let [item] = run(base, { type: "stalled" });
-    expect(item.status).toBe("blocked");
-    [item] = run(item, { type: "turn_started", role: "builder" });
+  it("nudges an agent that stops without reporting, then asks a person", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    let fx: Effect[];
+    [item] = run(item, { type: "start" });
+    [item, fx] = run(item, ended("plan", null, item));
+    expect(fx).toEqual([{ type: "agent", step: "plan", agent: 0, kind: "nudge" }]);
+    [item] = run(item, ended("plan", null, item));
+    [item] = run(item, ended("plan", null, item));
+    expect([item.status, item.waitingKind]).toEqual(["waiting_on_human", "no_report"]);
+    // The thread starts a turn again (someone talked to it): back to running.
+    [item] = run(item, { type: "turn_started", step: "plan", agent: 0 });
     expect(item.status).toBe("agent");
   });
 
-  it("takes extra work on an open PR back through build", () => {
-    const [item] = run({ ...base, stage: "ship", status: "ready", prNumber: 7 }, { type: "turn_started", role: "builder" });
-    expect([item.stage, item.status, item.returnTo]).toEqual(["build", "agent", "ship"]);
+  it("parks on questions; approve does not skip them", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("plan", null, item, 0, "Question: which DB?"));
+    expect([item.waitingKind, item.waitingReason]).toEqual(["question", "Plan: Question: which DB?"]);
+    [item] = run(item, { type: "approve" });
+    expect(item.waitingKind).toBe("question");
+    [item] = run(item, { type: "turn_started", step: "plan", agent: 0 });
+    [item] = run(item, ended("plan", { ...report("needs_input"), question: "Keep v1?" }, item));
+    expect([item.waitingKind, item.waitingReason]).toEqual(["question", "Plan: Keep v1?"]);
   });
 
-  it("finishes routine agents when their turn ends", () => {
-    const [item] = run({ ...base, source: "routine:Nightly" }, ended(null));
-    expect([item.stage, item.status]).toEqual(["done", "done"]);
+  it("retries infrastructure errors with backoff, then asks for help, then re-runs the effect", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
+      { id: "test", name: "Tests", type: "check", command: "npm test" },
+    ]);
+    let item = itemFor(w);
+    let fx: Effect[];
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    const effect: Effect = { type: "check", step: "test" };
+    for (let n = 1; n <= 3; n++) {
+      [item] = run(item, { type: "effect_error", step: "test", effect, message: "deadline exceeded" });
+      expect([item.status, item.nodes.test!.retry!.count]).toEqual(["retrying", n]);
+      expect(Date.parse(item.nodes.test!.retry!.at!) - NOW.getTime()).toBe(n * n * 60_000);
+      [item, fx] = run(item, { type: "retry_due", step: "test" });
+      expect(fx).toEqual([effect]);
+    }
+    [item] = run(item, { type: "effect_error", step: "test", effect, message: "deadline exceeded" });
+    expect([item.status, item.waitingKind]).toEqual(["waiting_on_human", "cos_error"]);
+    expect(item.waitingReason).toContain("the agent is not asking anything");
+    [item, fx] = run(item, { type: "retry" });
+    expect([item.status, fx]).toEqual(["cos", [effect]]);
+  });
+
+  it("fails the item when the builder dies, and retry restarts the writer in a fresh thread", () => {
+    let item = itemFor(DEFAULT_WORKFLOW, { status: "agent", threadId: "thr_1" });
+    item = { ...item, nodes: { ...item.nodes, plan: { ...item.nodes.plan!, status: "done", round: 1 }, build: { ...item.nodes.build!, status: "running", round: 1 } } };
+    [item] = run(item, { type: "thread_failed", step: null, agent: 0, error: "provider crashed" });
+    expect(item.status).toBe("failed");
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "retry" });
+    expect(item.status).toBe("agent");
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "build", agent: 0, kind: "start", fresh: true }]);
+  });
+
+  it("keeps watching an open PR when a ship escalation is approved, and merges when configured", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "merge", onFail: "build", maxAttempts: 0 },
+    ]);
+    let item = itemFor(w, { prNumber: 7 });
+    item = { ...item, nodes: { build: { ...item.nodes.build!, status: "done", round: 1 }, ship: { ...item.nodes.ship!, status: "running", round: 1, phase: "ci" } } };
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "ci_passing" });
+    expect([item.status, fx]).toEqual(["cos", [{ type: "merge", step: "ship" }]]);
+    [item] = run(item, { type: "merge_waiting", reason: "Waiting for an approving review" });
+    expect([item.status, item.lastError]).toEqual(["ready", "Waiting for an approving review"]);
+    [item] = run(item, { type: "ci_failing", log: "red" });
+    expect(item.waitingKind).toBe("escalation");
+    [item] = run(item, { type: "approve" });
+    expect([item.status, item.nodes.ship!.phase]).toEqual(["ready", "ready"]);
+  });
+
+  it("re-runs a chosen step and everything after it", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    const done = (id: string) => ({ ...item.nodes[id]!, status: "done" as const, round: 1 });
+    item = { ...item, nodes: { plan: done("plan"), build: done("build"), review: { ...item.nodes.review!, status: "running", round: 1 }, ship: item.nodes.ship! } };
+    const [after, fx] = run(item, { type: "rerun", step: "build", feedback: "rename the flag" });
+    expect(st(after)).toEqual({ plan: "done", build: "running", review: "pending", ship: "pending" });
+    expect(after.nodes.build!.feedback).toContain("rename the flag");
+    expect(agentFx(fx)).toHaveLength(1);
   });
 });
 
-describe("text stage reports", () => {
-  it("parses a trailing Stage report block", () => {
-    const text = "Did the thing.\n\n## Stage report\nstage: build\noutcome: done\nsummary: Changed auth.ts\nand added a test";
-    expect(parseTextReport(text, "t")).toEqual({ stage: "build", outcome: "done", summary: "Changed auth.ts\nand added a test", question: null, at: "t", via: "text" });
+describe("text step reports", () => {
+  it("parses a trailing Step report block", () => {
+    const text = "Did the thing.\n\n## Step report\nstep: build\noutcome: done\nsummary: Changed auth.ts\nand added a test";
+    expect(parseTextReport(text, "t")).toEqual({ step: "build", outcome: "done", summary: "Changed auth.ts\nand added a test", question: null, at: "t", via: "text" });
   });
 
-  it("accepts fenced, bulleted and bold variants and normalises the outcome", () => {
+  it("accepts legacy and loose variants", () => {
     const text = "## Stage report\n```\n- **stage**: review\n- **outcome**: Changes requested\n- **summary**: 1. fix x\n```";
-    expect(parseTextReport(text, "t")).toMatchObject({ stage: "review", outcome: "changes_requested", summary: "1. fix x" });
-  });
-
-  it("ignores messages without a valid block", () => {
+    expect(parseTextReport(text, "t")).toMatchObject({ step: "review", outcome: "failed", summary: "1. fix x" });
     expect(parseTextReport("All done!", "t")).toBeNull();
-    expect(parseTextReport("## Stage report\nstage: deploy\noutcome: done", "t")).toBeNull();
   });
 });

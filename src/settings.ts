@@ -2,7 +2,7 @@
 // multiline fields; the dashboard edits them through RPC + experimental_set.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { SEED_REPOS, parseRepos } from "./config";
-import { DEFAULT_WORKFLOW, parseWorkflow, serializeWorkflow, workflowSchema } from "./workflow";
+import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows } from "./workflow";
 
 const jsonSchema = (parse: (raw: string) => { ok: boolean; error?: string }) => ({
   "~standard": {
@@ -26,18 +26,18 @@ export const settingDescriptors = {
   repos: {
     type: "string",
     label: "Repositories (JSON)",
-    description: 'JSON: {"repos":[{projectId, owner?, repo?, intake, issueFilter:{labels, assignee?}, maxConcurrent, providerId?, model?, permissionMode, reviewers, mergeStrategy, workflow?}]}. owner/repo default to the project\'s GitHub remote.',
+    description: 'JSON: {"repos":[{projectId, owner?, repo?, intake, issueFilter:{labels, assignee?}, maxConcurrent, providerId?, model?, permissionMode, reviewers, mergeStrategy, workflow?: "<workflow id>"}]}. owner/repo default to the project\'s GitHub remote.',
     experimental_multiline: true,
     experimental_schema: jsonSchema(parseRepos),
     default: JSON.stringify(SEED_REPOS, null, 2),
   },
   workflow: {
     type: "string",
-    label: "Workflow (JSON)",
-    description: 'JSON: {"workflow":{plan:{enabled,instructions,requireApproval}, build:{instructions}, verify:{enabled,instructions,command,timeoutMinutes,maxAttempts}, review:{enabled,instructions,mode:"agent"|"self",maxRounds}, ship:{enabled,instructions,action:"push"|"pr"|"merge",draft,maxCiFixes,requireApproval}}}. Repos override any field under their own "workflow".',
+    label: "Workflows (JSON)",
+    description: 'JSON: {"workflows":[{id, name, steps:[{id, name, type:"agent"|"check"|"ship", instructions, next:[ids], ...}]}], "default": "<id>"}. Repos pick one with "workflow": "<id>". Edit visually under Configure → Workflows.',
     experimental_multiline: true,
-    experimental_schema: jsonSchema(parseWorkflow),
-    default: serializeWorkflow(workflowSchema.parse(DEFAULT_WORKFLOW)),
+    experimental_schema: jsonSchema(parseWorkflows),
+    default: serializeWorkflows(DEFAULT_DOCUMENT),
   },
   maxConcurrentTotal: { type: "number", label: "Max concurrent agent threads (all repos)", default: 4 },
   stallThresholdMinutes: { type: "number", label: "Stall threshold (minutes)", description: "A running agent with no activity for this long is reported as stalled.", default: 30 },

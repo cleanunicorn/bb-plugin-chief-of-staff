@@ -1,187 +1,119 @@
-// Stage prompts Chief of Staff sends to the builder and reviewer threads.
-// Every prompt names the stage, carries the operator's instructions for it,
-// and ends with the reporting contract, so the agent says explicitly when a
-// stage is finished instead of Chief of Staff guessing from its last message.
-import type { PromptKind } from "./machine";
+// Prompts Chief of Staff sends to the agents working on workflow steps. Every
+// prompt names the step, says whether the agent may change code, carries the
+// step's instructions, the reports of the steps that feed into it and any
+// feedback that sent it back, and ends with the reporting contract, so the
+// agent says explicitly when the step is finished.
+import type { NodeState, Nodes } from "./machine";
 import type { WorkItem } from "./state";
-import { activeStages, STAGE_LABEL, type Stage, type Workflow } from "./workflow";
-
-const LOG_TAIL = 12_000;
-const tail = (text: string | undefined, max = LOG_TAIL) => (text && text.length > max ? `…${text.slice(-max)}` : (text ?? ""));
+import { depths, predecessors, stepById, topoOrder, type AgentStep, type Workflow } from "./workflow";
 
 export const REPORT_TOOL = "cos_report";
+const CONTEXT_MAX = 8_000;
+const FEEDBACK_MAX = 12_000;
+const clip = (text: string, max: number) => (text.length > max ? `…${text.slice(-max)}` : text);
 
-/** Stage a prompt kind belongs to. */
-export function promptStage(kind: PromptKind, current: Stage): Stage {
-  switch (kind) {
-    case "plan":
-    case "plan_revise":
-      return "plan";
-    case "build":
-    case "fix_verify":
-    case "fix_review":
-    case "fix_ci":
-    case "fix_human":
-      return "build";
-    case "verify":
-      return "verify";
-    case "review":
-    case "rereview":
-      return "review";
-    case "ship":
-      return "ship";
-    case "nudge":
-      return current;
+/** "Plan → Build → (Review ∥ Docs) → Ship", with the current step in bold. */
+export function pipelineLine(wf: Workflow, current?: string): string {
+  const depth = depths(wf);
+  const groups = new Map<number, string[]>();
+  for (const id of topoOrder(wf)) {
+    const d = depth.get(id) ?? 0;
+    groups.set(d, [...(groups.get(d) ?? []), id]);
   }
+  return [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, ids]) => {
+      const names = ids.map((id) => (id === current ? `**${stepById(wf, id)?.name ?? id}**` : (stepById(wf, id)?.name ?? id)));
+      return names.length > 1 ? `(${names.join(" ∥ ")})` : names[0];
+    })
+    .join(" → ");
 }
 
-function header(workflow: Workflow, stage: Stage): string {
-  const stages = activeStages(workflow);
-  const index = stages.indexOf(stage);
-  const position = index >= 0 ? ` · stage ${index + 1} of ${stages.length}` : "";
-  return `**[Chief of Staff${position} · ${STAGE_LABEL[stage]}]**  Pipeline: ${stages.map((s) => (s === stage ? `**${STAGE_LABEL[s]}**` : STAGE_LABEL[s])).join(" → ")}`;
-}
-
-function outcomes(stage: Stage): string {
-  switch (stage) {
-    case "verify":
-      return '`"done"` (verified, with evidence) or `"failed"` (what is broken)';
-    case "review":
-      return '`"done"` (approve) or `"changes_requested"` (findings in the summary)';
-    default:
-      return '`"done"`';
+/** The latest reports of the steps feeding into `stepId`. */
+export function inputReports(wf: Workflow, nodes: Nodes, stepId: string): string[] {
+  const out: string[] = [];
+  for (const p of predecessors(wf, stepId)) {
+    const n = nodes[p];
+    const s = stepById(wf, p);
+    if (!n || !s) continue;
+    const reports = n.reports.filter((r): r is NonNullable<typeof r> => Boolean(r));
+    if (reports.length) {
+      const body = reports.length > 1 ? reports.map((r, i) => `#### Agent ${i + 1}\n${r.summary}`).join("\n\n") : reports[0]!.summary;
+      out.push(`### From ${s.name}\n${clip(body, CONTEXT_MAX)}`);
+    } else if (s.type === "check" && n.output) {
+      out.push(`### From ${s.name} (passed)\n\`\`\`\n${clip(n.output, 2_000)}\n\`\`\``);
+    }
   }
+  return out;
 }
 
-/** The contract appended to every stage prompt. */
-export function reportContract(stage: Stage, summaryHint: string): string {
+function contract(step: AgentStep): string[] {
+  const outcomes = step.verdict ? '`"done"` if it passes, or `"failed"` with the findings that must change' : '`"done"`';
   return [
     ``,
-    `### When you finish this stage`,
-    `Call the \`${REPORT_TOOL}\` tool with \`stage: "${stage}"\`, \`outcome\`: ${outcomes(stage)}, and \`summary\`: ${summaryHint}`,
+    `### When you finish this step`,
+    `Call the \`${REPORT_TOOL}\` tool with \`step: "${step.id}"\`, \`outcome\`: ${outcomes}, and a Markdown \`summary\` of your result (the next steps read it).`,
     `If you need a decision from a person, ask it with your question tool, or call \`${REPORT_TOOL}\` with \`outcome: "needs_input"\` and the \`question\`. Do not stop without doing one of these: Chief of Staff waits for the report before moving on.`,
     `If the \`${REPORT_TOOL}\` tool is unavailable, end your final message with:`,
     "```",
-    `## Stage report`,
-    `stage: ${stage}`,
+    `## Step report`,
+    `step: ${step.id}`,
     `outcome: done`,
-    `summary: <${summaryHint.replace(/\.$/, "")}>`,
+    `summary: <your result>`,
     "```",
+  ];
+}
+
+/** The prompt that starts (or restarts) an agent on a step. */
+export function stepPrompt(item: WorkItem, step: AgentStep, agent: number, ctx: { defaultBranch?: string } = {}): string {
+  const wf = item.workflow;
+  const node: NodeState | undefined = item.nodes[step.id];
+  const lines: string[] = [`**[Chief of Staff · ${wf.name} · ${step.name}]**  ${pipelineLine(wf, step.id)}`, ``];
+  if (step.writes) {
+    lines.push(`You may change code in this step. Commit your work on the current branch. Do not push and do not open a pull request; Chief of Staff does that.`);
+  } else {
+    lines.push(`This step is read-only: do not change, commit or delete files.${ctx.defaultBranch ? ` The work so far is \`git diff origin/${ctx.defaultBranch}...HEAD\`.` : ""}`);
+  }
+  if (step.agents > 1) lines.push(`${step.agents} agents work on this step independently; you are agent ${agent + 1}. Do your own work; Chief of Staff combines the reports.`);
+  if (step.approval) lines.push(`A person approves your report before the workflow moves on.`);
+  if (step.instructions.trim()) lines.push(``, `### Instructions`, step.instructions.trim());
+  const inputs = inputReports(wf, item.nodes, step.id);
+  if (inputs.length) lines.push(``, `### Input from earlier steps`, ...inputs);
+  if (node?.feedback) lines.push(``, `### Why this step runs again`, clip(node.feedback, FEEDBACK_MAX));
+  lines.push(...contract(step));
+  return lines.join("\n");
+}
+
+export function nudgePrompt(step: AgentStep): string {
+  return [
+    `You ended your turn without reporting the step **${step.name}**.`,
+    `- Finished? Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\` now.`,
+    `- Need a decision? Ask it, or report \`outcome: "needs_input"\` with the question.`,
+    `- Not finished? Keep working, then report.`,
   ].join("\n");
 }
 
-function instructions(text: string): string[] {
-  return text.trim() ? [``, `### Instructions for this stage`, text.trim()] : [];
-}
-
-function approvedPlan(item: WorkItem): string[] {
-  const plan = item.reports.plan?.summary;
-  return plan ? [``, `### Approved plan`, plan] : [];
-}
-
-const NO_PUSH = "Commit your work on the current branch. Do not push and do not open a pull request; Chief of Staff does that.";
-
-/** The prompt body for a stage. `detail` is the failure log, findings or operator feedback. */
-export function stagePrompt(kind: PromptKind, item: WorkItem, workflow: Workflow, ctx: { detail?: string; verifyCommand?: string; defaultBranch?: string } = {}): string {
-  const current = item.stage === "done" ? "build" : item.stage;
-  const stage = promptStage(kind, current);
-  const lines: string[] = [header(workflow, stage), ``];
-  switch (kind) {
-    case "plan":
-      lines.push(
-        `Investigate the codebase and write an implementation plan for the task. Do not change files and do not commit in this stage.`,
-        `Cover: the approach, the files you will change, risks and open questions, and how you will test it.`,
-        workflow.plan.requireApproval ? `A person approves the plan before you build it.` : ``,
-        ...instructions(workflow.plan.instructions),
-        reportContract("plan", "the full plan in Markdown."),
-      );
-      break;
-    case "plan_revise":
-      lines.push(`Your plan was sent back with this feedback:`, ``, ctx.detail ?? "", ``, `Revise the plan. Do not change files yet.`, ...instructions(workflow.plan.instructions), reportContract("plan", "the full revised plan in Markdown."));
-      break;
-    case "build":
-      lines.push(`Implement the task${item.reports.plan ? " following the approved plan" : ""}. ${NO_PUSH}`, ...approvedPlan(item), ...instructions(workflow.build.instructions), reportContract("build", "what changed and why, and the tests you ran with their results."));
-      break;
-    case "fix_verify":
-      lines.push(
-        `Verification failed${ctx.verifyCommand ? ` (\`${ctx.verifyCommand}\`)` : ""}. Fix the problem. ${NO_PUSH}`,
-        ``,
-        "```",
-        tail(ctx.detail),
-        "```",
-        ...instructions(workflow.build.instructions),
-        reportContract("build", "what you fixed."),
-      );
-      break;
-    case "fix_review":
-      lines.push(`The review requested changes. Address every finding. ${NO_PUSH}`, ``, `### Review findings`, ctx.detail ?? "", ...instructions(workflow.build.instructions), reportContract("build", "how you addressed each finding."));
-      break;
-    case "fix_ci":
-      lines.push(`CI failed on pull request #${item.prNumber ?? "?"}. Fix the failure. ${NO_PUSH}`, ``, "```", tail(ctx.detail), "```", reportContract("build", "what you fixed."));
-      break;
-    case "fix_human":
-      lines.push(`Instructions from the operator:`, ``, ctx.detail ?? "", ``, NO_PUSH, reportContract("build", "what you changed."));
-      break;
-    case "verify":
-      lines.push(
-        ctx.verifyCommand ? `\`${ctx.verifyCommand}\` passed. Now verify the change actually does what the task asks.` : `Verify the change actually does what the task asks.`,
-        `Exercise it the way a user would and collect evidence (commands and output, screenshots, logs). Only fix trivial problems here; report anything real as failed.`,
-        ...instructions(workflow.verify.instructions),
-        reportContract("verify", "what you checked and the evidence, or what is broken."),
-      );
-      break;
-    case "review":
-    case "rereview": {
-      const self = workflow.review.mode === "self";
-      const diff = `git diff ${ctx.defaultBranch ? `origin/${ctx.defaultBranch}` : "<default branch>"}...HEAD`;
-      if (kind === "rereview") {
-        lines.push(`The builder addressed the previous findings:`, ``, item.reports.build?.summary ?? "(no summary)", ``, `Review the updated changes again (\`${diff}\`).`);
-      } else {
-        lines.push(self ? `Review your own changes critically, as a reviewer who did not write them would (\`${diff}\`).` : `Review the changes on this branch (\`${diff}\`).`);
-      }
-      lines.push(
-        `Check correctness against the task, edge cases, tests, and the repository's conventions. Do not modify files in this stage.`,
-        ...instructions(workflow.review.instructions),
-        reportContract("review", "your verdict and, when requesting changes, a numbered list of concrete findings with file:line."),
-      );
-      break;
-    }
-    case "ship":
-      lines.push(
-        `Write the pull request description for this change. Do not push and do not open the pull request; Chief of Staff does that with your text.`,
-        `Start the summary with a line \`Title: <pull request title>\`, then the description in Markdown.`,
-        ...instructions(workflow.ship.instructions),
-        reportContract("ship", "`Title: …` on the first line, then the pull request description."),
-      );
-      break;
-    case "nudge":
-      lines.push(
-        `You ended your turn without reporting the ${STAGE_LABEL[current]} stage.`,
-        `- Finished? Call \`${REPORT_TOOL}\` with \`stage: "${current}"\` now.`,
-        `- Need a decision? Ask it, or report \`outcome: "needs_input"\` with the question.`,
-        `- Not finished? Keep working, then report.`,
-      );
-      break;
-  }
-  return lines.filter((l, i, all) => !(l === "" && all[i - 1] === "")).join("\n");
-}
-
-/** Context a newly spawned reviewer needs: it has not seen the task. */
-export function reviewerBrief(item: WorkItem, task: string): string {
+/** Opening context for a thread spawned for a read-only step (it has not seen the task). */
+export function stepThreadBrief(item: WorkItem, step: AgentStep, task: string): string {
   return [
-    `You are the reviewer for ${item.issueNumber ? `${item.repo}#${item.issueNumber}` : item.repo}: ${item.issueTitle}. Another agent built the change in this workspace. You did not write it; judge it on its merits.`,
+    `You work on one step (“${step.name}”) of a task in ${item.repo}. ${item.threadId ? "Another agent builds the change in this workspace; judge and inform, do not edit." : "Nothing has been built yet."}`,
     ``,
     `## Task`,
     task,
-    ...approvedPlan(item),
-    item.reports.build ? [``, `### Builder's summary`, item.reports.build.summary].join("\n") : ``,
-    item.reports.verify ? [``, `### Verification`, item.reports.verify.summary].join("\n") : ``,
   ].join("\n");
 }
 
-/** Split an agent-written ship report into PR title and body. */
-export function splitShipReport(summary: string): { title: string | null; body: string } {
+/** Split a report that starts with "Title: …" into a PR title and body. */
+export function splitTitle(summary: string): { title: string | null; body: string } {
   const match = /^\s*Title:\s*(.+)\s*$/im.exec(summary);
-  if (!match) return { title: null, body: summary.trim() };
+  if (!match || match.index > 200) return { title: null, body: summary.trim() };
   return { title: match[1].trim(), body: summary.replace(match[0], "").trim() };
+}
+
+/** The step a builder-thread turn belongs to: the code-writing step that is running. */
+export function runningWriter(item: WorkItem): AgentStep | null {
+  for (const s of item.workflow.steps) {
+    if (s.type === "agent" && s.writes && ["running", "waiting"].includes(item.nodes[s.id]?.status ?? "")) return s;
+  }
+  return null;
 }

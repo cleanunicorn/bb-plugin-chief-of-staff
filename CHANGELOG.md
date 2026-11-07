@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Your own workflows.** A workflow is now a graph of steps you define,
+  replacing the fixed Plan → Build → Verify → Review → Ship (which stays as the
+  default). Three step types share a name, instructions and arrows to the steps
+  after them:
+  - **Agent**: agents work on the instructions; code-writing or read-only;
+    read-only steps can run several agents in parallel; optional approval by
+    you and a pass/fail verdict that sends the work back to an earlier step.
+  - **Check**: Chief of Staff runs a command; failure goes back to a step.
+  - **Ship**: push, open a PR, or merge when green; red CI goes back to a step.
+  Steps side by side run in parallel; a step waits for every step pointing at
+  it. Each step's prompt carries the reports of the steps before it.
+- **Canvas editor.** Configure → Workflows: drag steps, connect them, add and
+  remove them (React Flow), or edit them as a list. Several workflows; each
+  repository picks one; a task keeps the workflow it started with.
+- **Live workflow view.** Task cards show the workflow's steps with their
+  state (parallel steps stacked); **Workflow** opens the task on the canvas and
+  runs any step again from there (`bb cos item rerun <id> --step <step>`).
+- `cos_report` takes the `step` id; agents on read-only steps get their own
+  threads (in the task's workspace once code exists).
+- Migration: the stage config converts into a workflow (repos with stage
+  overrides get their own), and tasks in flight continue at their stage.
+
+
 - **Delivery workflow: Plan → Build → Verify → Review → Ship.** Chief of Staff
   takes every task through these stages and only moves on when the agent
   reports the stage done. Each stage can be switched off (Build always runs) and

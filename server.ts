@@ -10,7 +10,7 @@ import { reconcile } from "./src/roster";
 import { observeActive, observeFailure, observeIdle, observeInteraction, snapshotOf, syncThread } from "./src/sync";
 import { describeInteraction } from "./src/threads";
 import { sweep } from "./src/sweep";
-import { newJobGeneration } from "./src/delivery";
+import { dispatch, newJobGeneration } from "./src/delivery";
 
 export type { rpcContract } from "./rpcContract";
 
@@ -53,22 +53,21 @@ export default async function plugin(bb: BbPluginApi) {
     if (item) await observeInteraction(cos, item.id, thread.id, describeInteraction(interaction), "event");
   });
   bb.events.on("thread.archived", async ({ thread }) => {
+    // observeFailure ignores step threads whose step is over (archiving them is housekeeping).
     const item = store.getWorkItemByThread(thread.id);
-    // The reviewer's thread being archived after review is housekeeping, not a failure.
-    if (item && !(item.reviewThreadId === thread.id && item.stage !== "review")) await observeFailure(cos, item.id, thread.id, "thread archived", "event");
+    if (item) await observeFailure(cos, item.id, thread.id, "thread archived", "event");
   });
   bb.events.on("thread.unarchived", async ({ thread }) => {
     // Unarchiving brings the item back: let sync read the thread's state.
     const item = store.getWorkItemByThread(thread.id);
     if (item?.status === "failed" && item.lastError === "thread archived") {
-      store.updateWorkItem(item.id, { status: "blocked", finishedAt: null });
+      await dispatch(cos, item.id, { type: "revive" }, "event");
       await syncThread(cos, store.getWorkItem(item.id) ?? item, snapshotOf(thread as never), "event");
-      cos.invalidate();
     }
   });
   bb.events.on("thread.deleted", async ({ thread }) => {
     const item = store.getWorkItemByThread(thread.id);
-    if (item && !(item.reviewThreadId === thread.id && item.stage !== "review")) await observeFailure(cos, item.id, thread.id, "thread deleted", "event");
+    if (item) await observeFailure(cos, item.id, thread.id, "thread deleted", "event");
   });
 
   settings.onChange(() => cos.invalidate());

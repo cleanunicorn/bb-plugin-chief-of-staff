@@ -1,12 +1,13 @@
 // Intake: turn GitHub issues (or a task typed by the operator) into work
-// items and start them on the workflow. The first stage prompt spawns the
+// items and start them on the workflow. The first step prompt spawns the
 // agent thread (see delivery.ts), so starting is just a "start" event.
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
 import type { GitHubClient, GitHubIssue } from "./github";
 import { dispatch } from "./delivery";
-import type { WorkItem } from "./state";
+import type { NewWorkItem, WorkItem } from "./state";
+import { initialNodes } from "./machine";
 
 export interface IntakeResult {
   repo: string;
@@ -29,7 +30,7 @@ export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Pr
 
 /**
  * What the agent is asked to do and the repo's conventions. Sent once, when a
- * thread is spawned; stage prompts that follow refer back to it.
+ * thread is spawned; step prompts that follow refer back to it.
  */
 export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Promise<string> {
   let github: GitHubClient | null = null;
@@ -52,7 +53,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   } else {
     lines.push(`You are working on a task in ${repo.owner}/${repo.repo}: ${item.issueTitle}`, ``, (item.taskBody ?? "(no description)").slice(0, MAX_BODY));
   }
-  lines.push(``, `Your workspace is an isolated git worktree. Chief of Staff (a BB plugin) takes this task through its delivery workflow one stage at a time and tells you which stage you are in.`);
+  lines.push(``, `Your workspace is an isolated git worktree. Chief of Staff (a BB plugin) takes this task through the workflow “${item.workflow.name}” one step at a time and tells you which step you are on.`);
   if (github) {
     const conventions: string[] = [];
     for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"]) {
@@ -124,7 +125,9 @@ function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number): string |
   return null;
 }
 
-function newItem(repo: RepoConfig, fields: { issueNumber: number | null; issueTitle: string; branch: string; source: string; taskBody?: string | null }) {
+/** A queued item that runs the repo's workflow as it is right now (later edits do not change it). */
+async function newItem(cos: Cos, repo: RepoConfig, fields: { issueNumber: number | null; issueTitle: string; branch: string; source: string; taskBody?: string | null }): Promise<NewWorkItem> {
+  const workflow = await cos.workflow(repoKey(repo));
   return {
     id: randomUUID(),
     repo: repoKey(repo),
@@ -132,22 +135,20 @@ function newItem(repo: RepoConfig, fields: { issueNumber: number | null; issueTi
     environmentId: null,
     prNumber: null,
     prUrl: null,
-    status: "queued" as const,
-    stage: "build" as const,
+    status: "queued",
     providerId: null,
     model: null,
-    fixAttempts: 0,
-    retryCount: 0,
     lastError: null,
-    checkOutput: null,
     lastActivityAt: null,
     finishedAt: null,
+    workflow,
+    nodes: initialNodes(workflow),
     ...fields,
   };
 }
 
 export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue, actor: string): Promise<WorkItem | null> {
-  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(issue.number, issue.title), source: "intake" }));
+  const item = cos.store.insertWorkItem(await newItem(cos, repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(issue.number, issue.title), source: "intake" }));
   cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `picked up issue #${issue.number}: ${issue.title}`, actor });
   return dispatch(cos, item.id, { type: "start" }, actor);
 }
@@ -162,7 +163,7 @@ export async function startTask(cos: Cos, input: { repo: string; title: string; 
     const capacity = capacityProblem(cos, repo, (await cos.config()).values.maxConcurrentTotal);
     if (capacity) throw new Error(`${capacity}; try again later`);
   }
-  const item = cos.store.insertWorkItem(newItem(repo, { issueNumber: null, issueTitle: title, branch: `${BRANCH_PREFIX}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: input.body.trim() || title }));
+  const item = cos.store.insertWorkItem(await newItem(cos, repo, { issueNumber: null, issueTitle: title, branch: `${BRANCH_PREFIX}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: input.body.trim() || title }));
   cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `started task: ${title}`, actor });
   cos.invalidate();
   return dispatch(cos, item.id, { type: "start" }, actor);
