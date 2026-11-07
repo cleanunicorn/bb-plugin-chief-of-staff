@@ -3,9 +3,9 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Cos } from "./context";
 import { generalSettingsSchema, rpcContract } from "../rpcContract";
 import type { GeneralSettings } from "../rpcContract";
-import { buildRoster } from "./roster";
+import { buildRoster, rosterSteps } from "./roster";
 import { runIntake, startTask } from "./intake";
-import { activeStages, parseWorkflow } from "./workflow";
+import { parseWorkflows, stepById, topoOrder } from "./workflow";
 import { dispatch } from "./delivery";
 import { parseRepos } from "./config";
 import { computeStats } from "./stats";
@@ -32,9 +32,9 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
                 active: cos.store.countActive(key),
                 labels: r.issueFilter.labels,
                 intake: r.intake,
-                stages: activeStages(workflow),
-                shipAction: workflow.ship.action,
-                verifyCommand: workflow.verify.command.trim() || null,
+                workflowId: workflow.id,
+                workflowName: workflow.name,
+                stepNames: topoOrder(workflow).map((id) => stepById(workflow, id)?.name ?? id),
               };
             }),
           ),
@@ -54,13 +54,19 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return { results: await runIntake(cos, { repo: input.repo, dryRun: input.dryRun, actor: "rpc:client" }) };
       },
       async cos_item_action(input) {
-        const item = await itemAction(cos, input.id, input.action, "rpc:client");
+        const item = await itemAction(cos, input.id, input.action, "rpc:client", { step: input.step, feedback: input.feedback });
         return { status: item?.status ?? "unknown" };
+      },
+      async cos_item_workflow(input) {
+        const item = cos.store.getWorkItem(input.id);
+        if (!item) throw new Error(`work item ${input.id} not found`);
+        const live = Object.fromEntries(rosterSteps(item).map((s) => [s.id, { status: s.status, phase: s.phase, reported: s.reported, agents: s.agents, waitingKind: s.waitingKind, retrying: s.retrying, attempts: s.attempts, round: s.round }]));
+        return { title: `${item.repo}${item.issueNumber ? `#${item.issueNumber}` : ""} ${item.issueTitle}`, workflow: item.workflow, live };
       },
       async cos_start_task(input, ctx) {
         const item = await startTask(cos, { repo: input.repo, title: input.title, body: input.body }, callerActor(ctx));
         if (!item) throw new Error("could not start the task");
-        return { id: item.id, stage: item.stage, status: item.status };
+        return { id: item.id, workflow: item.workflow.name, status: item.status };
       },
       async cos_question(input) {
         return getQuestion(cos, input.id);
@@ -82,7 +88,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const warnings: string[] = [];
         const patch: { repos?: string; workflow?: string } = {};
         if (input.workflow !== undefined) {
-          const parsed = parseWorkflow(input.workflow);
+          const parsed = parseWorkflows(input.workflow);
           if (!parsed.ok) throw new Error(`workflow: ${parsed.error}`);
           patch.workflow = input.workflow;
         }
@@ -124,30 +130,32 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return { ok: true as const, changed };
       },
     },
-    { experimental_discoverable: true, experimental_description: "Chief of Staff: takes issues and tasks through plan, build, verify, review and ship" },
+    { experimental_discoverable: true, experimental_description: "Chief of Staff: takes issues and tasks through user-defined agent workflows" },
   );
 }
 
-export type ItemAction = "retry" | "resume" | "rerun_checks" | "approve" | "revise" | "mark_done" | "mark_failed";
+export type ItemAction = "retry" | "rerun_step" | "approve" | "revise" | "mark_done" | "mark_failed";
 
-export async function itemAction(cos: Cos, id: string, action: ItemAction, actor: string, feedback?: string) {
+export async function itemAction(cos: Cos, id: string, action: ItemAction, actor: string, opts: { step?: string; feedback?: string } = {}) {
   const item = cos.store.getWorkItem(id);
   if (!item) throw new Error(`work item ${id} not found`);
+  if (opts.step && !item.workflow.steps.some((s) => s.id === opts.step)) throw new Error(`step "${opts.step}" is not in this task's workflow (${item.workflow.steps.map((s) => s.id).join(", ")})`);
   switch (action) {
     case "retry":
-    case "resume":
-      return dispatch(cos, id, { type: "retry" }, actor);
-    case "rerun_checks":
-      return dispatch(cos, id, { type: "rerun_verify" }, actor);
+      return dispatch(cos, id, { type: "retry", step: opts.step }, actor);
+    case "rerun_step": {
+      if (!opts.step) throw new Error("rerun needs the step to run again");
+      return dispatch(cos, id, { type: "rerun", step: opts.step, feedback: opts.feedback }, actor);
+    }
     case "approve":
-      return dispatch(cos, id, { type: "approve" }, actor);
+      return dispatch(cos, id, { type: "approve", step: opts.step }, actor);
     case "revise":
-      if (!feedback?.trim()) throw new Error("revise needs feedback for the agent");
-      return dispatch(cos, id, { type: "revise", feedback }, actor);
+      if (!opts.feedback?.trim()) throw new Error("revise needs feedback for the agent");
+      return dispatch(cos, id, { type: "revise", step: opts.step, feedback: opts.feedback }, actor);
     case "mark_done":
       cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked done", actor });
       cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "done", stage: "done", finishedAt: cos.now().toISOString() });
+      return cos.store.updateWorkItem(id, { status: "done", finishedAt: cos.now().toISOString() });
     case "mark_failed":
       cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked failed", actor });
       cos.invalidate();

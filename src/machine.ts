@@ -1,407 +1,563 @@
-// Pure stage machine: given a work item, its repo's workflow and an event,
-// return the next stage + status, a patch, and the side effects the caller
-// runs. No I/O. Stages: plan → build → verify → review → ship → done, with
-// disabled stages skipped and failures looping back to build on a budget.
-import type { ReportOutcome, StageCounters, StageReport, WaitingKind, WorkItem, WorkStatus } from "./state";
-import { ZERO_COUNTERS } from "./state";
-import { firstStage, nextStage, STAGE_LABEL, type Stage, type StageOrDone, type Workflow } from "./workflow";
+// Pure workflow engine. Given a work item (its workflow snapshot and the state
+// of each step) and an event, return the new step states, an item patch and
+// the side effects to run. No I/O.
+//
+// Scheduling: a pending step starts when every step pointing at it is done.
+// Several ready steps start together (parallel); a step with several inputs
+// waits for all of them (join). A failing verdict, check or CI resets the
+// step's `onFail` target and everything downstream of it, and the work re-runs
+// from there with the failure as feedback, up to the step's limit, then waits
+// on a person. The item is done when every final step is done.
+import type { WaitingKind, WorkItem } from "./state";
+import { descendants, finalSteps, predecessors, stepById, topoOrder, type Step, type Workflow } from "./workflow";
 
-export type PromptKind =
-  | "plan"
-  | "plan_revise"
-  | "build"
-  | "fix_verify"
-  | "fix_review"
-  | "fix_ci"
-  | "fix_human"
-  | "verify"
-  | "review"
-  | "rereview"
-  | "ship"
-  | "nudge";
+export type ReportOutcome = "done" | "failed" | "needs_input";
+
+export interface StepReport {
+  outcome: ReportOutcome;
+  summary: string;
+  question?: string | null;
+  at: string;
+  via: "tool" | "text";
+}
+
+export type NodeStatus = "pending" | "running" | "waiting" | "done";
+export type ShipPhase = "pushing" | "ci" | "ready" | "merging";
+
+export interface NodeState {
+  status: NodeStatus;
+  /** Incremented every time the step starts; work from an older round is ignored. */
+  round: number;
+  /** Failures charged to this step (verdict, check or CI) across rounds. */
+  attempts: number;
+  /** One slot per agent working on the step, for the current round. */
+  reports: (StepReport | null)[];
+  nudges: number[];
+  waiting: { kind: WaitingKind; reason: string; agent?: number } | null;
+  /** Why the step is running again (failure output, review findings, operator feedback). */
+  feedback: string | null;
+  /** Ship only. */
+  phase: ShipPhase | null;
+  /** Check output or CI log of the latest run. */
+  output: string | null;
+  /** Infrastructure retry of the step's last effect. */
+  retry: { effect: Effect; at: string | null; count: number } | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export type Nodes = Record<string, NodeState>;
 
 export type Effect =
-  /** Send a stage prompt; spawns the builder (or reviewer) thread when it does not exist yet, or when `fresh`. */
-  | { type: "prompt"; target: "builder" | "reviewer"; kind: PromptKind; detail?: string; fresh?: boolean }
-  /** Run the verify command in the worktree (detached job). */
-  | { type: "verify_command" }
-  /** Commit leftovers, push, and open/update the PR per the ship action (detached job). */
-  | { type: "ship" }
-  /** Merge the open PR (detached job). */
-  | { type: "merge" }
+  /** Send an agent working on `step` its prompt (spawning its thread when needed). */
+  | { type: "agent"; step: string; agent: number; kind: "start" | "nudge"; fresh?: boolean }
+  /** Run a check step's command in the worktree (detached job). */
+  | { type: "check"; step: string }
+  /** Commit leftovers, push, open/find the PR (detached job). */
+  | { type: "ship"; step: string }
+  /** Merge the PR (detached job). */
+  | { type: "merge"; step: string }
   | { type: "notify"; title: string; body: string };
-
-export type ThreadRole = "builder" | "reviewer";
 
 export type MachineEvent =
   | { type: "start" }
-  | { type: "thread_spawned"; role: ThreadRole; threadId: string; environmentId: string | null }
-  | { type: "turn_started"; role: ThreadRole }
-  /** A turn ended. The observer has already looked for a stage report and a plain-text question. */
-  | { type: "turn_ended"; role: ThreadRole; report: StageReport | null; question: string | null }
-  | { type: "interaction_pending"; role: ThreadRole; reason: string | null }
-  | { type: "thread_failed"; role: ThreadRole; error: string }
-  | { type: "verify_passed"; output: string }
-  | { type: "verify_failed"; output: string }
-  | { type: "pushed" }
-  | { type: "pr_opened"; prNumber: number; prUrl: string }
-  /** Ship or merge could not proceed for a reason a human has to fix (not an outage). */
-  | { type: "ship_refused"; reason: string }
+  | { type: "turn_started"; step: string; agent: number }
+  | { type: "turn_ended"; step: string; agent: number; round: number; report: StepReport | null; question: string | null }
+  | { type: "interaction_pending"; step: string; agent: number; reason: string | null }
+  /** `step` null: the builder thread itself is gone. */
+  | { type: "thread_failed"; step: string | null; agent: number; error: string }
+  | { type: "check_result"; step: string; ok: boolean; output: string }
+  | { type: "pushed"; step: string }
+  | { type: "pr_opened"; step: string; prNumber: number; prUrl: string }
+  | { type: "ship_refused"; step: string; reason: string }
   | { type: "ci_passing" }
   | { type: "ci_failing"; log: string }
+  | { type: "merge_waiting"; reason: string }
   | { type: "pr_merged" }
   | { type: "pr_closed" }
-  /** Merge is configured but not possible yet (e.g. no approving review); stay ready and try again on the next CI pass. */
-  | { type: "merge_waiting"; reason: string }
-  /** A Chief of Staff job is not running (plugin restart, or its result was lost); start it again. */
+  | { type: "effect_error"; step: string; effect: Effect; message: string }
+  | { type: "retry_due"; step: string }
+  /** Jobs this process is not running (restart): start them again. */
   | { type: "resume_job" }
-  /** An effect threw (host timeout, network, GitHub 5xx). Retried with backoff. */
-  | { type: "effect_error"; effect: Effect; message: string }
-  | { type: "retry_due" }
-  | { type: "stalled" }
-  // Human decisions from the dashboard / CLI.
-  | { type: "approve" }
-  | { type: "revise"; feedback: string }
-  | { type: "retry" }
-  | { type: "rerun_verify" };
-
-export interface Transition {
-  stage: StageOrDone;
-  status: WorkStatus;
-  patch: Partial<WorkItem>;
-  effects: Effect[];
-}
+  | { type: "stalled"; step: string; agent: number }
+  // Operator decisions. `step` defaults to the step waiting on them.
+  | { type: "approve"; step?: string }
+  | { type: "revise"; step?: string; feedback: string }
+  | { type: "retry"; step?: string }
+  /** A failed item's builder thread was resumed in BB: un-fail it, no new prompts. */
+  | { type: "revive" }
+  /** Run a step again from scratch (and everything after it). */
+  | { type: "rerun"; step: string; feedback?: string };
 
 export interface MachinePolicy {
-  /** Nudges per stage when the agent stops without reporting. */
   maxNudges: number;
-  /** Infrastructure retries before asking a human. */
   maxInfraRetries: number;
 }
 
 export const DEFAULT_POLICY: MachinePolicy = { maxNudges: 2, maxInfraRetries: 3 };
+
+export interface Transition {
+  nodes: Nodes;
+  patch: Partial<WorkItem>;
+  effects: Effect[];
+}
 
 /** Backoff before infrastructure retry n (1-based): 1, 4, 9 minutes. */
 export function infraBackoffMs(attempt: number): number {
   return Math.max(1, attempt) ** 2 * 60_000;
 }
 
+export function freshNode(): NodeState {
+  return { status: "pending", round: 0, attempts: 0, reports: [], nudges: [], waiting: null, feedback: null, phase: null, output: null, retry: null, startedAt: null, finishedAt: null };
+}
+
+export function initialNodes(wf: Workflow): Nodes {
+  return Object.fromEntries(wf.steps.map((s) => [s.id, freshNode()]));
+}
+
+const agentsOf = (step: Step) => (step.type === "agent" ? step.agents : 1);
+const limitOf = (step: Step) => (step.type === "agent" ? step.maxRounds : step.maxAttempts);
 const label = (item: WorkItem) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
-const JOB_EFFECTS = new Set<Effect["type"]>(["verify_command", "ship", "merge"]);
 
-export function transition(item: WorkItem, event: MachineEvent, workflow: Workflow, policy: MachinePolicy = DEFAULT_POLICY): Transition {
-  const stay = (effects: Effect[] = [], patch: Partial<WorkItem> = {}): Transition => ({ stage: item.stage, status: item.status, patch, effects });
-  const counters = (delta: Partial<StageCounters>): StageCounters => ({ ...item.counters, ...delta });
-  const skipReview = item.returnTo === "ship";
+const WAIT_TITLE: Record<WaitingKind, string> = {
+  question: "Agent needs input",
+  approval: "Ready for your approval",
+  escalation: "Needs your decision",
+  no_report: "Agent stopped without reporting",
+  cos_error: "Chief of Staff needs help",
+  stalled: "Agent stalled",
+};
 
-  /** Enter a stage: reset per-stage counters and emit what starts it. */
-  const enter = (stage: StageOrDone, kind?: PromptKind, detail?: string, patch: Partial<WorkItem> = {}): Transition => {
-    const base: Partial<WorkItem> = {
-      waitingKind: null,
-      waitingReason: null,
-      pendingReport: null,
-      pendingEffect: null,
-      retryAt: null,
-      lastError: null,
-      ...patch,
-      counters: { ...(patch.counters ?? item.counters), nudges: 0, infraRetries: 0 },
-    };
-    switch (stage) {
-      case "done":
-        return {
-          stage: "done",
-          status: "done",
-          patch: { ...base, finishedAt: "now", returnTo: null },
-          effects: [
-            item.stage === "ship" || item.prUrl
-              ? { type: "notify", title: `Shipped: ${label(item)}`, body: item.prUrl ? `Merged ${item.prUrl}` : "The branch is pushed." }
-              : { type: "notify", title: `Finished: ${label(item)}`, body: "All enabled workflow stages are done (shipping is off for this repository)." },
-          ],
-        };
-      case "plan":
-        return { stage, status: "agent", patch: base, effects: [{ type: "prompt", target: "builder", kind: kind ?? "plan", detail }] };
-      case "build":
-        return { stage, status: "agent", patch: base, effects: [{ type: "prompt", target: "builder", kind: kind ?? "build", detail }] };
-      case "verify":
-        if (workflow.verify.command.trim()) return { stage, status: "cos", patch: { ...base, jobStartedAt: "now" }, effects: [{ type: "verify_command" }] };
-        return { stage, status: "agent", patch: base, effects: [{ type: "prompt", target: "builder", kind: "verify" }] };
-      case "review": {
-        const target = workflow.review.mode === "agent" ? "reviewer" : "builder";
-        return { stage, status: "agent", patch: base, effects: [{ type: "prompt", target, kind: (patch.counters ?? item.counters).reviewRounds > 0 ? "rereview" : "review" }] };
-      }
-      case "ship": {
-        const shipPatch = { ...base, returnTo: null };
-        // The agent writes the PR description when the ship stage has instructions and no PR exists yet.
-        if (workflow.ship.action !== "push" && workflow.ship.instructions.trim() && !item.prNumber && !item.reports.ship) {
-          return { stage, status: "agent", patch: shipPatch, effects: [{ type: "prompt", target: "builder", kind: "ship" }] };
-        }
-        return { stage, status: "cos", patch: { ...shipPatch, jobStartedAt: "now" }, effects: [{ type: "ship" }] };
-      }
+export function transition(item: WorkItem, event: MachineEvent, policy: MachinePolicy = DEFAULT_POLICY, now: Date = new Date()): Transition {
+  const wf = item.workflow;
+  const nodes: Nodes = Object.fromEntries(Object.entries(item.nodes).map(([k, v]) => [k, { ...v, reports: [...v.reports], nudges: [...v.nudges] }]));
+  for (const s of wf.steps) if (!nodes[s.id]) nodes[s.id] = freshNode();
+  const effects: Effect[] = [];
+  const patch: Partial<WorkItem> = {};
+  const iso = now.toISOString();
+  const step = (id: string) => stepById(wf, id);
+  const node = (id: string) => nodes[id];
+
+  // ---- primitives ----
+
+  const start = (id: string) => {
+    const s = step(id);
+    const n = node(id);
+    if (!s || !n) return;
+    const count = agentsOf(s);
+    Object.assign(n, { status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
+    if (s.type === "agent") for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
+    else if (s.type === "check") {
+      patch.jobStartedAt = iso;
+      effects.push({ type: "check", step: id });
+    } else {
+      n.phase = "pushing";
+      patch.jobStartedAt = iso;
+      effects.push({ type: "ship", step: id });
     }
   };
 
-  const advance = (from: Stage, patch: Partial<WorkItem> = {}): Transition => enter(nextStage(workflow, from, { skipReview }), undefined, undefined, patch);
-
-  const waitHuman = (kind: WaitingKind, reason: string, title: string, patch: Partial<WorkItem> = {}): Transition => ({
-    stage: item.stage,
-    status: "waiting_on_human",
-    patch: { ...patch, waitingKind: kind, waitingReason: reason.slice(0, 600) },
-    effects: [{ type: "notify", title: `${title}: ${label(item)}`, body: reason.slice(0, 500) }],
-  });
-
-  /** Verify (command or agent) failed: back to build on budget, else escalate. */
-  const verifyFailed = (output: string): Transition => {
-    const failures = item.counters.verifyFailures + 1;
-    const patch = { checkOutput: output, counters: counters({ verifyFailures: failures }), fixAttempts: item.fixAttempts + 1 };
-    if (failures <= workflow.verify.maxAttempts) return enter("build", "fix_verify", output, patch);
-    return waitHuman("escalation", `Verify still failing after ${workflow.verify.maxAttempts} fix attempt(s). Approve to continue anyway, or send instructions back to the agent.`, "Verify keeps failing", { checkOutput: output, counters: counters({ verifyFailures: failures }) });
+  const complete = (id: string) => {
+    const n = node(id);
+    if (!n) return;
+    Object.assign(n, { status: "done", waiting: null, feedback: null, phase: null, retry: null, finishedAt: iso });
   };
 
-  /** The role whose turns drive the current stage. */
-  const drivingRole: ThreadRole = item.stage === "review" && workflow.review.mode === "agent" ? "reviewer" : "builder";
+  const wait = (id: string, kind: WaitingKind, reason: string, agent?: number) => {
+    const n = node(id);
+    if (!n) return;
+    n.status = "waiting";
+    n.waiting = { kind, reason: reason.slice(0, 600), ...(agent !== undefined ? { agent } : {}) };
+    effects.push({ type: "notify", title: `${WAIT_TITLE[kind]}: ${label(item)}`, body: `${step(id)?.name ?? id}: ${reason}`.slice(0, 500) });
+  };
+
+  /** Reset `target` and everything after it; `target` re-runs with `feedback`. */
+  const resetFrom = (target: string, feedback: string | null) => {
+    for (const d of descendants(wf, target)) {
+      const n = node(d);
+      if (!n) continue;
+      Object.assign(n, { ...freshNode(), round: n.round, attempts: n.attempts, output: n.output });
+    }
+    const t = node(target);
+    if (t) t.feedback = feedback;
+  };
+
+  /** A step failed (verdict, check, CI): loop back on budget, else ask a person. */
+  const fail = (id: string, detail: string) => {
+    const s = step(id);
+    const n = node(id);
+    if (!s || !n) return;
+    n.attempts += 1;
+    n.output = detail.slice(-12_000);
+    if (s.onFail && n.attempts <= limitOf(s)) {
+      resetFrom(s.onFail, `${s.name} failed:\n\n${detail}`.slice(-12_000));
+      return;
+    }
+    const why = s.onFail ? `failed ${n.attempts} time(s), past its limit of ${limitOf(s)}` : "failed";
+    wait(id, "escalation", `${s.name} ${why}. Approve to continue anyway, or send instructions back.`);
+  };
+
+  /** Every agent on an agent step has reported: pass it on, gate it, or fail it. */
+  const agentStepFinished = (id: string) => {
+    const s = step(id);
+    const n = node(id);
+    if (!s || s.type !== "agent" || !n) return;
+    const failed = n.reports.filter((r) => r?.outcome === "failed");
+    if (failed.length) {
+      if (s.verdict) return fail(id, failed.map((r) => r!.summary).join("\n\n---\n\n"));
+      return wait(id, "escalation", `The agent reported it could not finish: ${failed[0]!.summary}`);
+    }
+    if (s.approval) return wait(id, "approval", `${s.name} is ready for your approval.`);
+    complete(id);
+  };
+
+  /** The waiting (or targeted) step for an operator decision. */
+  const target = (id?: string) => (id ? (node(id) ? id : undefined) : topoOrder(wf).find((sid) => node(sid)?.status === "waiting"));
+
+  /** The ship step currently tracking a PR. */
+  const shipNode = () => wf.steps.find((s) => s.type === "ship" && node(s.id)?.status === "running" && node(s.id)?.phase && node(s.id)!.phase !== "pushing")?.id;
+
+  // ---- events ----
 
   switch (event.type) {
     case "start":
-      if (item.status !== "queued") return stay();
-      return enter(item.threadId ? (item.stage === "done" ? "build" : (item.stage as Stage)) : firstStage(workflow));
-
-    case "thread_spawned":
-      return stay([], event.role === "builder" ? { threadId: event.threadId, environmentId: event.environmentId } : { reviewThreadId: event.threadId });
+      break; // scheduling below starts the entry steps
 
     case "turn_started": {
-      if (event.role !== drivingRole && !(event.role === "builder" && ["ci", "ready"].includes(item.status))) return stay();
-      switch (item.status) {
-        case "waiting_on_human":
-          // A human answered or resumed the thread. A plan awaiting approval
-          // that gets discussed in the thread goes back to planning.
-          return { stage: item.stage, status: "agent", patch: { waitingKind: null, waitingReason: null, lastError: null, finishedAt: null, counters: counters({ nudges: 0 }) }, effects: [] };
-        case "blocked":
-        case "failed":
-        case "retrying":
-          return { stage: item.stage === "done" ? "build" : item.stage, status: "agent", patch: { waitingKind: null, waitingReason: null, lastError: null, finishedAt: null, retryAt: null, pendingEffect: null }, effects: [] };
-        case "ci":
-        case "ready":
-          // Someone is pushing more work onto the open PR from the thread.
-          return { stage: "build", status: "agent", patch: { returnTo: "ship" }, effects: [] };
-        default:
-          return stay();
+      const n = node(event.step);
+      if (!n || n.status !== "waiting" || !n.waiting) break;
+      if (["question", "no_report", "stalled"].includes(n.waiting.kind)) {
+        n.status = "running";
+        n.waiting = null;
+        n.nudges = n.nudges.map(() => 0);
       }
+      break;
     }
 
     case "turn_ended": {
-      if (item.status !== "agent" || event.role !== drivingRole) return stay();
-      // Routine agents are free-form tasks, not workflow items: a finished turn finishes them.
-      if (item.source.startsWith("routine:")) {
-        if (event.question) return waitHuman("question", event.question, "Agent needs input");
-        return { stage: "done", status: "done", patch: { finishedAt: "now" }, effects: [] };
+      const s = step(event.step);
+      const n = node(event.step);
+      if (!s || s.type !== "agent" || !n || n.status !== "running" || event.round !== n.round) break;
+      if (n.reports[event.agent]) break; // this agent already reported
+      const report = event.report;
+      if (report?.outcome === "needs_input") {
+        wait(event.step, "question", report.question || report.summary, event.agent);
+        break;
       }
-      const report = event.report && event.report.stage === item.stage ? event.report : null;
-      if (!report) {
-        if (event.question) return waitHuman("question", event.question, "Agent needs input", { pendingReport: null });
-        if (item.counters.nudges < policy.maxNudges) {
-          return { stage: item.stage, status: "agent", patch: { counters: counters({ nudges: item.counters.nudges + 1 }) }, effects: [{ type: "prompt", target: drivingRole, kind: "nudge" }] };
-        }
-        return waitHuman("no_report", `The agent stopped ${policy.maxNudges + 1} times without reporting the ${STAGE_LABEL[item.stage]} stage. Approve to treat the stage as done, or send it instructions.`, "Agent stopped without reporting");
+      if (report) {
+        n.reports[event.agent] = report;
+        n.retry = null;
+        if (n.reports.every(Boolean)) agentStepFinished(event.step);
+        break;
       }
-      return onReport(report);
+      if (event.question) {
+        wait(event.step, "question", event.question, event.agent);
+        break;
+      }
+      const nudged = n.nudges[event.agent] ?? 0;
+      if (nudged < policy.maxNudges) {
+        n.nudges[event.agent] = nudged + 1;
+        effects.push({ type: "agent", step: event.step, agent: event.agent, kind: "nudge" });
+      } else {
+        wait(event.step, "no_report", `The agent stopped ${policy.maxNudges + 1} times without reporting ${s.name}. Approve to treat it as done, or send it instructions.`, event.agent);
+      }
+      break;
     }
 
-    case "interaction_pending":
-      if (["done", "failed"].includes(item.status)) return stay();
-      if (item.status === "waiting_on_human" && item.waitingKind === "question" && (!event.reason || event.reason === item.waitingReason)) return stay();
-      return waitHuman("question", event.reason ?? "The agent is waiting for a human decision.", "Agent needs input");
+    case "interaction_pending": {
+      const n = node(event.step);
+      if (!n || (n.status !== "running" && !(n.status === "waiting" && n.waiting?.kind === "question"))) break;
+      const reason = event.reason ?? "The agent is waiting for a human decision.";
+      if (n.waiting?.kind === "question" && n.waiting.reason === reason.slice(0, 600)) break;
+      wait(event.step, "question", reason, event.agent);
+      break;
+    }
 
-    case "thread_failed":
-      if (["done", "failed"].includes(item.status)) return stay();
-      if (event.role === "reviewer") {
-        return waitHuman("cos_error", `The reviewer thread failed: ${event.error}. Retry to start a new reviewer.`, "Reviewer failed", {
-          reviewThreadId: null,
-          pendingEffect: JSON.stringify({ type: "prompt", target: "reviewer", kind: "review" } satisfies Effect),
-        });
+    case "thread_failed": {
+      if (event.step === null) {
+        patch.status = "failed";
+        patch.lastError = event.error;
+        patch.finishedAt = iso;
+        effects.push({ type: "notify", title: `Agent failed: ${label(item)}`, body: event.error.slice(0, 500) });
+        return { nodes, patch, effects };
       }
-      return { stage: item.stage, status: "failed", patch: { lastError: event.error, finishedAt: "now" }, effects: [{ type: "notify", title: `Agent failed: ${label(item)}`, body: event.error.slice(0, 500) }] };
+      const n = node(event.step);
+      if (!n || n.status === "done" || n.status === "pending") break;
+      n.retry = { effect: { type: "agent", step: event.step, agent: event.agent, kind: "start", fresh: true }, at: null, count: 0 };
+      wait(event.step, "cos_error", `The agent's thread failed (${event.error}). Retry starts a new one.`, event.agent);
+      break;
+    }
 
-    case "verify_passed":
-      if (item.stage !== "verify" || item.status !== "cos") return stay();
-      if (workflow.verify.instructions.trim()) return { stage: "verify", status: "agent", patch: { checkOutput: event.output, jobStartedAt: null }, effects: [{ type: "prompt", target: "builder", kind: "verify" }] };
-      return advance("verify", { checkOutput: event.output, jobStartedAt: null });
+    case "check_result": {
+      const n = node(event.step);
+      if (!n || n.status !== "running" || step(event.step)?.type !== "check") break;
+      patch.jobStartedAt = null;
+      n.output = event.output.slice(-12_000);
+      if (event.ok) complete(event.step);
+      else fail(event.step, event.output);
+      break;
+    }
 
-    case "verify_failed":
-      if (item.stage !== "verify" || item.status !== "cos") return stay();
-      return verifyFailed(event.output);
+    case "pushed": {
+      if (node(event.step)?.status !== "running") break;
+      patch.jobStartedAt = null;
+      complete(event.step);
+      break;
+    }
 
-    case "pushed":
-      if (item.stage !== "ship") return stay();
-      return enter("done", undefined, undefined, { jobStartedAt: null });
+    case "pr_opened": {
+      const n = node(event.step);
+      patch.prNumber = event.prNumber;
+      patch.prUrl = event.prUrl;
+      if (!n || n.status !== "running") break;
+      patch.jobStartedAt = null;
+      n.phase = "ci";
+      n.retry = null;
+      break;
+    }
 
-    case "pr_opened":
-      if (item.stage !== "ship") return stay([], { prNumber: event.prNumber, prUrl: event.prUrl });
-      return { stage: "ship", status: "ci", patch: { prNumber: event.prNumber, prUrl: event.prUrl, jobStartedAt: null, lastError: null }, effects: [] };
+    case "ship_refused": {
+      if (node(event.step)?.status !== "running") break;
+      patch.jobStartedAt = null;
+      wait(event.step, "escalation", event.reason);
+      break;
+    }
 
-    case "ship_refused":
-      return waitHuman("escalation", event.reason, "Cannot ship", { jobStartedAt: null });
-
-    case "ci_passing":
-      if (item.stage !== "ship" || (item.status !== "ci" && item.status !== "ready")) return stay();
-      if (workflow.ship.action === "merge") return { stage: "ship", status: "cos", patch: { jobStartedAt: "now", lastError: null }, effects: [{ type: "merge" }] };
-      return { stage: "ship", status: "ready", patch: { lastError: null }, effects: item.status === "ready" ? [] : [{ type: "notify", title: `PR ready to merge: ${label(item)}`, body: item.prUrl ?? "" }] };
+    case "ci_passing": {
+      const id = shipNode();
+      const s = id ? step(id) : undefined;
+      const n = id ? node(id) : undefined;
+      if (!id || !s || s.type !== "ship" || !n || (n.phase !== "ci" && n.phase !== "ready")) break;
+      if (s.action === "merge") {
+        n.phase = "merging";
+        patch.jobStartedAt = iso;
+        effects.push({ type: "merge", step: id });
+      } else if (n.phase === "ci") {
+        n.phase = "ready";
+        effects.push({ type: "notify", title: `PR ready to merge: ${label(item)}`, body: item.prUrl ?? "" });
+      }
+      break;
+    }
 
     case "ci_failing": {
-      if (item.stage !== "ship" || (item.status !== "ci" && item.status !== "ready")) return stay();
-      const fixes = item.counters.ciFixes + 1;
-      if (fixes <= workflow.ship.maxCiFixes) return enter("build", "fix_ci", event.log, { checkOutput: event.log, counters: counters({ ciFixes: fixes }), fixAttempts: item.fixAttempts + 1, returnTo: "ship" });
-      return waitHuman("escalation", `CI is red on PR #${item.prNumber} after ${workflow.ship.maxCiFixes} fix attempt(s). Send instructions back to the agent, or fix it by hand.`, "CI failing", { checkOutput: event.log, counters: counters({ ciFixes: fixes }) });
+      const id = shipNode();
+      const n = id ? node(id) : undefined;
+      if (!id || !n || (n.phase !== "ci" && n.phase !== "ready")) break;
+      fail(id, event.log);
+      break;
     }
 
-    case "pr_merged":
-      if (item.status === "done") return stay();
-      return enter("done", undefined, undefined, { jobStartedAt: null });
-
-    case "merge_waiting":
-      if (item.stage !== "ship") return stay();
-      return { stage: "ship", status: "ready", patch: { jobStartedAt: null, lastError: event.reason.slice(0, 500) }, effects: [] };
-
-    case "resume_job": {
-      if (item.status !== "cos") return stay();
-      const effect: Effect | null = item.stage === "verify" ? { type: "verify_command" } : item.stage === "ship" ? (item.prNumber && workflow.ship.action === "merge" ? { type: "merge" } : { type: "ship" }) : null;
-      if (!effect) return enter(item.stage === "done" ? "build" : item.stage);
-      return { stage: item.stage, status: "cos", patch: { jobStartedAt: "now" }, effects: [effect] };
+    case "merge_waiting": {
+      const id = wf.steps.find((s) => node(s.id)?.phase === "merging")?.id;
+      if (!id) break;
+      node(id)!.phase = "ready";
+      patch.jobStartedAt = null;
+      patch.lastError = event.reason.slice(0, 500);
+      break;
     }
 
-    case "pr_closed":
-      if (item.status === "done") return stay();
-      return { stage: "done", status: "done", patch: { finishedAt: "now", lastError: "PR closed without merge", jobStartedAt: null }, effects: [] };
+    case "pr_merged": {
+      patch.jobStartedAt = null;
+      // A merged PR ships the task, whatever else was still open.
+      for (const s of wf.steps) if (node(s.id)?.status !== "done") complete(s.id);
+      break;
+    }
+
+    case "pr_closed": {
+      if (item.status === "done") break;
+      for (const s of wf.steps) complete(s.id);
+      patch.lastError = "PR closed without merge";
+      patch.jobStartedAt = null;
+      patch.status = "done";
+      patch.finishedAt = iso;
+      return { nodes, patch, effects };
+    }
 
     case "effect_error": {
-      if (["done", "failed"].includes(item.status)) return stay();
-      const attempt = item.counters.infraRetries + 1;
-      const pendingEffect = JSON.stringify(event.effect);
-      if (attempt <= policy.maxInfraRetries) {
-        return { stage: item.stage, status: "retrying", patch: { pendingEffect, retryAt: `+${infraBackoffMs(attempt)}`, lastError: event.message.slice(0, 1000), counters: counters({ infraRetries: attempt }), jobStartedAt: null }, effects: [] };
+      const n = node(event.step);
+      if (!n || n.status === "done" || n.status === "pending") break;
+      const count = (n.retry?.count ?? 0) + 1;
+      if (event.effect.type !== "agent") patch.jobStartedAt = null;
+      patch.lastError = event.message.slice(0, 1000);
+      if (count <= policy.maxInfraRetries) {
+        n.retry = { effect: event.effect, at: new Date(now.getTime() + infraBackoffMs(count)).toISOString(), count };
+      } else {
+        n.retry = { effect: event.effect, at: null, count };
+        wait(event.step, "cos_error", `Chief of Staff could not ${EFFECT_LABEL[event.effect.type]} after ${policy.maxInfraRetries} retries (the agent is not asking anything): ${event.message}`);
       }
-      return waitHuman(
-        "cos_error",
-        `Chief of Staff could not ${EFFECT_LABEL[event.effect.type]} after ${policy.maxInfraRetries} retries (the agent is not asking anything): ${event.message}`,
-        "Chief of Staff needs help",
-        { pendingEffect, lastError: event.message.slice(0, 1000), jobStartedAt: null },
-      );
+      break;
     }
 
     case "retry_due": {
-      if (item.status !== "retrying" || !item.pendingEffect) return stay();
-      return rerunPending(item.pendingEffect);
+      const n = node(event.step);
+      if (!n?.retry?.at || n.status === "waiting") break;
+      const effect = n.retry.effect;
+      n.retry = { ...n.retry, at: null };
+      if (effect.type !== "agent" && effect.type !== "notify") patch.jobStartedAt = iso;
+      effects.push(effect);
+      break;
     }
 
-    case "stalled":
-      if (item.status !== "agent") return stay();
-      return { stage: item.stage, status: "blocked", patch: { lastError: "stalled" }, effects: [{ type: "notify", title: `Agent stalled: ${label(item)}`, body: "No activity past the stall threshold." }] };
+    case "resume_job": {
+      for (const s of wf.steps) {
+        const n = node(s.id);
+        if (n?.status !== "running" || n.retry?.at) continue;
+        if (s.type === "check") effects.push({ type: "check", step: s.id });
+        else if (s.type === "ship" && n.phase === "pushing") effects.push({ type: "ship", step: s.id });
+        else if (s.type === "ship" && n.phase === "merging") effects.push({ type: "merge", step: s.id });
+        else continue;
+        patch.jobStartedAt = iso;
+      }
+      break;
+    }
 
-    case "approve":
-      if (item.status !== "waiting_on_human" && item.status !== "blocked") return stay();
-      if (item.stage === "done") return stay();
+    case "stalled": {
+      const n = node(event.step);
+      if (n?.status !== "running" || step(event.step)?.type !== "agent") break;
+      wait(event.step, "stalled", "No activity past the stall threshold.", event.agent);
+      break;
+    }
+
+    case "approve": {
+      const id = target(event.step);
+      const n = id ? node(id) : undefined;
+      const s = id ? step(id) : undefined;
+      if (!id || !n || !s || n.status !== "waiting" || !n.waiting) break;
       // An open question is answered, not approved; Chief of Staff's own failure is retried.
-      if (item.status === "waiting_on_human" && (item.waitingKind === "question" || item.waitingKind === "cos_error")) return stay();
-      // Shipping is not done while a PR is open: keep watching it.
-      if (item.stage === "ship" && item.prNumber) return { stage: "ship", status: "ready", patch: { waitingKind: null, waitingReason: null, lastError: null }, effects: [] };
-      // Plan approved, or the human vouches for a stage that is stuck: move on.
-      return advance(item.stage);
+      if (n.waiting.kind === "question" || n.waiting.kind === "cos_error") break;
+      if (s.type === "ship" && item.prNumber) {
+        // Shipping is not over while the PR is open: keep watching it.
+        n.status = "running";
+        n.waiting = null;
+        n.phase = "ready";
+        break;
+      }
+      complete(id);
+      break;
+    }
 
     case "revise": {
-      if (item.status !== "waiting_on_human" && item.status !== "blocked") return stay();
+      const id = target(event.step);
+      const n = id ? node(id) : undefined;
+      const s = id ? step(id) : undefined;
       const feedback = event.feedback.trim();
-      if (item.stage === "plan") return enter("plan", "plan_revise", feedback);
-      return enter("build", "fix_human", feedback, { fixAttempts: item.fixAttempts + 1, returnTo: item.stage === "ship" ? "ship" : item.returnTo });
-    }
-
-    case "retry":
-      if (item.status === "done") return stay();
-      if (item.pendingEffect) return rerunPending(item.pendingEffect, { retryCount: item.retryCount + 1 });
-      if (item.status === "queued") return enter(item.threadId ? (item.stage as Stage) : firstStage(workflow));
-      // Re-enter the current stage; a failed item gets a fresh thread.
-      {
-        const stage = item.stage === "done" ? "build" : item.stage;
-        const t = enter(stage, undefined, undefined, { retryCount: item.retryCount + 1, finishedAt: null });
-        if (item.status === "failed") t.effects = t.effects.map((e) => (e.type === "prompt" && e.target === "builder" ? { ...e, fresh: true } : e));
-        return t;
+      if (!id || !n || !s || n.status !== "waiting" || !n.waiting || !feedback) break;
+      if (n.waiting.kind === "question" || n.waiting.kind === "cos_error") break;
+      const note = `Feedback from the operator:\n\n${feedback}`;
+      if (n.waiting.kind === "escalation") {
+        n.attempts = 0;
+        resetFrom(s.onFail ?? id, note);
+      } else {
+        resetFrom(id, note);
       }
+      break;
+    }
 
-    case "rerun_verify":
-      if (["done"].includes(item.status)) return stay();
-      return enter("verify", undefined, undefined, { finishedAt: null });
-
-    default:
-      return stay();
-  }
-
-  function onReport(report: StageReport): Transition {
-    const reports = { ...item.reports, [report.stage]: report };
-    const outcome: ReportOutcome = report.outcome;
-    if (outcome === "needs_input") return waitHuman("question", report.question || report.summary, "Agent needs input", { pendingReport: null, reports });
-    switch (report.stage) {
-      case "plan":
-        if (outcome !== "done") break;
-        if (workflow.plan.requireApproval) return waitHuman("plan_approval", "Plan ready for your approval.", "Plan ready", { reports, pendingReport: null });
-        return advance("plan", { reports });
-      case "build":
-        if (outcome !== "done") break;
-        return advance("build", { reports });
-      case "verify":
-        if (outcome === "failed") return verifyFailed(report.summary);
-        if (outcome !== "done") break;
-        return advance("verify", { reports });
-      case "review": {
-        if (outcome === "done") return advance("review", { reports });
-        if (outcome !== "changes_requested") break;
-        const rounds = item.counters.reviewRounds + 1;
-        if (rounds <= workflow.review.maxRounds) return enter("build", "fix_review", report.summary, { reports, counters: counters({ reviewRounds: rounds }), fixAttempts: item.fixAttempts + 1 });
-        return waitHuman("escalation", `Review still requests changes after ${workflow.review.maxRounds} round(s). Approve to ship anyway, or send instructions back to the agent.`, "Review keeps requesting changes", { reports, counters: counters({ reviewRounds: rounds }) });
+    case "retry": {
+      if (item.status === "failed") {
+        // The builder died: restart the writing step that was running with a fresh thread.
+        patch.status = undefined;
+        patch.lastError = null;
+        patch.finishedAt = null;
+        const writer = wf.steps.find((s) => s.type === "agent" && s.writes && node(s.id)?.status !== "done" && node(s.id)?.status !== "pending");
+        if (writer) {
+          start(writer.id);
+          for (const e of effects) if (e.type === "agent" && e.step === writer.id) e.fresh = true;
+        }
+        break;
       }
-      case "ship":
-        if (outcome !== "done") break;
-        return { stage: "ship", status: "cos", patch: { reports, pendingReport: null, jobStartedAt: "now" }, effects: [{ type: "ship" }] };
+      const id = target(event.step);
+      const n = id ? node(id) : undefined;
+      if (!id || !n) break;
+      if (n.retry) {
+        const effect = n.retry.effect;
+        n.retry = null;
+        if (n.status === "waiting") {
+          n.status = "running";
+          n.waiting = null;
+        }
+        if (effect.type !== "agent" && effect.type !== "notify") patch.jobStartedAt = iso;
+        effects.push(effect);
+      } else if (n.status !== "pending") {
+        resetFrom(id, n.feedback);
+      }
+      break;
     }
-    return waitHuman("escalation", `The agent reported "${outcome}" for ${STAGE_LABEL[report.stage]}: ${report.summary}`, "Agent is stuck", { reports, pendingReport: null });
+
+    case "revive": {
+      if (item.status !== "failed") break;
+      patch.status = undefined;
+      patch.lastError = null;
+      patch.finishedAt = null;
+      break;
+    }
+
+    case "rerun": {
+      if (!node(event.step)) break;
+      resetFrom(event.step, event.feedback?.trim() ? `Feedback from the operator:\n\n${event.feedback.trim()}` : null);
+      if (item.status === "failed") {
+        patch.status = undefined;
+        patch.lastError = null;
+        patch.finishedAt = null;
+      }
+      break;
+    }
   }
 
-  function rerunPending(raw: string, extra: Partial<WorkItem> = {}): Transition {
-    let effect: Effect;
-    try {
-      effect = JSON.parse(raw) as Effect;
-    } catch {
-      return enter(item.stage === "done" ? "build" : item.stage, undefined, undefined, extra);
+  // ---- schedule: start every pending step whose inputs are all done ----
+  const failed = ("status" in patch ? patch.status : item.status) === "failed";
+  if (!failed) {
+    for (const id of topoOrder(wf)) {
+      const n = node(id);
+      if (n?.status !== "pending") continue;
+      if (predecessors(wf, id).every((p) => node(p)?.status === "done")) start(id);
     }
-    const status: WorkStatus = JOB_EFFECTS.has(effect.type) ? "cos" : "agent";
-    return {
-      stage: item.stage,
-      status,
-      patch: { ...extra, pendingEffect: null, retryAt: null, waitingKind: null, waitingReason: null, finishedAt: null, ...(status === "cos" ? { jobStartedAt: "now" } : {}) },
-      effects: [effect],
-    };
   }
+
+  // ---- finished? ----
+  const finals = finalSteps(wf);
+  if (item.status !== "done" && patch.status !== "done" && finals.every((id) => node(id)?.status === "done")) {
+    patch.finishedAt = iso;
+    patch.jobStartedAt = null;
+    const shipped = wf.steps.some((s) => s.type === "ship");
+    effects.push(shipped ? { type: "notify", title: `Shipped: ${label(item)}`, body: (patch.prUrl ?? item.prUrl) ? `Done: ${patch.prUrl ?? item.prUrl}` : "Workflow finished." } : { type: "notify", title: `Finished: ${label(item)}`, body: "Every step of the workflow is done." });
+  }
+
+  return { nodes, patch, effects };
 }
 
 export const EFFECT_LABEL: Record<Effect["type"], string> = {
-  prompt: "send the agent its next prompt",
-  verify_command: "run the verify command",
+  agent: "send the agent its prompt",
+  check: "run the check command",
   ship: "push the branch and open the pull request",
   merge: "merge the pull request",
   notify: "send a notification",
 };
 
-/** The prompt that (re)starts a stage from scratch. */
-export function stagePromptKind(stage: StageOrDone): PromptKind {
-  switch (stage) {
-    case "plan":
-      return "plan";
-    case "verify":
-      return "verify";
-    case "review":
-      return "review";
-    case "ship":
-      return "ship";
-    default:
-      return "build";
+// ---------- derived item status ----------
+
+export type ItemStatus = WorkItem["status"];
+
+/** The item's coarse status, from its step states (who holds the ball). */
+export function deriveStatus(item: Pick<WorkItem, "status" | "workflow">, nodes: Nodes): { status: ItemStatus; waitingKind: WaitingKind | null; waitingReason: string | null } {
+  if (item.status === "failed") return { status: "failed", waitingKind: null, waitingReason: null };
+  const wf = item.workflow;
+  if (finalSteps(wf).every((id) => nodes[id]?.status === "done")) return { status: "done", waitingKind: null, waitingReason: null };
+  const order = topoOrder(wf);
+  const waiting = order.map((id) => ({ id, n: nodes[id] })).find((x) => x.n?.status === "waiting" && x.n.waiting);
+  if (waiting) {
+    const w = waiting.n!.waiting!;
+    const name = stepById(wf, waiting.id)?.name ?? waiting.id;
+    return { status: w.kind === "stalled" ? "blocked" : "waiting_on_human", waitingKind: w.kind, waitingReason: `${name}: ${w.reason}`.slice(0, 600) };
   }
+  const running = order.map((id) => ({ s: stepById(wf, id)!, n: nodes[id] })).filter((x) => x.n?.status === "running");
+  const active = running.filter((x) => !x.n!.retry?.at);
+  if (active.some((x) => x.s.type === "agent")) return { status: "agent", waitingKind: null, waitingReason: null };
+  if (active.some((x) => x.s.type === "check" || x.n!.phase === "pushing" || x.n!.phase === "merging")) return { status: "cos", waitingKind: null, waitingReason: null };
+  if (active.some((x) => x.n!.phase === "ci")) return { status: "ci", waitingKind: null, waitingReason: null };
+  if (active.some((x) => x.n!.phase === "ready")) return { status: "ready", waitingKind: null, waitingReason: null };
+  if (running.length) return { status: "retrying", waitingKind: null, waitingReason: null };
+  return { status: "queued", waitingKind: null, waitingReason: null };
 }
 
 export type Actor = "agent" | "cos" | "human" | "system" | "none";
@@ -427,16 +583,10 @@ export function actorOf(item: Pick<WorkItem, "status">): Actor {
 }
 
 /** Map an item to the roster's coarse, human-facing status. */
-export function rosterStatus(item: WorkItem): "queued" | "running" | "waiting on human" | "blocked" | "done" | "failed" {
+export function rosterStatus(item: Pick<WorkItem, "status">): "queued" | "running" | "waiting on human" | "blocked" | "done" | "failed" {
   switch (item.status) {
     case "queued":
       return "queued";
-    case "agent":
-    case "cos":
-    case "ci":
-    case "ready":
-    case "retrying":
-      return "running";
     case "waiting_on_human":
       return "waiting on human";
     case "blocked":
@@ -445,7 +595,7 @@ export function rosterStatus(item: WorkItem): "queued" | "running" | "waiting on
       return "done";
     case "failed":
       return "failed";
+    default:
+      return "running";
   }
 }
-
-export { ZERO_COUNTERS };

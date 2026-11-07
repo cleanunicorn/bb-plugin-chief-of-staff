@@ -7,14 +7,28 @@ const rosterEntry = z.object({
   id: z.string(),
   status: z.enum(["queued", "running", "waiting on human", "blocked", "done", "failed"]),
   detail: z.string(),
-  stage: z.enum(["plan", "build", "verify", "review", "ship", "done"]),
-  stages: z.array(z.enum(["plan", "build", "verify", "review", "ship"])),
+  workflowName: z.string(),
+  steps: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      type: z.enum(["agent", "check", "ship"]),
+      depth: z.number(),
+      status: z.enum(["pending", "running", "waiting", "done"]),
+      phase: z.string().nullable(),
+      agents: z.number(),
+      reported: z.number(),
+      nudged: z.number(),
+      attempts: z.number(),
+      round: z.number(),
+      waitingKind: z.string().nullable(),
+      retrying: z.boolean(),
+    }),
+  ),
+  current: z.array(z.string()),
   actor: z.enum(["agent", "cos", "human", "system", "none"]),
   activity: z.string(),
   waitingKind: z.string().nullable(),
-  reviewThreadId: z.string().nullable(),
-  counters: z.object({ verifyFailures: z.number(), reviewRounds: z.number(), ciFixes: z.number(), nudges: z.number(), infraRetries: z.number() }),
-  retryAt: z.string().nullable(),
   repo: z.string(),
   issueNumber: z.number().nullable(),
   issueTitle: z.string(),
@@ -86,14 +100,13 @@ const questionView = z.object({
   threadId: z.string().nullable(),
   threadUrl: z.string().nullable(),
   status: z.string(),
-  stage: z.string(),
+  stepId: z.string().nullable(),
+  stepName: z.string().nullable(),
   waitingKind: z.string().nullable(),
   waitingReason: z.string().nullable(),
-  /** The plan the agent reported (for plan approval). */
-  plan: z.string().nullable(),
-  /** The latest review report (findings) when review is involved. */
-  review: z.string().nullable(),
-  /** Whether Approve / Send back apply (plan approval or an escalation). */
+  /** The waiting step's report (what you approve), all agents combined. */
+  report: z.string().nullable(),
+  /** Whether Approve / Send back apply. */
   decidable: z.boolean(),
   open: z.array(openQuestion),
   lastMessage: z.string().nullable(),
@@ -106,9 +119,9 @@ const answerInput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("approval"), interactionId: z.string().max(200), decision }),
   z.object({ kind: z.literal("request"), interactionId: z.string().max(200), value: z.string().max(20000) }),
   z.object({ kind: z.literal("text"), text: z.string().min(1).max(20000) }),
-  /** Approve the plan, or move past a stuck stage. */
+  /** Approve the waiting step's report, or move past a stuck step. */
   z.object({ kind: z.literal("approve") }),
-  /** Send the plan (or the work) back to the agent with feedback. */
+  /** Send the waiting step back to the agent with feedback. */
   z.object({ kind: z.literal("revise"), feedback: z.string().min(1).max(20000) }),
 ]);
 export type AnswerPayload = z.input<typeof answerInput>;
@@ -118,7 +131,7 @@ export const rpcContract = defineRpcContract({
     input: z.null(),
     output: z.object({
       tokenSource: z.enum(["setting", "gh-cli", "none"]),
-      repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), intake: z.boolean(), stages: z.array(z.string()), shipAction: z.string(), verifyCommand: z.string().nullable() })),
+      repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), intake: z.boolean(), workflowId: z.string(), workflowName: z.string(), stepNames: z.array(z.string()) })),
       errors: z.array(z.string()),
       warnings: z.array(z.string()),
       settings: z.object({ stallThresholdMinutes: z.number(), maxConcurrentTotal: z.number(), intakeIntervalMinutes: z.number() }),
@@ -126,8 +139,20 @@ export const rpcContract = defineRpcContract({
   },
   cos_roster: { input: z.object({ repo: z.string().optional(), includeDone: z.boolean().default(false), withUsage: z.boolean().default(false) }), output: z.object({ entries: z.array(rosterEntry) }) },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
-  cos_item_action: { input: z.object({ id: z.string(), action: z.enum(["retry", "resume", "rerun_checks", "approve", "mark_done", "mark_failed"]) }), output: z.object({ status: z.string() }) },
-  cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().min(1).max(200), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), stage: z.string(), status: z.string() }) },
+  cos_item_action: {
+    input: z.object({ id: z.string(), action: z.enum(["retry", "rerun_step", "approve", "mark_done", "mark_failed"]), step: z.string().max(40).optional(), feedback: z.string().max(20000).optional() }),
+    output: z.object({ status: z.string() }),
+  },
+  cos_item_workflow: {
+    input: z.object({ id: z.string() }),
+    output: z.object({
+      title: z.string(),
+      /** The workflow the task runs (a Workflow document). */
+      workflow: z.any(),
+      live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number() })),
+    }),
+  },
+  cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().min(1).max(200), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },
   cos_question: { input: z.object({ id: z.string() }), output: questionView },
   cos_answer: { input: z.object({ id: z.string(), answer: answerInput }), output: z.object({ status: z.string() }) },
   cos_stats: {

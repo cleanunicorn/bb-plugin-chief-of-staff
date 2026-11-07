@@ -48,6 +48,7 @@ describe("chief-of-staff server", () => {
   let ghRoutes: Record<string, Route> = {};
   /** Per-thread overrides of status / updatedAt for the fake thread list. */
   let perThread: Record<string, { status?: "idle" | "active"; updatedAt?: number }> = {};
+  const spawned = new Set<string>();
   let prCreated = false;
   let clock = 0;
   let pending: unknown[] = [];
@@ -74,6 +75,7 @@ describe("chief-of-staff server", () => {
     assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
     prCreated = false;
     perThread = {};
+    spawned.clear();
     ghRoutes = {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
         "GET /repos/acme/app/issues": () => ({ body: [issue] }),
@@ -113,8 +115,14 @@ describe("chief-of-staff server", () => {
         system: { config: async () => ({ primaryHostId: "host_1" }) as never },
         projects: { list: async () => [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never },
         threads: {
-          spawn: async (args: { environment: { type: string } }) =>
-            args.environment.type === "reuse" ? makeThreadResponse({ id: "thr_r", environmentId: "env_1", providerId: "claude-code" }) : makeThreadResponse({ id: "thr_1", environmentId: "env_1", providerId: "claude-code" }),
+          // The builder (titled after its branch) is thr_1 in env_1; step threads are thr_<step title>.
+          spawn: async (args: { environment: { type: string }; title?: string }) => {
+            const title = args.title ?? "";
+            const builder = title.startsWith("cos/");
+            const id = builder ? "thr_1" : `thr_${title.split(":")[0]!.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+            spawned.add(id);
+            return makeThreadResponse({ id, environmentId: builder || args.environment.type === "reuse" ? "env_1" : `env_${id}`, providerId: "claude-code" });
+          },
           get: async (args: { threadId: string }) => ({ ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus } }),
           interactions: {
             list: async () => pending as never,
@@ -125,7 +133,7 @@ describe("chief-of-staff server", () => {
             },
           },
           list: async () =>
-            ["thr_1", "thr_r"].map((id) => {
+            ["thr_1", ...[...spawned].filter((id) => id !== "thr_1")].map((id) => {
               const status = perThread[id]?.status ?? threadStatus;
               return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0 };
             }),
@@ -148,14 +156,14 @@ describe("chief-of-staff server", () => {
   const tick = () => Date.now() + 60_000 + ++clock * 1000;
   /** The agent files its stage report through the cos_report tool. */
   const report = (stage: string, outcome = "done", summary = `${stage} done`, threadId = "thr_1", question?: string) =>
-    host.harness.behavior.callAgentTool("cos_report", { stage, outcome, summary, ...(question ? { question } : {}) }, { threadId });
+    host.harness.behavior.callAgentTool("cos_report", { step: stage, outcome, summary, ...(question ? { question } : {}) }, { threadId });
   /** A turn ends on a thread; wait for the jobs it starts. */
   const idle = async (lastAssistantText: string | null = "done", threadId = "thr_1", updatedAt = tick()) => {
     threadUpdatedAt = updatedAt;
     await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText });
     await settleJobs();
   };
-  type Entry = { id: string; status: string; detail: string; stage: string; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; fixAttempts: number; counters: Record<string, number> };
+  type Entry = { id: string; status: string; detail: string; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; fixAttempts: number; counters: Record<string, number> };
   const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
   const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
   const sentTexts = () => (sent as { input: { text: string }[] }[]).map((s) => s.input[0].text);
@@ -187,7 +195,7 @@ describe("chief-of-staff server", () => {
     expect(spawnArgs.prompt).toContain("Build");
     expect(spawnArgs.prompt).toContain("cos_report");
     expect(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/issues/12/comments")).toBeTruthy();
-    expect(await roster()).toMatchObject({ stage: "build", detail: "agent", actor: "agent" });
+    expect(await roster()).toMatchObject({ current: ["Build"], detail: "agent", actor: "agent" });
 
     // Dedupe: a second intake does not spawn again.
     await host.harness.behavior.callRpc("cos_intake_now", {});
@@ -208,17 +216,17 @@ describe("chief-of-staff server", () => {
     expect(body.body).toContain("claude-code");
     expect(body.body).toContain("npm test → 12 passing");
     expect(body.body).toContain("all green");
-    expect(await roster()).toMatchObject({ status: "running", stage: "ship", detail: "ci", prNumber: 7 });
+    expect(await roster()).toMatchObject({ status: "running", detail: "ci", prNumber: 7 });
 
     // CI green → ready to merge; merged → done (CI is polled every 2 minutes).
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       await sweep();
-      expect(await roster()).toMatchObject({ stage: "ship", detail: "ready", actor: "human" });
+      expect(await roster()).toMatchObject({ detail: "ready", actor: "human" });
       currentPull = { ...currentPull, merged: true, merged_at: "2026-11-05T02:00:00Z", state: "closed" };
       vi.setSystemTime(Date.now() + 3 * 60_000);
       await sweep();
-      expect(await roster()).toMatchObject({ status: "done", stage: "done" });
+      expect(await roster()).toMatchObject({ status: "done" });
     } finally {
       vi.useRealTimers();
     }
@@ -231,56 +239,92 @@ describe("chief-of-staff server", () => {
     expect(log.stdout).not.toContain("ghp_secret_token");
   });
 
-  it("runs the full pipeline: plan approval, independent reviewer in the builder's workspace, review loop", async () => {
-    await host.harness.behavior.setSettings({ workflow: fullWorkflow });
+  it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
+    const custom = {
+      workflows: [
+        {
+          id: "careful",
+          name: "Careful",
+          steps: [
+            { id: "plan", name: "Plan", type: "agent", agents: 2, approval: true, instructions: "Write a plan.", next: ["build"] },
+            { id: "build", name: "Build", type: "agent", writes: true, instructions: "Build it.", next: ["test"] },
+            { id: "test", name: "Test", type: "check", command: "npm test", onFail: "build", next: ["review", "docs"] },
+            { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", instructions: "Review the diff.", next: ["ship"] },
+            { id: "docs", name: "Docs", type: "agent", instructions: "Check the docs mention the change.", next: ["ship"] },
+            { id: "ship", name: "Ship", type: "ship", action: "pr", onFail: "build" },
+          ],
+        },
+      ],
+      default: "careful",
+    };
+    const reposWithWorkflow = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, workflow: "careful" }] });
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify(custom), repos: reposWithWorkflow });
     await host.harness.behavior.callRpc("cos_intake_now", {});
-    const first = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
-    expect(first.prompt).toContain("Plan");
-    expect(first.prompt).toContain("Do not change files");
 
-    await report("plan", "done", "1. Patch auth.ts\n2. Add a regression test");
-    await idle();
+    // Two planners, each in its own (read-only) thread; no builder yet.
+    const spawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").map((c) => c[0] as { title: string; prompt: string; environment: { type: string; environmentId?: string }; parentThreadId?: string });
+    expect(spawns().map((p) => p.title)).toEqual(["Plan 1: cos/issue-12-fix-login", "Plan 2: cos/issue-12-fix-login"]);
+    expect(spawns()[0]!.prompt).toContain("This step is read-only");
+    expect(spawns()[1]!.prompt).toContain("you are agent 2");
+    expect(await roster()).toMatchObject({ current: ["Plan"], detail: "agent", activity: "Plan: 0/2 agents reported" });
+
+    await report("plan", "done", "Plan A: patch auth.ts", "thr_plan-1");
+    await idle("a", "thr_plan-1");
+    expect(await roster()).toMatchObject({ activity: "Plan: 1/2 agents reported" });
+    await report("plan", "done", "Plan B: rewrite session", "thr_plan-2");
+    await idle("b", "thr_plan-2");
     const { id } = await roster();
-    expect(await roster()).toMatchObject({ stage: "plan", detail: "waiting_on_human", waitingKind: "plan_approval", actor: "human" });
-    const view = (await host.harness.behavior.callRpc("cos_question", { id })) as { plan: string; decidable: boolean };
-    expect(view).toMatchObject({ plan: "1. Patch auth.ts\n2. Add a regression test", decidable: true });
+    expect(await roster()).toMatchObject({ current: ["Plan"], detail: "waiting_on_human", waitingKind: "approval" });
+    const view = (await host.harness.behavior.callRpc("cos_question", { id })) as { report: string; decidable: boolean; stepName: string };
+    expect(view).toMatchObject({ stepName: "Plan", decidable: true });
+    expect(view.report).toContain("Plan A: patch auth.ts");
+    expect(view.report).toContain("Plan B: rewrite session");
 
-    // Approve from the dashboard → the builder gets the build prompt with the plan.
+    // Approve → the builder spawns with both plans as input.
     await host.harness.behavior.callRpc("cos_answer", { id, answer: { kind: "approve" } });
-    expect(await roster()).toMatchObject({ stage: "build", detail: "agent" });
-    expect(sentTexts().at(-1)).toContain("Approved plan");
-    expect(sentTexts().at(-1)).toContain("Patch auth.ts");
+    const builder = spawns().at(-1)!;
+    expect(builder.title).toBe("cos/issue-12-fix-login");
+    expect(builder.prompt).toContain("Plan A: patch auth.ts");
+    expect(builder.prompt).toContain("Plan B: rewrite session");
+    expect(builder.prompt).toContain("You may change code");
 
+    // Build → test check → review and docs in parallel, both in the builder's workspace.
     await report("build", "done", "Patched auth.ts");
     await idle();
     expect(ranChecks()).toBe(1);
-    // Review: a reviewer thread in the builder's environment, nested under it.
-    const reviewerSpawn = host.harness.inspection.sdk.callsTo("threads.spawn")[1][0] as { environment: unknown; parentThreadId: string; prompt: string };
-    expect(reviewerSpawn.environment).toEqual({ type: "reuse", environmentId: "env_1" });
-    expect(reviewerSpawn.parentThreadId).toBe("thr_1");
-    expect(reviewerSpawn.prompt).toContain("You did not write it");
-    expect(reviewerSpawn.prompt).toContain("git diff origin/main...HEAD");
-    expect(await roster()).toMatchObject({ stage: "review", detail: "agent", activity: expect.stringContaining("Reviewer") });
+    const parallel = spawns().slice(-2);
+    expect(parallel.map((p) => p.title.split(":")[0])).toEqual(["Review", "Docs"]);
+    for (const p of parallel) {
+      expect(p.environment).toEqual({ type: "reuse", environmentId: "env_1" });
+      expect(p.parentThreadId).toBe("thr_1");
+    }
+    expect(await roster()).toMatchObject({ current: ["Review", "Docs"], detail: "agent" });
 
-    // The builder may not report review; the reviewer requests changes.
-    expect(JSON.stringify(await report("review", "done", "lgtm", "thr_1"))).toContain("reviewer thread");
-    await report("review", "changes_requested", "1. auth.ts:12 misses the null case", "thr_r");
-    await idle("findings", "thr_r");
-    expect(await roster()).toMatchObject({ stage: "build", detail: "agent", counters: expect.objectContaining({ reviewRounds: 1 }) });
+    // The builder (idle, its step done) cannot report someone else's step.
+    expect(JSON.stringify(await report("review", "done", "lgtm", "thr_1"))).toContain("no step running on this thread");
+    // Docs passes; review fails → back to build with the findings; docs runs again too.
+    await report("docs", "done", "Docs fine", "thr_docs");
+    await idle("ok", "thr_docs");
+    await report("review", "failed", "1. auth.ts:12 misses the null case", "thr_review");
+    await idle("findings", "thr_review");
+    expect(await roster()).toMatchObject({ current: ["Build"], detail: "agent" });
     expect(sentTexts().at(-1)).toContain("auth.ts:12 misses the null case");
 
-    // Fix → verify again → re-review in the same reviewer thread → approve → PR.
     await report("build", "done", "Handled null");
     await idle();
     expect(ranChecks()).toBe(2);
-    expect((sent.at(-1) as { threadId: string }).threadId).toBe("thr_r");
-    expect(sentTexts().at(-1)).toContain("Handled null");
-    await report("review", "done", "Looks right now", "thr_r");
-    await idle("ok", "thr_r");
-    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci", prNumber: 7 });
+    // The same review and docs threads get the next round.
+    expect(sent.slice(-2).map((m) => (m as { threadId: string }).threadId).sort()).toEqual(["thr_docs", "thr_review"]);
+    await report("review", "done", "Looks right now", "thr_review");
+    await idle("ok", "thr_review");
+    expect(await roster()).toMatchObject({ current: ["Docs"] });
+    await report("docs", "done", "Docs fine", "thr_docs");
+    await idle("ok2", "thr_docs");
+    expect(await roster()).toMatchObject({ detail: "ci", prNumber: 7 });
     const pr = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")!.body as { body: string };
-    expect(pr.body).toContain("Plan: approved by a human");
-    expect(pr.body).toContain("independent reviewer agent, 1 round(s)");
+    expect(pr.body).toContain("## Workflow: Careful");
+    expect(pr.body).toContain("### Plan (approved)");
+    expect(pr.body).toContain("Looks right now");
   });
 
   it("handles a turn end once even when the event and the sweep both see it", async () => {
@@ -296,7 +340,7 @@ describe("chief-of-staff server", () => {
       host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText: "done" }),
     ]);
     // The verify job runs detached: monitoring is not blocked while it runs.
-    expect(await roster()).toMatchObject({ stage: "verify", detail: "cos", actor: "cos" });
+    expect(await roster()).toMatchObject({ current: ["Verify"], detail: "cos", actor: "cos" });
     // A sweep while the job runs neither waits for it nor starts a second one.
     await host.harness.behavior.runSchedule("cos-sweep");
     expect(ranChecks()).toBe(1);
@@ -304,14 +348,14 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     expect(ranChecks()).toBe(1);
     expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
-    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "ci" });
   });
 
   it("nudges an agent that stops without reporting, then hands it to a human", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await idle("I made some changes.");
     expect(sentTexts()).toHaveLength(1);
-    expect(sentTexts()[0]).toContain("without reporting the Build stage");
+    expect(sentTexts()[0]).toContain("without reporting the step **Build**");
     expect(await roster()).toMatchObject({ detail: "agent", activity: expect.stringContaining("nudged 1×") });
     // The same idle seen again by the sweep changes nothing.
     await sweep();
@@ -344,11 +388,11 @@ describe("chief-of-staff server", () => {
     await idle();
     expect(sentTexts()).toHaveLength(1);
     expect(sentTexts()[0]).toContain("1 failing");
-    expect(await roster()).toMatchObject({ stage: "build", detail: "agent", fixAttempts: 1 });
+    expect(await roster()).toMatchObject({ current: ["Build"], detail: "agent", fixAttempts: 1 });
 
     await report("build");
     await idle();
-    expect(await roster()).toMatchObject({ status: "waiting on human", stage: "verify", waitingKind: "escalation" });
+    expect(await roster()).toMatchObject({ status: "waiting on human", current: ["Verify"], waitingKind: "escalation" });
     expect(host.harness.inspection.sdk.callsTo("plugins.callRpc").length).toBeGreaterThan(0);
     expect(ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toBeUndefined();
 
@@ -359,7 +403,7 @@ describe("chief-of-staff server", () => {
     expect(sentTexts().at(-1)).toContain("The flaky test needs a retry");
     await report("build");
     await idle();
-    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "ci" });
   });
 
   it("tracks questions and resumes in step with the thread", async () => {
@@ -372,7 +416,7 @@ describe("chief-of-staff server", () => {
     // The agent asks through a BB interaction.
     pending = [question];
     await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
-    expect(await roster()).toMatchObject({ status: "waiting on human", waitingKind: "question", waitingReason: "Question: Which database should I use?" });
+    expect(await roster()).toMatchObject({ status: "waiting on human", waitingKind: "question", waitingReason: "Build: Question: Which database should I use?" });
 
     // The human answers in BB. No event says so; the sweep notices.
     pending = [];
@@ -382,7 +426,7 @@ describe("chief-of-staff server", () => {
     // A missed interaction event is also caught by the sweep.
     pending = [question];
     await sweep();
-    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Which database should I use?" });
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Build: Question: Which database should I use?" });
     pending = [];
     await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) });
     expect(await roster()).toMatchObject({ detail: "agent" });
@@ -390,7 +434,7 @@ describe("chief-of-staff server", () => {
     // The agent ends its turn with a plain-text question: wait, do not verify.
     threadStatus = "idle";
     await idle("I found two options.\n\nShould I use Postgres or SQLite?");
-    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Question: Should I use Postgres or SQLite?" });
+    expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingReason: "Build: Question: Should I use Postgres or SQLite?" });
     expect(ranChecks()).toBe(0);
     await sweep();
     expect(await roster()).toMatchObject({ detail: "waiting_on_human" });
@@ -401,7 +445,7 @@ describe("chief-of-staff server", () => {
     await report("build", "done", "Used Postgres.");
     await idle("## Summary\nUsed Postgres.");
     expect(ranChecks()).toBe(1);
-    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "ci" });
   });
 
   it("retries its own infrastructure failures with backoff instead of blaming the human", async () => {
@@ -413,7 +457,8 @@ describe("chief-of-staff server", () => {
       await report("build");
       await idle();
       expect(await roster()).toMatchObject({ status: "running", detail: "retrying", actor: "system", waitingReason: null });
-      expect((await roster()).activity).toContain("exceeded its deadline");
+      expect((await roster()).activity).toContain("Verify: Chief of Staff retrying");
+      expect((await roster()).lastError).toContain("exceeded its deadline");
 
       // Not due yet: nothing re-runs.
       await sweep();
@@ -423,7 +468,7 @@ describe("chief-of-staff server", () => {
       vi.setSystemTime(new Date("2026-11-06T10:02:00Z"));
       await sweep();
       expect(ranChecks()).toBe(2);
-      expect(await roster()).toMatchObject({ stage: "ship", detail: "ci", waitingReason: null });
+      expect(await roster()).toMatchObject({ detail: "ci", waitingReason: null });
     } finally {
       vi.useRealTimers();
     }
@@ -445,7 +490,7 @@ describe("chief-of-staff server", () => {
       }
       const parked = await roster();
       expect(parked).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error" });
-      expect(parked.waitingReason).toContain("Chief of Staff could not run the verify command");
+      expect(parked.waitingReason).toContain("Chief of Staff could not run the check command");
       expect(parked.waitingReason).toContain("the agent is not asking anything");
       expect(ranChecks()).toBe(4);
     } finally {
@@ -505,7 +550,7 @@ describe("chief-of-staff server", () => {
     await pause();
     await idle("Used Postgres.", "thr_1", Date.now());
     expect(ranChecks()).toBe(1);
-    expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "ci" });
   });
 
   it("does not nudge the idle builder while the independent reviewer works", async () => {
@@ -513,20 +558,23 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await report("build");
     await idle();
-    expect(await roster()).toMatchObject({ stage: "review", detail: "agent" });
+    expect(await roster()).toMatchObject({ current: ["Review"], detail: "agent" });
     const before = sent.length;
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
         // The builder idles from before the review prompt; the reviewer is working.
-      perThread = { thr_1: { status: "idle", updatedAt: 1 }, thr_r: { status: "active", updatedAt: Date.now() } };
+      perThread = { thr_1: { status: "idle", updatedAt: 1 }, thr_review: { status: "active", updatedAt: Date.now() } };
       for (let i = 1; i <= 5; i++) {
         vi.setSystemTime(Date.now() + 15 * 60_000);
+        perThread.thr_review = { status: "active", updatedAt: Date.now() };
         await sweep();
       }
     } finally {
       vi.useRealTimers();
     }
-    expect(await roster()).toMatchObject({ stage: "review", detail: "agent", counters: expect.objectContaining({ infraRetries: 0 }) });
+    const after = (await roster()) as Entry & { steps: { id: string; retrying: boolean; status: string }[] };
+    expect(after).toMatchObject({ current: ["Review"], detail: "agent" });
+    expect(after.steps.find((st) => st.id === "review")).toMatchObject({ status: "running", retrying: false });
     expect(sent.slice(before).filter((m) => (m as { threadId: string }).threadId === "thr_1")).toHaveLength(0);
   });
 
@@ -541,13 +589,15 @@ describe("chief-of-staff server", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       await sweep();
-      expect(await roster()).toMatchObject({ stage: "build", counters: expect.objectContaining({ ciFixes: 1 }) });
+      const fixing = (await roster()) as Entry & { steps: { id: string; attempts: number }[] };
+      expect(fixing).toMatchObject({ current: ["Build"] });
+      expect(fixing.steps.find((st) => st.id === "ship")!.attempts).toBe(1);
       // The agent decides it was a flake and reports without committing: same head sha.
       currentPull = { ...currentPull };
       vi.setSystemTime(Date.now() + 3 * 60_000);
       await report("build");
       await idle();
-      expect(await roster()).toMatchObject({ stage: "ship", detail: "ci" });
+      expect(await roster()).toMatchObject({ detail: "ci" });
       vi.setSystemTime(Date.now() + 6 * 60_000);
       await sweep();
       expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "escalation" });
@@ -556,18 +606,47 @@ describe("chief-of-staff server", () => {
     }
   });
 
+  it("adopts items started before custom workflows at their old stage", async () => {
+    const db = host.bb.storage.database();
+    const at = new Date().toISOString();
+    const insert = db.prepare(
+      `INSERT INTO work_items (id, repo, issue_number, issue_title, thread_id, environment_id, branch, pr_number, pr_url, status, source, created_at, updated_at, stage, waiting_kind, waiting_reason)
+       VALUES (@id, 'acme/app', @issue, 'Old task', @thread, 'env_1', 'cos/old', @pr, @prUrl, @status, 'intake', @at, @at, @stage, @kind, @reason)`,
+    );
+    insert.run({ id: "old-verify", issue: 30, thread: "thr_1", pr: null, prUrl: null, status: "cos", at, stage: "verify", kind: null, reason: null });
+    insert.run({ id: "old-ci", issue: 31, thread: "thr_old2", pr: 7, prUrl: "https://github.com/acme/app/pull/7", status: "ci", at, stage: "ship", kind: null, reason: null });
+    insert.run({ id: "old-question", issue: 32, thread: "thr_old3", pr: null, prUrl: null, status: "waiting_on_human", at, stage: "build", kind: "question", reason: "Question: which DB?" });
+
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    await settleJobs();
+    const all = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: (Entry & { issueNumber: number; workflowName: string; steps: { id: string; status: string; phase: string | null }[] })[] }).entries;
+    const byIssue = (n: number) => all.find((e) => e.issueNumber === n)!;
+
+    // Was running its checks: Build done, the Verify check re-runs, then ships.
+    expect(byIssue(30).workflowName).toBe("acme/app (converted)");
+    expect(byIssue(30).steps.find((st) => st.id === "build")!.status).toBe("done");
+    expect(ranChecks()).toBe(1);
+    expect(byIssue(30)).toMatchObject({ detail: "ci" });
+    // Was waiting on CI: still watching the same PR.
+    expect(byIssue(31)).toMatchObject({ detail: "ci", prNumber: 7 });
+    expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "running", phase: "ci" });
+    // Was waiting on a question: still waiting, same question.
+    expect(byIssue(32)).toMatchObject({ detail: "waiting_on_human", waitingKind: "question", waitingReason: "Build: Question: which DB?" });
+  });
+
   it("revives a failed item when its thread is resumed", async () => {
     threadStatus = "active";
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
     expect((await roster()).detail).toBe("failed");
     await sweep();
-    expect(await roster()).toMatchObject({ detail: "agent", stage: "build" });
+    expect(await roster()).toMatchObject({ detail: "agent", current: ["Build"] });
   });
 
   it("starts an ad-hoc task described by the operator or another agent", async () => {
-    const started = (await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Add rate limiting", body: "Limit /login to 5 req/min" })) as { id: string; stage: string };
-    expect(started.stage).toBe("build");
+    const started = (await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Add rate limiting", body: "Limit /login to 5 req/min" })) as { id: string; workflow: string };
+    expect(started.workflow).toBe("acme/app (converted)");
     const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
     expect(spawn.prompt).toContain("Add rate limiting");
     expect(spawn.prompt).toContain("Limit /login to 5 req/min");
@@ -592,7 +671,7 @@ describe("chief-of-staff server", () => {
     expect(view).toMatchObject({
       threadId: "thr_1",
       issueNumber: 12,
-      stage: "build",
+      stepName: "Build",
       waitingKind: "question",
       decidable: false,
       lastMessage: assistantOutput,
@@ -644,7 +723,7 @@ describe("chief-of-staff server", () => {
     const tool = await host.harness.behavior.callAgentTool("chief_of_staff_status", {});
     const text = typeof tool === "string" ? tool : tool.content.map((c) => (c.type === "text" ? c.text : "")).join("");
     expect(text).toContain("acme/app#12");
-    expect(text).toContain("[build/agent]");
+    expect(text).toContain("[Build/agent]");
     const cli = await host.harness.behavior.runCli(["status"]);
     expect(cli.exitCode).toBe(0);
     expect(cli.stdout).toContain("acme/app#12");

@@ -1,57 +1,36 @@
 // Persistent state in the plugin's SQLite database (bb.storage.database()).
-// Tables: work_items (task -> stages -> PR) and activity_log. routine_runs and
-// routine_schedule are left over from the removed routines feature.
+// Tables: work_items (a task, its workflow snapshot and the state of each
+// step), item_threads (which agent thread works on which step) and
+// activity_log. Columns from the fixed-stage model and the removed routines
+// feature are left in place and unused.
 import type { Database } from "better-sqlite3";
-import type { Stage, StageOrDone } from "./workflow";
+import type { Nodes, StepReport } from "./machine";
+import type { Workflow } from "./workflow";
 
 /**
- * Who holds the ball inside the item's current stage:
- * - queued: waiting for a free agent slot
- * - agent: the agent (builder or reviewer) is working on the stage
- * - cos: Chief of Staff is running deterministic work (verify command, push, PR, merge)
- * - ci: the PR is open and CI is running or red
+ * Who holds the ball, derived from the item's step states:
+ * - queued: nothing started yet
+ * - agent: an agent is working on a step
+ * - cos: Chief of Staff is running a check, pushing or merging
+ * - ci: the PR is open and CI is running
  * - ready: the PR is open and green, waiting to be merged
- * - waiting_on_human: you need to answer, approve or decide
+ * - waiting_on_human: a step waits for you (question, approval, decision)
  * - retrying: Chief of Staff hit an infrastructure error and retries with backoff
- * - blocked: the agent went quiet past the stall threshold
+ * - blocked: an agent went quiet past the stall threshold
  */
 export const WORK_STATUSES = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked", "done", "failed"] as const;
 export type WorkStatus = (typeof WORK_STATUSES)[number];
 
-/** Why an item waits on a human; drives what the answer panel offers. */
-export const WAITING_KINDS = ["question", "plan_approval", "escalation", "no_report", "cos_error"] as const;
+/** Why a step waits on a human; drives what the answer panel offers. */
+export const WAITING_KINDS = ["question", "approval", "escalation", "no_report", "cos_error", "stalled"] as const;
 export type WaitingKind = (typeof WAITING_KINDS)[number];
-
-export interface StageCounters {
-  /** Verify failures sent back to Build. */
-  verifyFailures: number;
-  /** Review rounds that requested changes. */
-  reviewRounds: number;
-  /** CI failures sent back to Build. */
-  ciFixes: number;
-  /** Nudges sent in the current stage because the agent stopped without reporting. */
-  nudges: number;
-  /** Consecutive infrastructure retries of the pending effect. */
-  infraRetries: number;
-}
-export const ZERO_COUNTERS: StageCounters = { verifyFailures: 0, reviewRounds: 0, ciFixes: 0, nudges: 0, infraRetries: 0 };
-
-export type ReportOutcome = "done" | "changes_requested" | "failed" | "needs_input";
-export interface StageReport {
-  stage: Stage;
-  outcome: ReportOutcome;
-  summary: string;
-  question?: string | null;
-  at: string;
-  /** "tool" when the agent called cos_report, "text" when parsed from its message. */
-  via: "tool" | "text";
-}
 
 export interface WorkItem {
   id: string;
   repo: string; // owner/repo
   issueNumber: number | null;
   issueTitle: string;
+  /** The builder thread: where code-writing steps run. */
   threadId: string | null;
   environmentId: string | null;
   branch: string | null;
@@ -60,40 +39,45 @@ export interface WorkItem {
   status: WorkStatus;
   providerId: string | null;
   model: string | null;
+  /** Failures looped back across all steps (for the PR body and stats). */
   fixAttempts: number;
   retryCount: number;
   lastError: string | null;
-  checkOutput: string | null;
-  source: string; // "intake" | "watch" | "routine:<name>" | "cli" | "tool"
+  source: string; // "intake" | "task" | "tool"
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string | null;
   finishedAt: string | null;
-  /** What the agent is waiting on a human for (its question, an approval), or null. */
+  /** First waiting step's reason and kind (derived; for the roster). */
   waitingReason: string | null;
-  /** Current workflow stage. */
-  stage: StageOrDone;
   waitingKind: WaitingKind | null;
-  counters: StageCounters;
-  /** Accepted stage reports, newest per stage (feed the next prompts and the PR body). */
-  reports: Partial<Record<Stage, StageReport>>;
-  /** A report the agent filed during its turn, acted on when the turn ends. */
-  pendingReport: StageReport | null;
-  reviewThreadId: string | null;
-  /** After a CI fix, go from Verify straight back to this stage. */
-  returnTo: Stage | null;
-  /** When Chief of Staff last sent the agent a prompt (ms); idles before it belong to an older turn. */
-  promptSentAt: number | null;
-  /** Thread updatedAt (ms) of the last idle we handled, so events and sync never handle one twice. */
-  idleSeenAt: number | null;
-  /** Detached Chief of Staff job (verify command, ship) start time. */
+  /** Start time of the running Chief of Staff job (check, push, merge); results from older jobs are dropped. */
   jobStartedAt: string | null;
-  /** Earliest time to retry the pending effect after an infrastructure error. */
-  retryAt: string | null;
-  /** The effect to re-run on retry (JSON). */
-  pendingEffect: string | null;
   /** Free-text task for items not backed by a GitHub issue. */
   taskBody: string | null;
+  /** The workflow the item runs, frozen when it started. */
+  workflow: Workflow;
+  /** State of each step. */
+  nodes: Nodes;
+}
+
+/** An agent thread working for an item: the builder, or one agent on a read-only step. */
+export interface ItemThread {
+  threadId: string;
+  itemId: string;
+  role: "builder" | "step";
+  /** For role "step". */
+  stepId: string | null;
+  agent: number;
+  environmentId: string | null;
+  /** The step round the thread was last prompted for. */
+  round: number;
+  /** When Chief of Staff last prompted it (ms); idles before that belong to an older turn. */
+  promptSentAt: number | null;
+  /** Thread updatedAt (ms) of the last idle handled. */
+  idleSeenAt: number | null;
+  /** A report the agent filed during its turn, acted on when the turn ends. */
+  pendingReport: (StepReport & { step: string; round: number }) | null;
 }
 
 export interface LogEntry {
@@ -191,6 +175,23 @@ export const MIGRATIONS = [
      WHEN status = 'checking' THEN 'cos'
      WHEN status IN ('pr_open', 'ci_failed') THEN 'ci'
      ELSE status END`,
+  `ALTER TABLE work_items ADD COLUMN workflow_json TEXT`,
+  `ALTER TABLE work_items ADD COLUMN nodes_json TEXT`,
+  `CREATE TABLE IF NOT EXISTS item_threads (
+    thread_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    step_id TEXT,
+    agent INTEGER NOT NULL DEFAULT 0,
+    environment_id TEXT,
+    round INTEGER NOT NULL DEFAULT 0,
+    prompt_sent_at INTEGER,
+    idle_seen_at INTEGER,
+    pending_report_json TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS item_threads_item ON item_threads(item_id)`,
+  `UPDATE work_items SET waiting_kind = 'approval' WHERE waiting_kind = 'plan_approval'`,
 ];
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
@@ -199,6 +200,19 @@ export function isActiveStatus(status: WorkStatus): boolean {
 }
 
 type Row = Record<string, unknown>;
+
+function parseJson<T>(value: unknown, fallback: T): T {
+  if (typeof value !== "string" || !value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Placeholder for rows written before workflows were stored per item (adopted at startup). */
+export const NO_WORKFLOW: Workflow = { id: "none", name: "None", steps: [] };
+
 function rowToWorkItem(row: Row): WorkItem {
   return {
     id: row.id as string,
@@ -216,79 +230,58 @@ function rowToWorkItem(row: Row): WorkItem {
     fixAttempts: (row.fix_attempts as number) ?? 0,
     retryCount: (row.retry_count as number) ?? 0,
     lastError: (row.last_error as string | null) ?? null,
-    checkOutput: (row.check_output as string | null) ?? null,
     source: (row.source as string) ?? "intake",
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     lastActivityAt: (row.last_activity_at as string | null) ?? null,
     finishedAt: (row.finished_at as string | null) ?? null,
     waitingReason: (row.waiting_reason as string | null) ?? null,
-    stage: ((row.stage as string | null) ?? "build") as StageOrDone,
     waitingKind: (row.waiting_kind as WaitingKind | null) ?? null,
-    counters: { ...ZERO_COUNTERS, ...parseJson<Partial<StageCounters>>(row.counters_json, {}) },
-    reports: parseJson<WorkItem["reports"]>(row.reports_json, {}),
-    pendingReport: parseJson<StageReport | null>(row.pending_report_json, null),
-    reviewThreadId: (row.review_thread_id as string | null) ?? null,
-    returnTo: (row.return_to as Stage | null) ?? null,
+    jobStartedAt: (row.job_started_at as string | null) ?? null,
+    taskBody: (row.task_body as string | null) ?? null,
+    workflow: parseJson<Workflow>(row.workflow_json, NO_WORKFLOW),
+    nodes: parseJson<Nodes>(row.nodes_json, {}),
+  };
+}
+
+function rowToThread(row: Row): ItemThread {
+  return {
+    threadId: row.thread_id as string,
+    itemId: row.item_id as string,
+    role: row.role as ItemThread["role"],
+    stepId: (row.step_id as string | null) ?? null,
+    agent: (row.agent as number) ?? 0,
+    environmentId: (row.environment_id as string | null) ?? null,
+    round: (row.round as number) ?? 0,
     promptSentAt: (row.prompt_sent_at as number | null) ?? null,
     idleSeenAt: (row.idle_seen_at as number | null) ?? null,
-    jobStartedAt: (row.job_started_at as string | null) ?? null,
-    retryAt: (row.retry_at as string | null) ?? null,
-    pendingEffect: (row.pending_effect as string | null) ?? null,
-    taskBody: (row.task_body as string | null) ?? null,
+    pendingReport: parseJson<ItemThread["pendingReport"]>(row.pending_report_json, null),
   };
 }
 
-function parseJson<T>(value: unknown, fallback: T): T {
-  if (typeof value !== "string" || !value) return fallback;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-/** Defaults for the stage fields, so callers creating items only name what matters. */
-export const NEW_ITEM_STAGE_FIELDS = {
-  waitingReason: null,
-  waitingKind: null,
-  counters: ZERO_COUNTERS,
-  reports: {},
-  pendingReport: null,
-  reviewThreadId: null,
-  returnTo: null,
-  promptSentAt: null,
-  idleSeenAt: null,
-  jobStartedAt: null,
-  retryAt: null,
-  pendingEffect: null,
-  taskBody: null,
-} satisfies Partial<WorkItem>;
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson`;
 
 function toRow(item: WorkItem): Record<string, unknown> {
-  return {
-    ...item,
-    counters: JSON.stringify(item.counters),
-    reports: JSON.stringify(item.reports),
-    pendingReport: item.pendingReport ? JSON.stringify(item.pendingReport) : null,
-  };
+  const { workflow, nodes, ...rest } = item;
+  return { ...rest, workflowJson: workflow.steps.length ? JSON.stringify(workflow) : null, nodesJson: JSON.stringify(nodes) };
 }
+
+export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
+  Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
 
 export class StateStore {
   constructor(private readonly db: Database, private readonly now: () => Date = () => new Date()) {}
 
   // ---- work items ----
-  insertWorkItem(item: Omit<WorkItem, "createdAt" | "updatedAt" | keyof typeof NEW_ITEM_STAGE_FIELDS> & Partial<Pick<WorkItem, keyof typeof NEW_ITEM_STAGE_FIELDS>>): WorkItem {
+  insertWorkItem(item: NewWorkItem): WorkItem {
     const at = this.now().toISOString();
-    const full: WorkItem = { ...NEW_ITEM_STAGE_FIELDS, ...item, createdAt: at, updatedAt: at };
+    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at };
     this.db
       .prepare(
-        `INSERT INTO work_items (id, repo, issue_number, issue_title, thread_id, environment_id, branch, pr_number, pr_url, status, provider_id, model, fix_attempts, retry_count, last_error, check_output, source, created_at, updated_at, last_activity_at, finished_at, waiting_reason,
-           stage, waiting_kind, counters_json, reports_json, pending_report_json, review_thread_id, return_to, prompt_sent_at, idle_seen_at, job_started_at, retry_at, pending_effect, task_body)
-         VALUES (@id, @repo, @issueNumber, @issueTitle, @threadId, @environmentId, @branch, @prNumber, @prUrl, @status, @providerId, @model, @fixAttempts, @retryCount, @lastError, @checkOutput, @source, @createdAt, @updatedAt, @lastActivityAt, @finishedAt, @waitingReason,
-           @stage, @waitingKind, @counters, @reports, @pendingReport, @reviewThreadId, @returnTo, @promptSentAt, @idleSeenAt, @jobStartedAt, @retryAt, @pendingEffect, @taskBody)`,
+        `INSERT INTO work_items (id, created_at, updated_at, status, repo) VALUES (@id, @createdAt, @createdAt, @status, @repo)`,
       )
-      .run(toRow(full));
+      .run({ id: full.id, createdAt: at, status: full.status, repo: full.repo });
+    this.db.prepare(`UPDATE work_items SET ${ITEM_COLUMNS} WHERE id=@id`).run(toRow(full));
     return full;
   }
 
@@ -296,12 +289,7 @@ export class StateStore {
     const current = this.getWorkItem(id);
     if (!current) return null;
     const next: WorkItem = { ...current, ...patch, updatedAt: this.now().toISOString() };
-    this.db
-      .prepare(
-        `UPDATE work_items SET repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, check_output=@checkOutput, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason,
-           stage=@stage, waiting_kind=@waitingKind, counters_json=@counters, reports_json=@reports, pending_report_json=@pendingReport, review_thread_id=@reviewThreadId, return_to=@returnTo, prompt_sent_at=@promptSentAt, idle_seen_at=@idleSeenAt, job_started_at=@jobStartedAt, retry_at=@retryAt, pending_effect=@pendingEffect, task_body=@taskBody WHERE id=@id`,
-      )
-      .run(toRow(next));
+    this.db.prepare(`UPDATE work_items SET ${ITEM_COLUMNS} WHERE id=@id`).run(toRow(next));
     return next;
   }
 
@@ -310,9 +298,17 @@ export class StateStore {
     return row ? rowToWorkItem(row) : null;
   }
 
-  /** The item a thread belongs to, as its builder or its reviewer. */
+  /** The stage a row had under the fixed-stage model (for adopting old rows). */
+  legacyStage(id: string): string | null {
+    const row = this.db.prepare(`SELECT stage, review_thread_id FROM work_items WHERE id = ?`).get(id) as { stage: string | null } | undefined;
+    return row?.stage ?? null;
+  }
+
+  /** The item a thread works for (builder or step thread). */
   getWorkItemByThread(threadId: string): WorkItem | null {
-    const row = this.db.prepare(`SELECT * FROM work_items WHERE thread_id = ? OR review_thread_id = ? ORDER BY created_at DESC LIMIT 1`).get(threadId, threadId) as Row | undefined;
+    const t = this.getThread(threadId);
+    if (t) return this.getWorkItem(t.itemId);
+    const row = this.db.prepare(`SELECT * FROM work_items WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1`).get(threadId) as Row | undefined;
     return row ? rowToWorkItem(row) : null;
   }
 
@@ -351,6 +347,41 @@ export class StateStore {
   countActiveAll(): number {
     const row = this.db.prepare(`SELECT COUNT(*) AS n FROM work_items WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`).get(...ACTIVE_STATUSES) as { n: number };
     return row.n;
+  }
+
+  // ---- item threads ----
+  upsertThread(t: Omit<ItemThread, "idleSeenAt" | "pendingReport"> & Partial<Pick<ItemThread, "idleSeenAt" | "pendingReport">>): void {
+    this.db
+      .prepare(
+        `INSERT INTO item_threads (thread_id, item_id, role, step_id, agent, environment_id, round, prompt_sent_at, idle_seen_at, pending_report_json, created_at)
+         VALUES (@threadId, @itemId, @role, @stepId, @agent, @environmentId, @round, @promptSentAt, @idleSeenAt, @pendingReport, @createdAt)
+         ON CONFLICT(thread_id) DO UPDATE SET item_id=excluded.item_id, role=excluded.role, step_id=excluded.step_id, agent=excluded.agent, environment_id=excluded.environment_id, round=excluded.round, prompt_sent_at=excluded.prompt_sent_at`,
+      )
+      .run({ ...t, idleSeenAt: t.idleSeenAt ?? null, pendingReport: t.pendingReport ? JSON.stringify(t.pendingReport) : null, createdAt: this.now().toISOString() });
+  }
+
+  updateThread(threadId: string, patch: Partial<Pick<ItemThread, "round" | "promptSentAt" | "idleSeenAt" | "pendingReport" | "environmentId">>): void {
+    const cur = this.getThread(threadId);
+    if (!cur) return;
+    const next = { ...cur, ...patch };
+    this.db
+      .prepare(`UPDATE item_threads SET round=@round, prompt_sent_at=@promptSentAt, idle_seen_at=@idleSeenAt, pending_report_json=@pendingReport, environment_id=@environmentId WHERE thread_id=@threadId`)
+      .run({ ...next, pendingReport: next.pendingReport ? JSON.stringify(next.pendingReport) : null });
+  }
+
+  getThread(threadId: string): ItemThread | null {
+    const row = this.db.prepare(`SELECT * FROM item_threads WHERE thread_id = ?`).get(threadId) as Row | undefined;
+    return row ? rowToThread(row) : null;
+  }
+
+  listThreads(itemId: string): ItemThread[] {
+    return (this.db.prepare(`SELECT * FROM item_threads WHERE item_id = ? ORDER BY created_at`).all(itemId) as Row[]).map(rowToThread);
+  }
+
+  /** The thread for one agent on a read-only step. */
+  stepThread(itemId: string, stepId: string, agent: number): ItemThread | null {
+    const row = this.db.prepare(`SELECT * FROM item_threads WHERE item_id = ? AND role = 'step' AND step_id = ? AND agent = ? ORDER BY created_at DESC LIMIT 1`).get(itemId, stepId, agent) as Row | undefined;
+    return row ? rowToThread(row) : null;
   }
 
   // ---- activity log ----

@@ -1,123 +1,334 @@
-// The delivery workflow: Plan → Build → Verify → Review → Ship. Each stage can
-// be switched off (Build is the one stage that always runs) and carries free
-// text instructions for the agent. A global workflow lives in the `workflow`
-// setting; a repo can override any field of any stage. Pure (zod only) so the
-// configurator bundle can use it.
+// User-defined workflows: a graph of typed steps. Pure (zod only) so the
+// configurator bundle and the engine share it.
+//
+// A workflow is a list of steps. Each step has an id, a name, instructions,
+// `next` (the steps that follow it) and the properties of its type:
+//   agent: an agent works on the instructions (optionally read-only and in
+//          parallel, gated by a human approval or by its own pass/fail verdict)
+//   check: Chief of Staff runs a command in the worktree
+//   ship:  push, open a pull request, or merge it when CI is green
+// `next` edges form a DAG; `onFail` points back to an earlier step to re-run
+// from when a verdict, check or CI fails.
 import { z } from "zod";
 
-export const STAGES = ["plan", "build", "verify", "review", "ship"] as const;
-export type Stage = (typeof STAGES)[number];
-export type StageOrDone = Stage | "done";
+export const STEP_TYPES = ["agent", "check", "ship"] as const;
+export type StepType = (typeof STEP_TYPES)[number];
 
-export const STAGE_LABEL: Record<StageOrDone, string> = { plan: "Plan", build: "Build", verify: "Verify", review: "Review", ship: "Ship", done: "Done" };
-
-const instructions = z.string().max(20_000);
+const stepId = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/, "lowercase letters, digits, - and _ (max 40)");
+const position = z.object({ x: z.number(), y: z.number() });
 const attempts = z.number().int().min(0).max(10);
 
-// Field shapes without defaults, shared by the full schema and the override schema.
-const planFields = { enabled: z.boolean(), instructions, requireApproval: z.boolean() };
-const buildFields = { instructions };
-const verifyFields = { enabled: z.boolean(), instructions, command: z.string().max(2000), timeoutMinutes: z.number().int().min(1).max(240), maxAttempts: attempts };
-const reviewFields = { enabled: z.boolean(), instructions, mode: z.enum(["agent", "self"]), maxRounds: attempts };
-const shipFields = { enabled: z.boolean(), instructions, action: z.enum(["push", "pr", "merge"]), draft: z.boolean(), maxCiFixes: attempts, requireApproval: z.boolean() };
-
-export const DEFAULT_WORKFLOW = {
-  plan: { enabled: true, instructions: "", requireApproval: true },
-  build: { instructions: "" },
-  verify: { enabled: true, instructions: "", command: "", timeoutMinutes: 30, maxAttempts: 2 },
-  review: { enabled: true, instructions: "", mode: "agent" as const, maxRounds: 2 },
-  ship: { enabled: true, instructions: "", action: "pr" as const, draft: false, maxCiFixes: 2, requireApproval: true },
+const base = {
+  id: stepId,
+  name: z.string().min(1).max(80),
+  instructions: z.string().max(20_000).default(""),
+  next: z.array(stepId).default([]),
+  /** Canvas position; laid out automatically when missing. */
+  position: position.optional(),
 };
 
-export const workflowSchema = z.object({
-  plan: z.object(planFields).partial().transform((v) => ({ ...DEFAULT_WORKFLOW.plan, ...v })).default(DEFAULT_WORKFLOW.plan),
-  build: z.object(buildFields).partial().transform((v) => ({ ...DEFAULT_WORKFLOW.build, ...v })).default(DEFAULT_WORKFLOW.build),
-  verify: z.object(verifyFields).partial().transform((v) => ({ ...DEFAULT_WORKFLOW.verify, ...v })).default(DEFAULT_WORKFLOW.verify),
-  review: z.object(reviewFields).partial().transform((v) => ({ ...DEFAULT_WORKFLOW.review, ...v })).default(DEFAULT_WORKFLOW.review),
-  ship: z.object(shipFields).partial().transform((v) => ({ ...DEFAULT_WORKFLOW.ship, ...v })).default(DEFAULT_WORKFLOW.ship),
+export const agentStepSchema = z.object({
+  ...base,
+  type: z.literal("agent"),
+  /** Changes code: runs in the task's builder thread, one writing step at a time. Otherwise read-only. */
+  writes: z.boolean().default(false),
+  /** Read-only steps: how many agents work on it in parallel. */
+  agents: z.number().int().min(1).max(4).default(1),
+  /** A person approves the step's report, or sends it back with feedback. */
+  approval: z.boolean().default(false),
+  /** The agent reports pass or fail; fail re-runs from `onFail`. */
+  verdict: z.boolean().default(false),
+  onFail: stepId.optional(),
+  maxRounds: attempts.default(2),
 });
+
+export const checkStepSchema = z.object({
+  ...base,
+  type: z.literal("check"),
+  command: z.string().min(1).max(2000),
+  timeoutMinutes: z.number().int().min(1).max(240).default(30),
+  onFail: stepId.optional(),
+  maxAttempts: attempts.default(2),
+});
+
+export const shipStepSchema = z.object({
+  ...base,
+  type: z.literal("ship"),
+  action: z.enum(["push", "pr", "merge"]).default("pr"),
+  draft: z.boolean().default(false),
+  /** With action "merge": wait for an approving review on GitHub. */
+  requireApproval: z.boolean().default(true),
+  /** Where to go back to when CI is red. */
+  onFail: stepId.optional(),
+  maxAttempts: attempts.default(2),
+});
+
+export const stepSchema = z.discriminatedUnion("type", [agentStepSchema, checkStepSchema, shipStepSchema]);
+export type Step = z.output<typeof stepSchema>;
+export type AgentStep = z.output<typeof agentStepSchema>;
+export type CheckStep = z.output<typeof checkStepSchema>;
+export type ShipStep = z.output<typeof shipStepSchema>;
+
+export const workflowSchema = z.object({ id: stepId, name: z.string().min(1).max(80), steps: z.array(stepSchema).min(1) });
 export type Workflow = z.output<typeof workflowSchema>;
 
-/** Per-repo override: any subset of any stage's fields. */
-export const workflowOverrideSchema = z.object({
-  plan: z.object(planFields).partial().optional(),
-  build: z.object(buildFields).partial().optional(),
-  verify: z.object(verifyFields).partial().optional(),
-  review: z.object(reviewFields).partial().optional(),
-  ship: z.object(shipFields).partial().optional(),
+export const workflowsDocumentSchema = z.object({ workflows: z.array(workflowSchema).min(1), default: stepId });
+export type WorkflowsDocument = z.output<typeof workflowsDocumentSchema>;
+
+// ---------- defaults ----------
+
+export const DEFAULT_INSTRUCTIONS = {
+  plan: "Investigate the codebase and write an implementation plan: the approach, the files you will change, risks and open questions, and how you will test it.",
+  build: "Implement the task following the plan. Add or update tests for what you change.",
+  verify: "Verify the change does what the task asks. Exercise it the way a user would and collect evidence (commands and output, screenshots, logs). Fail with what is broken.",
+  review:
+    "Review the changes on this branch against the task: correctness, edge cases, tests, and the repository's conventions. Pass if it is ready. Fail with a numbered list of concrete findings (file:line) that must change.",
+};
+
+export const DEFAULT_WORKFLOW: Workflow = workflowSchema.parse({
+  id: "default",
+  name: "Plan, build, review, ship",
+  steps: [
+    { id: "plan", name: "Plan", type: "agent", instructions: DEFAULT_INSTRUCTIONS.plan, approval: true, next: ["build"] },
+    { id: "build", name: "Build", type: "agent", writes: true, instructions: DEFAULT_INSTRUCTIONS.build, next: ["review"] },
+    { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", instructions: DEFAULT_INSTRUCTIONS.review, next: ["ship"] },
+    { id: "ship", name: "Ship", type: "ship", action: "pr", onFail: "build" },
+  ],
 });
-export type WorkflowOverride = z.output<typeof workflowOverrideSchema>;
 
-export const workflowDocumentSchema = z.object({ workflow: workflowSchema.default(DEFAULT_WORKFLOW) });
+export const DEFAULT_DOCUMENT: WorkflowsDocument = { workflows: [DEFAULT_WORKFLOW], default: DEFAULT_WORKFLOW.id };
 
-/** Parse the global `workflow` setting. Empty means the defaults. */
-export function parseWorkflow(raw: string): { ok: true; value: Workflow } | { ok: false; error: string } {
+// ---------- graph helpers ----------
+
+export function stepById(wf: Workflow, id: string): Step | undefined {
+  return wf.steps.find((s) => s.id === id);
+}
+
+/** Steps with an edge into `id`. */
+export function predecessors(wf: Workflow, id: string): string[] {
+  return wf.steps.filter((s) => s.next.includes(id)).map((s) => s.id);
+}
+
+/** `id` and every step reachable from it through `next`. */
+export function descendants(wf: Workflow, id: string): Set<string> {
+  const seen = new Set<string>();
+  const stack = [id];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const n of stepById(wf, cur)?.next ?? []) stack.push(n);
+  }
+  return seen;
+}
+
+export function reachable(wf: Workflow, from: string, to: string): boolean {
+  return from !== to && descendants(wf, from).has(to);
+}
+
+/** Steps nothing points at. */
+export function entrySteps(wf: Workflow): string[] {
+  const targets = new Set(wf.steps.flatMap((s) => s.next));
+  return wf.steps.filter((s) => !targets.has(s.id)).map((s) => s.id);
+}
+
+/** Steps that point at nothing: the task is done when all of them are. */
+export function finalSteps(wf: Workflow): string[] {
+  return wf.steps.filter((s) => !s.next.length).map((s) => s.id);
+}
+
+/** Longest-path depth of each step (0 for entries); parallel steps share a depth. */
+export function depths(wf: Workflow): Map<string, number> {
+  const depth = new Map<string, number>();
+  const order = topoOrder(wf);
+  for (const id of order) {
+    const d = Math.max(-1, ...predecessors(wf, id).map((p) => depth.get(p) ?? 0)) + 1;
+    depth.set(id, d);
+  }
+  return depth;
+}
+
+/** Topological order of the `next` graph (input order breaks ties); cyclic leftovers appended. */
+export function topoOrder(wf: Workflow): string[] {
+  const indeg = new Map(wf.steps.map((s) => [s.id, 0]));
+  for (const s of wf.steps) for (const n of s.next) if (indeg.has(n)) indeg.set(n, indeg.get(n)! + 1);
+  const queue = wf.steps.filter((s) => indeg.get(s.id) === 0).map((s) => s.id);
+  const out: string[] = [];
+  while (queue.length) {
+    const id = queue.shift()!;
+    out.push(id);
+    for (const n of stepById(wf, id)?.next ?? []) {
+      if (!indeg.has(n)) continue;
+      indeg.set(n, indeg.get(n)! - 1);
+      if (indeg.get(n) === 0) queue.push(n);
+    }
+  }
+  for (const s of wf.steps) if (!out.includes(s.id)) out.push(s.id);
+  return out;
+}
+
+/** Steps that use the task's worktree exclusively: code-writing agents, checks, ship. */
+export function isExclusive(step: Step): boolean {
+  return step.type !== "agent" || step.writes;
+}
+
+/** Problems that make a workflow unrunnable, as human-readable messages. */
+export function validateWorkflow(wf: Workflow): string[] {
+  const problems: string[] = [];
+  const ids = new Set<string>();
+  for (const s of wf.steps) {
+    if (ids.has(s.id)) problems.push(`two steps have the id "${s.id}"`);
+    ids.add(s.id);
+  }
+  const name = (id: string) => stepById(wf, id)?.name ?? id;
+  for (const s of wf.steps) {
+    for (const n of s.next) {
+      if (n === s.id) problems.push(`${s.name} points at itself`);
+      else if (!ids.has(n)) problems.push(`${s.name} points at a missing step "${n}"`);
+    }
+  }
+  if (topoOrder(wf).some((id, i, order) => predecessors(wf, id).some((p) => order.indexOf(p) > i))) {
+    problems.push("the arrows form a loop; use “on fail” to go back to an earlier step");
+  }
+  for (const s of wf.steps) {
+    if (s.type === "agent" && s.writes && s.agents > 1) problems.push(`${s.name}: only read-only steps can run several agents`);
+    if (s.type === "agent" && s.onFail && !s.verdict) problems.push(`${s.name}: “on fail” needs the pass/fail verdict switched on`);
+    if (s.onFail) {
+      if (!ids.has(s.onFail)) problems.push(`${s.name}: on fail goes to a missing step "${s.onFail}"`);
+      else if (s.onFail !== s.id && !reachable(wf, s.onFail, s.id)) problems.push(`${s.name}: on fail must go back to a step before it (${name(s.onFail)} is not)`);
+    }
+    if (s.type !== "agent") {
+      const writerBefore = wf.steps.some((w) => w.type === "agent" && w.writes && reachable(wf, w.id, s.id));
+      if (!writerBefore) problems.push(`${s.name}: needs a step that writes code before it`);
+    }
+  }
+  // Steps sharing the worktree exclusively must run one after the other.
+  const exclusive = wf.steps.filter(isExclusive);
+  for (let i = 0; i < exclusive.length; i++) {
+    for (let j = i + 1; j < exclusive.length; j++) {
+      const a = exclusive[i]!;
+      const b = exclusive[j]!;
+      if (!reachable(wf, a.id, b.id) && !reachable(wf, b.id, a.id)) problems.push(`${a.name} and ${b.name} could run at the same time, but both change the worktree; connect one after the other`);
+    }
+  }
+  return [...new Set(problems)];
+}
+
+/** Problems with the whole document (unique workflow ids, a valid default). */
+export function validateDocument(doc: WorkflowsDocument): string[] {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const wf of doc.workflows) {
+    if (seen.has(wf.id)) problems.push(`two workflows have the id "${wf.id}"`);
+    seen.add(wf.id);
+    for (const p of validateWorkflow(wf)) problems.push(`${wf.name}: ${p}`);
+  }
+  if (!seen.has(doc.default)) problems.push(`the default workflow "${doc.default}" does not exist`);
+  return problems;
+}
+
+// ---------- the stage config from before custom workflows ----------
+
+const legacyStages = z.object({
+  plan: z.object({ enabled: z.boolean(), instructions: z.string(), requireApproval: z.boolean() }).partial().optional(),
+  build: z.object({ instructions: z.string() }).partial().optional(),
+  verify: z.object({ enabled: z.boolean(), instructions: z.string(), command: z.string(), timeoutMinutes: z.number(), maxAttempts: z.number() }).partial().optional(),
+  review: z.object({ enabled: z.boolean(), instructions: z.string(), mode: z.string(), maxRounds: z.number() }).partial().optional(),
+  ship: z.object({ enabled: z.boolean(), instructions: z.string(), action: z.enum(["push", "pr", "merge"]), draft: z.boolean(), maxCiFixes: z.number(), requireApproval: z.boolean() }).partial().optional(),
+});
+export type LegacyStages = z.output<typeof legacyStages>;
+export const legacyStagesSchema = legacyStages;
+
+const join = (...parts: (string | undefined)[]) => parts.filter((p) => p && p.trim()).join("\n\n");
+
+/** Turn the fixed-stage config into an equivalent workflow. */
+export function fromStages(stages: LegacyStages, id = "default", name = "Plan, build, verify, review, ship"): Workflow {
+  const steps: Record<string, unknown>[] = [];
+  const on = (s: { enabled?: boolean } | undefined) => s?.enabled !== false;
+  if (on(stages.plan)) steps.push({ id: "plan", name: "Plan", type: "agent", instructions: join(DEFAULT_INSTRUCTIONS.plan, stages.plan?.instructions), approval: stages.plan?.requireApproval !== false });
+  steps.push({ id: "build", name: "Build", type: "agent", writes: true, instructions: join(DEFAULT_INSTRUCTIONS.build, stages.build?.instructions) });
+  if (on(stages.verify) && stages.verify?.command?.trim()) {
+    steps.push({ id: "verify", name: "Verify", type: "check", command: stages.verify.command.trim(), timeoutMinutes: clamp(stages.verify.timeoutMinutes ?? 30, 1, 240), onFail: "build", maxAttempts: clamp(stages.verify.maxAttempts ?? 2, 0, 10) });
+  }
+  if (on(stages.verify) && stages.verify?.instructions?.trim()) {
+    steps.push({ id: "verify-agent", name: "Verify by hand", type: "agent", verdict: true, onFail: "build", instructions: join(DEFAULT_INSTRUCTIONS.verify, stages.verify.instructions), maxRounds: clamp(stages.verify.maxAttempts ?? 2, 0, 10) });
+  }
+  if (on(stages.review)) steps.push({ id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", instructions: join(DEFAULT_INSTRUCTIONS.review, stages.review?.instructions), maxRounds: clamp(stages.review?.maxRounds ?? 2, 0, 10) });
+  if (on(stages.ship)) {
+    steps.push({ id: "ship", name: "Ship", type: "ship", action: stages.ship?.action ?? "pr", draft: stages.ship?.draft ?? false, requireApproval: stages.ship?.requireApproval ?? true, onFail: "build", maxAttempts: clamp(stages.ship?.maxCiFixes ?? 2, 0, 10) });
+  }
+  steps.forEach((s, i) => {
+    if (steps[i + 1]) s.next = [steps[i + 1]!.id as string];
+  });
+  return workflowSchema.parse({ id, name, steps });
+}
+
+/** Merge a repo's stage overrides over the global stage config, field by field. */
+export function mergeStages(global: LegacyStages, override: LegacyStages): LegacyStages {
+  const out: Record<string, unknown> = { ...global };
+  for (const [k, v] of Object.entries(override)) out[k] = { ...((global as Record<string, object | undefined>)[k] ?? {}), ...(v ?? {}) };
+  return out as LegacyStages;
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, Math.round(n)));
+}
+
+// ---------- the setting ----------
+
+export type ParsedWorkflows = { ok: true; value: WorkflowsDocument; legacy: LegacyStages | null; warnings: string[] } | { ok: false; error: string };
+
+/**
+ * Parse the `workflow` setting. Accepts the current document
+ * (`{workflows:[...], default}`), the stage config from before custom
+ * workflows (`{workflow:{plan,build,...}}`, converted), or empty (defaults).
+ */
+export function parseWorkflows(raw: string): ParsedWorkflows {
   const text = raw.trim();
-  if (!text) return { ok: true, value: workflowSchema.parse({}) };
+  if (!text) return { ok: true, value: DEFAULT_DOCUMENT, legacy: null, warnings: [] };
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch (error) {
     return { ok: false, error: `invalid JSON: ${error instanceof Error ? error.message : String(error)}` };
   }
-  const parsed = workflowDocumentSchema.safeParse(json);
-  if (!parsed.success) return { ok: false, error: parsed.error.issues.map((i) => `${i.path.map(String).join(".") || "<root>"}: ${i.message}`).join("; ") };
-  return { ok: true, value: parsed.data.workflow };
-}
-
-export function serializeWorkflow(workflow: Workflow): string {
-  return JSON.stringify({ workflow }, null, 2);
-}
-
-/**
- * The workflow one repo runs: the global workflow with the repo's overrides
- * merged over it field by field.
- */
-export function resolveWorkflow(global: Workflow, override: WorkflowOverride | undefined): Workflow {
-  const o = override ?? {};
-  const merged: Workflow = {
-    plan: { ...global.plan, ...stripUndefined(o.plan) },
-    build: { ...global.build, ...stripUndefined(o.build) },
-    verify: { ...global.verify, ...stripUndefined(o.verify) },
-    review: { ...global.review, ...stripUndefined(o.review) },
-    ship: { ...global.ship, ...stripUndefined(o.ship) },
-  };
-  return merged;
-}
-
-function stripUndefined<T extends object>(obj: T | undefined): Partial<T> {
-  if (!obj) return {};
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
-}
-
-/** Build always runs; the others follow their `enabled` flag. Verify with nothing to do is skipped. */
-export function stageEnabled(workflow: Workflow, stage: Stage): boolean {
-  switch (stage) {
-    case "build":
-      return true;
-    case "verify":
-      return workflow.verify.enabled && Boolean(workflow.verify.command.trim() || workflow.verify.instructions.trim());
-    default:
-      return workflow[stage].enabled;
+  const obj = (json ?? {}) as Record<string, unknown>;
+  if (!("workflows" in obj) && "workflow" in obj) {
+    const legacy = legacyStages.safeParse(obj.workflow ?? {});
+    if (!legacy.success) return { ok: false, error: issues(legacy.error) };
+    return { ok: true, value: { workflows: [fromStages(legacy.data)], default: "default" }, legacy: legacy.data, warnings: ["workflow setting uses the old stage format; it was converted"] };
   }
+  const parsed = workflowsDocumentSchema.safeParse(json);
+  if (!parsed.success) return { ok: false, error: issues(parsed.error) };
+  const problems = validateDocument(parsed.data);
+  if (problems.length) return { ok: false, error: problems.join("; ") };
+  return { ok: true, value: parsed.data, legacy: null, warnings: [] };
 }
 
-/** The enabled stages, in order. */
-export function activeStages(workflow: Workflow): Stage[] {
-  return STAGES.filter((s) => stageEnabled(workflow, s));
+export function serializeWorkflows(doc: WorkflowsDocument): string {
+  return JSON.stringify(doc, null, 2);
 }
 
-/** First enabled stage after `stage` ("done" when none is left). */
-export function nextStage(workflow: Workflow, stage: Stage, opts: { skipReview?: boolean } = {}): StageOrDone {
-  for (let i = STAGES.indexOf(stage) + 1; i < STAGES.length; i++) {
-    const candidate = STAGES[i];
-    if (candidate === "review" && opts.skipReview) continue;
-    if (stageEnabled(workflow, candidate)) return candidate;
+function issues(error: z.ZodError): string {
+  return error.issues.map((i) => `${i.path.map(String).join(".") || "<root>"}: ${i.message}`).join("; ");
+}
+
+/** A fresh, unused step id based on a name. */
+export function newStepId(wf: Workflow, name: string): string {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "step";
+  let id = base;
+  for (let n = 2; wf.steps.some((s) => s.id === id); n++) id = `${base}-${n}`;
+  return id;
+}
+
+/** A new step of a type with sensible defaults. */
+export function blankStep(type: StepType, id: string, name: string): Step {
+  switch (type) {
+    case "agent":
+      return agentStepSchema.parse({ id, name, type });
+    case "check":
+      return checkStepSchema.parse({ id, name, type, command: "npm test" });
+    case "ship":
+      return shipStepSchema.parse({ id, name, type });
   }
-  return "done";
-}
-
-/** Where a new item starts: Plan when enabled, otherwise Build. */
-export function firstStage(workflow: Workflow): Stage {
-  return stageEnabled(workflow, "plan") ? "plan" : "build";
 }

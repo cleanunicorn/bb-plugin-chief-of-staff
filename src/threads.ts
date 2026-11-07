@@ -37,18 +37,23 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
   return { thread, providerId: thread.providerId ?? providerId ?? null, model: model ?? null, hostId: checkout.hostId };
 }
 
-export interface ReviewerSpawnOptions {
+export interface StepSpawnOptions {
   repo: RepoConfig;
-  /** The builder's environment: the reviewer reads the same worktree. */
-  environmentId: string;
+  /** The builder's environment, when it exists: read-only steps then see exactly what was built. */
+  environmentId: string | null;
   parentThreadId?: string;
   title: string;
   prompt: string;
   pluginMetadata: Record<string, string | number | boolean | null>;
 }
 
-/** Spawn the independent reviewer in the builder's workspace (it sees exactly what was built). */
-export async function spawnReviewerThread(cos: Cos, opts: ReviewerSpawnOptions) {
+/**
+ * Spawn an agent for a read-only step: in the builder's workspace when there
+ * is one, otherwise in a fresh worktree of the default branch (nothing has been
+ * built yet, so there is nothing to see but the repository).
+ */
+export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
+  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
   const { values } = await cos.config();
   const providerId = opts.repo.providerId || values.defaultProviderId || undefined;
   const model = opts.repo.model || values.defaultModel || undefined;
@@ -65,7 +70,7 @@ export async function spawnReviewerThread(cos: Cos, opts: ReviewerSpawnOptions) 
     pluginMetadata: opts.pluginMetadata,
     ...(opts.parentThreadId ? { parentThreadId: opts.parentThreadId } : {}),
   });
-  return { thread };
+  return { thread, providerId: thread.providerId ?? providerId ?? null, model: model ?? null };
 }
 
 export interface ThreadUsage {

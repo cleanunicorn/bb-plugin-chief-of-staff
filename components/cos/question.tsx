@@ -1,7 +1,7 @@
 // Answer-from-dashboard sheet: shows the agent's open question(s) with their
 // options, approval decisions, and the context around them (the agent's last
 // message, failing checks), then answers through cos_answer or opens the thread.
-// Workflow gates (plan approval, a stage out of fix attempts) get a decision
+// Workflow gates (a step waiting for approval, a step out of attempts) get a decision
 // block: approve and move on, or send it back to the agent with feedback.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
@@ -194,7 +194,7 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
               {!data.decidable && (data.open.length === 0 || data.open.every((q) => q.kind === "request" && !q.answerable)) ? (
                 <ReplyBox label="Message the agent" placeholder="Tell the agent what to do next." sending={sending} onSend={(text) => send({ kind: "text", text }, "message")} />
               ) : null}
-              {data.review && data.stage !== "plan" && data.waitingKind === "escalation" ? <Collapsible icon="SearchCheck" title="Latest review" markdown={data.review} /> : null}
+              {data.report && data.waitingKind === "escalation" ? <Collapsible icon="SearchCheck" title={`${data.stepName ?? "Step"} report`} markdown={data.report} /> : null}
               <Context lastMessage={data.lastMessage} checkOutput={data.checkOutput} lastError={data.lastError} />
             </>
           ) : null}
@@ -365,10 +365,11 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
   );
 }
 
-type DecisionData = { stage: string; waitingKind: string | null; waitingReason: string | null; plan: string | null };
+type DecisionData = { stepName: string | null; waitingKind: string | null; waitingReason: string | null; report: string | null };
 
 const DECISION_COPY: Record<string, { title: string; approve: string; back: string; placeholder: string }> = {
-  plan_approval: { title: "Approve the plan?", approve: "Approve plan", back: "Send plan back", placeholder: "What should change in the plan?" },
+  approval: { title: "Approve this step?", approve: "Approve", back: "Send back", placeholder: "What should change?" },
+  stalled: { title: "The agent went quiet.", approve: "Treat step as done", back: "Send instructions", placeholder: "What should the agent do next?" },
   escalation: { title: "Out of fix attempts. Your call.", approve: "Continue anyway", back: "Send back to the agent", placeholder: "Instructions for the agent's next attempt." },
   no_report: { title: "The agent stopped without reporting.", approve: "Treat stage as done", back: "Send back to the agent", placeholder: "What should the agent do next?" },
 };
@@ -379,10 +380,10 @@ function Decision({ data, sending, onSend }: { data: DecisionData; sending: bool
   const [feedback, setFeedback] = useState("");
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-border p-3">
-      <SectionTitle icon={data.waitingKind === "plan_approval" ? "ClipboardCheck" : "Hand"} text={copy.title} />
-      {data.waitingKind === "plan_approval" && data.plan ? (
+      <SectionTitle icon={data.waitingKind === "approval" ? "ClipboardCheck" : "Hand"} text={data.stepName ? `${data.stepName}: ${copy.title}` : copy.title} />
+      {data.waitingKind === "approval" && data.report ? (
         <div className="max-h-[50vh] overflow-auto rounded-md bg-muted px-3 py-2">
-          <Markdown content={data.plan} className="text-sm text-foreground" />
+          <Markdown content={data.report} className="text-sm text-foreground" />
         </div>
       ) : data.waitingReason ? (
         <p className="text-sm text-foreground">{data.waitingReason}</p>

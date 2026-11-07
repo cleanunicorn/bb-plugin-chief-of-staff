@@ -7,13 +7,15 @@ import { GitHubClient, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
 import { DEFAULT_POLICY, type MachinePolicy } from "./machine";
-import { parseWorkflow, resolveWorkflow, workflowSchema, type Workflow } from "./workflow";
+import { DEFAULT_DOCUMENT, fromStages, mergeStages, parseWorkflows, type LegacyStages, type Workflow, type WorkflowsDocument } from "./workflow";
 
 export interface LoadedConfig {
   values: SettingsValues;
   repos: RepoConfig[];
-  /** The global workflow (repos merge their overrides over it). */
-  workflow: Workflow;
+  /** The workflows repositories can run, and which one is the default. */
+  workflows: WorkflowsDocument;
+  /** The stage config when the setting still uses the old format (repo stage overrides merge over it). */
+  legacyStages: LegacyStages | null;
   errors: string[];
   warnings: string[];
   policy: MachinePolicy;
@@ -26,7 +28,7 @@ export interface Cos {
   now(): Date;
   config(): Promise<LoadedConfig>;
   repo(key: string): Promise<RepoConfig | null>;
-  /** The workflow a repo runs (global merged with the repo's overrides). */
+  /** The workflow a repo runs. */
   workflow(repoKey: string): Promise<Workflow>;
   /** BB projects (non-personal) with their git remote, used to infer owner/repo. */
   projects(): Promise<Array<{ id: string; name: string; gitRemoteUrl: string | null }>>;
@@ -96,14 +98,17 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
       const reposResult = parseRepos(values.repos, remotes);
       if (!reposResult.ok) errors.push(`repos: ${reposResult.error}`);
       else warnings.push(...reposResult.warnings);
-      const workflowResult = parseWorkflow(values.workflow ?? "");
+      const workflowResult = parseWorkflows(values.workflow ?? "");
       if (!workflowResult.ok) errors.push(`workflow: ${workflowResult.error}`);
-      const workflow = workflowResult.ok ? workflowResult.value : workflowSchema.parse({});
+      else warnings.push(...workflowResult.warnings);
+      const workflows = workflowResult.ok ? workflowResult.value : DEFAULT_DOCUMENT;
+      const legacyStages = workflowResult.ok ? workflowResult.legacy : null;
       const repos = reposResult.ok ? reposResult.value : [];
       const value: LoadedConfig = {
         values,
         repos,
-        workflow,
+        workflows,
+        legacyStages,
         errors,
         warnings,
         policy: DEFAULT_POLICY,
@@ -118,7 +123,7 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     async workflow(key) {
       const config = await cos.config();
       const repo = config.repos.find((r) => `${r.owner}/${r.repo}` === key);
-      return resolveWorkflow(config.workflow, repo?.workflow);
+      return workflowForRepo(config, repo);
     },
     async projects() {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
@@ -188,4 +193,15 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     },
   };
   return cos;
+}
+
+/** The workflow a repository runs: its chosen id, its converted stage overrides, or the default. */
+export function workflowForRepo(config: Pick<LoadedConfig, "workflows" | "legacyStages">, repo: RepoConfig | undefined): Workflow {
+  const doc = config.workflows;
+  const fallback = doc.workflows.find((w) => w.id === doc.default) ?? doc.workflows[0]!;
+  const choice = repo?.workflow;
+  if (!choice) return fallback;
+  if (typeof choice === "string") return doc.workflows.find((w) => w.id === choice) ?? fallback;
+  const slug = `${repo.owner}-${repo.repo}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").slice(0, 34);
+  return fromStages(mergeStages(config.legacyStages ?? {}, choice), `repo-${slug}`, `${repo.owner}/${repo.repo} (converted)`);
 }

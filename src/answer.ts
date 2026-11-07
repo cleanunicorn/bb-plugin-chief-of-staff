@@ -8,6 +8,8 @@ import type { WorkItem } from "./state";
 import { dispatch } from "./delivery";
 import { observeActive, snapshotOf, syncThread } from "./sync";
 import { lastAssistantText, plainTextQuestion, sendToThread, threadUrl } from "./threads";
+import type { NodeState } from "./machine";
+import { stepById, topoOrder, type Step } from "./workflow";
 
 const CONTEXT_MAX = 6000;
 const DETAIL_MAX = 4000;
@@ -36,16 +38,19 @@ export interface QuestionView {
   threadId: string | null;
   threadUrl: string | null;
   status: string;
-  stage: string;
+  /** The step waiting on you, if any. */
+  stepId: string | null;
+  stepName: string | null;
   waitingKind: string | null;
   waitingReason: string | null;
-  plan: string | null;
-  review: string | null;
+  /** That step's report (what you are asked to approve), all agents combined. */
+  report: string | null;
+  /** Whether Approve / Send back apply. */
   decidable: boolean;
   open: OpenQuestion[];
   /** The agent's last message, tail-trimmed. */
   lastMessage: string | null;
-  /** Check or CI output when the item is waiting because checks failed. */
+  /** Check or CI output of the waiting step. */
   checkOutput: string | null;
   lastError: string | null;
 }
@@ -128,13 +133,26 @@ async function openInteractions(cos: Cos, threadId: string) {
   return list.filter((i) => i.status === "pending");
 }
 
+/** The step waiting on a person, and the thread that is asking (if an agent is). */
+function waitingStep(cos: Cos, item: WorkItem): { step: Step; node: NodeState; threadId: string | null } | null {
+  for (const id of topoOrder(item.workflow)) {
+    const node = item.nodes[id];
+    const step = stepById(item.workflow, id);
+    if (!step || node?.status !== "waiting") continue;
+    if (step.type !== "agent") return { step, node, threadId: null };
+    const threadId = step.writes ? item.threadId : (cos.store.stepThread(item.id, step.id, node.waiting?.agent ?? 0)?.threadId ?? null);
+    return { step, node, threadId };
+  }
+  return null;
+}
+
 export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionView> {
   const item = cos.store.getWorkItem(itemId);
   if (!item) throw new Error(`work item ${itemId} not found`);
+  const waiting = waitingStep(cos, item);
   let open: OpenQuestion[] = [];
   let lastMessage: string | null = null;
-  // During review the reviewer's thread is the one asking.
-  const asking = item.stage === "review" && item.reviewThreadId ? item.reviewThreadId : item.threadId;
+  const asking = waiting ? waiting.threadId : item.threadId;
   if (asking) {
     try {
       open = (await openInteractions(cos, asking)).map(toOpenQuestion);
@@ -142,28 +160,30 @@ export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionVie
       open = [];
     }
     lastMessage = await lastAssistantText(cos, asking);
-    if (!open.length && item.waitingKind === "question") {
+    if (!open.length && waiting?.node.waiting?.kind === "question") {
       const question = plainTextQuestion(lastMessage);
       if (question) open = [{ kind: "text", question: question.replace(/^Question:\s*/, "") }];
     }
   }
+  const reports = waiting ? waiting.node.reports.filter(Boolean) : [];
+  const kind = waiting?.node.waiting?.kind ?? null;
   return {
     itemId: item.id,
     repo: item.repo,
     issueNumber: item.issueNumber,
     issueTitle: item.issueTitle,
-    threadId: item.threadId,
-    threadUrl: item.threadId ? threadUrl(cos, item.threadId) : null,
+    threadId: asking ?? item.threadId,
+    threadUrl: (asking ?? item.threadId) ? threadUrl(cos, (asking ?? item.threadId)!) : null,
     status: item.status,
-    stage: item.stage,
-    waitingKind: item.waitingKind,
-    waitingReason: item.waitingReason,
-    plan: item.reports.plan?.summary ?? null,
-    review: item.reports.review?.summary ?? null,
-    decidable: item.status === "waiting_on_human" && ["plan_approval", "escalation", "no_report"].includes(item.waitingKind ?? ""),
+    stepId: waiting?.step.id ?? null,
+    stepName: waiting?.step.name ?? null,
+    waitingKind: kind,
+    waitingReason: waiting?.node.waiting?.reason ?? item.waitingReason,
+    report: reports.length ? reports.map((r, i) => (reports.length > 1 ? `### Agent ${i + 1}\n${r!.summary}` : r!.summary)).join("\n\n") : null,
+    decidable: ["approval", "escalation", "no_report", "stalled"].includes(kind ?? ""),
     open,
     lastMessage: markdownTail(lastMessage, CONTEXT_MAX),
-    checkOutput: tail(item.checkOutput, DETAIL_MAX),
+    checkOutput: tail(waiting?.node.output ?? null, DETAIL_MAX),
     lastError: item.lastError,
   };
 }
@@ -180,14 +200,16 @@ export type AnswerInput =
 export async function answerQuestion(cos: Cos, itemId: string, answer: AnswerInput, actor: string): Promise<{ status: string }> {
   const item = cos.store.getWorkItem(itemId);
   if (!item) throw new Error(`work item ${itemId} not found`);
-  // Workflow decisions go to the stage machine, not the thread.
+  const waiting = waitingStep(cos, item);
+  // Workflow decisions go to the engine, not the thread.
   if (answer.kind === "approve" || answer.kind === "revise") {
-    const next = await dispatch(cos, itemId, answer.kind === "approve" ? { type: "approve" } : { type: "revise", feedback: answer.feedback }, actor);
-    cos.store.log({ level: "info", kind: "answer", repo: item.repo, workItemId: item.id, message: answer.kind === "approve" ? `approved ${item.stage}` : `sent ${item.stage} back with feedback`, actor });
+    const step = waiting?.step.id;
+    const next = await dispatch(cos, itemId, answer.kind === "approve" ? { type: "approve", step } : { type: "revise", step, feedback: answer.feedback }, actor);
+    cos.store.log({ level: "info", kind: "answer", repo: item.repo, workItemId: item.id, message: answer.kind === "approve" ? `approved ${waiting?.step.name ?? "the step"}` : `sent ${waiting?.step.name ?? "the step"} back with feedback`, actor });
     cos.invalidate();
     return { status: next?.status ?? item.status };
   }
-  const threadId = item.stage === "review" && item.reviewThreadId ? item.reviewThreadId : item.threadId;
+  const threadId = waiting ? waiting.threadId : item.threadId;
   if (!threadId) throw new Error("this item has no thread to answer");
 
   let summary: string;
