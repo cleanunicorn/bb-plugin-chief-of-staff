@@ -10,7 +10,10 @@
     "name": "Chief of Staff",
     "description": "Watches agents, turns GitHub issues into agent PRs, and runs scheduled batch-merge/release/deploy routines.",
     "branding": {
-      "icon": "ChefHat"
+      "icon": "./assets/chef-hat.svg",
+      "experimental_icons": {
+        "chef-hat": "./assets/chef-hat.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx",
