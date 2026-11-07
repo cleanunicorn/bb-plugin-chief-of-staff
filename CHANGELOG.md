@@ -16,6 +16,10 @@
 - **Canvas editor.** Configure → Workflows: drag steps, connect them, add and
   remove them (React Flow), or edit them as a list. Several workflows; each
   repository picks one; a task keeps the workflow it started with.
+- **Agent skills in step instructions.** Type `/` in an agent step's
+  instructions to pick a skill from the configured projects; referenced skills
+  are listed under the field (unknown ones flagged) and reach the agent as
+  skill mentions, so the provider loads them.
 - **Live workflow view.** Task cards show the workflow's steps with their
   state (parallel steps stacked); **Workflow** opens the task on the canvas and
   runs any step again from there (`bb cos item rerun <id> --step <step>`).

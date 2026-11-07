@@ -54,7 +54,10 @@ has `id`, `name`, `type`, `instructions` and `next` (step ids after it). Types:
 `agent` (`writes`, `agents` for parallel read-only agents, `approval`,
 `verdict`, `onFail`, `maxRounds`), `check` (`command`, `timeoutMinutes`,
 `onFail`, `maxAttempts`), `ship` (`action`: push / pr / merge, `draft`,
-`requireApproval`, `onFail` for red CI, `maxAttempts`). A repo picks one with
+`requireApproval`, `onFail` for red CI, `maxAttempts`). An agent step's
+`instructions` may reference agent skills as `/skill-name`; Chief of Staff sends
+each reference to a skill installed in the workspace as a skill mention (the
+`cos_skills` RPC lists them). A repo picks one with
 `"workflow": "<id>"`; a task keeps the workflow it started with.
 
 ## Configuration

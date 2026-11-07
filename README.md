@@ -75,6 +75,14 @@ Past the limit, the task waits on you: approve to continue anyway, or send
 instructions back. Read-only steps run in their own threads, in the task's
 workspace once code exists, so a reviewer sees exactly what was built.
 
+**Agent skills.** An agent step's instructions can name skills the way the bb
+composer does: type `/` in **Instructions for the agent** to pick one (e.g.
+`Use /tdd, then implement the plan.`). The editor lists the skills of your
+configured repositories' projects and flags any it does not know. When Chief of
+Staff prompts the agent, each `/skill` reference to a skill installed in that
+workspace is sent as a skill mention, so Claude Code, Codex and ACP agents load
+the skill; anything else stays plain text.
+
 The default workflow is **Plan** (needs approval) → **Build** (writes code) →
 **Review** (pass/fail, back to Build) → **Ship** (PR). Edit it, or add your own,
 under **Configure → Workflows**: drag steps on the canvas, connect a step's

@@ -9,7 +9,8 @@ import { deriveStatus, transition, type Effect, type MachineEvent, type Nodes } 
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import type { WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
-import { lastAssistantText, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
+import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
+import { referencedSkills, skillMentions } from "./skills";
 import { stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
 
 const OUTPUT_TAIL = 12_000;
@@ -156,6 +157,10 @@ async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undef
 async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentStep, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
   const round = item.nodes[step.id]?.round ?? 0;
   const body = effect.kind === "nudge" ? nudgePrompt(step) : stepPrompt(item, step, effect.agent, { defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined });
+  // `/skill` references in the instructions become skill mentions (only skills the workspace has).
+  const usesSkills = effect.kind !== "nudge" && referencedSkills(step.instructions).length > 0;
+  const skills = usesSkills ? await listSkills(cos, repo.projectId, item.environmentId) : [];
+  const mentionsIn = (text: string) => (usesSkills ? skillMentions(text, step.instructions, skills) : []);
   // Record the send time first: an idle that predates it belongs to an older turn.
   const sentAt = cos.now().getTime();
   cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
@@ -163,10 +168,12 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   if (step.writes) {
     if (!item.threadId || effect.fresh) {
       const brief = await taskBrief(cos, repo, item);
+      const prompt = `${brief}\n\n---\n\n${body}`;
       const spawned = await spawnWorktreeThread(cos, {
         repo,
         title: item.branch ?? item.issueTitle,
-        prompt: `${brief}\n\n---\n\n${body}`,
+        prompt,
+        mentions: mentionsIn(prompt),
         pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, branch: item.branch, role: "builder" },
       });
       cos.store.updateWorkItem(item.id, { threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model });
@@ -184,7 +191,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
     }
     if (!cos.store.getThread(item.threadId)) cos.store.upsertThread({ threadId: item.threadId, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: item.environmentId, round, promptSentAt: sentAt });
     else cos.store.updateThread(item.threadId, { round, promptSentAt: sentAt });
-    await sendToThread(cos, item.threadId, body);
+    await sendToThread(cos, item.threadId, body, mentionsIn(body));
     cos.store.log({ level: "info", kind: "prompt", repo: item.repo, workItemId: item.id, message: `sent ${effect.kind === "nudge" ? "a nudge" : step.name} to the builder`, actor });
     return;
   }
@@ -194,17 +201,19 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   const reusable = existing && !effect.fresh && (existing.environmentId === item.environmentId || !item.environmentId);
   if (reusable) {
     cos.store.updateThread(existing.threadId, { round, promptSentAt: sentAt });
-    await sendToThread(cos, existing.threadId, body);
+    await sendToThread(cos, existing.threadId, body, mentionsIn(body));
     cos.store.log({ level: "info", kind: "prompt", repo: item.repo, workItemId: item.id, message: `sent ${effect.kind === "nudge" ? "a nudge" : step.name} to agent ${effect.agent + 1}`, actor });
     return;
   }
   const brief = await taskBrief(cos, repo, item);
+  const stepThreadPrompt = `${stepThreadBrief(item, step, brief)}\n\n---\n\n${body}`;
   const spawned = await spawnStepThread(cos, {
     repo,
     environmentId: item.environmentId,
     parentThreadId: item.threadId ?? undefined,
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
-    prompt: `${stepThreadBrief(item, step, brief)}\n\n---\n\n${body}`,
+    prompt: stepThreadPrompt,
+    mentions: mentionsIn(stepThreadPrompt),
     pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, step: step.id, agent: effect.agent },
   });
   cos.store.upsertThread({ threadId: spawned.thread.id, itemId: item.id, role: "step", stepId: step.id, agent: effect.agent, environmentId: spawned.thread.environmentId ?? item.environmentId, round, promptSentAt: sentAt });
