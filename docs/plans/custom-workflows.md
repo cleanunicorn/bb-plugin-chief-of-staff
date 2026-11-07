@@ -19,7 +19,8 @@ Implementation (one PR, milestones in order)
 - [x] M8 Tests (schema, engine table tests, e2e parallel plan → build → gate loop → ship), docs, changelog (needs all)
 
 Before merge
-- [ ] Install the branch build and walk one real task through a custom workflow, including the canvas editor (not done here: the live BB has in-flight items; the canvas has only been built, not seen)
+- [x] Canvas editor checked in a headless browser (standalone preview): layout, parallel column, fail arrows, live colours, step panel, list view, connect and delete arrows
+- [ ] Install the branch build and walk one real task through a custom workflow (not done here: the live BB has in-flight items)
 - [ ] Open the PR, mirror final checkboxes to #6
 
 Deferred

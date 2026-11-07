@@ -12,6 +12,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  applyEdgeChanges,
   applyNodeChanges,
   type Connection,
   type Edge,
@@ -35,8 +36,8 @@ export const STEP_TYPE_META: Record<StepType, { label: string; icon: string; hin
   ship: { label: "Ship", icon: "Rocket", hint: "Push, open a PR, or merge" },
 };
 
-const COL = 250;
-const ROW = 120;
+const COL = 320;
+const ROW = 130;
 
 /** Positions for steps without one: columns by depth, rows within a column. */
 export function layout(wf: Workflow, force = false): Map<string, { x: number; y: number }> {
@@ -107,6 +108,9 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
         </p>
       ) : null}
       <Handle type="source" position={Position.Right} className="!size-2.5 !border-border !bg-background" />
+      {/* Fail arrows leave and enter at the bottom so they curve under the row instead of hiding behind it. */}
+      <Handle type="source" id="fail-out" position={Position.Bottom} isConnectable={false} className="!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-transparent" />
+      <Handle type="target" id="fail-in" position={Position.Bottom} isConnectable={false} className="!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-transparent" />
     </div>
   );
 }
@@ -135,27 +139,36 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   const [nodes, setNodes] = useState<Node<StepNodeData>[]>(build);
   useEffect(() => setNodes(build()), [build]);
 
-  const edges = useMemo<Edge[]>(() => {
+  const computedEdges = useMemo<Edge[]>(() => {
     const out: Edge[] = [];
+    // Stagger fail arrows so several going back to the same step do not overlap.
+    const failers = workflow.steps.filter((s) => s.onFail).map((s) => s.id);
+    const wf_index = (id: string) => failers.indexOf(id);
     for (const s of workflow.steps) {
-      for (const n of s.next) out.push({ id: `next:${s.id}:${n}`, source: s.id, target: n, markerEnd: { type: MarkerType.ArrowClosed }, deletable: editable });
+      for (const n of s.next) out.push({ id: `next:${s.id}:${n}`, source: s.id, target: n, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 1.5 }, deletable: editable });
       if (s.onFail) {
         out.push({
           id: `fail:${s.id}:${s.onFail}`,
           source: s.id,
           target: s.onFail,
-          label: "on fail",
+          sourceHandle: "fail-out",
+          targetHandle: "fail-in",
+          label: s.type === "ship" ? "CI red" : "on fail",
           type: "smoothstep",
+          pathOptions: { offset: 24 + 14 * Math.max(0, wf_index(s.id)) },
           animated: true,
-          style: { strokeDasharray: "6 4", stroke: STATUS.serious },
+          style: { strokeDasharray: "6 4", stroke: STATUS.serious, strokeWidth: 1.5 },
           labelStyle: { fill: STATUS.serious, fontSize: 10 },
           markerEnd: { type: MarkerType.ArrowClosed, color: STATUS.serious },
           deletable: editable,
-        });
+        } as Edge);
       }
     }
     return out;
   }, [workflow, editable]);
+  // Local copy so React Flow can mark an arrow selected (Backspace deletes the selected one).
+  const [edges, setEdges] = useState<Edge[]>(computedEdges);
+  useEffect(() => setEdges(computedEdges), [computedEdges]);
 
   const update = useCallback((next: Workflow) => onChange?.(next), [onChange]);
 
@@ -182,6 +195,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
+      setEdges((es) => applyEdgeChanges(changes.filter((c) => c.type !== "remove"), es));
       if (!editable) return;
       const removed = changes.filter((c) => c.type === "remove").map((c) => c.id);
       if (!removed.length) return;

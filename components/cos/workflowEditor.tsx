@@ -130,11 +130,11 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
       <Problems items={[...problems, ...docProblems]} />
 
       {view === "canvas" ? (
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]">
           <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} className="h-[520px]" />
           <div className="min-w-0">
             {selected && wf.steps.some((s) => s.id === selected) ? (
-              <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} />
+              <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} narrow />
             ) : (
               <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                 <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
@@ -173,12 +173,13 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
   );
 }
 
-function Row({ children }: { children: ReactNode }) {
-  return <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</div>;
+function Row({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
+  return <div className={cn("grid grid-cols-1 gap-3", !narrow && "sm:grid-cols-2")}>{children}</div>;
 }
 
 /** Edit one step: the common fields, then its type's fields. */
-export function StepPanel({ workflow, step, onChange, onRemove, collapsible = false }: { workflow: Workflow; step: Step; onChange: (s: Step) => void; onRemove: () => void; collapsible?: boolean }) {
+export function StepPanel({ workflow, step, onChange, onRemove, collapsible = false, narrow = false }: { workflow: Workflow; step: Step; onChange: (s: Step) => void; onRemove: () => void; collapsible?: boolean; narrow?: boolean }) {
+  const two = narrow ? "grid grid-cols-1 gap-2" : "grid grid-cols-1 gap-2 sm:grid-cols-2";
   const [open, setOpen] = useState(!collapsible);
   const set = (patch: Record<string, unknown>) => onChange({ ...step, ...patch } as Step);
   const meta = STEP_TYPE_META[step.type];
@@ -200,7 +201,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, collapsible = fa
       </header>
       {open ? (
         <>
-          <Row>
+          <Row narrow={narrow}>
             <Field label="Name">{(id) => <TextInput id={id} value={step.name} onChange={(v) => set({ name: v })} />}</Field>
             <Field label="Type" hint={meta.hint}>
               {(id) => (
@@ -218,7 +219,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, collapsible = fa
           </Field>
 
           {step.type === "agent" ? (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className={two}>
               <ToggleRow label="Writes code" hint="Runs in the task's main thread, one code-writing step at a time. Off: read-only, may run in parallel." checked={step.writes} onChange={(v) => set({ writes: v, ...(v ? { agents: 1 } : {}) })} />
               <ToggleRow label="Needs my approval" hint="You approve the report or send it back with feedback." checked={step.approval} onChange={(v) => set({ approval: v })} />
               <ToggleRow label="Pass / fail verdict" hint="The agent reports pass or fail; fail sends the work back." checked={step.verdict} onChange={(v) => set({ verdict: v, ...(v ? {} : { onFail: undefined }) })} />
@@ -230,13 +231,13 @@ export function StepPanel({ workflow, step, onChange, onRemove, collapsible = fa
             </div>
           ) : null}
           {step.type === "check" ? (
-            <Row>
+            <Row narrow={narrow}>
               <Field label="Command" hint="Runs in the task's worktree; a non-zero exit fails the check.">{(id) => <TextInput id={id} value={step.command} onChange={(v) => set({ command: v })} placeholder="npm test" mono />}</Field>
               <Field label="Timeout (minutes)">{(id) => <NumberInput id={id} value={step.timeoutMinutes} min={1} max={240} onChange={(v) => set({ timeoutMinutes: v })} />}</Field>
             </Row>
           ) : null}
           {step.type === "ship" ? (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className={two}>
               <Field label="Shipping means">
                 {(id) => (
                   <Select
@@ -256,7 +257,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, collapsible = fa
             </div>
           ) : null}
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className={cn("grid grid-cols-1 gap-3", !narrow && "sm:grid-cols-2")}>
             <Field label="Runs next" hint="Steps that start after this one. Several = they run in parallel.">
               {() => (
                 <div className="flex flex-wrap gap-1.5">
