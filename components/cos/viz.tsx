@@ -147,7 +147,7 @@ export function Swatch({ color, shape = "square" }: { color: string; shape?: "sq
   return <span aria-hidden className={cn("inline-block size-2.5 shrink-0", shape === "dot" ? "rounded-full" : "rounded-[3px]")} style={{ background: color }} />;
 }
 
-const TONE_ICON: Record<Tone, string> = { good: "CircleCheck", warning: "TriangleAlert", serious: "CircleAlert", critical: "CircleX", neutral: "Circle", info: "CircleDot" };
+const TONE_ICON: Record<Tone, string> = { good: "CircleCheck", warning: "TriangleAlert", serious: "CircleAlert", critical: "CircleX", neutral: "Circle", info: "Info" };
 
 // A status pill: colored icon + text in ink. Never color alone.
 export function StatusPill({ tone, label, icon, pulse }: { tone: Tone; label: string; icon?: string; pulse?: boolean }) {
