@@ -146,6 +146,7 @@ describe("chief-of-staff server", () => {
         },
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
+        skills: { list: async () => ({ skills: [{ id: "skill_1", name: "tdd", description: "Test first", filePath: "/x/SKILL.md", manageable: false, pluginId: null, provider: null, registrySkillId: null, scope: "bb-project" }] }) as never },
         providers: { catalog: async () => [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true, info: {} }] as never },
       },
     });
@@ -753,6 +754,19 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.callRpc("cos_set_settings", { clearGithubToken: true });
     const cleared = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { token: { stored: boolean } };
     expect(cleared.token.stored).toBe(false);
+  });
+
+  it("sends /skill references in step instructions as skill mentions", async () => {
+    const workflow = { workflows: [{ id: "default", name: "Skilled", steps: [{ id: "build", name: "Build", type: "agent", writes: true, instructions: "Use /tdd and /nope. Avoid src/tdd." }] }], default: "default" };
+    const plainRepos = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, maxConcurrent: 2, allow: { intake: true, openPr: true } }] });
+    await host.harness.behavior.callRpc("cos_set_config", { workflow: JSON.stringify(workflow), repos: plainRepos });
+    expect(await host.harness.behavior.callRpc("cos_skills", null)).toEqual({ skills: [{ name: "tdd", description: "Test first", scope: "bb-project" }] });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const args = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt?: string; input?: { text: string; mentions: { start: number; end: number; resource: { name: string; source: string } }[] }[] };
+    expect(args.prompt).toBeUndefined();
+    const [input] = args.input!;
+    expect(input!.text).toContain("Use /tdd and /nope.");
+    expect(input!.mentions.map((m) => [input!.text.slice(m.start, m.end), m.resource.source])).toEqual([["/tdd", "skill"]]);
   });
 
   it("validates and stores the workflow from the configurator", async () => {
