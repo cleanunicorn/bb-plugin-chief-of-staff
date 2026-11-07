@@ -359,7 +359,19 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
 
   const repoIssues = useMemo(() => validateRepos(repoDraft), [repoDraft]);
   const workflowProblems = useMemo(() => validateDocument(workflowDraft), [workflowDraft]);
-  const problemCount = Object.keys(repoIssues).length + workflowProblems.length;
+  /** Every blocking problem, with where it is, so the save bar can point at it. */
+  const problems = useMemo(() => {
+    const out: { section: Section; repo?: number; text: string }[] = [];
+    for (const [i, list] of Object.entries(repoIssues)) {
+      const r = repoDraft[Number(i)];
+      const name = r && r.owner && r.repo ? repoKey(r) : `Repository ${Number(i) + 1}`;
+      for (const text of list) out.push({ section: "repos", repo: Number(i), text: `${name}: ${text}` });
+    }
+    for (const text of workflowProblems) out.push({ section: "workflow", text });
+    return out;
+  }, [repoIssues, repoDraft, workflowProblems]);
+  const problemCount = problems.length;
+  const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
   const usedBy = useMemo(() => {
     const out: Record<string, string[]> = {};
     for (const r of repoDraft) {
@@ -432,7 +444,13 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
             <Icon name={s.icon} fallback="Circle" className="size-4" aria-hidden />
             <span className="flex-1">{s.label}</span>
             {counts[s.id] !== null ? <span className="rounded-full bg-muted px-1.5 text-[11px] tabular-nums text-muted-foreground">{counts[s.id]}</span> : null}
-            {sectionDirty[s.id] ? <span aria-label="unsaved" className="size-1.5 rounded-full" style={{ background: STATUS.warning }} /> : null}
+            {sectionProblems(s.id) ? (
+              <span aria-label={`${sectionProblems(s.id)} to fix`} className="rounded-full px-1.5 text-[11px] font-semibold text-white tabular-nums" style={{ background: STATUS.critical }}>
+                {sectionProblems(s.id)}
+              </span>
+            ) : sectionDirty[s.id] ? (
+              <span aria-label="unsaved" className="size-1.5 rounded-full" style={{ background: STATUS.warning }} />
+            ) : null}
           </button>
         ))}
       </nav>
@@ -496,7 +514,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
                 <span className="flex items-center gap-1.5 text-sm text-foreground">
                   <span aria-hidden className="size-2 rounded-full" style={{ background: STATUS.warning }} />
                   Unsaved changes
-                  {problemCount ? <span className="text-xs" style={{ color: STATUS.critical }}>· {problemCount} {problemCount === 1 ? "entry needs" : "entries need"} fixing</span> : null}
+                  {problemCount ? <span className="text-xs" style={{ color: STATUS.critical }}>· {problemCount} to fix before saving</span> : null}
                 </span>
                 <span className="ml-auto flex gap-1.5">
                   <Button size="sm" variant="outline" disabled={saving} onClick={discard}>
@@ -506,6 +524,29 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
                     <Icon name="Save" fallback="Circle" aria-hidden /> {saving ? "Saving…" : "Save changes"}
                   </Button>
                 </span>
+                {problemCount ? (
+                  <ul className="flex basis-full flex-col gap-0.5">
+                    {problems.slice(0, 5).map((p, i) => (
+                      <li key={i}>
+                        <button
+                          type="button"
+                          className="flex items-start gap-1.5 text-left text-xs hover:underline"
+                          style={{ color: STATUS.critical }}
+                          onClick={() => {
+                            setSection(p.section);
+                            if (p.repo !== undefined) setOpenRepo(p.repo);
+                          }}
+                        >
+                          <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3 shrink-0" aria-hidden />
+                          <span>
+                            <b>{SECTIONS.find((x) => x.id === p.section)?.label}</b> · {p.text}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                    {problemCount > 5 ? <li className="text-xs text-muted-foreground">and {problemCount - 5} more</li> : null}
+                  </ul>
+                ) : null}
               </>
             ) : null}
             {status ? (

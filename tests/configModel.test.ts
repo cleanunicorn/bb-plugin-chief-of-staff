@@ -48,6 +48,13 @@ describe("configModel", () => {
     expect(blankRepo()).toMatchObject({ owner: "", repo: "", projectId: "", intake: true, maxConcurrent: 2 });
   });
 
+  it("does not let the seeded placeholder entry block saving", () => {
+    const loaded = loadRepos(JSON.stringify({ repos: [{ projectId: "proj_xxxxxxxxxx", issueFilter: { labels: ["agent-ready"] }, maxConcurrent: 2 }] }));
+    if (!loaded.ok) throw new Error(loaded.error);
+    expect(validateRepos(loaded.items)).toEqual({});
+    expect(validateRepos([{ ...loaded.items[0]!, projectId: "" }])[0]).toBeTruthy();
+  });
+
   it("loads legacy entries with their old keys folded in", () => {
     const loaded = loadRepos(JSON.stringify({ repos: [{ projectId: "p", checkCommand: "make test", allow: { intake: false } }] }));
     if (!loaded.ok) throw new Error(loaded.error);

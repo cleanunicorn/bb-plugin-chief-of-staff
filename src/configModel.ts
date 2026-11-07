@@ -1,7 +1,7 @@
 // Editing model for the visual configurator. Pure functions only (zod + the
 // config schemas) so the frontend bundle can use it and tests can cover it.
 // The stored format stays the same JSON documents the server parses.
-import { migrateLegacyRepo, parseGitHubRemote, repoConfigSchema, repoKey, reposDocumentSchema } from "./config";
+import { isPlaceholderRepo, migrateLegacyRepo, parseGitHubRemote, repoConfigSchema, repoKey, reposDocumentSchema } from "./config";
 import type { RepoConfig } from "./config";
 
 export type LoadResult<T> = { ok: true; items: T[] } | { ok: false; error: string };
@@ -127,6 +127,8 @@ export function validateRepos(repos: RepoConfig[]): Issues {
   const issues: Issues = {};
   const seen = new Map<string, number>();
   repos.forEach((repo, i) => {
+    // The seeded example entry is ignored by the server; it must not block saving.
+    if (isPlaceholderRepo(repo)) return;
     const list = schemaIssues(repoConfigSchema.safeParse(cleanRepo(repo)));
     if (!repo.owner.trim() || !repo.repo.trim()) list.unshift("set the GitHub repository (owner/repo)");
     if (!repo.projectId.trim()) list.unshift("pick the BB project that holds the checkout");
