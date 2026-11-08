@@ -7,7 +7,7 @@ import { rpcContract } from "./rpcContract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { ColumnChart, DataTable, Legend, Meter, Panel, PaletteProvider, STATUS, SegmentedBar, StatTile, StatusPill, Swatch, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
+import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, SegmentedBar, StatTile, StatusPill, Swatch, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
 import { ACTOR, STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { WorkflowCanvas, type LiveStatus } from "@/components/cos/workflowCanvas";
@@ -448,13 +448,13 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                     title={st.hint}
                     aria-pressed={selected}
                     onClick={() => setFilter(selected ? "all" : st.key)}
-                    className={cn("relative flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", selected ? "border-foreground/40 bg-state-active" : "border-border")}
+                    className={cn("relative flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", selected ? "border-foreground/40 bg-state-active" : "border-border", st.tone && byStage[st.key] > 0 && !selected && "border-amber-400/60")}
                   >
-                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="flex items-start gap-1.5 text-xs text-muted-foreground">
                       {st.tone ? <Icon name={st.icon} fallback="Circle" className="size-3.5" style={{ color }} aria-hidden /> : <Swatch color={color} />}
-                      <span className="truncate">{st.label}</span>
+                      <span className="leading-tight">{st.label}</span>
                     </span>
-                    <span className="text-2xl font-semibold leading-none text-foreground tabular-nums">{byStage[st.key]}</span>
+                    <span className={cn("text-2xl font-semibold leading-none tabular-nums", byStage[st.key] === 0 ? "text-muted-foreground/50" : "text-foreground")}>{byStage[st.key]}</span>
                     {i < STAGES.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="absolute top-1/2 -right-2.5 z-10 hidden size-3.5 -translate-y-1/2 text-muted-foreground lg:block" aria-hidden /> : null}
                   </button>
                 );
@@ -474,7 +474,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                 </div>
               ))}
             </div>
-            <Legend items={parts.map((p) => ({ label: p.label, color: p.color, icon: STAGES.find((st) => st.key === p.key)?.tone ? p.icon : undefined }))} />
           </div>
         )}
       </Panel>
