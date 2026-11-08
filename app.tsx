@@ -451,7 +451,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   }, [active]);
   const s = stats.data;
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
-  const running = active.filter((e) => e.detail !== "queued").length;
+  const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const needsYou = byStage.human;
   const stalled = active.filter((e) => e.stalled).length;
   const openPrs = active.filter((e) => e.prNumber != null).length;
@@ -468,8 +468,8 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
       <ErrorLine error={roster.error ?? stats.error ?? actionError} />
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatTile hero label="Active agents" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>
-          {maxTotal ? <div className="mt-2"><Meter value={running} max={maxTotal} label="Agent slots in use" /></div> : null}
+        <StatTile hero label="Tasks using capacity" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>
+          {maxTotal ? <div className="mt-2"><Meter value={running} max={maxTotal} label="Task slots in use" /></div> : null}
         </StatTile>
         <StatTile label="Needs you" icon={needsYou ? "Hand" : "CircleCheck"} tone={needsYou ? "warning" : "good"} value={needsYou} sub={needsYou ? "waiting on a person" : "nothing blocked"} onClick={() => setFilter("human")} />
         <StatTile label="Open PRs" icon="GitPullRequest" tone="info" value={openPrs} sub={fixingCi ? `${fixingCi} back in build for fixes` : "CI green or running"} onClick={() => goTab("issues")} />
@@ -481,7 +481,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
       {/* Pipeline */}
       <Panel title="Pipeline" icon="Workflow" dim={roster.isFetching && !roster.isLoading} actions={<ViewToggle table={pipelineTable} onChange={setPipelineTable} />}>
         {pipelineTable ? (
-          <DataTable columns={["Stage", "Items", "Meaning"]} rows={[...STAGES.map((st) => [st.label, byStage[st.key], st.hint]), [`Done (${WINDOW_DAYS}d)`, s?.doneInWindow ?? 0, "Closed by a merged PR"], [`Failed (${WINDOW_DAYS}d)`, s?.failedInWindow ?? 0, "Gave up or marked failed"]]} />
+          <DataTable columns={["Stage", "Items", "Meaning"]} rows={[...STAGES.map((st) => [st.label, byStage[st.key], st.hint]), [`Done (${WINDOW_DAYS}d)`, s?.doneInWindow ?? 0, "Finished the configured workflow"], [`Failed (${WINDOW_DAYS}d)`, s?.failedInWindow ?? 0, "Gave up or marked failed"]]} />
         ) : (
           <div className="flex flex-col gap-4">
             <SegmentedBar parts={parts} label="Active work by stage" unit="items" />
@@ -760,10 +760,10 @@ function ReposTab() {
                     {r.active}
                     <span className="text-sm font-normal text-muted-foreground">/{r.maxConcurrent}</span>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">agents</div>
+                  <div className="text-[11px] text-muted-foreground">tasks using capacity</div>
                 </div>
               </div>
-              <Meter size="sm" value={r.active} max={r.maxConcurrent} label={`${r.key} agent slots`} />
+              <Meter size="sm" value={r.active} max={r.maxConcurrent} label={`${r.key} task slots`} />
               <ol className="flex flex-wrap items-center gap-1 text-[11px]" aria-label="Workflow">
                 <li className="flex items-center gap-1 pr-1 font-medium text-foreground">
                   <Icon name="Workflow" fallback="Circle" className="size-3" aria-hidden /> {r.workflowName}:

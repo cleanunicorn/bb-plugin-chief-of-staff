@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
 import type { GitHubClient, GitHubIssue } from "./github";
-import { dispatch } from "./delivery";
+import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes } from "./machine";
 
@@ -68,6 +68,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
 
 export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
   const config = await cos.config();
+  if (!opts.dryRun) await resumeQueued(cos, opts.actor);
   const results: IntakeResult[] = [];
   let github: GitHubClient;
   try {
@@ -120,8 +121,8 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
 }
 
 function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number): string | null {
-  if (cos.store.countActive(repoKey(repo)) >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
-  if (cos.store.countActiveAll() >= maxTotal) return `global max concurrency (${maxTotal})`;
+  if (cos.store.countOccupied(repoKey(repo)) >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
+  if (cos.store.countOccupied() >= maxTotal) return `global max concurrency (${maxTotal})`;
   return null;
 }
 
@@ -159,6 +160,7 @@ export async function startTask(cos: Cos, input: { repo: string; title: string; 
   if (!repo) throw new Error(`repo ${input.repo} is not configured`);
   const title = input.title.trim();
   if (!title) throw new Error("the task needs a title");
+  await resumeQueued(cos, actor);
   if (!input.force) {
     const capacity = capacityProblem(cos, repo, (await cos.config()).values.maxConcurrentTotal);
     if (capacity) throw new Error(`${capacity}; try again later`);
@@ -166,7 +168,7 @@ export async function startTask(cos: Cos, input: { repo: string; title: string; 
   const item = cos.store.insertWorkItem(await newItem(cos, repo, { issueNumber: null, issueTitle: title, branch: `${BRANCH_PREFIX}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: input.body.trim() || title }));
   cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `started task: ${title}`, actor });
   cos.invalidate();
-  return dispatch(cos, item.id, { type: "start" }, actor);
+  return dispatch(cos, item.id, { type: "start" }, actor, input.force);
 }
 
 /** BB names the worktree branch itself; record the real name once the environment is ready. */

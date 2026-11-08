@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
+import { StateStore } from "../src/state";
 import { settleJobs } from "../src/delivery";
 
 type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string } | undefined;
@@ -223,21 +224,10 @@ describe("chief-of-staff server", () => {
     expect(body.body).toContain("claude-code");
     expect(body.body).toContain("npm test → 12 passing");
     expect(body.body).toContain("all green");
-    expect(await roster()).toMatchObject({ status: "running", detail: "ci", prNumber: 7 });
-
-    // CI green → ready to merge; merged → done (CI is polled every 2 minutes).
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      await sweep();
-      expect(await roster()).toMatchObject({ detail: "ready", actor: "human" });
-      currentPull = { ...currentPull, merged: true, merged_at: "2026-11-05T02:00:00Z", state: "closed" };
-      vi.setSystemTime(Date.now() + 3 * 60_000);
-      await sweep();
-      expect(await roster()).toMatchObject({ status: "done" });
-      expect(archivedIds).toEqual(["thr_1"]);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(await roster()).toMatchObject({ status: "done", detail: "done", prNumber: 7 });
+    expect(archivedIds).toEqual(["thr_1"]);
+    await sweep();
+    expect(ghCalls.some((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toBe(false);
 
     // The token went to GitHub as a bearer header and nowhere else.
     expect(ghCalls.every((c) => c.auth === "Bearer ghp_secret_token")).toBe(true);
@@ -245,6 +235,88 @@ describe("chief-of-staff server", () => {
     expect(status.stdout).not.toContain("ghp_secret_token");
     const log = await host.harness.behavior.runCli(["log"]);
     expect(log.stdout).not.toContain("ghp_secret_token");
+  });
+
+  it("reports occupied capacity separately from a merge waiting on review", async () => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }), maxConcurrentTotal: 1 });
+    ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build");
+    await idle();
+    await sweep();
+    expect(await roster()).toMatchObject({ detail: "ready", occupiesCapacity: false, prNumber: 7 });
+    const overview = await host.harness.behavior.callRpc("cos_overview", null) as { repos: { active: number }[]; occupiedCapacity: number };
+    expect(overview.repos[0].active).toBe(0);
+    expect(overview.occupiedCapacity).toBe(0);
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "thr_2", environmentId: "env_2" }));
+    const b = await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Another task", body: "Work while review waits" }) as { id: string };
+    const after = await host.harness.behavior.callRpc("cos_overview", null) as typeof overview;
+    expect(after.occupiedCapacity).toBe(1);
+    expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(0);
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(new StateStore(host.bb.storage.database()).listWorkItems().find((i) => i.id !== b.id)).toMatchObject({ status: "ready" });
+    ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [{ state: "APPROVED", user: { login: "alice" }, submitted_at: "" }] });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      await sweep();
+    } finally { vi.useRealTimers(); }
+    const store = new StateStore(host.bb.storage.database());
+    const a = store.listWorkItems().find((i) => i.id !== b.id)!;
+    expect(a).toMatchObject({ status: "done", prNumber: 7, finishedAt: expect.any(String) });
+    expect(store.getWorkItem(b.id)).toMatchObject({ status: "agent", finishedAt: null });
+    expect(store.countOccupied()).toBe(1);
+    expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(1);
+    expect(archivedIds).not.toContain("thr_2");
+  });
+
+  it.each(["red CI", "changes requested", "merge rejected"])("does not finalize merge delivery after %s", async (failure) => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }) });
+    if (failure === "red CI") ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "CI", status: "completed", conclusion: "failure" }] } });
+    if (failure === "changes requested") ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [{ state: "APPROVED", user: { login: "alice" } }, { state: "CHANGES_REQUESTED", user: { login: "bob" } }] });
+    if (failure === "merge rejected") ghRoutes["PUT /repos/acme/app/pulls/7/merge"] = () => ({ status: 405, body: { message: "Branch protection" } });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle(); await sweep();
+    const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+    expect(item.status).not.toBe("done");
+    expect(item.finishedAt).toBeNull();
+    expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(failure === "merge rejected" ? 1 : 0);
+  });
+
+  it("releases capacity at PR creation and starts the next task", async () => {
+    await host.harness.behavior.setSettings({ maxConcurrentTotal: 1 });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const a = store.listWorkItems()[0];
+    expect(a).toMatchObject({ status: "done", prUrl: pull.html_url, finishedAt: expect.any(String) });
+    expect(store.countOccupied()).toBe(0);
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "thr_2", environmentId: "env_2" }));
+    await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Next", body: "Next task" });
+    expect(store.countOccupied()).toBe(1);
+    expect(currentPull.merged).toBe(false);
+    expect(store.getWorkItem(a.id)!.status).toBe("done");
+  });
+
+  it("does not finish PR-only delivery after PR creation fails", async () => {
+    ghRoutes["POST /repos/acme/app/pulls"] = () => ({ status: 503, body: { message: "Unavailable" } });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]).toMatchObject({ status: "retrying", finishedAt: null, prNumber: null });
+  });
+
+  it("leaves queued repairs untouched during dry-run intake", async () => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }) });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const a = store.listWorkItems()[0];
+    store.updateWorkItem(a.id, { status: "queued", queuedEvent: { type: "ci_failing", log: "Needs repair" } });
+    const sends = sent.length;
+    await host.harness.behavior.callRpc("cos_intake_now", { dryRun: true });
+    expect(store.getWorkItem(a.id)).toMatchObject({ status: "queued", queuedEvent: { type: "ci_failing" } });
+    expect(sent).toHaveLength(sends);
   });
 
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
@@ -328,7 +400,7 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ current: ["Docs"] });
     await report("docs", "done", "Docs fine", "thr_docs");
     await idle("ok2", "thr_docs");
-    expect(await roster()).toMatchObject({ detail: "ci", prNumber: 7 });
+    expect(await roster()).toMatchObject({ detail: "done", prNumber: 7 });
     const pr = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")!.body as { body: string };
     expect(pr.body).toContain("## Workflow: Careful");
     expect(pr.body).toContain("### Plan (approved)");
@@ -403,7 +475,7 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     expect(ranChecks()).toBe(1);
     expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("nudges an agent that stops without reporting, then hands it to a human", async () => {
@@ -458,7 +530,7 @@ describe("chief-of-staff server", () => {
     expect(sentTexts().at(-1)).toContain("The flaky test needs a retry");
     await report("build");
     await idle();
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("tracks questions and resumes in step with the thread", async () => {
@@ -500,7 +572,7 @@ describe("chief-of-staff server", () => {
     await report("build", "done", "Used Postgres.");
     await idle("## Summary\nUsed Postgres.");
     expect(ranChecks()).toBe(1);
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("retries its own infrastructure failures with backoff instead of blaming the human", async () => {
@@ -523,7 +595,7 @@ describe("chief-of-staff server", () => {
       vi.setSystemTime(new Date("2026-11-06T10:02:00Z"));
       await sweep();
       expect(ranChecks()).toBe(2);
-      expect(await roster()).toMatchObject({ detail: "ci", waitingReason: null });
+      expect(await roster()).toMatchObject({ detail: "done", waitingReason: null });
     } finally {
       vi.useRealTimers();
     }
@@ -577,7 +649,7 @@ describe("chief-of-staff server", () => {
     release();
     await new Promise((r) => setTimeout(r, 10));
     const entry = await roster();
-    expect(entry.detail).toBe("ci");
+    expect(entry.detail).toBe("done");
     expect(ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toHaveLength(1);
   });
 
@@ -605,7 +677,7 @@ describe("chief-of-staff server", () => {
     await pause();
     await idle("Used Postgres.", "thr_1", Date.now());
     expect(ranChecks()).toBe(1);
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("does not nudge the idle builder while the independent reviewer works", async () => {
@@ -634,7 +706,7 @@ describe("chief-of-staff server", () => {
   });
 
   it("counts a CI failure again when a fix pushes no new commit", async () => {
-    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { maxCiFixes: 1 } } }) });
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", maxCiFixes: 1 } } }) });
     ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
     ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
     openPulls = [];
@@ -661,6 +733,43 @@ describe("chief-of-staff server", () => {
     }
   });
 
+  it.each([
+    { phase: "ci", merged: false, state: "open", expected: "done" },
+    { phase: "ready", merged: true, state: "closed", expected: "done" },
+    { phase: "ready", merged: false, state: "closed", expected: "failed" },
+  ] as const)("reconciles a stored PR-only item: $phase / $state / merged=$merged", async ({ phase, merged, state, expected }) => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    store.updateWorkItem(item.id, { status: phase, finishedAt: null, nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase } } });
+    currentPull = { ...currentPull, merged, state };
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    await settleJobs();
+    expect(await roster()).toMatchObject({ detail: expected, prNumber: 7, occupiesCapacity: false });
+    if (expected === "failed") expect((await roster()).lastError).toBe("PR closed without merge");
+    expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(1);
+    const count = archivedIds.length;
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(archivedIds).toHaveLength(count);
+  });
+
+  it("does not confirm PR-only completion when GitHub is unavailable", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    store.updateWorkItem(item.id, { status: "ready", finishedAt: null, nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase: "ready" } } });
+    ghRoutes["GET /repos/acme/app/pulls/7"] = () => ({ status: 503 });
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(await roster()).toMatchObject({ detail: "ready", occupiesCapacity: false });
+    ghRoutes["GET /repos/acme/app/pulls/7"] = () => ({ body: currentPull });
+    await sweep();
+    expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
   it("adopts items started before custom workflows at their old stage", async () => {
     const db = host.bb.storage.database();
     const at = new Date().toISOString();
@@ -682,10 +791,10 @@ describe("chief-of-staff server", () => {
     expect(byIssue(30).workflowName).toBe("acme/app (converted)");
     expect(byIssue(30).steps.find((st) => st.id === "build")!.status).toBe("done");
     expect(ranChecks()).toBe(1);
-    expect(byIssue(30)).toMatchObject({ detail: "ci" });
-    // Was waiting on CI: still watching the same PR.
-    expect(byIssue(31)).toMatchObject({ detail: "ci", prNumber: 7 });
-    expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "running", phase: "ci" });
+    expect(byIssue(30)).toMatchObject({ detail: "done" });
+    // A confirmed open PR finishes the converted PR-only workflow.
+    expect(byIssue(31)).toMatchObject({ detail: "done", prNumber: 7 });
+    expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "done" });
     // Was waiting on a question: still waiting, same question.
     expect(byIssue(32)).toMatchObject({ detail: "waiting_on_human", waitingKind: "question", waitingReason: "Build: Question: which DB?" });
   });

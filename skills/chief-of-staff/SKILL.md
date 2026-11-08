@@ -60,6 +60,20 @@ each reference to a skill installed in the workspace as a skill mention (the
 `cos_skills` RPC lists them). A repo picks one with
 `"workflow": "<id>"`; a task keeps the workflow it started with.
 
+Ship completion depends on `action`: `push` finishes after the branch push;
+`pr` finishes when a new or existing open PR is confirmed; `merge` finishes only
+when GitHub confirms a merge. PR-only delivery stops watching and repairing CI
+when finished. Use merge mode when the assignment includes merging, and preserve
+`requireApproval` unless the user configured otherwise.
+
+Shipping waits for CI, review or a human decision do not reserve task capacity.
+The item remains visible and tracked. Repairs, reruns and agent steps after
+shipping queue until repo and global capacity is available, then resume
+without keeping an agent turn alive. Limits count tasks, not parallel threads;
+non-shipping gates keep their existing reservations. `cos_overview` reports
+`occupiedCapacity` globally and reserved counts in each repo's `active` field;
+roster entries expose `occupiesCapacity`.
+
 ## Configuration
 
 Configure visually in the dashboard's **Configure** tab (or the plugin's

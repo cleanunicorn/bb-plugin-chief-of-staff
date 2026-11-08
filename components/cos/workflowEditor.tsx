@@ -200,7 +200,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
   const others = workflow.steps.filter((s) => s.id !== step.id);
   // Fail arrows may only go back: to this step or a step it comes after.
   const before = others.filter((s) => descendants(workflow, s.id).has(step.id));
-  const canFail = step.type !== "agent" || step.verdict;
+  const canFail = step.type === "ship" ? step.action === "merge" : step.type !== "agent" || step.verdict;
   return (
     <article className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3">
       <header className="flex items-center gap-2">
@@ -258,22 +258,22 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
           ) : null}
           {step.type === "ship" ? (
             <div className={two}>
-              <Field label="Shipping means">
+              <Field label="Shipping means" hint={step.action === "pr" ? "Finishes when the PR opens. Later CI, review and merge are handled by the PR owner." : undefined}>
                 {(id) => (
                   <Select
                     id={id}
                     value={step.action}
                     onChange={(v) => set({ action: v })}
                     options={[
-                      { value: "pr", label: "Open a pull request; I merge it" },
-                      { value: "merge", label: "Open a pull request and merge it when green" },
+                      { value: "pr", label: "Finish when the pull request opens" },
+                      { value: "merge", label: "Finish after the pull request is merged" },
                       { value: "push", label: "Push the branch only" },
                     ]}
                   />
                 )}
               </Field>
               {step.action !== "push" ? <ToggleRow label="Open as draft" checked={step.draft} onChange={(v) => set({ draft: v })} /> : null}
-              {step.action === "merge" ? <ToggleRow label="Wait for an approving review" checked={step.requireApproval} onChange={(v) => set({ requireApproval: v })} /> : null}
+              {step.action === "merge" ? <ToggleRow label="Wait for an approving review" hint="CI and review waits release task capacity. Merges when approved and green." checked={step.requireApproval} onChange={(v) => set({ requireApproval: v })} /> : null}
             </div>
           ) : null}
 

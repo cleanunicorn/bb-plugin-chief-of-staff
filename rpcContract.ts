@@ -4,6 +4,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 const rosterEntry = z.object({
+  occupiesCapacity: z.boolean(),
   id: z.string(),
   status: z.enum(["queued", "running", "waiting on human", "blocked", "done", "failed"]),
   detail: z.string(),
@@ -132,6 +133,7 @@ export const rpcContract = defineRpcContract({
   cos_overview: {
     input: z.null(),
     output: z.object({
+      occupiedCapacity: z.number(),
       tokenSource: z.enum(["setting", "gh-cli", "none"]),
       repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), intake: z.boolean(), workflowId: z.string(), workflowName: z.string(), stepNames: z.array(z.string()) })),
       errors: z.array(z.string()),

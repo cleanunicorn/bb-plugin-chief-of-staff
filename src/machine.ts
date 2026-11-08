@@ -311,8 +311,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       patch.prUrl = event.prUrl;
       if (!n || n.status !== "running") break;
       patch.jobStartedAt = null;
-      n.phase = "ci";
       n.retry = null;
+      const s = step(event.step);
+      if (s?.type === "ship" && s.action === "pr") complete(event.step);
+      else n.phase = "ci";
       break;
     }
 
@@ -357,18 +359,21 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
 
     case "pr_merged": {
+      // Confirm delivery and its prerequisites, then schedule successors normally.
+      const ship = topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
+      if (!ship) break;
       patch.jobStartedAt = null;
-      // A merged PR ships the task, whatever else was still open.
-      for (const s of wf.steps) if (node(s.id)?.status !== "done") complete(s.id);
+      for (const s of wf.steps) {
+        if (node(s.id)?.status !== "done" && (s.id === ship || descendants(wf, s.id).has(ship))) complete(s.id);
+      }
       break;
     }
 
     case "pr_closed": {
-      if (item.status === "done") break;
-      for (const s of wf.steps) complete(s.id);
+      if (item.status === "done" || item.status === "failed") break;
       patch.lastError = "PR closed without merge";
       patch.jobStartedAt = null;
-      patch.status = "done";
+      patch.status = "failed";
       patch.finishedAt = iso;
       return { nodes, patch, effects };
     }
