@@ -23,7 +23,7 @@
     ]
   },
   "dependencies": {
-    "@get-bb/plugin-sdk": "0.6.104",
+    "@get-bb/plugin-sdk": "0.6.121",
     "@radix-ui/react-slot": "^1.2.4",
     "@xyflow/react": "^12.12.1",
     "zod": "^4.6.5"
