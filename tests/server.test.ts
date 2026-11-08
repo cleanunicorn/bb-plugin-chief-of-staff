@@ -521,6 +521,56 @@ describe("chief-of-staff server", () => {
     expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
   });
 
+  it("cancels downstream retries when an upstream step is rerun", async () => {
+    await host.harness.behavior.setSettings({
+      workflow: JSON.stringify({ workflows: [{ id: "rerun", name: "Rerun", steps: [
+        { id: "plan", name: "Plan", type: "agent", instructions: "Plan", next: ["build"] },
+        { id: "build", name: "Build", type: "agent", writes: true, instructions: "Build" },
+      ] }], default: "rerun" }),
+      repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "rerun", issueFilter: { labels: ["agent-ready"] } }] }),
+    });
+    const store = new StateStore(host.bb.storage.database());
+    let failed = false;
+    host.harness.inspection.sdk.stub("projects.list", async () => {
+      if (!failed && store.listWorkItems()[0]?.nodes.build?.deliveries?.[0]?.status === "preparing") {
+        failed = true;
+        throw new Error("build preflight unavailable");
+      }
+      return [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never;
+    });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("plan", "done", "Original plan", "thr_plan");
+    await idle("done", "thr_plan");
+    const item = store.listWorkItems()[0];
+    const oldRound = item.nodes.build.round;
+    expect(item.nodes.build.agentRetries?.[0].at).toBeTruthy();
+    await host.harness.behavior.callRpc("cos_item_action", { id: item.id, action: "rerun_step", step: "plan" });
+    const reset = store.getWorkItem(item.id)!.nodes.build;
+    expect(reset).toMatchObject({ status: "pending", retry: null });
+    expect(reset.agentRetries).toEqual({});
+    expect(reset.deliveries).toEqual({});
+    threadStatus = "active";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 2 * 60_000);
+      await sweep();
+      expect(store.getWorkItem(item.id)!.nodes.build.status).toBe("pending");
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1); // Plan only.
+      expect(sent).toHaveLength(1); // Rerun Plan only.
+      await report("plan", "done", "Revised plan", "thr_plan");
+      await idle("done", "thr_plan");
+      const build = store.getWorkItem(item.id)!.nodes.build;
+      expect(build.status).toBe("running");
+      expect(build.round).toBe(oldRound + 1);
+      const calls = host.harness.inspection.sdk.callsTo("threads.spawn");
+      expect(calls).toHaveLength(2);
+      expect((calls[1][0] as { prompt: string }).prompt).toContain("Revised plan");
+      expect(await report("build")).not.toHaveProperty("isError", true);
+      await idle();
+      expect(store.getWorkItem(item.id)!.status).toBe("done");
+    } finally { vi.useRealTimers(); }
+  });
+
   it("holds workflow progress and intake while paused, then resumes recorded reports", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await host.harness.behavior.callRpc("cos_set_paused", { paused: true });

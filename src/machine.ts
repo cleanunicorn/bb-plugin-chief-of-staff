@@ -133,7 +133,7 @@ export function infraBackoffMs(attempt: number): number {
 }
 
 export function freshNode(): NodeState {
-  return { status: "pending", round: 0, attempts: 0, reports: [], nudges: [], waiting: null, feedback: null, phase: null, output: null, retry: null, startedAt: null, finishedAt: null };
+  return { status: "pending", round: 0, attempts: 0, deliveries: {}, agentRetries: {}, reports: [], nudges: [], waiting: null, feedback: null, phase: null, output: null, retry: null, startedAt: null, finishedAt: null };
 }
 
 export function initialNodes(wf: Workflow): Nodes {
@@ -490,7 +490,8 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "retry_due": {
       const n = node(event.step);
-      if (n && (event.agent !== undefined || n.retry?.effect.type === "agent")) {
+      if (!n || (n.status !== "running" && n.status !== "waiting")) break;
+      if (event.agent !== undefined || n.retry?.effect.type === "agent") {
         const agent = event.agent ?? (n.retry!.effect as Extract<Effect, { type: "agent" }>).agent;
         const retry = n.agentRetries?.[agent];
         if (!retry?.at || Date.parse(retry.at) > now.getTime() || (n.status === "waiting" && n.waiting?.kind !== "cos_error")) break;
@@ -502,7 +503,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!n?.retry?.at || n.status === "waiting") break;
       const effect = n.retry.effect;
       n.retry = { ...n.retry, at: null };
-      if (effect.type !== "agent" && effect.type !== "notify") patch.jobStartedAt = iso;
+      if (effect.type !== "notify") patch.jobStartedAt = iso;
       effects.push(effect);
       break;
     }

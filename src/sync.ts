@@ -309,6 +309,7 @@ export async function tickItems(cos: Cos, actor: string): Promise<void> {
         });
       }
       const current = cos.store.getWorkItem(item.id)?.nodes[stepId];
+      if (!current || (current.status !== "running" && current.status !== "waiting")) continue;
       for (const [key, retry] of Object.entries(current?.agentRetries ?? {})) {
         if (retry.at && Date.parse(retry.at) <= now) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId, agent: Number(key) }, actor));
       }

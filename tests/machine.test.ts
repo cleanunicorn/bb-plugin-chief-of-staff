@@ -485,6 +485,19 @@ describe("an agent step that chooses the model", () => {
 
 describe("delivery recovery boundaries", () => {
   const workflow = wf([{ id: "review", type: "agent", name: "Review", agents: 2, instructions: "Review" }]);
+  it.each(["pending", "done"] as const)("ignores stale agent retries on %s nodes", (status) => {
+    let [item] = run(itemFor(workflow), { type: "start" });
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 0, kind: "start" }, message: "preflight failed" });
+    item.nodes.review.status = status;
+    if (status === "pending") {
+      item.workflow = wf([{ id: "before", type: "agent", name: "Before", instructions: "Wait", next: ["review"] }, ...workflow.steps]);
+      item.nodes.before = { ...item.nodes.review, status: "running", retry: null, agentRetries: {} };
+    }
+    item.nodes.review.agentRetries![0].at = NOW.toISOString();
+    const result = transition(item, { type: "retry_due", step: "review", agent: 0 }, DEFAULT_POLICY, NOW);
+    expect(agentFx(result.effects)).toEqual([]);
+  });
+
   it("keeps another agent's retry when a report or delivery confirmation arrives", () => {
     let [item] = run(itemFor(workflow), { type: "start" });
     [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 1, kind: "start" }, message: "preflight failed" });
