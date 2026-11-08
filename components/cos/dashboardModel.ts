@@ -1,7 +1,7 @@
 import { stageOf, type StageKey } from "./stages";
 
 type TaskState = { detail: string; waitingKind: string | null; stalled: boolean };
-export type TaskFilter = StageKey | "all" | "failures" | "stalled";
+export type TaskFilter = StageKey | "all" | "failures" | "stalled" | "input";
 
 /** Terminal failed runs are history. Only active failure decisions need action. */
 export function attentionKind(entry: TaskState): "failures" | "stalled" | "human" | null {
@@ -13,6 +13,7 @@ export function attentionKind(entry: TaskState): "failures" | "stalled" | "human
 
 export function matchesTaskFilter(entry: TaskState, filter: TaskFilter): boolean {
   if (filter === "all") return true;
+  if (filter === "input") return attentionKind(entry) === "human";
   if (filter === "failures" || filter === "stalled") return attentionKind(entry) === filter;
   return stageOf(entry)?.key === filter;
 }

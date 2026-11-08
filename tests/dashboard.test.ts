@@ -23,6 +23,8 @@ describe("dashboard attention and filtering", () => {
     expect(matchesTaskFilter(task("waiting_on_human", "cos_error"), "human")).toBe(true);
     expect(matchesTaskFilter(task("agent", null, true), "stalled")).toBe(true);
     expect(matchesTaskFilter(task("ci"), "pr")).toBe(true);
+    expect(matchesTaskFilter(task("waiting_on_human", "approval"), "input")).toBe(true);
+    expect(matchesTaskFilter(task("waiting_on_human", "cos_error"), "input")).toBe(false);
     expect(matchesTaskFilter(task("queued"), "agent")).toBe(false);
     expect(matchesTaskFilter(task("failed"), "all")).toBe(true);
   });

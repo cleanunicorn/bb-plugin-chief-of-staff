@@ -16,6 +16,7 @@ import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow } from "@/components/cos/stepFlow";
+import { activitySummary } from "./components/cos/activitySummary";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 
@@ -391,7 +392,7 @@ export function PipelineTab() {
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
   const visible = entries.filter((e) => matchesTaskFilter(e, filter));
-  const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : STAGES.find((st) => st.key === filter)?.label;
+  const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
   return (
@@ -414,13 +415,13 @@ export function PipelineTab() {
       {failures + stalled + humanInput > 0 ? (
         <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3">
           <span className="mr-2 text-sm font-semibold text-foreground">Needs attention</span>
-          {failures ? <Button variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
-            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} failures needing a decision
+          {failures ? <Button className="h-auto max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
+            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
           </Button> : null}
           {stalled ? <Button variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
             <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
           </Button> : null}
-          {humanInput ? <Button variant="ghost" aria-pressed={filter === "human"} onClick={() => setFilter("human")}>
+          {humanInput ? <Button className="h-auto max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => setFilter("input")}>
             <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
           </Button> : null}
         </section>
@@ -434,7 +435,7 @@ export function PipelineTab() {
       </nav>
       {/* Agents */}
       <Panel
-        className="border-0 bg-transparent [&>header]:px-0 [&>div]:px-0"
+        className="border-0 bg-transparent [&>header]:px-0 [&>header]:flex-wrap [&>div]:px-0"
         title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
         icon="Bot"
         dim={roster.isFetching && !roster.isLoading}
@@ -725,10 +726,11 @@ const LEVEL: Record<string, { tone: Tone; icon: string; label: string }> = {
   error: { tone: "critical", icon: "CircleX", label: "Error" },
 };
 
-function ActivityFeed() {
+export function ActivityFeed() {
   const palette = usePalette();
   const now = useNow();
   const [onlyProblems, setOnlyProblems] = useState(false);
+  const [viewing, setViewing] = useState<string | null>(null);
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60 } });
   useLiveRefresh(log.refetch);
   const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
@@ -749,21 +751,30 @@ function ActivityFeed() {
         {entries.map((e) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
           return (
-            <li key={e.id} className="flex items-start gap-2.5 py-1.5 text-xs">
-              <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
-              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{e.kind}</span>
-              <span className="min-w-0 flex-1 text-foreground">
-                {e.repo ? <span className="font-medium">{e.repo.split("/")[1]} </span> : null}
-                {e.message}
-                <span className="text-muted-foreground"> · {e.actor}</span>
-              </span>
-              <span className="shrink-0 text-muted-foreground tabular-nums" title={new Date(e.at).toLocaleString()}>
-                {relative(e.at, now)}
-              </span>
+            <li key={e.id} className="flex items-start gap-2.5 border-b border-border py-3 text-sm last:border-0">
+              <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-4 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
+              <div className="min-w-0 flex-1">
+                <p className="text-foreground [overflow-wrap:anywhere]">{activitySummary(e)}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+                  {e.repo ? <span className="[overflow-wrap:anywhere]">{e.repo}</span> : null}
+                  <time dateTime={e.at} title={new Date(e.at).toLocaleString()}>{relative(e.at, now)}</time>
+                  {e.workItemId ? <button type="button" className="rounded text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" onClick={() => setViewing(e.workItemId)}>View task</button> : null}
+                </div>
+                <details className="mt-1 text-muted-foreground">
+                  <summary className="w-fit cursor-pointer rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Technical details</summary>
+                  <dl className="mt-2 space-y-1 [overflow-wrap:anywhere]">
+                    <div><dt className="inline font-medium">Event: </dt><dd className="inline">{e.kind}</dd></div>
+                    <div><dt className="inline font-medium">Actor: </dt><dd className="inline">{e.actor}</dd></div>
+                    {e.workItemId ? <div><dt className="inline font-medium">Task: </dt><dd className="inline">{e.workItemId}</dd></div> : null}
+                    <div><dt className="inline font-medium">Message: </dt><dd className="inline whitespace-pre-wrap">{e.message}</dd></div>
+                  </dl>
+                </details>
+              </div>
             </li>
           );
         })}
       </ol>
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void log.refetch()} /> : null}
     </Panel>
   );
 }
