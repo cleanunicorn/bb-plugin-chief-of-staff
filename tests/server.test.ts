@@ -305,6 +305,42 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ detail: "done" });
   });
 
+  it.each([
+    ["tool", "failed", false], ["text", "deleted", false],
+    ["tool", "deleted", true], ["text", "failed", true],
+  ] as const)("rejects %s reports after a reviewer thread is %s (legacy=%s)", async (via, failure, legacy) => {
+    await host.harness.behavior.setSettings({
+      repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "default" }] }),
+      workflow: JSON.stringify({ default: "default", workflows: [{ id: "default", name: "Review", steps: [{ id: "review", name: "Review", type: "agent" }] }] }),
+    });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const delivery = item.nodes.review.deliveries![0].id;
+    const thread = makeThreadResponse({ id: "thr_review", status: "error" });
+    if (failure === "deleted") await host.harness.behavior.emitThreadEvent("thread.deleted", { thread });
+    else await host.harness.behavior.emitThreadEvent("thread.failed", { thread, error: "provider crashed" } as never);
+    const failed = store.getWorkItem(item.id)!;
+    expect(failed.nodes.review.retry?.effect).toMatchObject({ type: "agent", fresh: true });
+    if (legacy) {
+      delete failed.nodes.review.retry!.cause;
+      delete failed.nodes.review.agentRetries;
+      store.updateWorkItem(item.id, { nodes: failed.nodes });
+    }
+    const before = store.getWorkItem(item.id)!.nodes.review;
+    if (via === "tool") expect(JSON.stringify(await report("review", "done", "old thread done", "thr_review"))).toContain("not running");
+    else await idle(`## Step report\nstep: review\ndelivery: ${delivery}\noutcome: done\nsummary: old thread done`, "thr_review");
+    expect(store.getWorkItem(item.id)!.nodes.review).toEqual(before);
+    expect(store.getThread("thr_review")?.pendingReport).toBeNull();
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "thr_replacement", environmentId: "env_1" }));
+    await host.harness.behavior.callRpc("cos_item_action", { id: item.id, action: "retry", step: "review" });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(2);
+    expect(JSON.stringify(await report("review", "done", "replacement done", "thr_replacement"))).toContain("Recorded");
+    await idle("done", "thr_replacement");
+    expect(store.getWorkItem(item.id)?.nodes.review.status).toBe("done");
+  });
+
   it("preserves a sibling's uncertain retry and report on a multi-agent step", async () => {
     await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "default" }] }), workflow: JSON.stringify({ default: "default", workflows: [{ id: "default", name: "Pair", steps: [{ id: "review", name: "Review", type: "agent", agents: 2 }] }] }) });
     await host.harness.behavior.callRpc("cos_intake_now", {});

@@ -26,7 +26,11 @@ Each prompt includes a delivery id for tool and text reports. A matching report
 can acknowledge an uncertain attempt under the item lock; step, agent, thread,
 and round must agree. Later rounds require the token even after acceptance.
 Legacy rows retain round validation and may recover only agent-delivery
-`cos_error` waits. Approval and unrelated error waits do not become reportable.
+`cos_error` waits. New retries record a `prompt_delivery` or `thread_failure`
+cause. Legacy agent retries requesting a fresh thread (`fresh: true`) are treated
+as thread failures, not recoverable delivery errors. Approval and thread-failure
+waits do not become reportable; failed/deleted reviewers require a fresh-thread
+retry even when the old report has a valid delivery token.
 Reports still pass through the usual verdict, model-choice and approval logic
 on idle. One agent cannot clear another agent's retry or discard its report.
 

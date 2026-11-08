@@ -35,7 +35,12 @@ export interface AgentDelivery {
   sentAt: number;
 }
 
-export interface InfraRetry { effect: Effect; at: string | null; count: number; uncertain?: boolean }
+export interface InfraRetry { cause?: "prompt_delivery" | "thread_failure"; effect: Effect; at: string | null; count: number; uncertain?: boolean }
+
+/** Old thread-failure retries are distinguished by fresh:true; they predate cause. */
+export function isPromptDeliveryRetry(retry: InfraRetry | null | undefined): boolean {
+  return retry?.effect.type === "agent" && (retry.cause === "prompt_delivery" || (retry.cause === undefined && !retry.effect.fresh));
+}
 
 export interface NodeState {
   agentRetries?: Record<number, InfraRetry>;
@@ -239,7 +244,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
   const selectAgentRetry = (n: NodeState) => {
     const retries = Object.values(n.agentRetries ?? {});
-    const parked = retries.find((r) => r.uncertain || r.count > policy.maxInfraRetries);
+    const parked = retries.find((r) => !isPromptDeliveryRetry(r)) ?? retries.find((r) => r.uncertain || r.count > policy.maxInfraRetries);
     n.retry = parked ?? retries.sort((a, b) => (a.at ?? "~").localeCompare(b.at ?? "~"))[0] ?? null;
     if (parked && n.status === "running") {
       n.status = "waiting";
@@ -271,7 +276,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "turn_ended": {
       const s = step(event.step);
       const n = node(event.step);
-      if (!s || s.type !== "agent" || !n || (n.status !== "running" && !(event.report && n.status === "waiting" && n.waiting?.kind === "cos_error" && n.retry?.effect.type === "agent")) || event.round !== n.round) break;
+      if (!s || s.type !== "agent" || !n || (n.status !== "running" && !(event.report && n.status === "waiting" && n.waiting?.kind === "cos_error" && isPromptDeliveryRetry(n.retry))) || event.round !== n.round) break;
       if (n.reports[event.agent]) break; // this agent already reported
       const report = event.report;
       if (report?.outcome === "needs_input") {
@@ -321,7 +326,8 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       }
       const n = node(event.step);
       if (!n || n.status === "done" || n.status === "pending") break;
-      n.retry = { effect: { type: "agent", step: event.step, agent: event.agent, kind: "start", fresh: true }, at: null, count: 0 };
+      n.retry = { cause: "thread_failure", effect: { type: "agent", step: event.step, agent: event.agent, kind: "start", fresh: true }, at: null, count: 0 };
+      n.agentRetries = { ...n.agentRetries, [event.agent]: n.retry };
       wait(event.step, "cos_error", `The agent's thread failed (${event.error}). Retry starts a new one.`, event.agent);
       break;
     }
@@ -419,14 +425,16 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "delivery_ack": {
       const n = node(event.step);
       if (!n || n.round !== event.round) break;
+      if (n.status === "waiting" && n.waiting?.kind === "cos_error" && !isPromptDeliveryRetry(n.retry)) break;
       if (n.agentRetries && Object.keys(n.agentRetries).length) {
         n.agentRetries = { ...n.agentRetries };
+        if (!isPromptDeliveryRetry(n.agentRetries[event.agent])) break;
         delete n.agentRetries[event.agent];
         selectAgentRetry(n);
         break;
       }
       const retry = n.retry?.effect;
-      if (retry?.type !== "agent" || retry.agent !== event.agent || retry.step !== event.step) break;
+      if (!isPromptDeliveryRetry(n.retry) || retry?.type !== "agent" || retry.agent !== event.agent || retry.step !== event.step) break;
       n.retry = null;
       if (n.status === "waiting" && n.waiting?.kind === "cos_error") {
         n.status = "running";
@@ -455,6 +463,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         wait(event.step, "cos_error", `Chief of Staff could not ${EFFECT_LABEL[event.effect.type]} after ${policy.maxInfraRetries} retries (the agent is not asking anything): ${event.message}`);
       }
       if (event.effect.type === "agent" && n.retry) {
+        n.retry.cause = "prompt_delivery";
         n.agentRetries = { ...n.agentRetries, [event.effect.agent]: n.retry };
         selectAgentRetry(n);
       }

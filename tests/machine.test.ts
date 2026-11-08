@@ -485,6 +485,23 @@ describe("an agent step that chooses the model", () => {
 
 
 describe("per-agent delivery retries", () => {
+  it.each([false, true])("does not acknowledge a thread failure as delivery recovery (legacy=%s)", (legacy) => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 1, kind: "start" }, message: "response lost", uncertain: true });
+    [item] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "thread deleted" });
+    if (legacy) {
+      delete item.nodes.review.retry!.cause;
+      delete item.nodes.review.agentRetries;
+    }
+    const before = structuredClone(item.nodes.review);
+    for (const agent of [0, 1]) {
+      [item] = run(item, { type: "delivery_ack", step: "review", agent, round: 1 });
+      [item] = run(item, ended("review", report(), item, agent));
+      expect(item.nodes.review).toEqual(before);
+    }
+  });
+
   it("drops downstream delivery attempts and retries when an earlier step is rerun", () => {
     let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true, next: ["review"] }, { id: "review", name: "Review", type: "agent" }]));
     [item] = run(item, { type: "start" });

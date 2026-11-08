@@ -1,4 +1,5 @@
 // Correlate a report with a persisted delivery, never with a thread's busy status.
+import { isPromptDeliveryRetry } from "./machine";
 import type { Cos } from "./context";
 import type { WorkItem } from "./state";
 import type { AgentStep } from "./workflow";
@@ -6,7 +7,7 @@ import { dispatchLocked, withItemLock } from "./delivery";
 
 export function deliveryWait(item: WorkItem, step: string): boolean {
   const node = item.nodes[step];
-  return node?.status === "waiting" && node.waiting?.kind === "cos_error" && node.retry?.effect.type === "agent" && node.retry.effect.step === step;
+  return node?.status === "waiting" && node.waiting?.kind === "cos_error" && isPromptDeliveryRetry(node.retry) && node.retry?.effect.type === "agent" && node.retry.effect.step === step;
 }
 
 /** Caller holds the item lock. A token is mandatory when transport acceptance is unknown. */
@@ -15,6 +16,7 @@ export function reportMatches(cos: Cos, item: WorkItem, step: AgentStep, agent: 
   const row = cos.store.getThread(threadId);
   const attempt = node?.deliveries?.[agent];
   if (!node || agent < 0 || agent >= step.agents) return false;
+  if (node.status === "waiting" && node.waiting?.kind === "cos_error" && !deliveryWait(item, step.id)) return false;
   if (attempt) {
     if (attempt.round !== node.round || attempt.threadId !== threadId || (token && token !== attempt.id)) return false;
     if (attempt.state !== "accepted") return token === attempt.id;
