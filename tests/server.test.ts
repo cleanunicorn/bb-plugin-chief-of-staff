@@ -54,6 +54,7 @@ describe("chief-of-staff server", () => {
   let pending: unknown[] = [];
   let resolved: unknown[] = [];
   let sent: unknown[] = [];
+  let archivedIds: string[] = [];
   let assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
   let host: ReturnType<typeof createFakePluginHost>;
   const originalFetch: typeof fetch = globalThis.fetch;
@@ -68,6 +69,7 @@ describe("chief-of-staff server", () => {
     pending = [];
     resolved = [];
     sent = [];
+    archivedIds = [];
     checkHangs = false;
     checkBlocks = null;
     threadUpdatedAt = 0;
@@ -138,6 +140,10 @@ describe("chief-of-staff server", () => {
               return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0 };
             }),
           output: async () => ({ output: assistantOutput }),
+          archive: async (args: { threadId: string }) => {
+            archivedIds.push(args.threadId);
+            return { archivedThreadIds: [args.threadId] } as never;
+          },
           send: async (args: unknown) => {
             sent.push(args);
             return { ok: true, delivery: "sent" } as never;
@@ -228,6 +234,7 @@ describe("chief-of-staff server", () => {
       vi.setSystemTime(Date.now() + 3 * 60_000);
       await sweep();
       expect(await roster()).toMatchObject({ status: "done" });
+      expect(archivedIds).toEqual(["thr_1"]);
     } finally {
       vi.useRealTimers();
     }
@@ -326,6 +333,53 @@ describe("chief-of-staff server", () => {
     expect(pr.body).toContain("## Workflow: Careful");
     expect(pr.body).toContain("### Plan (approved)");
     expect(pr.body).toContain("Looks right now");
+  });
+
+  describe("archiving threads when the workflow is done", () => {
+    const buildThenReview = {
+      workflows: [
+        {
+          id: "br",
+          name: "Build and review",
+          steps: [
+            { id: "build", name: "Build", type: "agent", writes: true, instructions: "Build it.", next: ["review"] },
+            { id: "review", name: "Review", type: "agent", instructions: "Review the diff." },
+          ],
+        },
+      ],
+      default: "br",
+    };
+    const reposBr = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, workflow: "br" }] });
+    const runToDone = async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build", "done", "Built");
+      await idle();
+      expect(archivedIds).toEqual([]);
+      await report("review", "done", "lgtm", "thr_review");
+      await idle("ok", "thr_review");
+      expect(await roster()).toMatchObject({ status: "done" });
+    };
+
+    it("archives the builder and step threads, and stays done when their archive events arrive", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify(buildThenReview), repos: reposBr });
+      await runToDone();
+      expect(archivedIds.sort()).toEqual(["thr_1", "thr_review"]);
+      for (const id of archivedIds) await host.harness.behavior.emitThreadEvent("thread.archived", { thread: makeThreadResponse({ id, environmentId: "env_1", status: "idle" }) } as never);
+      expect(await roster()).toMatchObject({ status: "done", lastError: null });
+    });
+
+    it("keeps the threads when archiving is turned off", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify(buildThenReview), repos: reposBr, archiveThreadsOnDone: false });
+      await runToDone();
+      expect(archivedIds).toEqual([]);
+    });
+
+    it("keeps a failed task's threads", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
+      expect((await roster()).detail).toBe("failed");
+      expect(archivedIds).toEqual([]);
+    });
   });
 
   it("handles a turn end once even when the event and the sweep both see it", async () => {

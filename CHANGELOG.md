@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Finished tasks archive their threads.** When a task's workflow is done,
+  Chief of Staff archives the builder and step threads it started, so the
+  sidebar only shows work in flight. Failed tasks keep theirs. Turn it off with
+  `archiveThreadsOnDone` (Configure → General → Housekeeping).
 - **Your own workflows.** A workflow is now a graph of steps you define,
   replacing the fixed Plan → Build → Verify → Review → Ship (which stays as the
   default). Three step types share a name, instructions and arrows to the steps

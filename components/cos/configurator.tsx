@@ -229,6 +229,9 @@ function GeneralEditor({ values, onChange, providers }: { values: GeneralSetting
       <Group title="Notifications" icon="Bell" cols={1}>
         <ToggleRow label="BB push notifications" hint="Questions, plans to approve, escalations and shipped work. Uses the push-notifications plugin when installed." checked={values.notifyPush} onChange={(v) => set("notifyPush", v)} />
       </Group>
+      <Group title="Housekeeping" icon="Archive" cols={1}>
+        <ToggleRow label="Archive threads when a task is done" hint="Once a task's workflow finishes, its builder and step threads are archived. Failed tasks keep theirs so you can look into them." checked={values.archiveThreadsOnDone} onChange={(v) => set("archiveThreadsOnDone", v)} />
+      </Group>
     </div>
   );
 }

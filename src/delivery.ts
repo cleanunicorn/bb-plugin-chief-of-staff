@@ -87,7 +87,31 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
       if (effect.type !== "notify") await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message }, actor);
     }
   }
+  if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
   return cos.store.getWorkItem(item.id);
+}
+
+/**
+ * The workflow is over: archive every thread the item started (builder and
+ * step agents), when the operator has not turned that off. The item is
+ * already done, so the thread.archived events this fires are ignored. One
+ * thread failing to archive (already archived, deleted) does not stop the rest.
+ */
+async function archiveItemThreads(cos: Cos, item: WorkItem, actor: string): Promise<void> {
+  const { values } = await cos.config();
+  if (!values.archiveThreadsOnDone) return;
+  const ids = [...new Set([...cos.store.listThreads(item.id).map((t) => t.threadId), ...(item.threadId ? [item.threadId] : [])])];
+  const archived: string[] = [];
+  for (const threadId of ids) {
+    try {
+      await cos.bb.sdk.threads.archive({ threadId });
+      archived.push(threadId);
+    } catch (error) {
+      const message = await cos.safe(error instanceof Error ? error.message : String(error));
+      cos.store.log({ level: "warn", kind: "effect", repo: item.repo, workItemId: item.id, message: `could not archive thread ${threadId}: ${message}`, actor });
+    }
+  }
+  if (archived.length) cos.store.log({ level: "info", kind: "effect", repo: item.repo, workItemId: item.id, message: `archived ${archived.length} thread${archived.length === 1 ? "" : "s"}: ${archived.join(", ")}`, actor });
 }
 
 /** The stored patch for a transition: step states plus the status derived from them. */
