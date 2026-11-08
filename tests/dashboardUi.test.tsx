@@ -81,19 +81,20 @@ it("shows real zero usage and keeps task actions available without a thread", as
 });
 
 
-it("shows readable activity with expandable diagnostics and preserves problem filtering", async () => {
+it("shows compact activity rows with full messages and preserves problem filtering", async () => {
   mocks.logs = [
     { id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one" },
     { id: 2, at: new Date().toISOString(), level: "error", kind: "check", message: "Build failed (exit 1)", actor: "job", repo: "acme/app", workItemId: "two" },
   ];
   await mount(<ActivityFeed />);
-  expect(container.querySelector("li p")?.textContent).toBe("Started Review agent");
-  const details = container.querySelector("details")!;
-  expect(details.open).toBe(false);
-  expect(details.textContent).toContain("spawned Review thr_abc");
-  expect(container.textContent).toContain("View task");
+  const row = container.querySelector("li")!;
+  expect(row.textContent).toContain("spawn");
+  expect(row.textContent).toContain("app spawned Review thr_abc");
+  expect(row.textContent).toContain("· event");
+  expect(row.querySelector('[title]')).not.toBeNull();
+  expect(container.querySelector("details")).toBeNull();
   await act(async () => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === "Problems only")!.click());
-  expect(container.textContent).not.toContain("Started Review agent");
+  expect(container.textContent).not.toContain("spawned Review thr_abc");
   expect(container.textContent).toContain("Build failed (exit 1)");
 });
 
