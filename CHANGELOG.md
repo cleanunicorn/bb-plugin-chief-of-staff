@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Upgrade migration fix.** Restore the recorded index of the queued-event
+  migration so existing installations can update without a migration 27 mismatch.
+  Pause-control tables are appended after the existing migrations.
+
 - **Visual task cues.** Larger state pictograms, repository and usage icons,
   recorded step-state symbols, and a theme-aware empty-queue illustration make
   the dashboard easier to scan without replacing text labels.

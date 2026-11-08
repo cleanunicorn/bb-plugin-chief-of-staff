@@ -93,6 +93,7 @@ export interface LogEntry {
   actor: string;
 }
 
+// Append only: BB records each statement hash by index, including whitespace.
 export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS work_items (
     id TEXT PRIMARY KEY,
@@ -194,9 +195,9 @@ export const MIGRATIONS = [
   )`,
   `CREATE INDEX IF NOT EXISTS item_threads_item ON item_threads(item_id)`,
   `UPDATE work_items SET waiting_kind = 'approval' WHERE waiting_kind = 'plan_approval'`,
+  `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
   `CREATE TABLE IF NOT EXISTS cos_control (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS deferred_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, event_json TEXT NOT NULL, actor TEXT NOT NULL)`,
-  `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
 ];
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];

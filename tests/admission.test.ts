@@ -1,3 +1,4 @@
+import previousMigrations from "./fixtures/migrations-before-pause.json";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS, StateStore, type NewWorkItem } from "../src/state";
@@ -98,8 +99,18 @@ describe("shipping repair admission", () => {
   it("upgrades a database whose previous migrations were already applied", () => {
     const host = createFakePluginHost({ pluginId: "upgrade" }); hosts.push(host);
     const db = host.bb.storage.database();
-    host.bb.storage.migrate(db, MIGRATIONS.filter((sql) => !sql.includes("ADD COLUMN queued_event_json")));
+    // Frozen from d961a23, before pause support; never derive history from MIGRATIONS.
+    host.bb.storage.migrate(db, previousMigrations);
+    db.prepare("INSERT INTO work_items (id, repo, status, created_at, updated_at, queued_event_json) VALUES (?, ?, ?, ?, ?, ?)")
+      .run("existing", "a/b", "queued", "2026-11-08", "2026-11-08", '{"type":"retry"}');
     expect(() => host.bb.storage.migrate(db, MIGRATIONS)).not.toThrow();
+    expect(() => host.bb.storage.migrate(db, MIGRATIONS)).not.toThrow();
+    const store = new StateStore(db);
+    expect(store.getWorkItem("existing")?.queuedEvent).toEqual({ type: "retry" });
+    store.setPaused(true);
+    expect(store.isPaused()).toBe(true);
+    store.deferEvent("existing", { type: "retry" }, "test");
+    expect(store.nextDeferredEvent()).toMatchObject({ item_id: "existing", event_json: '{"type":"retry"}' });
     expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "queued_event_json" })]));
   });
 
