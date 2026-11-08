@@ -12,6 +12,7 @@ import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
 import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
+import { issueSection } from "./sections";
 
 const OUTPUT_TAIL = 12_000;
 
@@ -259,6 +260,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
       const spawned = await spawnWorktreeThread(cos, {
         repo,
         title: item.branch ?? item.issueTitle,
+        sectionId: await issueSection(cos, item),
         prompt,
         mentions: mentionsIn(prompt),
         settings,
@@ -299,6 +301,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
     repo,
     environmentId: item.environmentId,
     parentThreadId: item.threadId ?? undefined,
+    sectionId: await issueSection(cos, item),
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
     prompt: stepThreadPrompt,
     mentions: mentionsIn(stepThreadPrompt),

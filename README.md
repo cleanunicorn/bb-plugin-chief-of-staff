@@ -284,3 +284,9 @@ npm test            # vitest: workflow engine and validation, stats, fake plugin
 npm run typecheck
 bb plugin dev       # build + install + reload on change
 ```
+
+### Workflow thread grouping
+
+Chief of Staff groups workflow threads in native BB sections named `owner/repo#123 · Issue title`. Planning, builder, review, and retry threads share the issue section across worktrees. Tasks without a GitHub issue get their own section. BB handles section display and collapse behavior; no custom sidebar is needed.
+
+The regular sweep also groups unsectioned threads belonging to active tasks. Archived threads and threads already placed in another section are left alone. Section identities survive plugin restarts and manual renames; deleted sections are recreated when needed. Grouping failures are logged and retried without blocking workflow execution.

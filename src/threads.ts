@@ -32,6 +32,7 @@ export interface SpawnOptions {
   settings?: AgentSettings;
   pluginMetadata: Record<string, string | number | boolean | null>;
   parentThreadId?: string;
+  sectionId?: string;
 }
 
 export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
@@ -49,6 +50,7 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
     },
     ...promptArgs(opts.prompt, opts.mentions),
     title: opts.title,
+    sectionId: opts.sectionId,
     ...(providerId ? { providerId } : {}),
     ...(model ? { model } : {}),
     ...(reasoningLevel ? { reasoningLevel } : {}),
@@ -65,6 +67,7 @@ export interface StepSpawnOptions {
   /** The builder's environment, when it exists: read-only steps then see exactly what was built. */
   environmentId: string | null;
   parentThreadId?: string;
+  sectionId?: string;
   title: string;
   prompt: string;
   mentions?: SkillMention[];
@@ -78,7 +81,7 @@ export interface StepSpawnOptions {
  * built yet, so there is nothing to see but the repository).
  */
 export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
-  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
+  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId, sectionId: opts.sectionId });
   const { values } = await cos.config();
   const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
   const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
@@ -88,6 +91,7 @@ export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
     environment: { type: "reuse", environmentId: opts.environmentId },
     ...promptArgs(opts.prompt, opts.mentions),
     title: opts.title,
+    sectionId: opts.sectionId,
     ...(providerId ? { providerId } : {}),
     ...(model ? { model } : {}),
     ...(reasoningLevel ? { reasoningLevel } : {}),
