@@ -303,6 +303,11 @@ export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingRea
 export class StateStore {
   constructor(private readonly db: Database, private readonly now: () => Date = () => new Date()) {}
 
+  /** Commit related synchronous writes together, or roll them all back. */
+  transaction<T>(write: () => T): T {
+    return this.db.transaction(write)();
+  }
+
   isPaused(): boolean {
     return Boolean((this.db.prepare("SELECT paused FROM cos_control WHERE id = 1").get() as { paused: number } | undefined)?.paused);
   }

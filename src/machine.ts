@@ -447,7 +447,13 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "effect_error": {
       const n = node(event.step);
       if (!n || n.status === "done" || n.status === "pending") break;
-      const previous = event.effect.type === "agent" ? n.agentRetries?.[event.effect.agent] ?? (n.retry?.effect.type === "agent" && n.retry.effect.agent === event.effect.agent ? n.retry : null) : n.retry;
+      // Carry legacy node-level retries into the per-agent map before adding
+      // a sibling's error, so its failed-thread wait cannot be overwritten.
+      const agentRetries = { ...(n.retry?.effect.type === "agent" ? { [n.retry.effect.agent]: n.retry } : {}), ...n.agentRetries };
+      const previous = event.effect.type === "agent" ? agentRetries[event.effect.agent] : n.retry;
+      // An interrupted send must not reclassify a known dead thread as a
+      // recoverable prompt error. Only an explicit retry replaces that thread.
+      if (event.effect.type === "agent" && previous && !isPromptDeliveryRetry(previous)) break;
       const count = (previous?.count ?? 0) + 1;
       if (event.effect.type !== "agent") patch.jobStartedAt = null;
       patch.lastError = event.message.slice(0, 1000);
@@ -465,7 +471,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       }
       if (event.effect.type === "agent" && n.retry) {
         n.retry.cause = "prompt_delivery";
-        n.agentRetries = { ...n.agentRetries, [event.effect.agent]: n.retry };
+        n.agentRetries = { ...agentRetries, [event.effect.agent]: n.retry };
         selectAgentRetry(n);
       }
       break;
