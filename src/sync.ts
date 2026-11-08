@@ -271,7 +271,7 @@ function threadIdsOf(cos: Cos, item: WorkItem): string[] {
 export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> {
   const now = cos.now().getTime();
   const items = cos.store.listWorkItems({ limit: 200 }).filter((item) => {
-    if (item.status === "done") return false;
+    if (item.status === "done" || cos.store.isPaused(item.repo)) return false;
     if (item.status === "failed") return item.finishedAt !== null && now - Date.parse(item.finishedAt) <= FAILED_LOOKBACK_MS;
     return true;
   });
@@ -316,7 +316,7 @@ export async function tickItems(cos: Cos, actor: string): Promise<void> {
   await resumeQueued(cos, actor);
   const now = cos.now().getTime();
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
-    if (!item.workflow.steps.length) continue;
+    if (!item.workflow.steps.length || cos.store.isPaused(item.repo)) continue;
     if (item.queuedEvent) continue;
     // One item failing must not hold up other items.
     try {

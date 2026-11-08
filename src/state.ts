@@ -199,6 +199,7 @@ export const MIGRATIONS = [
   `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
   `CREATE TABLE IF NOT EXISTS cos_control (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS deferred_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, event_json TEXT NOT NULL, actor TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS paused_repos (repo TEXT PRIMARY KEY)`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -308,8 +309,19 @@ export class StateStore {
     return this.db.transaction(write)();
   }
 
-  isPaused(): boolean {
-    return Boolean((this.db.prepare("SELECT paused FROM cos_control WHERE id = 1").get() as { paused: number } | undefined)?.paused);
+  /** Paused everywhere, or, when a repo is given, paused for that repo alone. */
+  isPaused(repo?: string): boolean {
+    if ((this.db.prepare("SELECT paused FROM cos_control WHERE id = 1").get() as { paused: number } | undefined)?.paused) return true;
+    return repo !== undefined && this.isRepoPaused(repo);
+  }
+
+  isRepoPaused(repo: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM paused_repos WHERE repo = ?").get(repo));
+  }
+
+  setRepoPaused(repo: string, paused: boolean): void {
+    if (paused) this.db.prepare("INSERT OR IGNORE INTO paused_repos (repo) VALUES (?)").run(repo);
+    else this.db.prepare("DELETE FROM paused_repos WHERE repo = ?").run(repo);
   }
 
   setPaused(paused: boolean): void {
@@ -321,7 +333,8 @@ export class StateStore {
   }
 
   nextDeferredEvent(): { id: number; item_id: string; event_json: string; actor: string } | undefined {
-    return this.db.prepare("SELECT id, item_id, event_json, actor FROM deferred_events ORDER BY id LIMIT 1").get() as { id: number; item_id: string; event_json: string; actor: string } | undefined;
+    // Events held for a paused repo wait; events of other repos (or of deleted items) replay.
+    return this.db.prepare("SELECT d.id, d.item_id, d.event_json, d.actor FROM deferred_events d LEFT JOIN work_items w ON w.id = d.item_id WHERE w.repo IS NULL OR w.repo NOT IN (SELECT repo FROM paused_repos) ORDER BY d.id LIMIT 1").get() as { id: number; item_id: string; event_json: string; actor: string } | undefined;
   }
 
   deleteDeferredEvent(id: number): void { this.db.prepare("DELETE FROM deferred_events WHERE id = ?").run(id); }

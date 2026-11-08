@@ -522,6 +522,25 @@ describe("chief-of-staff server", () => {
     expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ paused: false });
   });
 
+  it("pauses one project: holds its intake and progress, then resumes the recorded report", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.callRpc("cos_set_repo_paused", { repo: "acme/app", paused: true });
+    expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ paused: false, repos: [{ key: "acme/app", paused: true }] });
+    const intake = (await host.harness.behavior.callRpc("cos_intake_now", {})) as { results: { error?: string }[] };
+    expect(intake.results[0].error).toMatch(/paused/i);
+    await expect(host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", body: "do it" })).rejects.toThrow(/Project acme\/app is paused/);
+    await expect(host.harness.behavior.callRpc("cos_set_repo_paused", { repo: "nope/nope", paused: true })).rejects.toThrow(/not configured/);
+    await sweep();
+    await report("build");
+    await idle();
+    expect(ranChecks()).toBe(0);
+    expect(await roster()).toMatchObject({ current: ["Build"] });
+    await host.harness.behavior.callRpc("cos_set_repo_paused", { repo: "acme/app", paused: false });
+    await settleJobs();
+    expect(ranChecks()).toBe(1);
+    expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ repos: [{ paused: false }] });
+  });
+
   it("takes an issue through build, verify and ship, never leaking the token", async () => {
     const intake = (await host.harness.behavior.callRpc("cos_intake_now", {})) as { results: { started: { issue: number; threadId: string }[] }[] };
     expect(intake.results[0].started).toEqual([{ issue: 12, threadId: "thr_1" }]);

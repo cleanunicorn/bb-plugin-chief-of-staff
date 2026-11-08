@@ -182,7 +182,7 @@ export async function detectStalls(cos: Cos, actor: string): Promise<string[]> {
   const now = cos.now().getTime();
   const stalled: string[] = [];
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
-    if (item.status !== "agent") continue;
+    if (item.status !== "agent" || cos.store.isPaused(item.repo)) continue;
     const last = Date.parse(item.lastActivityAt ?? item.createdAt);
     if (now - last <= stallMs) continue;
     // Confirm against the live threads: one still streaming means not stalled.
@@ -276,6 +276,7 @@ export async function reconcile(cos: Cos): Promise<void> {
   await tickItems(cos, "startup");
   // Steps parked by our own failure get one fresh attempt after a restart or plugin update.
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
+    if (cos.store.isPaused(item.repo)) continue;
     for (const [stepId, n] of Object.entries(item.nodes)) {
       if (n.status === "waiting" && n.waiting?.kind === "cos_error" && n.retry && !n.retry.uncertain && (n.retry.effect.type !== "agent" || n.retry.uncertain === false)) await dispatch(cos, item.id, { type: "retry", step: stepId }, "startup");
     }
