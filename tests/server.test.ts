@@ -180,8 +180,12 @@ describe("chief-of-staff server", () => {
   /** A strictly increasing thread timestamp, always after Chief of Staff's latest prompt. */
   const tick = () => Date.now() + 60_000 + ++clock * 1000;
   /** The agent files its stage report through the cos_report tool. */
-  const report = (stage: string, outcome = "done", summary = `${stage} done`, threadId = "thr_1", question?: string) =>
-    host.harness.behavior.callAgentTool("cos_report", { step: stage, outcome, summary, ...(question ? { question } : {}) }, { threadId });
+  const report = (stage: string, outcome = "done", summary = `${stage} done`, threadId = "thr_1", question?: string) => {
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.getWorkItemByThread(threadId);
+    const delivery = item?.nodes[stage]?.deliveries?.[store.getThread(threadId)?.agent ?? 0]?.id;
+    return host.harness.behavior.callAgentTool("cos_report", { step: stage, outcome, summary, ...(delivery ? { delivery } : {}), ...(question ? { question } : {}) }, { threadId });
+  };
   /** A turn ends on a thread; wait for the jobs it starts. */
   const idle = async (lastAssistantText: string | null = "done", threadId = "thr_1", updatedAt = tick()) => {
     threadUpdatedAt = updatedAt;
@@ -202,6 +206,239 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     globalThis.fetch = originalFetch;
     await host.harness.lifecycle.dispose();
+  });
+
+  it("loads pre-model-choice workflows with defaults and completes their reports", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const db = host.bb.storage.database();
+    const store = new StateStore(db);
+    const item = store.listWorkItems()[0];
+    const legacy = JSON.parse(JSON.stringify(item.workflow));
+    for (const step of legacy.steps) delete step.chooses;
+    db.prepare("UPDATE work_items SET workflow_json=? WHERE id=?").run(JSON.stringify(legacy), item.id);
+    host = await host.harness.lifecycle.reload(plugin);
+    expect(new StateStore(host.bb.storage.database()).getWorkItem(item.id)?.workflow.steps[0]).toHaveProperty("chooses", []);
+    expect(JSON.stringify(await report("build"))).toContain("Recorded");
+    await idle();
+    expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
+  it("does not retry a delivered prompt when post-send bookkeeping throws", async () => {
+    const original = StateStore.prototype.log;
+    vi.spyOn(StateStore.prototype, "log").mockImplementation(function (this: StateStore, entry) {
+      if (entry.kind === "spawn") throw new Error("post-send bookkeeping failed");
+      return original.call(this, entry);
+    });
+    try {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+      expect(item.nodes.build.retry).toBeNull();
+      expect(item.nodes.build.status).toBe("running");
+      expect(JSON.stringify(await report("build"))).toContain("Recorded");
+      await idle();
+      expect(await roster()).toMatchObject({ detail: "done" });
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it("keeps an uncertain send across reload and accepts the matching agent report", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("accepted, response lost"); });
+    await idle(); // nudge delivered but transport response lost
+    const store = new StateStore(host.bb.storage.database());
+    let item = store.listWorkItems()[0];
+    expect(item.nodes.build.retry).toMatchObject({ uncertain: true, at: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    host = await host.harness.lifecycle.reload(plugin);
+    threadStatus = "active";
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    item = new StateStore(host.bb.storage.database()).getWorkItem(item.id)!;
+    const delivery = item.nodes.build.deliveries?.[0]?.id;
+    expect(delivery).toBeTruthy();
+    expect(JSON.stringify(await host.harness.behavior.callAgentTool("cos_report", { step: "build", outcome: "done", summary: "done", delivery }, { threadId: "thr_1" }))).toContain("Recorded");
+    await idle();
+    expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
+  it("rejects a tracked thread from an older round before staging a report", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    store.updateThread("thr_1", { round: item.nodes.build.round - 1 });
+    expect(JSON.stringify(await report("build"))).toContain("earlier");
+    expect(store.getThread("thr_1")?.pendingReport).toBeNull();
+  });
+
+  it.each(["done", "needs_input"])("recovers an uncertain send through a text %s report", async (outcome) => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("response lost"); });
+    await idle();
+    const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+    const token = item.nodes.build.deliveries![0].id;
+    await idle(`## Step report\nstep: build\ndelivery: wrong\noutcome: done\nsummary: stale`);
+    expect((await roster()).waitingKind).toBe("cos_error");
+    await idle(`## Step report\nstep: build\ndelivery: ${token}\noutcome: ${outcome}\nquestion: Which option?\nsummary: implemented`);
+    expect(await roster()).toMatchObject(outcome === "done" ? { detail: "done" } : { waitingKind: "question" });
+  });
+
+  it("recovers a lost spawn response using exact plugin metadata and its report token", async () => {
+    let metadata: Record<string, unknown> = {};
+    host.harness.inspection.sdk.stub("threads.spawn", async (args) => {
+      metadata = (args as { pluginMetadata: Record<string, unknown> }).pluginMetadata;
+      throw new Error("created the thread, lost the response");
+    });
+    host.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => metadata as never);
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    expect((await roster()).waitingKind).toBe("cos_error");
+    expect(JSON.stringify(await host.harness.behavior.callAgentTool("cos_report", {
+      step: "build", delivery: metadata.delivery, outcome: "done", summary: "done",
+    }, { threadId: "thr_lost" }))).toContain("Recorded");
+    await idle("done", "thr_lost");
+    expect(await roster()).toMatchObject({ detail: "done" });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  });
+
+  it("recovers legacy delivery-error waits but never an approval or unrelated failure", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const node = item.nodes.build;
+    delete node.deliveries;
+    delete node.agentRetries;
+    node.status = "waiting";
+    node.waiting = { kind: "cos_error", reason: "legacy prompt failure" };
+    node.retry = { effect: { type: "check", step: "build" }, count: 4, at: null };
+    store.updateWorkItem(item.id, { nodes: item.nodes });
+    expect(JSON.stringify(await report("build"))).toContain("not running");
+    node.retry = { effect: { type: "agent", step: "build", agent: 0, kind: "nudge" }, count: 4, at: null };
+    node.waiting = { kind: "approval", reason: "approval" };
+    store.updateWorkItem(item.id, { nodes: item.nodes });
+    expect(JSON.stringify(await report("build"))).toContain("not running");
+    node.waiting = { kind: "cos_error", reason: "legacy prompt failure" };
+    store.updateWorkItem(item.id, { nodes: item.nodes });
+    host = await host.harness.lifecycle.reload(plugin);
+    expect(JSON.stringify(await report("build"))).toContain("Recorded");
+    await idle();
+    expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
+  it.each([
+    ["tool", "failed", false], ["text", "deleted", false],
+    ["tool", "deleted", true], ["text", "failed", true],
+  ] as const)("rejects %s reports after a reviewer thread is %s (legacy=%s)", async (via, failure, legacy) => {
+    await host.harness.behavior.setSettings({
+      repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "default" }] }),
+      workflow: JSON.stringify({ default: "default", workflows: [{ id: "default", name: "Review", steps: [{ id: "review", name: "Review", type: "agent" }] }] }),
+    });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const delivery = item.nodes.review.deliveries![0].id;
+    const thread = makeThreadResponse({ id: "thr_review", status: "error" });
+    if (failure === "deleted") await host.harness.behavior.emitThreadEvent("thread.deleted", { thread });
+    else await host.harness.behavior.emitThreadEvent("thread.failed", { thread, error: "provider crashed" } as never);
+    const failed = store.getWorkItem(item.id)!;
+    expect(failed.nodes.review.retry?.effect).toMatchObject({ type: "agent", fresh: true });
+    if (legacy) {
+      delete failed.nodes.review.retry!.cause;
+      delete failed.nodes.review.agentRetries;
+      store.updateWorkItem(item.id, { nodes: failed.nodes });
+    }
+    const before = store.getWorkItem(item.id)!.nodes.review;
+    if (via === "tool") expect(JSON.stringify(await report("review", "done", "old thread done", "thr_review"))).toContain("not running");
+    else await idle(`## Step report\nstep: review\ndelivery: ${delivery}\noutcome: done\nsummary: old thread done`, "thr_review");
+    expect(store.getWorkItem(item.id)!.nodes.review).toEqual(before);
+    expect(store.getThread("thr_review")?.pendingReport).toBeNull();
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "thr_replacement", environmentId: "env_1" }));
+    await host.harness.behavior.callRpc("cos_item_action", { id: item.id, action: "retry", step: "review" });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(2);
+    expect(JSON.stringify(await report("review", "done", "replacement done", "thr_replacement"))).toContain("Recorded");
+    await idle("done", "thr_replacement");
+    expect(store.getWorkItem(item.id)?.nodes.review.status).toBe("done");
+  });
+
+  it("preserves a sibling's uncertain retry and report on a multi-agent step", async () => {
+    await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "default" }] }), workflow: JSON.stringify({ default: "default", workflows: [{ id: "default", name: "Pair", steps: [{ id: "review", name: "Review", type: "agent", agents: 2 }] }] }) });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("response lost"); });
+    await idle("no report", "thr_review-1");
+    await idle("no report", "thr_review-2"); // no blind nudge while parked
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const retry = item.nodes.review.retry;
+    expect(JSON.stringify(await report("review", "done", "second passed", "thr_review-2"))).toContain("Recorded");
+    await idle("done", "thr_review-2");
+    expect(store.getWorkItem(item.id)?.nodes.review).toMatchObject({ status: "waiting", retry, reports: [null, { summary: "second passed" }] });
+    const delivery = item.nodes.review.deliveries![0].id;
+    await host.harness.behavior.callAgentTool("cos_report", { step: "review", outcome: "done", summary: "first passed", delivery }, { threadId: "thr_review-1" });
+    await idle("done", "thr_review-1");
+    expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
+  it("keeps four items isolated when one delivery becomes uncertain", async () => {
+    await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", maxConcurrent: 4 }] }), maxConcurrentTotal: 4 });
+    let serial = 0;
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: `task_${++serial}`, environmentId: "env_1" }));
+    for (let i = 0; i < 4; i++) await host.harness.behavior.callAgentTool("cos_start_task", { repo: "acme/app", title: `Task ${i}`, description: `Fix ${i}` });
+    const store = new StateStore(host.bb.storage.database());
+    expect(store.listWorkItems()).toHaveLength(4);
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("response lost"); });
+    await idle("no report", "task_1");
+    expect(JSON.stringify(await report("build", "done", "second done", "task_2"))).toContain("Recorded");
+    const affected = store.getWorkItemByThread("task_1")!;
+    expect(affected.nodes.build.status).toBe("waiting");
+    for (const id of ["task_2", "task_3", "task_4"]) expect(store.getWorkItemByThread(id)?.nodes.build).toMatchObject({ status: "running", retry: null });
+    expect(store.getThread("task_1")?.pendingReport).toBeNull();
+  });
+
+  it("retries definite preparation failures with bounded backoff without spawning", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const original = StateStore.prototype.updateWorkItem;
+      vi.spyOn(StateStore.prototype, "updateWorkItem").mockImplementation(function (this: StateStore, id, patch) {
+        if (Object.keys(patch).length === 1 && patch.lastActivityAt) throw new Error("preparation failed");
+        return original.call(this, id, patch);
+      });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      for (let i = 0; i < 3; i++) { vi.setSystemTime(Date.now() + 20 * 60_000); await sweep(); }
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect((await roster()).waitingKind).toBe("cos_error");
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+
+  it("does not resend accepted queued work after a long silent interval", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      host.harness.inspection.sdk.stub("threads.send", async () => ({ ok: true, delivery: "queued", queuedMessage: { id: "queued_1" } }) as never);
+      await idle();
+      const calls = host.harness.inspection.sdk.callsTo("threads.send").length;
+      threadUpdatedAt = 1; // an old idle snapshot cannot disprove acceptance
+      vi.setSystemTime(Date.now() + 90 * 60_000);
+      await sweep();
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(calls);
+      expect(JSON.stringify(await report("build"))).toContain("Recorded");
+      await idle();
+      expect(await roster()).toMatchObject({ detail: "done" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("parks an interrupted in-flight delivery after reload without resending it", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    item.nodes.build.deliveries![0].state = "sending";
+    store.updateWorkItem(item.id, { nodes: item.nodes });
+    host = await host.harness.lifecycle.reload(plugin);
+    threadStatus = "active";
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(new StateStore(host.bb.storage.database()).getWorkItem(item.id)?.nodes.build.retry).toMatchObject({ uncertain: true, at: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    expect(JSON.stringify(await report("build"))).toContain("Recorded");
+    await idle();
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("holds workflow progress and intake while paused, then resumes recorded reports", async () => {

@@ -277,7 +277,7 @@ export async function reconcile(cos: Cos): Promise<void> {
   // Steps parked by our own failure get one fresh attempt after a restart or plugin update.
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
     for (const [stepId, n] of Object.entries(item.nodes)) {
-      if (n.status === "waiting" && n.waiting?.kind === "cos_error" && n.retry) await dispatch(cos, item.id, { type: "retry", step: stepId }, "startup");
+      if (n.status === "waiting" && n.waiting?.kind === "cos_error" && n.retry && !n.retry.uncertain && (n.retry.effect.type !== "agent" || n.retry.uncertain === false)) await dispatch(cos, item.id, { type: "retry", step: stepId }, "startup");
     }
   }
   cos.invalidate();
