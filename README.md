@@ -86,7 +86,7 @@ the skill; anything else stays plain text.
 The default workflow is **Plan** (needs approval) → **Build** (writes code) →
 **Review** (pass/fail, back to Build) → **Ship** (PR). Edit it, or add your own,
 under **Configure → Workflows**: drag steps on the canvas, connect a step's
-right edge to another step, select an arrow and press Backspace to remove it,
+bottom edge to another step, select an arrow and press Backspace to remove it,
 or use the list view. Each repository picks a workflow; a task keeps the
 workflow it started with. On a task card, **Workflow** shows the task live on
 the canvas and lets you run any step again from there.

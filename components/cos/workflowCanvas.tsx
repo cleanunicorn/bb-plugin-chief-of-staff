@@ -1,5 +1,5 @@
 // Workflow graph on a canvas (React Flow). Edit mode: drag steps, connect a
-// step's right handle to another step's left handle to run it after, select an
+// step's bottom handle to another step's top handle to run it after, select an
 // arrow and press Backspace to remove it, add steps from the toolbar. Fail
 // arrows (“on fail, go back to…”) are drawn dashed and edited in the step
 // panel. Read-only mode colours each step by its live status for one task.
@@ -40,17 +40,17 @@ export const STEP_TYPE_META: Record<StepType, { label: string; icon: string; hin
 const COL = 320;
 const ROW = 130;
 
-/** Positions for steps without one: columns by depth, rows within a column. */
+/** Positions for steps without one: rows by depth, columns within a row. */
 export function layout(wf: Workflow, force = false): Map<string, { x: number; y: number }> {
   const depth = depths(wf);
-  const perColumn = new Map<number, number>();
+  const perRow = new Map<number, number>();
   const out = new Map<string, { x: number; y: number }>();
   for (const id of topoOrder(wf)) {
     const s = wf.steps.find((x) => x.id === id)!;
     const d = depth.get(id) ?? 0;
-    const row = perColumn.get(d) ?? 0;
-    perColumn.set(d, row + 1);
-    out.set(id, !force && s.position ? s.position : { x: d * COL, y: row * ROW });
+    const column = perRow.get(d) ?? 0;
+    perRow.set(d, column + 1);
+    out.set(id, !force && s.position ? s.position : { x: column * COL, y: d * ROW });
   }
   return out;
 }
@@ -90,7 +90,7 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
       className={cn("w-52 rounded-lg border bg-card px-3 py-2 text-left shadow-sm", selected ? "ring-2 ring-ring" : "")}
       style={{ borderColor: tone?.color ?? "var(--border)", borderWidth: tone && tone.label !== "pending" ? 2 : 1 }}
     >
-      <Handle type="target" position={Position.Left} className="!size-2.5 !border-border !bg-background" />
+      <Handle type="target" position={Position.Top} className="!size-2.5 !border-border !bg-background" />
       <div className="flex items-center gap-1.5">
         <span className="relative inline-flex">
           {active ? <span aria-hidden className="absolute inset-0 animate-ping rounded-full opacity-40" style={{ background: tone?.color }} /> : null}
@@ -108,10 +108,10 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
           {live && live.attempts ? <span className="text-muted-foreground"> · {live.attempts} failed</span> : null}
         </p>
       ) : null}
-      <Handle type="source" position={Position.Right} className="!size-2.5 !border-border !bg-background" />
-      {/* Fail arrows leave and enter at the bottom so they curve under the row instead of hiding behind it. */}
-      <Handle type="source" id="fail-out" position={Position.Bottom} isConnectable={false} className="!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-transparent" />
-      <Handle type="target" id="fail-in" position={Position.Bottom} isConnectable={false} className="!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-transparent" />
+      <Handle type="source" position={Position.Bottom} className="!size-2.5 !border-border !bg-background" />
+      {/* Fail arrows curve around the side of the vertical flow. */}
+      <Handle type="source" id="fail-out" position={Position.Right} isConnectable={false} className="!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-transparent" />
+      <Handle type="target" id="fail-in" position={Position.Right} isConnectable={false} className="!size-1.5 !min-h-0 !min-w-0 !border-0 !bg-transparent" />
     </div>
   );
 }
@@ -224,8 +224,8 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   const add = (type: StepType) => {
     const name = `New ${STEP_TYPE_META[type].label.toLowerCase()}`;
     const id = newStepId(workflow, name);
-    const maxX = Math.max(0, ...[...positions.values()].map((p) => p.x));
-    const step = { ...blankStep(type, id, name), position: { x: maxX + COL, y: 0 } } as Step;
+    const maxY = Math.max(0, ...[...positions.values()].map((p) => p.y));
+    const step = { ...blankStep(type, id, name), position: { x: 0, y: maxY + ROW } } as Step;
     update({ ...workflow, steps: [...workflow.steps, step] });
     onSelect?.(id);
   };
