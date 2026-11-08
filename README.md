@@ -96,7 +96,14 @@ manual rerun or agent step after shipping reacquires capacity; if the repo or
 global limit is full, it queues and resumes automatically. Limits count task
 reservations, including non-shipping human gates, rather than individual parallel
 agent threads. Other branches still working in the same task retain its slot.
-The dashboard shows occupied task capacity separately from waiting PRs.
+The dashboard shows occupied task capacity separately from waiting PRs. The
+Pipeline view places active tasks before historical throughput and repository
+capacity. Stage filters count tasks; task slots retain the admission semantics
+above. “Failures needing a decision” counts active human waits caused by an
+escalation, a missing report, or a Chief of Staff error. Stalled work is shown
+separately. Terminal failed runs are historical outcomes, not unresolved
+incidents; they remain accessible with **Show finished**. Retrying work stays in
+Checks & shipping until it requires a decision.
 
 **Upgrade behavior:** unfinished PR-only items in CI/ready finish after their PR
 is confirmed open or merged. Closed, unmerged PRs fail delivery; a GitHub error

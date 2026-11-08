@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Visual task cues.** Larger state pictograms, repository and usage icons,
+  recorded step-state symbols, and a theme-aware empty-queue illustration make
+  the dashboard easier to scan without replacing text labels.
+
+- **Active work first.** The dashboard puts attention items and task cards above
+  historical throughput and capacity, with compact stage filters. Failure
+  decisions and stalls have separate drill-downs; terminal failures remain
+  historical outcomes. Cards lead with task titles and Open thread, collapse
+  workflow details, and hide unavailable usage. Activity shows readable updates
+  with expandable technical details and links to the task workflow.
+
 - **Model steps.** A new workflow step type sets the agent (provider), model and
   reasoning level for the agent steps after it, and keeps applying until another
   Model step changes them. It does no work of its own and completes instantly.
