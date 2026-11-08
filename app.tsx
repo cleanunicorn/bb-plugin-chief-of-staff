@@ -1,7 +1,7 @@
 // Chief of Staff — BB plugin frontend entry: dashboard nav panel + settings section.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { ThreadTitle, UrlLink, definePluginApp, experimental_useRpcQuery, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { UrlLink, definePluginApp, experimental_useRpcQuery, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "./rpcContract";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, StatusPill, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
-import { ACTOR, STAGES, stageColor, stageOf } from "@/components/cos/stages";
+import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { WorkflowCanvas, type LiveStatus } from "@/components/cos/workflowCanvas";
 import type { Workflow } from "./src/workflow";
 import type { StageKey } from "@/components/cos/stages";
@@ -84,7 +84,7 @@ const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
 
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
   if (e.detail === "done") return { tone: "good", label: e.lastError ? "Closed" : "Shipped", icon: "CircleCheck" };
-  if (e.detail === "failed") return { tone: "critical", label: "Failed", icon: "CircleX" };
+  if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
   if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
   if (e.detail === "waiting_on_human") {
     const w = WAITING_LABEL[e.waitingKind ?? "question"] ?? WAITING_LABEL.question!;
@@ -116,20 +116,12 @@ function StagePill({ entry }: { entry: RosterEntry }) {
   );
 }
 
-/** Who holds the ball and what is happening, in one line. */
+/** Preserve useful progress detail without repeating the stage's generic working label. */
 function ActivityLine({ entry }: { entry: RosterEntry }) {
-  const a = ACTOR[entry.actor] ?? ACTOR.none!;
-  if (!a.label) return null;
-  return (
-    <p className="flex items-start gap-1.5 text-xs text-muted-foreground" title={entry.activity}>
-      <Icon name={a.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-      <span className="min-w-0">
-        <span className="font-medium text-foreground">{a.label}</span> · <span className="line-clamp-2 inline">{entry.activity}</span>
-      </span>
-    </p>
-  );
+  const generic = entry.current.map((name) => `${name}: agent working`).join(" · ");
+  if (!entry.activity || entry.activity === generic || entry.activity === "Working" || entry.activity === entry.waitingReason) return null;
+  return <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{entry.activity}</p>;
 }
-
 
 /** One task's workflow on the canvas, coloured live, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
@@ -219,30 +211,35 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   return (
     <article className={cn("flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-4", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
+      <div className="min-w-0">
+        <h3 className="text-base font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
+        <p className="mt-1 text-sm text-muted-foreground [overflow-wrap:anywhere]">
+          {entry.repo.split("/")[1] ?? entry.repo}
+          {entry.issueNumber ? ` #${entry.issueNumber}` : ""}
+        </p>
+      </div>
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
           {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
         </div>
-        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums" title={`Started ${new Date(entry.startedAt).toLocaleString()}`}>
+        <span className="flex shrink-0 items-center gap-1 text-sm text-muted-foreground tabular-nums" title={`Task started ${new Date(entry.startedAt).toLocaleString()}`} aria-label={`Task age ${duration(elapsedMin)}`}>
           <Icon name="Timer" fallback="Clock" className="size-3.5" aria-hidden />
           {finished ? relative(entry.startedAt, now) : duration(elapsedMin)}
         </span>
       </div>
-      <div className="min-w-0">
-        <p className="text-xs font-medium text-muted-foreground">
-          {entry.repo.split("/")[1] ?? entry.repo}
-          {entry.issueNumber ? ` #${entry.issueNumber}` : ""}
-        </p>
-        <h3 className="line-clamp-2 text-sm font-semibold text-foreground">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
-      </div>
-      <StepFlow entry={entry} />
       {!finished ? <ActivityLine entry={entry} /> : null}
+      {entry.steps.length ? <details className="text-sm">
+        <summary className="cursor-pointer rounded py-1 text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+          Workflow progress · {entry.steps.filter((step) => step.status === "done").length}/{entry.steps.length} complete
+        </summary>
+        <div className="pt-2"><StepFlow entry={entry} /></div>
+      </details> : null}
       {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
         <button
           type="button"
           onClick={() => onAnswer(entry.id)}
-          className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+          className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
           aria-label={entry.waitingKind === "approval" ? "Open the report to approve it" : "Open the question to answer it"}
         >
           <Icon name="MessageCircleQuestion" fallback="MessageSquare" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
@@ -255,52 +252,53 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
         </button>
       ) : null}
       {entry.lastError && !finished && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
-        <p className="flex items-start gap-1.5 text-xs text-foreground">
+        <p className="flex items-start gap-1.5 text-sm text-foreground">
           <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
           <span className="line-clamp-2">{entry.lastError}</span>
         </p>
       ) : null}
-      <dl className="grid grid-cols-3 gap-2 border-t border-border pt-3 text-xs">
+      <dl className="mt-auto flex flex-wrap gap-x-5 gap-y-2 pt-2 text-sm">
         <div className="min-w-0">
-          <dt className="text-muted-foreground">Activity</dt>
-          <dd className="truncate font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
+          <dt className="text-muted-foreground">Last activity</dt>
+          <dd className="font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
         </div>
-        <div className="min-w-0">
+        {entry.usage?.totalTokens != null ? <div>
           <dt className="text-muted-foreground">Tokens</dt>
-          <dd className="truncate font-medium text-foreground tabular-nums">{entry.usage?.totalTokens != null ? compact(entry.usage.totalTokens) : "–"}</dd>
-        </div>
-        <div className="min-w-0">
-          <dt className="text-muted-foreground">{entry.fixAttempts ? "Fix cycles" : "Cost"}</dt>
-          <dd className="truncate font-medium text-foreground tabular-nums">{entry.fixAttempts ? entry.fixAttempts : entry.usage?.cost ? `${entry.usage.cost.amount.toFixed(2)} ${entry.usage.cost.currency}` : "–"}</dd>
-        </div>
+          <dd className="font-medium text-foreground tabular-nums">{compact(entry.usage.totalTokens)}</dd>
+        </div> : null}
+        {entry.usage?.cost != null ? <div>
+          <dt className="text-muted-foreground">Cost</dt>
+          <dd className="font-medium text-foreground tabular-nums">{entry.usage.cost.amount.toFixed(2)} {entry.usage.cost.currency}</dd>
+        </div> : null}
+        {entry.fixAttempts > 0 ? <div>
+          <dt className="text-muted-foreground">Fix cycles</dt>
+          <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
+        </div> : null}
       </dl>
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
         {entry.threadId ? (
-          <Button size="sm" variant="outline" className="h-7 max-w-[60%] px-2" onClick={() => navigate.toThread(entry.threadId!)}>
-            <Icon name="MessageSquare" fallback="Circle" aria-hidden />
-            <span className="truncate">
-              <ThreadTitle threadId={entry.threadId} />
-            </span>
+          <Button onClick={() => navigate.toThread(entry.threadId!)}>
+            <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
           </Button>
         ) : null}
+        <Button variant="outline" onClick={() => onWorkflow(entry.id)}>
+          <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
+        </Button>
         {entry.prUrl ? (
-          <span className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-xs font-medium">
+          <span className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium">
             <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
             <UrlLink href={entry.prUrl}>#{entry.prNumber}</UrlLink>
           </span>
         ) : null}
         {entry.waitingKind === "approval" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
+          <Button size="sm" className="text-sm" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
             <Icon name="Check" fallback="Circle" aria-hidden /> Approve
           </Button>
         ) : needsHuman && entry.waitingKind !== "question" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
+          <Button size="sm" className="text-sm" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
             <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => onWorkflow(entry.id)}>
-          <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
-        </Button>
         {!finished || entry.detail === "failed" ? (
           <div className="relative ml-auto">
             <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="More actions" aria-expanded={menu} disabled={busy} onClick={() => setMenu((v) => !v)}>
@@ -319,7 +317,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
                     key={action}
                     role="menuitem"
                     type="button"
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground hover:bg-state-hover"
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground hover:bg-state-hover"
                     onClick={() => {
                       setMenu(false);
                       onAction(entry.id, action);
@@ -436,7 +434,8 @@ export function PipelineTab() {
       </nav>
       {/* Agents */}
       <Panel
-        title={filter === "all" ? "Active tasks" : filterLabel ?? "Active tasks"}
+        className="border-0 bg-transparent [&>header]:px-0 [&>div]:px-0"
+        title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
         icon="Bot"
         dim={roster.isFetching && !roster.isLoading}
         actions={

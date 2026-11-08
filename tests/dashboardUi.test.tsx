@@ -55,3 +55,26 @@ it("drills into failure decisions and clears the filter", async () => {
   await act(async () => Array.from(container.querySelectorAll('button')).find(b => b.textContent?.trim() === "Clear filter")!.click());
   expect(container.textContent).toContain("Fix login");
 });
+
+it("leads with the title, omits missing usage, and opens the task thread", async () => {
+  mocks.entries = [entry()];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.textContent!.indexOf("Fix login")).toBeLessThan(card.textContent!.indexOf("Build"));
+  expect(card.textContent).not.toContain("agent working");
+  expect(card.textContent).not.toContain("Tokens");
+  expect(card.textContent).not.toContain("Cost");
+  const open = Array.from(card.querySelectorAll('button')).find(b => b.textContent?.trim() === "Open thread")!;
+  await act(async () => open.click());
+  expect(mocks.navigate.toThread).toHaveBeenCalledWith("thread-1");
+});
+
+it("shows real zero usage and keeps task actions available without a thread", async () => {
+  mocks.entries = [entry({ threadId: null, usage: { totalTokens: 0, cost: { amount: 0, currency: "USD" } } as RosterEntry["usage"] })];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.textContent).toContain("Tokens0");
+  expect(card.textContent).toContain("Cost0.00 USD");
+  expect(card.textContent).not.toContain("Open thread");
+  expect(card.textContent).toContain("Workflow");
+});
