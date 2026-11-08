@@ -265,15 +265,15 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                     value={step.action}
                     onChange={(v) => set({ action: v })}
                     options={[
-                      { value: "pr", label: "Open a pull request; I merge it" },
-                      { value: "merge", label: "Open a pull request and merge it when green" },
+                      { value: "pr", label: "Finish when the pull request opens" },
+                      { value: "merge", label: "Finish after the pull request is merged" },
                       { value: "push", label: "Push the branch only" },
                     ]}
                   />
                 )}
               </Field>
               {step.action !== "push" ? <ToggleRow label="Open as draft" checked={step.draft} onChange={(v) => set({ draft: v })} /> : null}
-              {step.action === "merge" ? <ToggleRow label="Wait for an approving review" checked={step.requireApproval} onChange={(v) => set({ requireApproval: v })} /> : null}
+              {step.action === "merge" ? <ToggleRow label="Wait for an approving review" hint="CI and review waits release task capacity. Merges when approved and green." checked={step.requireApproval} onChange={(v) => set({ requireApproval: v })} /> : null}
             </div>
           ) : null}
 

@@ -139,7 +139,7 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold text-foreground">{title}</span>
             <span className="block truncate text-[11px] text-muted-foreground">
-              {project ? `Project ${project.name}` : repo.projectId ? `Project ${repo.projectId}` : "No project selected"} · {repo.intake ? `issues labelled ${repo.issueFilter.labels.join(", ") || "(none)"}` : "intake paused"} · up to {repo.maxConcurrent} agents
+              {project ? `Project ${project.name}` : repo.projectId ? `Project ${repo.projectId}` : "No project selected"} · {repo.intake ? `issues labelled ${repo.issueFilter.labels.join(", ") || "(none)"}` : "intake paused"} · up to {repo.maxConcurrent} tasks
             </span>
           </span>
         </button>
@@ -161,7 +161,7 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
             <ToggleRow label="Pick up issues" hint="Off: only tasks you start." checked={repo.intake} onChange={(v) => set("intake", v)} />
             <Field label="Issue labels" hint="Issues must carry all of these. Comma separated.">{(id) => <ListInput id={id} value={repo.issueFilter.labels} onChange={(v) => set("issueFilter", { ...repo.issueFilter, labels: v })} placeholder="agent-ready" />}</Field>
             <Field label="Assignee" hint="Optional GitHub login.">{(id) => <TextInput id={id} value={repo.issueFilter.assignee ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, assignee: v })} placeholder="any" />}</Field>
-            <Field label="Max concurrent agents">{(id) => <NumberInput id={id} value={repo.maxConcurrent} min={0} max={50} onChange={(v) => set("maxConcurrent", v)} />}</Field>
+            <Field label="Max concurrent tasks">{(id) => <NumberInput id={id} value={repo.maxConcurrent} min={0} max={50} onChange={(v) => set("maxConcurrent", v)} />}</Field>
           </Group>
           <Group title="Agent" icon="Bot" cols={3}>
             <Field label="Provider">{(id) => <ProviderPicker id={id} value={repo.providerId ?? ""} providers={providers} allowDefault={`Default (${defaultProvider || "bb default"})`} onChange={(v) => set("providerId", v)} />}</Field>
@@ -218,7 +218,7 @@ function GeneralEditor({ values, onChange, providers }: { values: GeneralSetting
   return (
     <div className="flex flex-col gap-5">
       <Group title="Capacity" icon="Gauge" cols={3}>
-        <Field label="Max agents across all repos">{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
+        <Field label="Max tasks across all repos">{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
         <Field label="Intake every (minutes)">{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
         <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled.">{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
       </Group>

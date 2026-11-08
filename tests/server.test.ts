@@ -236,6 +236,22 @@ describe("chief-of-staff server", () => {
     expect(log.stdout).not.toContain("ghp_secret_token");
   });
 
+  it("reports occupied capacity separately from a merge waiting on review", async () => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }), maxConcurrentTotal: 1 });
+    ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build");
+    await idle();
+    await sweep();
+    expect(await roster()).toMatchObject({ detail: "ready", occupiesCapacity: false, prNumber: 7 });
+    const overview = await host.harness.behavior.callRpc("cos_overview", null) as { repos: { active: number }[]; occupiedCapacity: number };
+    expect(overview.repos[0].active).toBe(0);
+    expect(overview.occupiedCapacity).toBe(0);
+    await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Another task", body: "Work while review waits" });
+    const after = await host.harness.behavior.callRpc("cos_overview", null) as typeof overview;
+    expect(after.occupiedCapacity).toBe(1);
+  });
+
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
     const custom = {
       workflows: [

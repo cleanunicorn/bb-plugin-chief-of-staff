@@ -3,7 +3,7 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import type { WaitingKind, WorkItem } from "./state";
+import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch } from "./delivery";
 import { syncThreads, tickItems } from "./sync";
@@ -29,6 +29,7 @@ export interface RosterStep {
 }
 
 export interface RosterEntry {
+  occupiesCapacity: boolean;
   id: string;
   status: ReturnType<typeof rosterStatus>;
   detail: WorkItem["status"];
@@ -108,6 +109,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
     const steps = rosterSteps(item);
     entries.push({
       id: item.id,
+      occupiesCapacity: occupiesCapacity(item),
       status: rosterStatus(item),
       detail: item.status,
       workflowName: item.workflow.name,
@@ -149,7 +151,7 @@ export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSte
     case "failed":
       return item.lastError ?? "Failed";
     case "queued":
-      return "Waiting to start";
+      return item.queuedEvent ? "Waiting for task capacity" : "Waiting to start";
     case "waiting_on_human":
     case "blocked":
       return item.waitingReason ?? "Waiting on you";

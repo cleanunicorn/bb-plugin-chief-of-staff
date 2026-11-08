@@ -62,7 +62,7 @@ function subtitle(s: Step): string {
     case "check":
       return s.command;
     case "ship":
-      return s.action === "merge" ? "PR, merge when green" : s.action === "push" ? "push branch" : "open PR";
+      return s.action === "merge" ? "finish after merge" : s.action === "push" ? "push branch" : "finish when PR opens";
   }
 }
 

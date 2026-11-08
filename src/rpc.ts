@@ -23,6 +23,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const config = await cos.config();
         return {
           tokenSource: await cos.tokenSource(),
+          occupiedCapacity: cos.store.countOccupied(),
           repos: await Promise.all(
             config.repos.map(async (r) => {
               const key = `${r.owner}/${r.repo}`;
@@ -31,7 +32,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
                 key,
                 projectId: r.projectId,
                 maxConcurrent: r.maxConcurrent,
-                active: cos.store.countActive(key),
+                active: cos.store.countOccupied(key),
                 labels: r.issueFilter.labels,
                 intake: r.intake,
                 workflowId: workflow.id,
@@ -165,11 +166,11 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
     case "mark_done":
       cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked done", actor });
       cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "done", finishedAt: cos.now().toISOString() });
+      return cos.store.updateWorkItem(id, { status: "done", queuedEvent: null, finishedAt: cos.now().toISOString() });
     case "mark_failed":
       cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked failed", actor });
       cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "failed", finishedAt: cos.now().toISOString() });
+      return cos.store.updateWorkItem(id, { status: "failed", queuedEvent: null, finishedAt: cos.now().toISOString() });
   }
 }
 
