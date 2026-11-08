@@ -5,7 +5,7 @@ import { runIntake } from "./intake";
 import { watchCi } from "./delivery";
 import { detectStalls } from "./roster";
 import { syncThreads, tickItems } from "./sync";
-import { groupExistingThreads } from "./sections";
+import { groupExistingThreads } from "./threadGroups";
 
 const KV_LAST_INTAKE = "sweep:lastIntakeAt";
 const KV_LAST_CI = "sweep:lastCiAt";

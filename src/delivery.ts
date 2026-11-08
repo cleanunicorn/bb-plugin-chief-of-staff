@@ -12,7 +12,7 @@ import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
 import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
-import { issueSection } from "./sections";
+import { itemParent, archiveOrder } from "./threadGroups";
 
 const OUTPUT_TAIL = 12_000;
 
@@ -162,7 +162,7 @@ export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
 async function archiveItemThreads(cos: Cos, item: WorkItem, actor: string): Promise<void> {
   const { values } = await cos.config();
   if (!values.archiveThreadsOnDone) return;
-  const ids = [...new Set([...cos.store.listThreads(item.id).map((t) => t.threadId), ...(item.threadId ? [item.threadId] : [])])];
+  const ids = await archiveOrder(cos, item);
   const archived: string[] = [];
   for (const threadId of ids) {
     try {
@@ -260,7 +260,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
       const spawned = await spawnWorktreeThread(cos, {
         repo,
         title: item.branch ?? item.issueTitle,
-        sectionId: await issueSection(cos, item),
+        parentThreadId: await itemParent(cos, item),
         prompt,
         mentions: mentionsIn(prompt),
         settings,
@@ -300,8 +300,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   const spawned = await spawnStepThread(cos, {
     repo,
     environmentId: item.environmentId,
-    parentThreadId: item.threadId ?? undefined,
-    sectionId: await issueSection(cos, item),
+    parentThreadId: await itemParent(cos, item),
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
     prompt: stepThreadPrompt,
     mentions: mentionsIn(stepThreadPrompt),

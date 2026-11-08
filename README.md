@@ -287,6 +287,10 @@ bb plugin dev       # build + install + reload on change
 
 ### Workflow thread grouping
 
-Chief of Staff groups workflow threads in native BB sections named `owner/repo#123 · Issue title`. Planning, builder, review, and retry threads share the issue section across worktrees. Tasks without a GitHub issue get their own section. BB handles section display and collapse behavior; no custom sidebar is needed.
+Chief of Staff uses BB’s native parent-thread tree to group each workflow in project view. The first live workflow thread becomes its parent; planning agents, the builder, reviewers, and replacement threads are grouped beneath it across worktrees. The parent identity is stored separately from the builder and survives restarts. No extra coordinator agent or custom sidebar is created.
 
-The regular sweep also groups unsectioned threads belonging to active tasks. Archived threads and threads already placed in another section are left alone. Section identities survive plugin restarts and manual renames; deleted sections are recreated when needed. Grouping failures are logged and retried without blocking workflow execution.
+Child-result notifications are disabled (`parentNotifications: "off"`); Chief of Staff still handles step reports and progression. Workspace choices and configured provider, model, reasoning, and permissions remain explicit. Unset execution options can inherit BB’s parent defaults.
+
+The regular sweep groups existing active workflows and preserves threads attached to parents outside the workflow. BB can send an assignment notice to the parent when existing threads are attached, even with child-result notifications disabled. A missing or archived parent is replaced with a live workflow thread when available. Failed grouping is logged for a later retry.
+
+On completion, Chief of Staff archives children before their parent when automatic archiving is enabled. Manually archiving the parent detaches live children; deleting a parent also deletes its descendants. BB limits nesting to four levels. This implementation creates no native sections and does not change sidebar preferences.
