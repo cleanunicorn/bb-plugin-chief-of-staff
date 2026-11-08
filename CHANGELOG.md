@@ -4,7 +4,9 @@
 
 - **Upgrade migration fix.** Restore the recorded index of the queued-event
   migration so existing installations can update without a migration 27 mismatch.
-  Pause-control tables are appended after the existing migrations.
+  Pause-control tables are appended after the existing migrations. Installations
+  that already recorded the reordered pause migrations retain that history, with
+  all statement hashes still validated by the SDK.
 
 - **Visual task cues.** Larger state pictograms, repository and usage icons,
   recorded step-state symbols, and a theme-aware empty-queue illustration make

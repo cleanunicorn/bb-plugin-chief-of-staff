@@ -4,6 +4,7 @@
 // activity_log. Columns from the fixed-stage model and the removed routines
 // feature are left in place and unused.
 import type { Database } from "better-sqlite3";
+import { createHash } from "node:crypto";
 import type { MachineEvent, Nodes, StepReport } from "./machine";
 import type { Workflow } from "./workflow";
 
@@ -199,6 +200,17 @@ export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS cos_control (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS deferred_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, event_json TEXT NOT NULL, actor TEXT NOT NULL)`,
 ];
+
+/** Preserve both shipped histories; the SDK still validates every recorded hash.
+ * Append future migrations to MIGRATIONS: only indexes 27–29 differ. */
+export function migrationsForDatabase(db: Database): string[] {
+  const columns = db.prepare("PRAGMA table_info(_bb_migrations)").all() as { name: string }[];
+  if (!columns.some((column) => column.name === "statement_hash")) return MIGRATIONS;
+  const row = db.prepare("SELECT statement_hash FROM _bb_migrations WHERE id = 27").get() as { statement_hash: string | null } | undefined;
+  const pauseHash = createHash("sha256").update(MIGRATIONS[28]).digest("hex");
+  if (row?.statement_hash !== pauseHash) return MIGRATIONS;
+  return [...MIGRATIONS.slice(0, 27), MIGRATIONS[28], MIGRATIONS[29], MIGRATIONS[27], ...MIGRATIONS.slice(30)];
+}
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
 export function isActiveStatus(status: WorkStatus): boolean {

@@ -1,7 +1,8 @@
+import reorderedMigrations from "./fixtures/migrations-reordered-pause.json";
 import previousMigrations from "./fixtures/migrations-before-pause.json";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { MIGRATIONS, StateStore, type NewWorkItem } from "../src/state";
+import { MIGRATIONS, migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
 import { DEFAULT_POLICY, freshNode } from "../src/machine";
 import { workflowSchema } from "../src/workflow";
 import { dispatch, settleJobs, watchCi } from "../src/delivery";
@@ -18,7 +19,7 @@ function setup() {
   const host = createFakePluginHost({ pluginId: "test", sdk: { threads: { send: async () => ({ ok: true, delivery: "sent" }) as never } } });
   hosts.push(host);
   const db = host.bb.storage.database();
-  host.bb.storage.migrate(db, MIGRATIONS);
+  host.bb.storage.migrate(db, migrationsForDatabase(db));
   const store = new StateStore(db);
   const repo = { owner: "a", repo: "b", maxConcurrent: 1 };
   const cos = { bb: host.bb, store, now: () => new Date(), config: async () => ({ policy: DEFAULT_POLICY, repos: [repo], values: { maxConcurrentTotal: 1, archiveThreadsOnDone: false } }), repo: async () => repo, safe: async (s: string) => s, invalidate: () => {}, notify: async () => {} } as unknown as Cos;
@@ -96,15 +97,22 @@ describe("shipping repair admission", () => {
     expect(JSON.stringify(host.harness.inspection.sdk.callsTo("threads.send"))).toContain("retry manually");
   });
 
-  it("upgrades a database whose previous migrations were already applied", () => {
+  it.each([
+    ["before pause", previousMigrations],
+    ["reordered pause", reorderedMigrations],
+    ["restored order", MIGRATIONS],
+  ])("upgrades %s history without changing existing records", (_name, history) => {
     const host = createFakePluginHost({ pluginId: "upgrade" }); hosts.push(host);
     const db = host.bb.storage.database();
-    // Frozen from d961a23, before pause support; never derive history from MIGRATIONS.
-    host.bb.storage.migrate(db, previousMigrations);
+    // Frozen histories: pre-pause d961a23 and reordered pause 6bc7c67.
+    // Do not regenerate these fixtures from MIGRATIONS.
+    host.bb.storage.migrate(db, history);
+    const recorded = db.prepare("SELECT * FROM _bb_migrations").all();
     db.prepare("INSERT INTO work_items (id, repo, status, created_at, updated_at, queued_event_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run("existing", "a/b", "queued", "2026-11-08", "2026-11-08", '{"type":"retry"}');
-    expect(() => host.bb.storage.migrate(db, MIGRATIONS)).not.toThrow();
-    expect(() => host.bb.storage.migrate(db, MIGRATIONS)).not.toThrow();
+    expect(() => host.bb.storage.migrate(db, migrationsForDatabase(db))).not.toThrow();
+    expect(() => host.bb.storage.migrate(db, migrationsForDatabase(db))).not.toThrow();
+    expect(db.prepare("SELECT * FROM _bb_migrations").all()).toEqual(expect.arrayContaining(recorded));
     const store = new StateStore(db);
     expect(store.getWorkItem("existing")?.queuedEvent).toEqual({ type: "retry" });
     store.setPaused(true);
@@ -112,6 +120,26 @@ describe("shipping repair admission", () => {
     store.deferEvent("existing", { type: "retry" }, "test");
     expect(store.nextDeferredEvent()).toMatchObject({ item_id: "existing", event_json: '{"type":"retry"}' });
     expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "queued_event_json" })]));
+  });
+
+  it.each([[previousMigrations], [reorderedMigrations]])("rejects unknown hashes without changing the database", (history) => {
+    const host = createFakePluginHost({ pluginId: "unknown" }); hosts.push(host);
+    const db = host.bb.storage.database();
+    host.bb.storage.migrate(db, history);
+    db.prepare("UPDATE _bb_migrations SET statement_hash = 'unknown' WHERE id = 26").run();
+    const before = db.serialize();
+    expect(() => host.bb.storage.migrate(db, migrationsForDatabase(db))).toThrow("migration 26");
+    expect(db.serialize()).toEqual(before);
+  });
+
+  it.each([28, 29])("completes a reordered history with %i applied statements", (count) => {
+    const host = createFakePluginHost({ pluginId: "partial" }); hosts.push(host);
+    const db = host.bb.storage.database();
+    host.bb.storage.migrate(db, reorderedMigrations.slice(0, count));
+    expect(() => host.bb.storage.migrate(db, migrationsForDatabase(db))).not.toThrow();
+    expect(() => host.bb.storage.migrate(db, migrationsForDatabase(db))).not.toThrow();
+    expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "queued_event_json" })]));
+    expect(new StateStore(db).isPaused()).toBe(false);
   });
 
 });
