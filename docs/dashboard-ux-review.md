@@ -9,10 +9,10 @@ Scope: PipelineTab → attention filters → AgentCard → task actions, with th
 activity feed and historical panels as secondary context. Main branch resolves
 to origin/main. The working tree was clean at review start.
 
-Working metric: reduce time to correctly identify a task needing attention,
-without increasing selection/action errors. This was the recommended default
-in an optional metric question; no preference was supplied before implementation.
-No timing or conversion improvement has been measured.
+Confirmed metric: reduce time to correctly identify a task needing attention,
+without increasing selection/action errors. The user confirmed “Find
+attention-needed tasks faster” after implementation, matching the working
+metric used for the review. No timing or conversion improvement has been measured.
 
 Six independent read-only lens reviews returned no supported findings:
 
