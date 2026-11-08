@@ -4,8 +4,9 @@
 // activity_log. Columns from the fixed-stage model and the removed routines
 // feature are left in place and unused.
 import type { Database } from "better-sqlite3";
+import { createHash } from "node:crypto";
 import type { MachineEvent, Nodes, StepReport } from "./machine";
-import { stepSchema, type Workflow } from "./workflow";
+import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
  * Who holds the ball, derived from the item's step states:
@@ -93,6 +94,7 @@ export interface LogEntry {
   actor: string;
 }
 
+// Append only: BB records each statement hash by index, including whitespace.
 export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS work_items (
     id TEXT PRIMARY KEY,
@@ -194,10 +196,21 @@ export const MIGRATIONS = [
   )`,
   `CREATE INDEX IF NOT EXISTS item_threads_item ON item_threads(item_id)`,
   `UPDATE work_items SET waiting_kind = 'approval' WHERE waiting_kind = 'plan_approval'`,
+  `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
   `CREATE TABLE IF NOT EXISTS cos_control (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS deferred_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, event_json TEXT NOT NULL, actor TEXT NOT NULL)`,
-  `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
 ];
+
+/** Preserve both shipped histories; the SDK still validates every recorded hash.
+ * Append future migrations to MIGRATIONS: only indexes 27–29 differ. */
+export function migrationsForDatabase(db: Database): string[] {
+  const columns = db.prepare("PRAGMA table_info(_bb_migrations)").all() as { name: string }[];
+  if (!columns.some((column) => column.name === "statement_hash")) return MIGRATIONS;
+  const row = db.prepare("SELECT statement_hash FROM _bb_migrations WHERE id = 27").get() as { statement_hash: string | null } | undefined;
+  const pauseHash = createHash("sha256").update(MIGRATIONS[28]).digest("hex");
+  if (row?.statement_hash !== pauseHash) return MIGRATIONS;
+  return [...MIGRATIONS.slice(0, 27), MIGRATIONS[28], MIGRATIONS[29], MIGRATIONS[27], ...MIGRATIONS.slice(30)];
+}
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
 export function isActiveStatus(status: WorkStatus): boolean {
@@ -230,12 +243,6 @@ function parseJson<T>(value: unknown, fallback: T): T {
 /** Placeholder for rows written before workflows were stored per item (adopted at startup). */
 export const NO_WORKFLOW: Workflow = { id: "none", name: "None", steps: [] };
 
-/** Apply additive schema defaults to old snapshots without replacing their graph. */
-function storedWorkflow(value: unknown): Workflow {
-  const workflow = parseJson<Workflow>(value, NO_WORKFLOW);
-  return { ...workflow, steps: workflow.steps.map((step) => stepSchema.parse(step)) };
-}
-
 function rowToWorkItem(row: Row): WorkItem {
   return {
     id: row.id as string,
@@ -262,7 +269,7 @@ function rowToWorkItem(row: Row): WorkItem {
     waitingKind: (row.waiting_kind as WaitingKind | null) ?? null,
     jobStartedAt: (row.job_started_at as string | null) ?? null,
     taskBody: (row.task_body as string | null) ?? null,
-    workflow: storedWorkflow(row.workflow_json),
+    workflow: normalizeWorkflow(parseJson<Workflow>(row.workflow_json, NO_WORKFLOW)),
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
   };

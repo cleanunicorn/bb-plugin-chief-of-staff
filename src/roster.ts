@@ -6,7 +6,7 @@ import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeSt
 import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
-import { syncThreads, tickItems } from "./sync";
+import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
 import { depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
 
 export interface RosterStep {
@@ -188,6 +188,7 @@ export async function detectStalls(cos: Cos, actor: string): Promise<string[]> {
     // Confirm against the live threads: one still streaming means not stalled.
     const ids = [item.threadId, ...cos.store.listThreads(item.id).map((t) => t.threadId)].filter((id): id is string => Boolean(id));
     let fresh = false;
+    let busy = false;
     for (const threadId of new Set(ids)) {
       try {
         const thread = await cos.bb.sdk.threads.get({ threadId });
@@ -197,15 +198,21 @@ export async function detectStalls(cos: Cos, actor: string): Promise<string[]> {
           fresh = true;
           break;
         }
+        if (isBusy(snapshotOf(thread as never).status) && runsStep(cos, item, threadId)) busy = true;
       } catch {
-        /* treat as quiet */
+        // Unknown: treat as a quiet turn that never ended.
+        busy = true;
       }
     }
     if (fresh) continue;
+    // Every agent of the running steps is idle: their turns ended, and the
+    // thread sync (which reads a settled turn again and nudges) could not move
+    // the step on. Say that, rather than blaming a quiet agent.
+    const reason = busy ? undefined : "The agent's turn ended, but Chief of Staff could not move the step on. Approve to treat it as done, or send it instructions.";
     stalled.push(item.id);
-    cos.store.log({ level: "warn", kind: "stall", repo: item.repo, workItemId: item.id, message: `no activity for ${Math.round((now - last) / 60_000)} min`, actor });
+    cos.store.log({ level: "warn", kind: "stall", repo: item.repo, workItemId: item.id, message: `no activity for ${Math.round((now - last) / 60_000)} min${busy ? "" : " (agent idle)"}`, actor });
     for (const s of item.workflow.steps) {
-      if (s.type === "agent" && item.nodes[s.id]?.status === "running") await dispatch(cos, item.id, { type: "stalled", step: s.id, agent: 0 }, actor);
+      if (s.type === "agent" && item.nodes[s.id]?.status === "running") await dispatch(cos, item.id, { type: "stalled", step: s.id, agent: 0, ...(reason ? { reason } : {}) }, actor);
     }
   }
   return stalled;
@@ -274,4 +281,10 @@ export async function reconcile(cos: Cos): Promise<void> {
     }
   }
   cos.invalidate();
+}
+
+/** The thread works on a step of the item that is running now. */
+function runsStep(cos: Cos, item: WorkItem, threadId: string): boolean {
+  const step = threadContext(cos, item, threadId)?.step;
+  return Boolean(step && item.nodes[step.id]?.status === "running");
 }

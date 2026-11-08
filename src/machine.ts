@@ -100,7 +100,8 @@ export type MachineEvent =
   | { type: "retry_due"; step: string }
   /** Jobs this process is not running (restart): start them again. */
   | { type: "resume_job" }
-  | { type: "stalled"; step: string; agent: number }
+  /** `reason`: why it counts as stalled (default: no activity past the threshold). */
+  | { type: "stalled"; step: string; agent: number; reason?: string }
   // Operator decisions. `step` defaults to the step waiting on them.
   | { type: "approve"; step?: string }
   | { type: "revise"; step?: string; feedback: string }
@@ -507,7 +508,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "stalled": {
       const n = node(event.step);
       if (n?.status !== "running" || step(event.step)?.type !== "agent") break;
-      wait(event.step, "stalled", "No activity past the stall threshold.", event.agent);
+      wait(event.step, "stalled", event.reason ?? "No activity past the stall threshold.", event.agent);
       break;
     }
 

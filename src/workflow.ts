@@ -387,6 +387,20 @@ export function parseWorkflows(raw: string): ParsedWorkflows {
   return { ok: true, value: parsed.data, legacy: null, warnings: [] };
 }
 
+/**
+ * A work item's stored workflow snapshot, with the defaults of fields added
+ * since it was taken (e.g. `chooses`). Items keep the workflow they started
+ * with across plugin updates, so code must never meet a step missing a field
+ * its schema defaults. A step that no longer parses is kept as stored.
+ */
+export function normalizeWorkflow(raw: Workflow): Workflow {
+  if (!raw || !Array.isArray(raw.steps)) return raw;
+  return { ...raw, steps: raw.steps.map((s) => {
+    const parsed = stepSchema.safeParse(s);
+    return parsed.success ? parsed.data : s;
+  }) };
+}
+
 export function serializeWorkflows(doc: WorkflowsDocument): string {
   return JSON.stringify(doc, null, 2);
 }

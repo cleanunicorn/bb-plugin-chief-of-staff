@@ -2,7 +2,7 @@ import { recoverSpawn } from "./src/deliveryReport";
 // Chief of Staff — BB plugin backend entry.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createContext } from "./src/context";
-import { MIGRATIONS, StateStore } from "./src/state";
+import { migrationsForDatabase, StateStore } from "./src/state";
 import { defineSettings } from "./src/settings";
 import { registerRpc } from "./src/rpc";
 import { registerCli } from "./src/cli";
@@ -19,7 +19,7 @@ export default async function plugin(bb: BbPluginApi) {
   newJobGeneration();
   const settings = defineSettings(bb);
   const db = bb.storage.database();
-  bb.storage.migrate(db, MIGRATIONS);
+  bb.storage.migrate(db, migrationsForDatabase(db));
   const store = new StateStore(db);
   const cos = createContext(bb, store, settings);
 

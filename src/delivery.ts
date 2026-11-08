@@ -89,7 +89,13 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
-  const t = transition(item, event, policy, cos.now());
+  let t: ReturnType<typeof transition>;
+  try {
+    t = transition(item, event, policy, cos.now());
+  } catch (error) {
+    await recordEngineError(cos, item, event, error, actor);
+    throw error;
+  }
   const patch = { ...applyTransition(item, t.nodes, t.patch), queuedEvent: null };
   const proposed = { ...item, ...patch };
   // No await between counting and storing the reservation: dispatches for other
@@ -133,6 +139,23 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   }
   if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
   return cos.store.getWorkItem(item.id);
+}
+
+/**
+ * The engine threw on an event (a bug, or state it does not expect). Nothing
+ * was applied; the caller keeps its input (a report, an idle) for the next
+ * sweep. Say so on the item, in the activity log and with a notification,
+ * once per distinct error, instead of leaving the task looking like a quiet agent.
+ */
+async function recordEngineError(cos: Cos, item: WorkItem, event: MachineEvent, error: unknown, actor: string): Promise<void> {
+  const message = await cos.safe(error instanceof Error ? error.message : String(error));
+  const lastError = `Chief of Staff could not handle ${event.type}: ${message}`.slice(0, 1000);
+  if (item.lastError === lastError) return;
+  cos.store.updateWorkItem(item.id, { lastError });
+  cos.store.log({ level: "error", kind: "engine", repo: item.repo, workItemId: item.id, message: lastError, actor });
+  cos.invalidate();
+  const label = item.issueNumber ? `${item.repo}#${item.issueNumber}` : item.repo;
+  await cos.notify(`Chief of Staff needs help: ${label}`, `${lastError}\nIt retries every minute; the agent's report is kept.`, item.threadId ?? undefined).catch(() => undefined);
 }
 
 /** Replay events received during a pause in their original order. */

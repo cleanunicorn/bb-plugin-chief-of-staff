@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **No more silent stalls after an agent finishes.** Chief of Staff no longer
+  loses a step report when it fails to handle the turn end: the report and the
+  idle stay unhandled, the failure shows on the task (last error and activity
+  log), and the next sweep tries again. A step still running a few minutes
+  after its agent went idle, with nothing in flight, has its turn end read
+  again (report → move on, question → park, otherwise nudge). When that still
+  cannot move it, the stall notice says the agent finished rather than blaming
+  a quiet agent, and engine errors send a notification. Tasks started before model choices existed no
+  longer crash with `Cannot read properties of undefined (reading 'length')`:
+  stored workflow snapshots get the defaults of newer step fields.
+
+- **Upgrade migration fix.** Restore the recorded index of the queued-event
+  migration so existing installations can update without a migration 27 mismatch.
+  Pause-control tables are appended after the existing migrations. Installations
+  that already recorded the reordered pause migrations retain that history, with
+  all statement hashes still validated by the SDK.
+
 - **Visual task cues.** Larger state pictograms, repository and usage icons,
   recorded step-state symbols, and a theme-aware empty-queue illustration make
   the dashboard easier to scan without replacing text labels.
