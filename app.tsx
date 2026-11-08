@@ -803,7 +803,7 @@ function ReposTab() {
                     {r.active}
                     <span className="text-sm font-normal text-muted-foreground">/{r.maxConcurrent}</span>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">agents</div>
+                  <div className="text-[11px] text-muted-foreground">tasks using capacity</div>
                 </div>
               </div>
               <Meter size="sm" value={r.active} max={r.maxConcurrent} label={`${r.key} task slots`} />

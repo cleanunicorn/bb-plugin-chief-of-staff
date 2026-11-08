@@ -1,11 +1,11 @@
 ## Progress
 
-- [ ] 1. Finish PR-only shipping at the configured boundary.
-- [ ] 2. Release concurrency capacity while merge shipping waits externally.
-- [ ] 3. Admit resumed agent work through the same capacity gate as new work.
-- [ ] 4. Make completion modes and capacity visible in configuration and the roster.
-- [ ] 5. Reconcile existing shipping items safely on restart.
-- [ ] 6. Verify both delivery paths and document the behavior.
+- [x] 1. Finish PR-only shipping at the configured boundary.
+- [x] 2. Release concurrency capacity while merge shipping waits externally.
+- [x] 3. Admit resumed agent work through the same capacity gate as new work.
+- [x] 4. Make completion modes and capacity visible in configuration and the roster.
+- [x] 5. Reconcile existing shipping items safely on restart.
+- [x] 6. Verify both delivery paths and document the behavior.
 
 ## Problem and intended behavior
 
@@ -95,3 +95,20 @@ No manager hierarchy or assignment batching (#11), no new shipping agent, no cha
 
 - Important: capacity release requires durable admission for CI loop-backs and ship successors. Persist the deferred engine event, keep the item visible as queued, and replay it through the same synchronous capacity check used by startup. Avoid holding an agent turn to wait.
 - Clarification: keep per-task concurrency reservations; do not silently redefine limits as individual thread counts. Detached merge requests can run while other tasks occupy agent capacity.
+
+## Implementation and review results
+
+All six implementation tasks are complete. The action schema and approval defaults are preserved. Shipping waits release per-task reservations; deferred engine events persist in SQLite and resume through synchronous admission, including after restart. Terminal PR-only items stop CI ownership. Merge confirmation schedules successor steps rather than skipping them.
+
+Review findings (all fixed):
+
+- 🔴 Critical — `src/state.ts`, migration ordering: inserting the queued-event column before an existing migration broke upgrades with recorded statement hashes. Appended it instead; a regression starts with all previous migrations applied and verifies upgrade succeeds.
+- 🟡 Important — `src/intake.ts`, dry-run intake: queue draining could resume repairs during a dry run. Skip draining for dry runs; regression asserts the queued event and prompt count are unchanged.
+- 🟡 Important — `src/machine.ts` / `src/delivery.ts`, merge successors: the former merge handler completed successor steps without running them, and continued polling could clear successor job bookkeeping. Complete only delivery and its prerequisites; stop watching after shipping finishes. Tests cover a queued successor, normal execution and no subsequent PR polling.
+- 🟢 Nice-to-have — configuration and roster labels: use task capacity consistently, identify queued CI repairs, explain PR-only completion and hide CI-repair options for modes that do not watch CI. Removed obsolete active-count methods to keep admission and display on one capacity definition.
+
+Validation: 102 tests pass; `npm run typecheck`, `npm run build` and `git diff --check` pass. Coverage includes concurrent repairs, global and repo limits, manual rerun admission, persisted queues, PR-only handoff, approval waits through reload, approved merge while another task runs, red CI, changes requested, merge rejection, PR creation failure, legacy/current stored items and unavailable GitHub responses.
+
+Browser check: actual StepPanel controls in a standalone React preview, at wide and 390px widths, with generated plugin CSS and stubbed host icons. PR mode explains the handoff and hides CI repair controls; merge mode shows the approval gate and repair controls. Mode changes preserve approval, and no page-width overflow was detected. Proof images were inspected and saved in thread storage. Dashboard capacity is verified through RPC/runtime assertions and type checking; a live installation or a real production merge was not performed.
+
+Build note: BB reports installed SDK 0.6.132 versus the repository's pinned 0.6.104. The build succeeds with the existing pin; no SDK upgrade is part of this change.

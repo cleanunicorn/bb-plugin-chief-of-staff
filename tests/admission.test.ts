@@ -3,7 +3,7 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS, StateStore, type NewWorkItem } from "../src/state";
 import { DEFAULT_POLICY, freshNode } from "../src/machine";
 import { workflowSchema } from "../src/workflow";
-import { dispatch, settleJobs } from "../src/delivery";
+import { dispatch, settleJobs, watchCi } from "../src/delivery";
 import { tickItems } from "../src/sync";
 import type { Cos } from "../src/context";
 
@@ -72,6 +72,8 @@ describe("shipping repair admission", () => {
     await tickItems(cos, "test");
     expect(store.getWorkItem(a.id)).toMatchObject({ status: "agent", nodes: { ship: { status: "done" }, follow: { status: "running" } } });
     expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    cos.github = async () => { throw new Error("Delivery is finished: do not poll its PR"); };
+    await expect(watchCi(cos, "test")).resolves.toBeUndefined();
   });
 
   it("applies global capacity across repositories and gates operator reruns", async () => {
@@ -91,6 +93,14 @@ describe("shipping repair admission", () => {
     await tickItems(cos, "test");
     expect(store.getWorkItem("a")!.status).toBe("agent");
     expect(JSON.stringify(host.harness.inspection.sdk.callsTo("threads.send"))).toContain("retry manually");
+  });
+
+  it("upgrades a database whose previous migrations were already applied", () => {
+    const host = createFakePluginHost({ pluginId: "upgrade" }); hosts.push(host);
+    const db = host.bb.storage.database();
+    host.bb.storage.migrate(db, MIGRATIONS.filter((sql) => !sql.includes("ADD COLUMN queued_event_json")));
+    expect(() => host.bb.storage.migrate(db, MIGRATIONS)).not.toThrow();
+    expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "queued_event_json" })]));
   });
 
 });

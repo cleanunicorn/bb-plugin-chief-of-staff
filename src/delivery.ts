@@ -71,7 +71,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   if (!item || !item.workflow.steps.length) return null;
   if (item.queuedEvent) {
     if (event.type === "start" || event.type === "retry" || event.type === "approve") event = item.queuedEvent;
-    else if (!["rerun", "retry", "approve", "revise", "pr_closed", "pr_merged"].includes(event.type)) return item;
+    else if (!["rerun", "revise", "pr_closed", "pr_merged"].includes(event.type)) return item;
   }
   const { policy, repos, values } = await cos.config();
   const t = transition(item, event, policy, cos.now());
@@ -515,9 +515,18 @@ function openShip(item: WorkItem): ShipStep | null {
   return null;
 }
 
+/** Keep tracking a delivery during CI repairs, but stop after its ship step finishes. */
+function trackingPull(item: WorkItem): boolean {
+  return item.workflow.steps.some((s) => {
+    const n = item.nodes[s.id];
+    return s.type === "ship" && n && n.status !== "done" &&
+      (["ci", "ready", "merging"].includes(n.phase ?? "") || (n.status === "pending" && n.attempts > 0));
+  });
+}
+
 /** Poll every open PR we own. Called from the sweep. */
 export async function watchCi(cos: Cos, actor: string): Promise<void> {
-  const items = cos.store.listWorkItems({ activeOnly: true }).filter((i) => i.prNumber);
+  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => i.prNumber && trackingPull(i));
   if (!items.length) return;
   const github = await cos.github();
   if (!github.hasToken) return;

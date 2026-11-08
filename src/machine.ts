@@ -359,10 +359,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
 
     case "pr_merged": {
-      patch.jobStartedAt = null;
       // Confirm delivery and its prerequisites, then schedule successors normally.
       const ship = topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
       if (!ship) break;
+      patch.jobStartedAt = null;
       for (const s of wf.steps) {
         if (node(s.id)?.status !== "done" && (s.id === ship || descendants(wf, s.id).has(ship))) complete(s.id);
       }

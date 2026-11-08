@@ -151,7 +151,7 @@ export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSte
     case "failed":
       return item.lastError ?? "Failed";
     case "queued":
-      return item.queuedEvent ? "Waiting for task capacity" : "Waiting to start";
+      return item.queuedEvent?.type === "ci_failing" ? "CI repair waiting for task capacity" : item.queuedEvent ? "Waiting for task capacity" : "Waiting to start";
     case "waiting_on_human":
     case "blocked":
       return item.waitingReason ?? "Waiting on you";

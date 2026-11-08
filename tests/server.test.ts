@@ -306,6 +306,19 @@ describe("chief-of-staff server", () => {
     expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]).toMatchObject({ status: "retrying", finishedAt: null, prNumber: null });
   });
 
+  it("leaves queued repairs untouched during dry-run intake", async () => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }) });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const a = store.listWorkItems()[0];
+    store.updateWorkItem(a.id, { status: "queued", queuedEvent: { type: "ci_failing", log: "Needs repair" } });
+    const sends = sent.length;
+    await host.harness.behavior.callRpc("cos_intake_now", { dryRun: true });
+    expect(store.getWorkItem(a.id)).toMatchObject({ status: "queued", queuedEvent: { type: "ci_failing" } });
+    expect(sent).toHaveLength(sends);
+  });
+
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
     const custom = {
       workflows: [

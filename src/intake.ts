@@ -68,7 +68,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
 
 export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
   const config = await cos.config();
-  await resumeQueued(cos, opts.actor);
+  if (!opts.dryRun) await resumeQueued(cos, opts.actor);
   const results: IntakeResult[] = [];
   let github: GitHubClient;
   try {

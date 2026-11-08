@@ -193,8 +193,8 @@ export const MIGRATIONS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS item_threads_item ON item_threads(item_id)`,
-  `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
   `UPDATE work_items SET waiting_kind = 'approval' WHERE waiting_kind = 'plan_approval'`,
+  `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
 ];
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
@@ -351,18 +351,6 @@ export class StateStore {
     const sql = `SELECT * FROM work_items ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`;
     params.push(opts.limit ?? 200);
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
-  }
-
-  countActive(repo: string): number {
-    const row = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM work_items WHERE repo = ? AND status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`)
-      .get(repo, ...ACTIVE_STATUSES) as { n: number };
-    return row.n;
-  }
-
-  countActiveAll(): number {
-    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM work_items WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`).get(...ACTIVE_STATUSES) as { n: number };
-    return row.n;
   }
 
   /** Count reservations without the roster's display limit. */
