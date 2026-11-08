@@ -36,7 +36,7 @@ push or open pull requests; Chief of Staff does that.
   question opens it with its options and context and answers it in place
   (RPCs `cos_question {id}` and `cos_answer {id, answer}`).
 - `bb cos intake [--repo owner/repo] [--dry-run]` — pick up eligible issues now.
-- `bb cos task "<title>" --repo owner/repo [--body "..."]` — start a task with no
+- `bb cos task "<prompt>" --repo owner/repo [--body "..."]` — start a task with no
   GitHub issue (also the `cos_start_task` agent tool). The repository must be
   configured, but automatic intake need not be enabled. The task follows its
   configured workflow and counts against capacity limits.

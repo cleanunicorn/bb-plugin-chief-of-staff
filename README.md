@@ -154,10 +154,11 @@ code-writing step before them. The fixed-stage config from earlier versions is
 converted automatically.
 
 Start a task without an issue from the dashboard (**New task**), with
-`bb cos task "Title" --repo owner/repo --body …`, or let another agent call the
+`bb cos task "Describe the work" --repo owner/repo`, or let another agent call the
 `cos_start_task` tool. Configure the repository first; neither a GitHub issue
 nor automatic intake is required. The task uses that repository's configured
-workflow and counts against its concurrency limits.
+workflow and counts against its concurrency limits. Enter only the prompt; a short
+task title is derived automatically. The agent tool also accepts an optional title.
 
 ## Configure
 
@@ -226,7 +227,7 @@ intake, and options of the removed routines feature are ignored.
 ```
 bb cos status [--repo owner/repo] [--all] [--usage] [--json]
 bb cos intake [--repo owner/repo] [--dry-run]
-bb cos task "<title>" --repo owner/repo [--body "..."]
+bb cos task "<prompt>" --repo owner/repo [--body "..."]
 bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message "..."]
 bb cos log [--limit n] [--item id]
 ```

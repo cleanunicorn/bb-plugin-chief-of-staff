@@ -884,8 +884,29 @@ describe("chief-of-staff server", () => {
     expect(spawn.prompt).toContain("Add rate limiting");
     expect(spawn.prompt).toContain("Limit /login to 5 req/min");
     await expect(host.harness.behavior.callRpc("cos_start_task", { repo: "acme/other", title: "x", body: "" })).rejects.toThrow(/not configured/);
-    const tool = await host.harness.behavior.callAgentTool("cos_start_task", { repo: "acme/app", title: "Second", description: "Do more" }, { threadId: "thr_parent" });
-    expect(JSON.stringify(tool)).toContain("Started");
+    const tool = await host.harness.behavior.callAgentTool("cos_start_task", { repo: "acme/app", description: "Do more" }, { threadId: "thr_parent" });
+    expect(JSON.stringify(tool)).toContain("Do more");
+  });
+
+  it("starts from a prompt alone and preserves its full text", async () => {
+    const body = "Fix login errors.\n" + "Keep the context. ".repeat(20);
+    await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", body });
+    expect(await roster()).toMatchObject({ issueTitle: body.replace(/\s+/g, " ").slice(0, 200) });
+    const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
+    expect(spawn.prompt).toContain(body.trim());
+  });
+
+  it("starts a task from a CLI prompt alone", async () => {
+    const result = await host.harness.behavior.runCli(["task", "Fix login errors", "--repo", "acme/app"]);
+    expect(result.exitCode).toBe(0);
+    expect(await roster()).toMatchObject({ issueTitle: "Fix login errors" });
+    const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
+    expect(spawn.prompt).toContain("Fix login errors");
+  });
+
+  it("rejects an empty prompt without starting work", async () => {
+    await expect(host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", body: "  \n " })).rejects.toThrow(/needs a prompt/);
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
   });
 
   it("starts a described task through the configured workflow with intake disabled and no issue", async () => {

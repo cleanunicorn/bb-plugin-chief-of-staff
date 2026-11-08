@@ -73,13 +73,13 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
     description: "Hand a task to Chief of Staff: it starts an agent on a configured repository and takes the task through the workflow (plan, build, verify, review, ship). Use when the user asks to delegate work to Chief of Staff.",
     parameters: z.object({
       repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/).describe("owner/repo, as configured in Chief of Staff"),
-      title: z.string().min(1).max(200).describe("Short task title"),
+      title: z.string().max(200).optional().describe("Optional short task title; defaults to the description"),
       description: z.string().min(1).max(20_000).describe("What needs doing and why, with any acceptance criteria"),
     }),
     async execute(params, ctx) {
       const item = await startTask(cos, { repo: params.repo, title: params.title, body: params.description }, `tool:${ctx.threadId}`);
       if (!item) return { content: [{ type: "text", text: "Could not start the task." }], isError: true };
-      return `Started "${params.title}" on ${params.repo} (item ${item.id}, workflow ${item.workflow.name}${item.threadId ? `, thread ${item.threadId}` : ""}). Track it with chief_of_staff_status.`;
+      return `Started "${item.issueTitle}" on ${params.repo} (item ${item.id}, workflow ${item.workflow.name}${item.threadId ? `, thread ${item.threadId}` : ""}). Track it with chief_of_staff_status.`;
     },
   });
 }

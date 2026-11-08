@@ -6,10 +6,9 @@ import { cn } from "../../lib/utils";
 const fieldClass = "w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
 
 /** Hand Chief of Staff a task that has no GitHub issue; it runs the repo's workflow. */
-export function NewTaskForm({ repos, onCancel, onStarted, startTask }: { repos: string[]; onCancel: () => void; onStarted: () => void | Promise<void>; startTask: (input: { repo: string; title: string; body: string }) => Promise<unknown> }) {
+export function NewTaskForm({ repos, onCancel, onStarted, startTask }: { repos: string[]; onCancel: () => void; onStarted: () => void | Promise<void>; startTask: (input: { repo: string; body: string }) => Promise<unknown> }) {
   const [selectedRepo, setRepo] = useState("");
   const repo = repos.includes(selectedRepo) ? selectedRepo : (repos[0] ?? "");
-  const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -17,7 +16,7 @@ export function NewTaskForm({ repos, onCancel, onStarted, startTask }: { repos: 
     setSending(true);
     setError(null);
     try {
-      await startTask({ repo, title: title.trim(), body: body.trim() });
+      await startTask({ repo, body: body.trim() });
       await onStarted();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -31,11 +30,11 @@ export function NewTaskForm({ repos, onCancel, onStarted, startTask }: { repos: 
       className="mb-4 flex flex-col gap-2 rounded-lg border border-border p-3"
       onSubmit={(e) => {
         e.preventDefault();
-        if (title.trim() && repo) void start();
+        if (!sending && body.trim() && repo) void start();
       }}
     >
       <p className="text-sm text-muted-foreground">Choose a configured repository and describe the work. No GitHub issue or automatic intake is required; the task runs the repository's configured workflow and uses its capacity.</p>
-      <div className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_1fr]">
+      <div className="grid gap-2">
         <label className="text-xs font-medium text-muted-foreground">
           Repository
           <select className={cn(fieldClass, "mt-1")} value={repo} disabled={sending} onChange={(e) => setRepo(e.target.value)}>
@@ -45,10 +44,6 @@ export function NewTaskForm({ repos, onCancel, onStarted, startTask }: { repos: 
               </option>
             ))}
           </select>
-        </label>
-        <label className="text-xs font-medium text-muted-foreground">
-          Title
-          <input className={cn(fieldClass, "mt-1")} value={title} disabled={sending} placeholder="Add rate limiting to /login" onChange={(e) => setTitle(e.target.value)} />
         </label>
       </div>
       <label className="text-xs font-medium text-muted-foreground">
@@ -60,7 +55,7 @@ export function NewTaskForm({ repos, onCancel, onStarted, startTask }: { repos: 
         <Button type="button" size="sm" variant="ghost" disabled={sending} onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" size="sm" disabled={sending || !title.trim() || !repo}>
+        <Button type="submit" size="sm" disabled={sending || !body.trim() || !repo}>
           <Icon name="Play" fallback="Circle" aria-hidden /> {sending ? "Starting…" : "Start"}
         </Button>
       </div>
