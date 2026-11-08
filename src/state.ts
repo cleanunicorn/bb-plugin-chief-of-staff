@@ -6,7 +6,7 @@
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { MachineEvent, Nodes, StepReport } from "./machine";
-import type { Workflow } from "./workflow";
+import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
  * Who holds the ball, derived from the item's step states:
@@ -269,7 +269,7 @@ function rowToWorkItem(row: Row): WorkItem {
     waitingKind: (row.waiting_kind as WaitingKind | null) ?? null,
     jobStartedAt: (row.job_started_at as string | null) ?? null,
     taskBody: (row.task_body as string | null) ?? null,
-    workflow: parseJson<Workflow>(row.workflow_json, NO_WORKFLOW),
+    workflow: normalizeWorkflow(parseJson<Workflow>(row.workflow_json, NO_WORKFLOW)),
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
   };
