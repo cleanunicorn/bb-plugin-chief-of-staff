@@ -482,3 +482,24 @@ describe("an agent step that chooses the model", () => {
     expect(prompt).toContain("choice: <id of the model you pick>");
   });
 });
+
+
+describe("per-agent delivery retries", () => {
+  it("keeps both uncertain deliveries until each matching agent acknowledges", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    for (const agent of [0, 1]) [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent, kind: "start" }, message: "response lost", uncertain: true });
+    expect(Object.keys(item.nodes.review.agentRetries!)).toEqual(["0", "1"]);
+    const [retried, effects] = run(item, { type: "retry", step: "review" });
+    expect(effects).toContainEqual({ type: "agent", step: "review", agent: 0, kind: "start" });
+    expect(retried.nodes.review).toMatchObject({ status: "waiting", retry: { effect: { agent: 1 } } });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 0 });
+    expect(Object.keys(item.nodes.review.agentRetries!)).toHaveLength(2);
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    [item] = run(item, ended("review", report(), item, 0));
+    expect(item.nodes.review).toMatchObject({ status: "waiting", retry: { effect: { agent: 1 }, uncertain: true }, reports: [{ outcome: "done" }, null] });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 1, round: 1 });
+    [item] = run(item, ended("review", report(), item, 1));
+    expect(item.status).toBe("done");
+  });
+});

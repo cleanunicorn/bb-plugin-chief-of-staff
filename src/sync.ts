@@ -8,6 +8,7 @@
 // under the item's lock and is idempotent: an idle is handled once per thread
 // (keyed on the thread's updatedAt), and idles from before Chief of Staff's
 // latest prompt to that thread are ignored.
+import { acknowledgeReport, deliveryWait, reportMatches, recoverSpawn } from "./deliveryReport";
 import type { Cos } from "./context";
 import { resumeQueued, dispatchLocked, jobRunning, withItemLock } from "./delivery";
 import { runningWriter } from "./prompts";
@@ -104,14 +105,17 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
       if (!item) return;
     }
     const node = item.nodes[step.id];
-    if (node?.status !== "running") return;
-    const round = row?.round ?? node.round;
-    if (round !== node.round) return; // this thread worked on an earlier round
+    if (node?.status !== "running" && !deliveryWait(item, step.id)) return;
+    const round = node.round;
 
     const text = lastText === undefined ? await lastAssistantText(cos, threadId) : lastText;
     const fromTool = row?.pendingReport && row.pendingReport.step === step.id && row.pendingReport.round === round ? row.pendingReport : null;
     const fromText = fromTool ? null : parseTextReport(text, cos.now().toISOString());
     const report = fromTool ?? (fromText && fromText.step === step.id ? fromText : null);
+    if (report) {
+      if (!reportMatches(cos, item, step, ctx.agent, threadId, report.delivery)) return;
+      await acknowledgeReport(cos, item, step, ctx.agent, threadId);
+    } else if (deliveryWait(item, step.id) || (row && row.round !== round) || (node.deliveries?.[ctx.agent] && node.deliveries[ctx.agent].state !== "accepted")) return;
     const question = report ? null : plainTextQuestion(text);
     if (row) cos.store.updateThread(threadId, { idleSeenAt: updatedAt || row.idleSeenAt, pendingReport: null });
     await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, at: report.at, via: report.via } : null, question }, actor);
@@ -194,7 +198,7 @@ export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnaps
   }
   if (snapshot.status !== "idle") return;
   const row = ctx.row;
-  if (node.status === "running" && row?.promptSentAt && row.round === node.round && snapshot.updatedAt && snapshot.updatedAt < row.promptSentAt) {
+  if (!node.deliveries?.[ctx.agent] && node.status === "running" && row?.promptSentAt && row.round === node.round && snapshot.updatedAt && snapshot.updatedAt < row.promptSentAt) {
     // We sent a prompt the thread never picked up: send it again.
     if (cos.now().getTime() - row.promptSentAt > PROMPT_PICKUP_MS) {
       const step = ctx.step.id;
@@ -241,6 +245,15 @@ export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> 
     if (item.status === "failed") return item.finishedAt !== null && now - Date.parse(item.finishedAt) <= FAILED_LOOKBACK_MS;
     return true;
   });
+  if (items.some((item) => Object.values(item.nodes).some((node) => Object.values(node.deliveries ?? {}).some((attempt) => !attempt.threadId && attempt.round === node.round)))) {
+    // Bounded discovery after a spawn response was lost. Metadata, never status,
+    // identifies candidates. An undiscovered thread remains uncertain.
+    try {
+      const candidates = await cos.bb.sdk.threads.list({ includeHidden: true, limit: 200 });
+      for (const thread of candidates) await recoverSpawn(cos, thread.id);
+    } catch (error) { cos.bb.log.debug(`spawn reconciliation failed: ${error instanceof Error ? error.message : String(error)}`); }
+    for (let i = 0; i < items.length; i++) items[i] = cos.store.getWorkItem(items[i].id) ?? items[i];
+  }
   const perItem = new Map(items.map((i) => [i.id, threadIdsOf(cos, i)]));
   const threads = await snapshots(cos, [...new Set([...perItem.values()].flat())]);
   let changed = 0;
@@ -276,7 +289,16 @@ export async function tickItems(cos: Cos, actor: string): Promise<void> {
     if (!item.workflow.steps.length) continue;
     if (item.queuedEvent) continue;
     for (const [stepId, node] of Object.entries(item.nodes)) {
-      if (node.retry?.at && Date.parse(node.retry.at) <= now) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId }, actor));
+      if (Object.values(node.deliveries ?? {}).some((a) => a.state === "sending" && a.round === node.round)) {
+        await withItemLock(item.id, async () => {
+          const current = cos.store.getWorkItem(item.id)?.nodes[stepId];
+          for (const [agent, attempt] of Object.entries(current?.deliveries ?? {})) {
+            if (attempt.state !== "sending" || attempt.round !== current?.round) continue;
+            await dispatchLocked(cos, item.id, { type: "effect_error", step: stepId, effect: { type: "agent", step: stepId, agent: Number(agent), kind: "start" }, message: "Delivery was interrupted before its acceptance could be recorded.", uncertain: true }, actor);
+          }
+        });
+      }
+      if ((node.retry?.at && Date.parse(node.retry.at) <= now) || Object.values(node.agentRetries ?? {}).some((r) => r.at && Date.parse(r.at) <= now)) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId }, actor));
     }
     const fresh = cos.store.getWorkItem(item.id) ?? item;
     if (fresh.jobStartedAt && !jobRunning(item.id) && now - Date.parse(fresh.jobStartedAt) > LOST_JOB_GRACE_MS) {

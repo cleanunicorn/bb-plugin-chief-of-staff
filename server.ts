@@ -1,3 +1,4 @@
+import { recoverSpawn } from "./src/deliveryReport";
 // Chief of Staff — BB plugin backend entry.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createContext } from "./src/context";
@@ -41,7 +42,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (item) await observeActive(cos, item.id, thread.id, "event");
   });
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
-    const item = touch(thread.id);
+    const item = touch(thread.id) ?? await recoverSpawn(cos, thread.id);
     if (item) await observeIdle(cos, item.id, thread.id, snapshotOf(thread as never), lastAssistantText, "event");
   });
   bb.events.on("thread.failed", async ({ thread, error }) => {
