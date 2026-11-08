@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
-import { DEFAULT_WORKFLOW, fromStages, parseWorkflows, validateWorkflow, workflowSchema, type Workflow } from "../src/workflow";
+import { DEFAULT_WORKFLOW, fromStages, parseWorkflows, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
-import { pipelineLine } from "../src/prompts";
+import { pipelineLine, stepPrompt } from "../src/prompts";
 
 const NOW = new Date("2026-11-07T10:00:00.000Z");
 
@@ -375,5 +375,110 @@ describe("shipping completion boundary", () => {
       expect(agentFx(fx)).toHaveLength(1);
     }
     expect(item.finishedAt).toBeNull();
+  });
+});
+
+describe("model steps", () => {
+  const flow = wf([
+    { id: "m1", name: "Opus", type: "model", providerId: "claude-code", model: "opus", next: ["plan"] },
+    { id: "plan", name: "Plan", type: "agent", next: ["m2"] },
+    { id: "m2", name: "Cheaper", type: "model", model: "haiku", reasoningLevel: "low", next: ["build"] },
+    { id: "build", name: "Build", type: "agent", writes: true, next: ["m3"] },
+    { id: "m3", name: "Back", type: "model", model: "opus", next: ["review"] },
+    { id: "review", name: "Review", type: "agent", next: [] },
+  ]);
+
+  it("is valid without a code-writing step before it", () => {
+    expect(validateWorkflow(flow)).toEqual([]);
+  });
+
+  it("requires something to set", () => {
+    const empty = wf([{ id: "m", name: "Nothing", type: "model", next: ["a"] }, { id: "a", name: "A", type: "agent" }]);
+    expect(validateWorkflow(empty)).toEqual(["Nothing: set a provider, a model or a reasoning level"]);
+  });
+
+  it("keeps the settings for every later step until another model step changes a field", () => {
+    expect(settingsFor(flow, "plan")).toEqual({ providerId: "claude-code", model: "opus" });
+    expect(settingsFor(flow, "build")).toEqual({ providerId: "claude-code", model: "haiku", reasoningLevel: "low" });
+    expect(settingsFor(flow, "review")).toEqual({ providerId: "claude-code", model: "opus", reasoningLevel: "low" });
+  });
+
+  it("does not leak into steps that are not after it", () => {
+    const parallel = wf([
+      { id: "a", name: "A", type: "model", model: "opus", next: ["x"] },
+      { id: "b", name: "B", type: "model", model: "haiku", next: ["y"] },
+      { id: "x", name: "X", type: "agent" },
+      { id: "y", name: "Y", type: "agent" },
+    ]);
+    expect(settingsFor(parallel, "x")).toEqual({ model: "opus" });
+    expect(settingsFor(parallel, "y")).toEqual({ model: "haiku" });
+    expect(settingsFor(parallel, "a")).toEqual({});
+  });
+
+  it("completes instantly and starts the next agent step in the same pass", () => {
+    const [item, fx] = run(itemFor(flow), { type: "start" });
+    expect(st(item)).toMatchObject({ m1: "done", plan: "running", m2: "pending" });
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "plan", agent: 0, kind: "start" }]);
+    const [after, fx2] = run(item, ended("plan", report(), item));
+    expect(st(after)).toMatchObject({ m2: "done", build: "running" });
+    expect(agentFx(fx2).map((e) => (e as { step: string }).step)).toEqual(["build"]);
+  });
+});
+
+describe("an agent step that chooses the model", () => {
+  const flow = wf([
+    {
+      id: "triage",
+      name: "Triage",
+      type: "agent",
+      chooses: [
+        { id: "small", when: "tiny change", model: "haiku" },
+        { id: "hard", when: "risky or large change", providerId: "claude-code", model: "opus", reasoningLevel: "high" },
+      ],
+      next: ["plan"],
+    },
+    { id: "plan", name: "Plan", type: "agent", next: ["pin"] },
+    { id: "pin", name: "Pin", type: "model", model: "sonnet", next: ["build"] },
+    { id: "build", name: "Build", type: "agent", writes: true },
+  ]);
+  const pick = (choice: string | null): StepReport => ({ ...report("done", "picked"), choice });
+
+  it("applies the picked choice to every later step, until a model step changes it", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const [after] = run(started, ended("triage", pick("hard"), started));
+    expect(settingsFor(flow, "plan", after.nodes)).toEqual({ providerId: "claude-code", model: "opus", reasoningLevel: "high" });
+    expect(settingsFor(flow, "build", after.nodes)).toEqual({ providerId: "claude-code", model: "sonnet", reasoningLevel: "high" });
+  });
+
+  it("has no effect before the agent has picked", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    expect(settingsFor(flow, "plan", started.nodes)).toEqual({});
+  });
+
+  it("asks a person when the report names no valid choice", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    for (const bad of [null, "nonsense"]) {
+      const [after] = run(started, ended("triage", pick(bad), started));
+      expect(after.nodes.triage!.status).toBe("waiting");
+      expect(after.nodes.triage!.waiting?.kind).toBe("escalation");
+      expect(after.nodes.plan!.status).toBe("pending");
+    }
+  });
+
+  it("validates its choices", () => {
+    const dup = wf([{ id: "t", name: "T", type: "agent", chooses: [{ id: "a", when: "x", model: "m" }, { id: "a", when: "y" }] }]);
+    expect(validateWorkflow(dup)).toEqual(['T: two model choices have the id "a"', 'T: model choice "a" sets nothing']);
+  });
+
+  it("reads the choice from a text report", () => {
+    const r = parseTextReport("## Step report\nstep: triage\noutcome: done\nchoice: hard\nsummary: big", NOW.toISOString());
+    expect(r?.choice).toBe("hard");
+  });
+
+  it("tells the agent the options", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const prompt = stepPrompt(started, flow.steps[0] as AgentStep, 0);
+    expect(prompt).toContain("`small`: tiny change");
+    expect(prompt).toContain("choice: <id of the model you pick>");
   });
 });

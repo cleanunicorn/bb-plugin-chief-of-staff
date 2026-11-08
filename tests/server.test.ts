@@ -407,6 +407,59 @@ describe("chief-of-staff server", () => {
     expect(pr.body).toContain("Looks right now");
   });
 
+  it("runs later steps with the model an agent picked, and a model step overrides it", async () => {
+    const flow = {
+      workflows: [
+        {
+          id: "adaptive",
+          name: "Adaptive",
+          steps: [
+            {
+              id: "triage",
+              name: "Triage",
+              type: "agent",
+              instructions: "Judge how hard the task is.",
+              chooses: [
+                { id: "easy", when: "small change", model: "haiku" },
+                { id: "hard", when: "risky change", providerId: "codex", model: "opus", reasoningLevel: "high" },
+              ],
+              next: ["build"],
+            },
+            { id: "build", name: "Build", type: "agent", writes: true, instructions: "Build it.", next: ["pin"] },
+            { id: "pin", name: "Pin", type: "model", model: "sonnet", next: ["review"] },
+            { id: "review", name: "Review", type: "agent", instructions: "Review it." },
+          ],
+        },
+      ],
+      default: "adaptive",
+    };
+    const repos = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, workflow: "adaptive", reasoningLevel: "low" }] });
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify(flow), repos, defaultModel: "default-model" });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    type Spawn = { title: string; prompt: string; providerId?: string; model?: string; reasoningLevel?: string };
+    const spawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").map((c) => c[0] as Spawn);
+
+    // Before any choice: the global default and the repository's reasoning level.
+    expect(spawns()).toHaveLength(1);
+    expect(spawns()[0]).toMatchObject({ title: "Triage: cos/issue-12-fix-login", model: "default-model", reasoningLevel: "low" });
+    expect(spawns()[0]!.prompt).toContain("`hard`: risky change");
+
+    // The agent has to pick one of the listed choices.
+    const refused = await host.harness.behavior.callAgentTool("cos_report", { step: "triage", outcome: "done", summary: "x", choice: "medium" }, { threadId: "thr_triage" });
+    expect(JSON.stringify(refused)).toContain("set `choice` to one of");
+    expect(JSON.stringify(await host.harness.behavior.callAgentTool("cos_report", { step: "triage", outcome: "done", summary: "x" }, { threadId: "thr_triage" }))).toContain("set `choice` to one of");
+    await host.harness.behavior.callAgentTool("cos_report", { step: "triage", outcome: "done", summary: "Risky: touches auth.", choice: "hard" }, { threadId: "thr_triage" });
+    await idle("ok", "thr_triage");
+
+    // The builder spawns with the pick; unset fields (none here) would fall back.
+    expect(spawns().at(-1)).toMatchObject({ title: "cos/issue-12-fix-login", providerId: "codex", model: "opus", reasoningLevel: "high" });
+
+    // The model step after it overrides the model and keeps the rest.
+    await report("build", "done", "Built");
+    await idle();
+    expect(spawns().at(-1)).toMatchObject({ title: expect.stringMatching(/^Review:/), providerId: "codex", model: "sonnet", reasoningLevel: "high" });
+  });
+
   describe("archiving threads when the workflow is done", () => {
     const buildThenReview = {
       workflows: [

@@ -37,6 +37,12 @@ function slug(name: string, taken: string[]): string {
   return id;
 }
 
+function newChoiceId(taken: string[]): string {
+  let n = taken.length + 1;
+  while (taken.includes(`choice-${n}`)) n++;
+  return `choice-${n}`;
+}
+
 /** Change a step's type, keeping what all types share. */
 function retype(step: Step, type: StepType): Step {
   if (step.type === type) return step;
@@ -200,7 +206,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
   const others = workflow.steps.filter((s) => s.id !== step.id);
   // Fail arrows may only go back: to this step or a step it comes after.
   const before = others.filter((s) => descendants(workflow, s.id).has(step.id));
-  const canFail = step.type === "ship" ? step.action === "merge" : step.type !== "agent" || step.verdict;
+  const canFail = step.type === "ship" ? step.action === "merge" : step.type === "model" ? false : step.type !== "agent" || step.verdict;
   return (
     <article className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3">
       <header className="flex items-center gap-2">
@@ -248,6 +254,44 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                   {(id) => <NumberInput id={id} value={step.agents} min={1} max={4} onChange={(v) => set({ agents: Math.min(4, Math.max(1, v)) })} />}
                 </Field>
               ) : null}
+            </div>
+          ) : null}
+          {step.type === "agent" ? (
+            <div className="flex flex-col gap-2 rounded-md border border-dashed border-border p-2">
+              <p className="text-xs font-medium text-foreground">Choose the model for later steps</p>
+              <p className="text-xs text-muted-foreground">
+                Add choices and this agent analyses the task and picks one in its report. The agent steps after this one then run with it, until a Model step or another choosing step changes it. Leave empty to not choose.
+              </p>
+              {step.chooses.map((c, i) => {
+                const setChoice = (patch: Record<string, unknown>) => set({ chooses: step.chooses.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+                return (
+                  <div key={i} className="flex flex-col gap-2 rounded-md border border-border p-2">
+                    <div className={two}>
+                      <Field label="Choice id" hint="What the agent reports.">{(id) => <TextInput id={id} value={c.id} onChange={(v) => setChoice({ id: v.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40) })} mono />}</Field>
+                      <Field label="Use when">{(id) => <TextInput id={id} value={c.when} onChange={(v) => setChoice({ when: v })} placeholder="e.g. small, well-understood change" />}</Field>
+                      <Field label="Agent (provider)">{(id) => <TextInput id={id} value={c.providerId ?? ""} onChange={(v) => setChoice({ providerId: v || undefined })} placeholder="keep current" mono />}</Field>
+                      <Field label="Model">{(id) => <TextInput id={id} value={c.model ?? ""} onChange={(v) => setChoice({ model: v || undefined })} placeholder="keep current" mono />}</Field>
+                      <Field label="Reasoning level">{(id) => <TextInput id={id} value={c.reasoningLevel ?? ""} onChange={(v) => setChoice({ reasoningLevel: v || undefined })} placeholder="keep current" mono />}</Field>
+                    </div>
+                    <ConfirmRemove label={`Remove choice ${c.id}`} onConfirm={() => set({ chooses: step.chooses.filter((_, j) => j !== i) })} />
+                  </div>
+                );
+              })}
+              <div>
+                <Button type="button" variant="outline" size="sm" onClick={() => set({ chooses: [...step.chooses, { id: newChoiceId(step.chooses.map((c) => c.id)), when: "" }] })}>
+                  Add a model choice
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {step.type === "model" ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-xs text-muted-foreground">Applies to the agent steps after this one, and keeps applying until another Model step changes it. Empty fields keep the current setting. Agents already started (such as the code-writing thread of an earlier step) are not changed.</p>
+              <div className={two}>
+                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code.">{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined })} placeholder="keep current" mono />}</Field>
+                <Field label="Model">{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined })} placeholder="keep current" mono />}</Field>
+                <Field label="Reasoning level">{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined })} placeholder="keep current" mono />}</Field>
+              </div>
             </div>
           ) : null}
           {step.type === "check" ? (
@@ -315,7 +359,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                   )}
                 </Field>
                 <Field label={step.type === "agent" ? "Rounds" : "Attempts"} hint="Before asking you.">
-                  {(id) => <NumberInput id={id} value={step.type === "agent" ? step.maxRounds : step.maxAttempts} min={0} max={10} onChange={(v) => set(step.type === "agent" ? { maxRounds: v } : { maxAttempts: v })} />}
+                  {(id) => <NumberInput id={id} value={step.type === "agent" ? step.maxRounds : step.type === "model" ? 0 : step.maxAttempts} min={0} max={10} onChange={(v) => set(step.type === "agent" ? { maxRounds: v } : { maxAttempts: v })} />}
                 </Field>
               </div>
             ) : null}

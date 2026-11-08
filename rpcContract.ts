@@ -13,7 +13,7 @@ const rosterEntry = z.object({
     z.object({
       id: z.string(),
       name: z.string(),
-      type: z.enum(["agent", "check", "ship"]),
+      type: z.enum(["agent", "check", "ship", "model"]),
       depth: z.number(),
       status: z.enum(["pending", "running", "waiting", "done"]),
       phase: z.string().nullable(),

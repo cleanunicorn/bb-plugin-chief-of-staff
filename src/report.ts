@@ -34,7 +34,8 @@ export function parseTextReport(text: string | null | undefined, at: string): (S
   const summaryStart = /^\s*[-*]?\s*\**summary\**\s*:\s*/im.exec(block);
   const summary = summaryStart ? block.slice(summaryStart.index + summaryStart[0].length).trim() : "";
   const question = field("question");
+  const choice = field("choice");
   // Fall back to the message before the block when the summary is empty.
   const body = summary || text.slice(0, last.index).trim().slice(-8000);
-  return { step, outcome, summary: body, question: question || null, at, via: "text" };
+  return { step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), at, via: "text" };
 }

@@ -182,6 +182,7 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
             {step.instructions ? <p className="mt-3 whitespace-pre-wrap break-words">{step.instructions}</p> : null}
             {step.type === "check" ? <p className="mt-3 break-all"><b>Command:</b> {step.command}</p> : null}
             {step.type === "ship" ? <p className="mt-3"><b>Action:</b> {step.action}</p> : null}
+            {step.type === "model" ? <p className="mt-3"><b>Sets:</b> {[step.providerId, step.model, step.reasoningLevel].filter(Boolean).join(" · ") || "nothing"}</p> : null}
             {step.type === "agent" ? <p className="mt-3">{step.writes ? "Writes code" : "Read-only"} · {step.agents} {step.agents === 1 ? "agent" : "agents"}{step.approval ? " · Approval required" : ""}{step.verdict ? " · Pass/fail" : ""}</p> : null}
           </aside> : null}
         </div> : null}

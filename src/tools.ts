@@ -8,6 +8,7 @@ import { REPORT_OUTCOMES } from "./report";
 import { threadContext } from "./sync";
 import { startTask } from "./intake";
 import type { ReportOutcome } from "./machine";
+import { chosenModel } from "./workflow";
 
 export function registerTools(bb: BbPluginApi, cos: Cos): void {
   bb.agents.registerTool({
@@ -19,6 +20,7 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
       outcome: z.enum(REPORT_OUTCOMES as [ReportOutcome, ...ReportOutcome[]]).describe('"done"; "failed" on a pass/fail step that does not pass (or when you cannot finish); "needs_input" when a person must decide'),
       summary: z.string().min(1).max(40_000).describe("The step's result in Markdown (a plan, what changed, evidence, findings). The next steps read it."),
       question: z.string().max(4_000).optional().describe('With outcome "needs_input": the question for the human'),
+      choice: z.string().max(40).optional().describe("Only when your prompt lists model choices: the id of the one you pick for the steps after this"),
     }),
     async execute(params, ctx) {
       const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
@@ -33,7 +35,10 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
       const resumed = node?.status === "waiting" && node.waiting && ["question", "no_report", "stalled"].includes(node.waiting.kind);
       if (node?.status !== "running" && !resumed) return err(`The step ${tc.step.name} is not running (it is ${node?.status ?? "unknown"}).`);
       if (params.outcome === "needs_input" && !params.question?.trim()) return err('With outcome "needs_input", put the question for the human in `question`.');
-      const report = { step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, at: cos.now().toISOString(), via: "tool" as const };
+      if (tc.step.chooses.length && params.outcome === "done" && !chosenModel(tc.step, { reports: [{ choice: params.choice }] })) {
+        return err(`This step picks a model: set \`choice\` to one of ${tc.step.chooses.map((c) => `"${c.id}"`).join(", ")}.`);
+      }
+      const report = { step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, choice: params.choice?.trim() || null, at: cos.now().toISOString(), via: "tool" as const };
       if (tc.row) cos.store.updateThread(ctx.threadId, { pendingReport: report });
       else cos.store.upsertThread({ threadId: ctx.threadId, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: item.environmentId, round: node!.round, promptSentAt: null, pendingReport: report });
       cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
