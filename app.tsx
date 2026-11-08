@@ -7,7 +7,7 @@ import { rpcContract } from "./rpcContract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, SegmentedBar, StatTile, StatusPill, Swatch, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
+import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, StatusPill, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
 import { ACTOR, STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { WorkflowCanvas, type LiveStatus } from "@/components/cos/workflowCanvas";
@@ -16,6 +16,7 @@ import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow } from "@/components/cos/stepFlow";
+import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 
 type Contract = typeof rpcContract;
@@ -341,13 +342,11 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
 
 // ---------- pipeline tab ----------
 
-function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
+export function PipelineTab() {
   const rpc = useRpc<Contract>();
-  const palette = usePalette();
   const now = useNow();
   const [includeDone, setIncludeDone] = useState(false);
-  const [filter, setFilter] = useState<StageKey | "all">("all");
-  const [pipelineTable, setPipelineTable] = useState(false);
+  const [filter, setFilter] = useState<TaskFilter>("all");
   const [throughputTable, setThroughputTable] = useState(false);
   const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
@@ -390,26 +389,22 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   const s = stats.data;
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
-  const needsYou = byStage.human;
-  const stalled = active.filter((e) => e.stalled).length;
-  const openPrs = active.filter((e) => e.prNumber != null).length;
-  const fixingCi = active.filter((e) => e.prNumber != null && e.detail !== "ci" && e.detail !== "ready").length;
-  const tokens = active.reduce((a, e) => a + (e.usage?.totalTokens ?? 0), 0);
-  const cost = active.reduce((a, e) => a + (e.usage?.cost?.amount ?? 0), 0);
-  const currency = active.find((e) => e.usage?.cost)?.usage?.cost?.currency ?? "";
-  const visible = filter === "all" ? entries : entries.filter((e) => stageOf(e)?.key === filter);
-  const parts = STAGES.map((st) => ({ key: st.key, label: st.label, value: byStage[st.key], color: stageColor(st, palette), icon: st.icon }));
+  const stalled = active.filter((e) => attentionKind(e) === "stalled").length;
+  const failures = active.filter((e) => attentionKind(e) === "failures").length;
+  const humanInput = active.filter((e) => attentionKind(e) === "human").length;
+  const visible = entries.filter((e) => matchesTaskFilter(e, filter));
+  const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
   return (
     <div className="flex flex-col gap-4">
       <ErrorLine error={roster.error ?? stats.error ?? actionError} />
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="font-medium text-foreground">Start a described task</p>
-          <p className="text-sm text-muted-foreground">Use a configured repository; no GitHub issue or automatic intake needed.</p>
+          <h2 className="text-base font-semibold text-foreground">Work overview</h2>
+          <p className="text-sm text-muted-foreground">Start a task in a configured repository, with or without an issue.</p>
         </div>
-        <Button size="sm" variant="outline" aria-expanded={newTask} aria-controls="new-task" onClick={() => setNewTask((v) => !v)}>
+        <Button aria-expanded={newTask} aria-controls="new-task" onClick={() => setNewTask((v) => !v)}>
           <Icon name="Plus" fallback="Circle" aria-hidden /> New task
         </Button>
       </div>
@@ -418,68 +413,65 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
         </div>
       ) : null}
-      {/* KPI row */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatTile hero label="Tasks using capacity" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>
-          {maxTotal ? <div className="mt-2"><Meter value={running} max={maxTotal} label="Task slots in use" /></div> : null}
-        </StatTile>
-        <StatTile label="Needs you" icon={needsYou ? "Hand" : "CircleCheck"} tone={needsYou ? "warning" : "good"} value={needsYou} sub={needsYou ? "waiting on a person" : "nothing blocked"} onClick={() => setFilter("human")} />
-        <StatTile label="Open PRs" icon="GitPullRequest" tone="info" value={openPrs} sub={fixingCi ? `${fixingCi} back in build for fixes` : "CI green or running"} onClick={() => goTab("issues")} />
-        <StatTile label={`Shipped · ${WINDOW_DAYS}d`} icon="CircleCheck" tone="good" value={s?.doneInWindow ?? "–"} sub={s?.medianCycleMinutes != null ? `median ${duration(s.medianCycleMinutes)} issue→done` : `${s?.startedInWindow ?? 0} started`} />
-        <StatTile label={`Failed · ${WINDOW_DAYS}d`} icon={(s?.failedInWindow ?? 0) + stalled ? "CircleX" : "ShieldCheck"} tone={(s?.failedInWindow ?? 0) + stalled ? "critical" : "good"} value={s?.failedInWindow ?? "–"} sub={stalled ? `${stalled} stalled now` : "none stalled"} />
-        <StatTile label="Tokens in flight" icon="Coins" tone="neutral" value={compact(tokens)} sub={cost ? `${cost.toFixed(2)} ${currency} on active work` : "across active agents"} />
-      </div>
-
-      {/* Pipeline */}
-      <Panel title="Pipeline" icon="Workflow" dim={roster.isFetching && !roster.isLoading} actions={<ViewToggle table={pipelineTable} onChange={setPipelineTable} />}>
-        {pipelineTable ? (
-          <DataTable columns={["Stage", "Items", "Meaning"]} rows={[...STAGES.map((st) => [st.label, byStage[st.key], st.hint]), [`Done (${WINDOW_DAYS}d)`, s?.doneInWindow ?? 0, "Finished the configured workflow"], [`Failed (${WINDOW_DAYS}d)`, s?.failedInWindow ?? 0, "Gave up or marked failed"]]} />
-        ) : (
-          <div className="flex flex-col gap-4">
-            <SegmentedBar parts={parts} label="Active work by stage" unit="items" />
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-7">
-              {STAGES.map((st, i) => {
-                const color = stageColor(st, palette);
-                const selected = filter === st.key;
-                return (
-                  <button
-                    key={st.key}
-                    type="button"
-                    title={st.hint}
-                    aria-pressed={selected}
-                    onClick={() => setFilter(selected ? "all" : st.key)}
-                    className={cn("relative flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", selected ? "border-foreground/40 bg-state-active" : "border-border", st.tone && byStage[st.key] > 0 && !selected && "border-amber-400/60")}
-                  >
-                    <span className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                      {st.tone ? <Icon name={st.icon} fallback="Circle" className="size-3.5" style={{ color }} aria-hidden /> : <Swatch color={color} />}
-                      <span className="leading-tight">{st.label}</span>
-                    </span>
-                    <span className={cn("text-2xl font-semibold leading-none tabular-nums", byStage[st.key] === 0 ? "text-muted-foreground/50" : "text-foreground")}>{byStage[st.key]}</span>
-                    {i < STAGES.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="absolute top-1/2 -right-2.5 z-10 hidden size-3.5 -translate-y-1/2 text-muted-foreground lg:block" aria-hidden /> : null}
-                  </button>
-                );
-              })}
-              {(
-                [
-                  ["Done", s?.doneInWindow ?? 0, "CircleCheck", STATUS.good],
-                  ["Failed", s?.failedInWindow ?? 0, "CircleX", STATUS.critical],
-                ] as const
-              ).map(([label, value, icon, color], i) => (
-                <div key={label} className={cn("flex flex-col gap-1 rounded-lg border border-dashed border-border p-2.5", i === 0 && "lg:ml-1")}>
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Icon name={icon} fallback="Circle" className="size-3.5" style={{ color }} aria-hidden />
-                    {label} · {WINDOW_DAYS}d
-                  </span>
-                  <span className="text-2xl font-semibold leading-none text-foreground tabular-nums">{value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+      {failures + stalled + humanInput > 0 ? (
+        <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3">
+          <span className="mr-2 text-sm font-semibold text-foreground">Needs attention</span>
+          {failures ? <Button variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
+            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} failures needing a decision
+          </Button> : null}
+          {stalled ? <Button variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
+            <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
+          </Button> : null}
+          {humanInput ? <Button variant="ghost" aria-pressed={filter === "human"} onClick={() => setFilter("human")}>
+            <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
+          </Button> : null}
+        </section>
+      ) : null}
+      <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-sm">
+        <Button variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All tasks</Button>
+        {STAGES.map((st) => <Button key={st.key} variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
+          <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
+        </Button>)}
+        <span className="px-3 py-2 text-muted-foreground">Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
+      </nav>
+      {/* Agents */}
+      <Panel
+        title={filter === "all" ? "Active tasks" : filterLabel ?? "Active tasks"}
+        icon="Bot"
+        dim={roster.isFetching && !roster.isLoading}
+        actions={
+          <>
+            {filter !== "all" ? (
+              <Button size="sm" variant="ghost" onClick={() => setFilter("all")}>
+                <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
+              </Button>
+            ) : null}
+            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
+              <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
+              {includeDone ? "Hide finished" : "Show finished"}
+            </Button>
+          </>
+        }
+      >
+        {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+        {!roster.isLoading && !visible.length ? (
+          <Empty icon="Bot" title={filter === "all" ? "No agents working right now" : "Nothing in this stage"}>
+            {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
+          </Empty>
+        ) : null}
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {visible.map((e) => (
+            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={setAnswering} onWorkflow={setViewing} />
+          ))}
+        </div>
       </Panel>
 
       <div className="grid gap-4 lg:grid-cols-5">
         <Panel className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
+          {s ? <p className="mb-4 text-sm text-muted-foreground">
+            {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
+            {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
+          </p> : null}
           {!s ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : throughputTable ? (
@@ -525,37 +517,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
         </Panel>
       </div>
 
-      {/* Agents */}
-      <Panel
-        title={filter === "all" ? "Agents" : `Agents · ${STAGES.find((st) => st.key === filter)?.label}`}
-        icon="Bot"
-        dim={roster.isFetching && !roster.isLoading}
-        actions={
-          <>
-            {filter !== "all" ? (
-              <Button size="sm" variant="ghost" onClick={() => setFilter("all")}>
-                <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
-              </Button>
-            ) : null}
-            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
-              <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
-              {includeDone ? "Hide finished" : "Show finished"}
-            </Button>
-          </>
-        }
-      >
-        {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
-        {!roster.isLoading && !visible.length ? (
-          <Empty icon="Bot" title={filter === "all" ? "No agents working right now" : "Nothing in this stage"}>
-            {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
-          </Empty>
-        ) : null}
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={setAnswering} onWorkflow={setViewing} />
-          ))}
-        </div>
-      </Panel>
       {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} /> : null}
       {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} /> : null}
     </div>
@@ -866,7 +827,7 @@ function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab goTab={goTab} /> : tab === "issues" ? <ReposTab /> : <Configurator initialSection={configSection(subPath)} />}
+        {tab === "agents" ? <PipelineTab /> : tab === "issues" ? <ReposTab /> : <Configurator initialSection={configSection(subPath)} />}
         {tab === "config" ? null : <ActivityFeed />}
       </div>
     </PaletteProvider>
