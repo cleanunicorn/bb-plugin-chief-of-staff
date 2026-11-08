@@ -485,6 +485,18 @@ describe("an agent step that chooses the model", () => {
 
 
 describe("per-agent delivery retries", () => {
+  it("drops downstream delivery attempts and retries when an earlier step is rerun", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true, next: ["review"] }, { id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    item.nodes.review.deliveries = { 0: { id: "old", round: 1, threadId: "old", state: "sending", sentAt: 1 } };
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 0, kind: "start" }, message: "failed" });
+    [item] = run(item, { type: "rerun", step: "build" });
+    expect(item.nodes.review).toMatchObject({ status: "pending", deliveries: {}, agentRetries: {}, retry: null });
+    const [, effects] = run(item, { type: "retry_due", step: "review" });
+    expect(effects).toEqual([]);
+  });
+
   it("keeps both uncertain deliveries until each matching agent acknowledges", () => {
     let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
     [item] = run(item, { type: "start" });

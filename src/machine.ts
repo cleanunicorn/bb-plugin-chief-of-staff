@@ -124,7 +124,7 @@ export function infraBackoffMs(attempt: number): number {
 }
 
 export function freshNode(): NodeState {
-  return { status: "pending", round: 0, attempts: 0, reports: [], nudges: [], waiting: null, feedback: null, phase: null, output: null, retry: null, startedAt: null, finishedAt: null };
+  return { agentRetries: {}, deliveries: {}, status: "pending", round: 0, attempts: 0, reports: [], nudges: [], waiting: null, feedback: null, phase: null, output: null, retry: null, startedAt: null, finishedAt: null };
 }
 
 export function initialNodes(wf: Workflow): Nodes {
@@ -463,7 +463,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "retry_due": {
       const n = node(event.step);
-      if (n?.status === "waiting" && n.waiting?.kind !== "cos_error") break;
+      if (!n || n.status === "pending" || n.status === "done" || (n.status === "waiting" && n.waiting?.kind !== "cos_error")) break;
       if (n?.agentRetries && Object.keys(n.agentRetries).length) {
         n.agentRetries = { ...n.agentRetries };
         for (const [agent, retry] of Object.entries(n.agentRetries)) {
