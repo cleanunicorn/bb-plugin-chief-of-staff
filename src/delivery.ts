@@ -66,14 +66,28 @@ export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: s
 }
 
 /** dispatch() for callers that already hold the item's lock. */
-export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false): Promise<WorkItem | null> {
+export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false, deferredId?: number): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(itemId);
-  if (!item || !item.workflow.steps.length) return null;
+  if (!item || !item.workflow.steps.length) {
+    if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+    return null;
+  }
+  if (cos.store.isPaused()) {
+    if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
+    return item;
+  }
   if (item.queuedEvent) {
     if (event.type === "start" || event.type === "retry" || event.type === "approve") event = item.queuedEvent;
-    else if (!["rerun", "revise", "pr_closed", "pr_merged"].includes(event.type)) return item;
+    else if (!["rerun", "revise", "pr_closed", "pr_merged"].includes(event.type)) {
+      if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+      return item;
+    }
   }
   const { policy, repos, values } = await cos.config();
+  if (cos.store.isPaused()) {
+    if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
+    return item;
+  }
   const t = transition(item, event, policy, cos.now());
   const patch = { ...applyTransition(item, t.nodes, t.patch), queuedEvent: null };
   const proposed = { ...item, ...patch };
@@ -88,12 +102,14 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
         waitingKind: null, waitingReason: "Waiting for task capacity",
         ...(event.type === "pr_opened" ? { prNumber: event.prNumber, prUrl: event.prUrl } : {}),
       });
+      if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
       cos.invalidate();
       return queued;
     }
   }
   const updated = cos.store.updateWorkItem(item.id, patch);
   if (!updated) return null;
+  if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
   for (const effect of t.effects) {
     if (effect.type === "check" || effect.type === "ship" || effect.type === "merge") {
@@ -112,12 +128,28 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   return cos.store.getWorkItem(item.id);
 }
 
+/** Replay events received during a pause in their original order. */
+let replaying: Promise<void> | null = null;
+export function replayDeferred(cos: Cos): Promise<void> {
+  if (replaying) return replaying;
+  replaying = (async () => {
+    while (!cos.store.isPaused()) {
+      const entry = cos.store.nextDeferredEvent();
+      if (!entry) return;
+      if (!cos.store.getWorkItem(entry.item_id)) { cos.store.deleteDeferredEvent(entry.id); continue; }
+      await withItemLock(entry.item_id, () => dispatchLocked(cos, entry.item_id, JSON.parse(entry.event_json) as MachineEvent, entry.actor, false, entry.id));
+    }
+  })().finally(() => { replaying = null; });
+  return replaying;
+}
+
 /** Resume older deferred transitions before admitting fresh intake. */
 export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
   const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER })
     .filter((i) => i.queuedEvent)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   for (const item of items) await dispatch(cos, item.id, { type: "start" }, actor);
+
 }
 
 /**

@@ -187,6 +187,22 @@ describe("chief-of-staff server", () => {
     await host.harness.lifecycle.dispose();
   });
 
+  it("holds workflow progress and intake while paused, then resumes recorded reports", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.callRpc("cos_set_paused", { paused: true });
+    expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ paused: true });
+    await expect(host.harness.behavior.callRpc("cos_intake_now", {})).rejects.toThrow(/paused/i);
+    await sweep();
+    await report("build");
+    await idle();
+    expect(ranChecks()).toBe(0);
+    expect(await roster()).toMatchObject({ current: ["Build"] });
+    await host.harness.behavior.callRpc("cos_set_paused", { paused: false });
+    await settleJobs();
+    expect(ranChecks()).toBe(1);
+    expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ paused: false });
+  });
+
   it("takes an issue through build, verify and ship, never leaking the token", async () => {
     const intake = (await host.harness.behavior.callRpc("cos_intake_now", {})) as { results: { started: { issue: number; threadId: string }[] }[] };
     expect(intake.results[0].started).toEqual([{ issue: 12, threadId: "thr_1" }]);
