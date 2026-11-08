@@ -17,7 +17,6 @@ import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow } from "@/components/cos/stepFlow";
 import { StateMark, StepMiniMap, QueueIllustration } from "./components/cos/taskVisuals";
-import { activitySummary } from "./components/cos/activitySummary";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 
@@ -757,7 +756,6 @@ export function ActivityFeed() {
   const palette = usePalette();
   const now = useNow();
   const [onlyProblems, setOnlyProblems] = useState(false);
-  const [viewing, setViewing] = useState<string | null>(null);
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60 } });
   useLiveRefresh(log.refetch);
   const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
@@ -778,30 +776,21 @@ export function ActivityFeed() {
         {entries.map((e) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
           return (
-            <li key={e.id} className="flex items-start gap-2.5 border-b border-border py-3 text-sm last:border-0">
-              <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-4 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
-              <div className="min-w-0 flex-1">
-                <p className="text-foreground [overflow-wrap:anywhere]">{activitySummary(e)}</p>
-                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
-                  {e.repo ? <span className="[overflow-wrap:anywhere]">{e.repo}</span> : null}
-                  <time dateTime={e.at} title={new Date(e.at).toLocaleString()}>{relative(e.at, now)}</time>
-                  {e.workItemId ? <button type="button" className="rounded text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" onClick={() => setViewing(e.workItemId)}>View task</button> : null}
-                </div>
-                <details className="mt-1 text-muted-foreground">
-                  <summary className="w-fit cursor-pointer rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Technical details</summary>
-                  <dl className="mt-2 space-y-1 [overflow-wrap:anywhere]">
-                    <div><dt className="inline font-medium">Event: </dt><dd className="inline">{e.kind}</dd></div>
-                    <div><dt className="inline font-medium">Actor: </dt><dd className="inline">{e.actor}</dd></div>
-                    {e.workItemId ? <div><dt className="inline font-medium">Task: </dt><dd className="inline">{e.workItemId}</dd></div> : null}
-                    <div><dt className="inline font-medium">Message: </dt><dd className="inline whitespace-pre-wrap">{e.message}</dd></div>
-                  </dl>
-                </details>
-              </div>
+            <li key={e.id} className="flex items-start gap-2.5 py-1.5 text-xs">
+              <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{e.kind}</span>
+              <span className="min-w-0 flex-1 text-foreground [overflow-wrap:anywhere]">
+                {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
+                {e.message}
+                <span className="text-muted-foreground"> · {e.actor}</span>
+              </span>
+              <time className="shrink-0 text-muted-foreground tabular-nums" dateTime={e.at} title={new Date(e.at).toLocaleString()}>
+                {relative(e.at, now)}
+              </time>
             </li>
           );
         })}
       </ol>
-      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void log.refetch()} /> : null}
     </Panel>
   );
 }

@@ -1,7 +1,8 @@
 # Dashboard design changes (#22)
 
 Implemented as three tasks: active-work hierarchy and attention filters; task
-card hierarchy and actions; activity summaries and expandable diagnostics.
+card hierarchy and actions; activity feed presentation (subsequently restored
+to the previous compact rows).
 
 ## Behavior
 
@@ -16,12 +17,19 @@ card hierarchy and actions; activity summaries and expandable diagnostics.
 - Missing usage fields disappear; zero tokens and zero cost remain visible.
   Open thread is primary when available, Workflow remains available without it,
   and existing approval, retry, PR, and overflow actions are retained.
-- Activity summaries describe recorded transitions without claiming approval.
-  Unknown transition formats use a neutral fallback. Technical details preserve
-  the original event, actor, message and task identifier; View task opens its
-  workflow. Problems only retains the original severity filter.
+- Activity uses the previous compact rows: severity icon, event type, repository,
+  original message, actor and timestamp are visible together. Problems only
+  retains the severity filter. Long messages wrap within their row.
 
 ## Validation
+
+Compact activity restoration: all 166 tests across 15 files, typecheck, plugin
+build and whitespace checks pass. The dashboard test verifies visible event
+type, original message, actor and timestamp, and Problems only filtering.
+The unused summary formatter and its tests were removed. No new live browser
+check was performed for this restoration.
+
+Original dashboard redesign validation (before the activity restoration):
 
 - `npm test`: 129 tests passed across 15 files. New tests cover attention
   classification and drill-down, history separation, DOM reading order, missing
