@@ -248,6 +248,7 @@ Chief of Staff).
   snapshot of its workflow and the state of every step), `item_threads` (which
   agent thread works on which step) and `activity_log`. On startup the plugin
   reconciles every active item against its threads.
+- **Pause everything** on the dashboard pauses intake and holds workflow events until resumed, including across plugin reloads. Agents and jobs already running continue; pause does not interrupt them.
 - One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
   retries and stall detection.
 - Workflow engine (`src/machine.ts`, pure): each step has a state (pending,

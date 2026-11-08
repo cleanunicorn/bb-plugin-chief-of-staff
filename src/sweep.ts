@@ -14,7 +14,7 @@ const CI_POLL_MS = 2 * 60_000;
 let running = false;
 
 export async function sweep(cos: Cos): Promise<void> {
-  if (running) return;
+  if (running || cos.store.isPaused()) return;
   running = true;
   const warn = (what: string) => (error: unknown) => cos.bb.log.warn(`${what} failed: ${error instanceof Error ? error.message : String(error)}`);
   try {
@@ -28,6 +28,7 @@ export async function sweep(cos: Cos): Promise<void> {
       await runIntake(cos, { actor: "schedule:intake" }).catch(warn("intake"));
     }
 
+    if (cos.store.isPaused()) return;
     const lastCi = await kv.get<string>(KV_LAST_CI);
     if (!lastCi || now.getTime() - Date.parse(lastCi) >= CI_POLL_MS) {
       await kv.set(KV_LAST_CI, now.toISOString());
@@ -36,6 +37,7 @@ export async function sweep(cos: Cos): Promise<void> {
 
     // Before stall detection, so a thread resumed or answered in BB is not
     // mistaken for a stalled one.
+    if (cos.store.isPaused()) return;
     await syncThreads(cos, "schedule:sync").catch(warn("thread sync"));
     await tickItems(cos, "schedule:tick").catch(warn("item tick"));
     await detectStalls(cos, "schedule:stall").catch(warn("stall detection"));

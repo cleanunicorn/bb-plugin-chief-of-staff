@@ -5,14 +5,14 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], navigate: { toThread: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
-  useRpc: () => ({ call: vi.fn() }),
+  useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
   experimental_useRpcQuery: ({ method }: { method: string }) => ({
-    data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 } },
+    data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 } },
     error: null, refetch: vi.fn(),
   }),
   ThreadTitle: () => null, UrlLink: () => null,
@@ -34,7 +34,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); mocks.paused = false; mocks.call.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -104,4 +104,21 @@ it("pairs task state pictograms with explicit labels", async () => {
   const card = container.querySelector("article")!;
   expect(card.querySelector('header [data-icon="OctagonAlert"]')).not.toBeNull();
   expect(card.textContent).toContain("CoS stuck");
+});
+
+
+it("preserves global pause and resume alongside the redesigned task overview", async () => {
+  mocks.entries = [entry()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  const button = (label: string) => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === label)!;
+  expect(container.textContent).toContain("Work overview");
+  expect(container.textContent).toContain("Fix login");
+  await act(async () => button("Pause everything").click());
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_set_paused", { paused: true });
+  mocks.paused = true;
+  await act(async () => { root.render(<PipelineTab />); });
+  expect(container.textContent).toContain("Chief of Staff is paused");
+  await act(async () => button("Resume everything").click());
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_set_paused", { paused: false });
 });

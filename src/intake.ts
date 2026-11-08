@@ -67,6 +67,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
 }
 
 export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
+  if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting intake.");
   const config = await cos.config();
   if (!opts.dryRun) await resumeQueued(cos, opts.actor);
   const results: IntakeResult[] = [];
@@ -90,6 +91,7 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
       const issues = await eligibleIssues(github, repo);
       result.considered = issues.length;
       for (const issue of issues) {
+        if (cos.store.isPaused()) break;
         if (cos.store.findActiveForIssue(key, issue.number)) {
           result.skipped.push({ issue: issue.number, reason: "active thread exists" });
           continue;
@@ -156,6 +158,7 @@ export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue,
 
 /** Start a task the operator described, without a GitHub issue. */
 export async function startTask(cos: Cos, input: { repo: string; title: string; body: string; force?: boolean }, actor: string): Promise<WorkItem | null> {
+  if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting a task.");
   const repo = await cos.repo(input.repo);
   if (!repo) throw new Error(`repo ${input.repo} is not configured`);
   const title = input.title.trim();
