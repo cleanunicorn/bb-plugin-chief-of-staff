@@ -68,6 +68,7 @@ export const generalSettingsSchema = z.object({
   defaultProviderId: z.string().max(200),
   defaultModel: z.string().max(200),
   notifyPush: z.boolean(),
+  archiveThreadsOnDone: z.boolean(),
 });
 export type GeneralSettings = z.output<typeof generalSettingsSchema>;
 /** Read side: no range checks, so values set elsewhere (CLI, host fields) never break the configurator. */
@@ -78,6 +79,7 @@ const generalSettingsValuesSchema = z.object({
   defaultProviderId: z.string(),
   defaultModel: z.string(),
   notifyPush: z.boolean(),
+  archiveThreadsOnDone: z.boolean(),
 });
 
 const decision = z.enum(["allow_once", "allow_for_session", "deny"]);

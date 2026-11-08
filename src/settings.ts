@@ -45,6 +45,7 @@ export const settingDescriptors = {
   defaultProviderId: { type: "string", label: "Default provider id", description: "Used when a repo does not set providerId (e.g. claude-code).", default: "" },
   defaultModel: { type: "string", label: "Default model", default: "" },
   notifyPush: { type: "boolean", label: "Send BB push notifications", description: "Uses the push-notifications plugin when installed.", default: true },
+  archiveThreadsOnDone: { type: "boolean", label: "Archive threads when a task is done", description: "When a task's workflow finishes, archive the builder and step threads it started. Failed tasks keep their threads.", default: true },
 } as const;
 
 export function defineSettings(bb: BbPluginApi) {
