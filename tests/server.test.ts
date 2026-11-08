@@ -5,6 +5,23 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import plugin from "../server";
 import { StateStore } from "../src/state";
 import { settleJobs } from "../src/delivery";
+import { SETTLED_IDLE_MS } from "../src/sync";
+
+/** Make the engine throw on the next event of this type (a bug in handling it). */
+const engine = vi.hoisted(() => ({ failNext: null as string | null }));
+vi.mock("../src/machine", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/machine")>();
+  return {
+    ...actual,
+    transition: (...args: Parameters<typeof actual.transition>) => {
+      if (engine.failNext && args[1].type === engine.failNext) {
+        engine.failNext = null;
+        throw new TypeError("Cannot read properties of undefined (reading 'length')");
+      }
+      return actual.transition(...args);
+    },
+  };
+});
 
 type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string } | undefined;
 
@@ -567,6 +584,106 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.runCli(["item", "approve", id]);
     await settleJobs();
     expect(ranChecks()).toBe(1);
+  });
+
+  describe("an agent that finished while Chief of Staff missed it (earheart#349)", () => {
+    it("runs items whose workflow snapshot predates newer step fields", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      // The item started on a plugin version without model choices: its stored steps lack `chooses`.
+      const db = host.bb.storage.database();
+      const row = db.prepare("SELECT id, workflow_json FROM work_items").get() as { id: string; workflow_json: string };
+      const wf = JSON.parse(row.workflow_json) as { steps: Record<string, unknown>[] };
+      for (const step of wf.steps) delete step.chooses;
+      db.prepare("UPDATE work_items SET workflow_json = ? WHERE id = ?").run(JSON.stringify(wf), row.id);
+
+      await idle("I made some changes.");
+      expect(sentTexts()[0]).toContain("without reporting the step **Build**");
+      await report("build");
+      await idle();
+      expect(ranChecks()).toBe(1);
+      expect(await roster()).toMatchObject({ detail: "done", lastError: null });
+    });
+
+    it("keeps the agent's report when handling its turn end fails, says so, and moves on at the next sweep", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      engine.failNext = "turn_ended";
+      await idle().catch(() => undefined);
+      expect(ranChecks()).toBe(0);
+      const stuck = await roster();
+      expect(stuck).toMatchObject({ current: ["Build"] });
+      expect(stuck.lastError).toContain("could not handle turn_ended");
+      expect(stuck.lastError).toContain("reading 'length'");
+      const alerts = () => JSON.stringify(host.harness.inspection.sdk.callsTo("plugins.callRpc")).split("Chief of Staff needs help").length - 1;
+      expect(alerts()).toBe(1);
+
+      await sweep();
+      expect(ranChecks()).toBe(1);
+      expect(sentTexts()).toHaveLength(0); // the report was kept: no nudge
+      expect(await roster()).toMatchObject({ detail: "done" });
+    });
+
+    it("reads a turn end again when it was marked handled but the step never moved", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await host.harness.behavior.callRpc("cos_intake_now", {});
+        await report("build");
+        // The idle was recorded as handled, yet nothing acted on it (a crash, a reload).
+        const finishedAt = Date.now() + 1000;
+        threadUpdatedAt = finishedAt;
+        new StateStore(host.bb.storage.database()).updateThread("thr_1", { idleSeenAt: finishedAt });
+
+        vi.setSystemTime(finishedAt + 60_000);
+        await sweep();
+        expect(ranChecks()).toBe(0); // a turn end may still be on its way
+
+        vi.setSystemTime(finishedAt + SETTLED_IDLE_MS + 1000);
+        await sweep();
+        expect(ranChecks()).toBe(1);
+        expect(sentTexts()).toHaveLength(0);
+        expect(await roster()).toMatchObject({ detail: "done" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("nudges an idle agent that never reported instead of calling it stalled", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await host.harness.behavior.callRpc("cos_intake_now", {});
+        const finishedAt = Date.now() + 1000;
+        threadUpdatedAt = finishedAt;
+        new StateStore(host.bb.storage.database()).updateThread("thr_1", { idleSeenAt: finishedAt });
+        // Past the 30-minute stall threshold, the agent's thread idle the whole time.
+        vi.setSystemTime(finishedAt + 31 * 60_000);
+        await sweep();
+        const entry = await roster();
+        expect(entry.detail).not.toBe("blocked");
+        expect(entry.waitingKind).toBeNull();
+        expect(sentTexts()).toHaveLength(1);
+        expect(sentTexts()[0]).toContain("without reporting the step **Build**");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("hands a step to a human when its agent stays idle and nothing moves it on", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await host.harness.behavior.callRpc("cos_intake_now", {});
+        const finishedAt = Date.now() + 1000;
+        threadUpdatedAt = finishedAt;
+        // State sync cannot act on (the thread row is for another round), so only the stall check can.
+        host.bb.storage.database().prepare("UPDATE item_threads SET round = 99").run();
+        vi.setSystemTime(finishedAt + 31 * 60_000);
+        await sweep();
+        const entry = await roster();
+        expect(entry).toMatchObject({ waitingKind: "stalled" });
+        expect(entry.waitingReason).toContain("turn ended, but Chief of Staff could not move the step on");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("accepts a Stage report block from agents without the tool", async () => {
