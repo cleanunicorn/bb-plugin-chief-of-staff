@@ -135,6 +135,7 @@ describe("chief-of-staff server", () => {
         system: { config: async () => ({ primaryHostId: "host_1" }) as never },
         projects: { list: async () => [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never },
         threads: {
+          update: async () => ({ ok: true }) as never,
           // The builder (titled after its branch) is thr_1 in env_1; step threads are thr_<step title>.
           spawn: async (args: { environment: { type: string }; title?: string }) => {
             const title = args.title ?? "";
@@ -206,6 +207,21 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     globalThis.fetch = originalFetch;
     await host.harness.lifecycle.dispose();
+  });
+
+  it("groups older workflow threads on sweep and silences result notifications", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const state = new StateStore(host.bb.storage.database());
+    const item = state.listWorkItems()[0]!;
+    state.upsertThread({ threadId: "thr_old_plan", itemId: item.id, role: "step", stepId: "plan", agent: 0, environmentId: "env_old", round: 0, promptSentAt: null });
+    const records = new Map(["thr_1", "thr_old_plan"].map((id) => [id, makeThreadResponse({ id })]));
+    host.harness.inspection.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => records.get(threadId)!);
+    host.harness.inspection.sdk.stub("threads.update", async ({ threadId, ...patch }: { threadId: string; parentThreadId: string; parentNotifications: "off" }) => {
+      const next = { ...records.get(threadId)!, ...patch }; records.set(threadId, next); return next;
+    });
+    await sweep();
+    await sweep();
+    expect(host.harness.inspection.sdk.callsTo("threads.update")).toEqual([[{ threadId: "thr_old_plan", parentThreadId: "thr_1", parentNotifications: "off" }]]);
   });
 
   it("loads pre-model-choice workflows with defaults and completes their reports", async () => {
@@ -513,6 +529,7 @@ describe("chief-of-staff server", () => {
     const spawnCalls = host.harness.inspection.sdk.callsTo("threads.spawn");
     expect(spawnCalls).toHaveLength(1);
     const spawnArgs = spawnCalls[0][0] as { prompt: string; title: string; environment: { type: string; hostId: string; workspace: { type: string } } };
+    expect(host.harness.inspection.sdk.callsTo("threadSections.create")).toHaveLength(0);
     expect(spawnArgs.title).toBe("cos/issue-12-fix-login");
     expect(spawnArgs.environment).toMatchObject({ type: "host", hostId: "host_1", workspace: { type: "managed-worktree" } });
     expect(spawnArgs.prompt).toContain("Fix login");
@@ -691,11 +708,13 @@ describe("chief-of-staff server", () => {
     await report("build", "done", "Patched auth.ts");
     await idle();
     expect(ranChecks()).toBe(1);
+    expect(spawns()[0].parentThreadId).toBeUndefined();
+    for (const child of spawns().slice(1)) expect(child).toMatchObject({ parentThreadId: "thr_plan-1", parentNotifications: "off" });
     const parallel = spawns().slice(-2);
     expect(parallel.map((p) => p.title.split(":")[0])).toEqual(["Review", "Docs"]);
     for (const p of parallel) {
       expect(p.environment).toEqual({ type: "reuse", environmentId: "env_1" });
-      expect(p.parentThreadId).toBe("thr_1");
+      expect(p.parentThreadId).toBe("thr_plan-1");
     }
     expect(await roster()).toMatchObject({ current: ["Review", "Docs"], detail: "agent" });
 

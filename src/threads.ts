@@ -62,7 +62,7 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
     permissionMode: opts.repo.permissionMode,
     visibility: "visible",
     pluginMetadata: opts.pluginMetadata,
-    ...(opts.parentThreadId ? { parentThreadId: opts.parentThreadId } : {}),
+    ...(opts.parentThreadId ? { parentThreadId: opts.parentThreadId, parentNotifications: "off" as const } : {}),
   });
   opts.delivery?.accepted(thread);
   return { thread, providerId: thread.providerId ?? providerId ?? null, model: model ?? null, hostId: checkout.hostId };
@@ -104,7 +104,7 @@ export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
     permissionMode: opts.repo.permissionMode,
     visibility: "visible",
     pluginMetadata: opts.pluginMetadata,
-    ...(opts.parentThreadId ? { parentThreadId: opts.parentThreadId } : {}),
+    ...(opts.parentThreadId ? { parentThreadId: opts.parentThreadId, parentNotifications: "off" as const } : {}),
   });
   opts.delivery?.accepted(thread);
   return { thread, providerId: thread.providerId ?? providerId ?? null, model: model ?? null };

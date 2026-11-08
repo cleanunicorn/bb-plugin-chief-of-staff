@@ -5,6 +5,7 @@ import { runIntake } from "./intake";
 import { watchCi } from "./delivery";
 import { detectStalls } from "./roster";
 import { syncThreads, tickItems } from "./sync";
+import { groupExistingThreads } from "./threadGroups";
 
 const KV_LAST_INTAKE = "sweep:lastIntakeAt";
 const KV_LAST_CI = "sweep:lastCiAt";
@@ -38,6 +39,7 @@ export async function sweep(cos: Cos): Promise<void> {
     // Before stall detection, so a thread resumed or answered in BB is not
     // mistaken for a stalled one.
     if (cos.store.isPaused()) return;
+    await groupExistingThreads(cos).catch(warn("thread grouping"));
     await syncThreads(cos, "schedule:sync").catch(warn("thread sync"));
     await tickItems(cos, "schedule:tick").catch(warn("item tick"));
     await detectStalls(cos, "schedule:stall").catch(warn("stall detection"));

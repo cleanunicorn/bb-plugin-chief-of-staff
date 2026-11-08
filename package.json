@@ -23,7 +23,7 @@
     ]
   },
   "dependencies": {
-    "@get-bb/plugin-sdk": "0.6.104",
+    "@get-bb/plugin-sdk": "0.6.121",
     "@radix-ui/react-slot": "^1.2.4",
     "@xyflow/react": "^12.12.1",
     "zod": "^4.6.5"
@@ -41,20 +41,20 @@
     "@radix-ui/react-select": "^2.3.3",
     "@radix-ui/react-tooltip": "^1.2.12",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "better-sqlite3": "^12.0.0",
+    "better-sqlite3": "^13.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
     "jsdom": "^31.0.0",
-    "sonner": "^1.7.4",
+    "sonner": "^2.0.8",
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0",
     "vaul": "^1.1.2",
-    "vitest": "^3.2.7"
+    "vitest": "^5.1.0"
   },
   "description": "Engineering chief of staff for BB: watches agents, turns GitHub issues into agent work, delivers PRs, runs scheduled routines.",
   "scripts": {
