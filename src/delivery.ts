@@ -537,6 +537,11 @@ export async function watchCi(cos: Cos, actor: string): Promise<void> {
       if (item.queuedEvent) continue;
       const ship = openShip(item);
       if (!ship) continue;
+      // Upgrade unfinished PR-only deliveries after confirming the PR exists.
+      if (ship.action === "pr") {
+        await dispatch(cos, item.id, { type: "pr_opened", step: ship.id, prNumber: pr.number, prUrl: pr.html_url }, actor);
+        continue;
+      }
       const ci = await github.ciSummary(repo.owner, repo.repo, pr.head.sha);
       if (ci.state === "failing") {
         // React once per head sha.

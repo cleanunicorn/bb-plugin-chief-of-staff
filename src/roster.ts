@@ -5,7 +5,7 @@ import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
 import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
-import { applyTransition, dispatch } from "./delivery";
+import { applyTransition, dispatch, watchCi } from "./delivery";
 import { syncThreads, tickItems } from "./sync";
 import { depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
 
@@ -264,6 +264,7 @@ export async function reconcile(cos: Cos): Promise<void> {
       cos.bb.log.warn(`adopting ${item.id} failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
     }
   }
+  await watchCi(cos, "startup").catch((error) => cos.bb.log.warn(`PR reconciliation failed: ${error instanceof Error ? error.message : String(error)}`));
   await syncThreads(cos, "startup");
   await tickItems(cos, "startup");
   // Steps parked by our own failure get one fresh attempt after a restart or plugin update.

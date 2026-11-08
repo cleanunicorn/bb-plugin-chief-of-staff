@@ -366,11 +366,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
 
     case "pr_closed": {
-      if (item.status === "done") break;
-      for (const s of wf.steps) complete(s.id);
+      if (item.status === "done" || item.status === "failed") break;
       patch.lastError = "PR closed without merge";
       patch.jobStartedAt = null;
-      patch.status = "done";
+      patch.status = "failed";
       patch.finishedAt = iso;
       return { nodes, patch, effects };
     }

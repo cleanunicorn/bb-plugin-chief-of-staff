@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
+import { StateStore } from "../src/state";
 import { settleJobs } from "../src/delivery";
 
 type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string } | undefined;
@@ -666,6 +667,43 @@ describe("chief-of-staff server", () => {
     }
   });
 
+  it.each([
+    { phase: "ci", merged: false, state: "open", expected: "done" },
+    { phase: "ready", merged: true, state: "closed", expected: "done" },
+    { phase: "ready", merged: false, state: "closed", expected: "failed" },
+  ] as const)("reconciles a stored PR-only item: $phase / $state / merged=$merged", async ({ phase, merged, state, expected }) => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    store.updateWorkItem(item.id, { status: phase, finishedAt: null, nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase } } });
+    currentPull = { ...currentPull, merged, state };
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    await settleJobs();
+    expect(await roster()).toMatchObject({ detail: expected, prNumber: 7, occupiesCapacity: false });
+    if (expected === "failed") expect((await roster()).lastError).toBe("PR closed without merge");
+    expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(1);
+    const count = archivedIds.length;
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(archivedIds).toHaveLength(count);
+  });
+
+  it("does not confirm PR-only completion when GitHub is unavailable", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    store.updateWorkItem(item.id, { status: "ready", finishedAt: null, nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase: "ready" } } });
+    ghRoutes["GET /repos/acme/app/pulls/7"] = () => ({ status: 503 });
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(await roster()).toMatchObject({ detail: "ready", occupiesCapacity: false });
+    ghRoutes["GET /repos/acme/app/pulls/7"] = () => ({ body: currentPull });
+    await sweep();
+    expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
   it("adopts items started before custom workflows at their old stage", async () => {
     const db = host.bb.storage.database();
     const at = new Date().toISOString();
@@ -688,9 +726,9 @@ describe("chief-of-staff server", () => {
     expect(byIssue(30).steps.find((st) => st.id === "build")!.status).toBe("done");
     expect(ranChecks()).toBe(1);
     expect(byIssue(30)).toMatchObject({ detail: "done" });
-    // Was waiting on CI: still watching the same PR.
-    expect(byIssue(31)).toMatchObject({ detail: "ci", prNumber: 7 });
-    expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "running", phase: "ci" });
+    // A confirmed open PR finishes the converted PR-only workflow.
+    expect(byIssue(31)).toMatchObject({ detail: "done", prNumber: 7 });
+    expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "done" });
     // Was waiting on a question: still waiting, same question.
     expect(byIssue(32)).toMatchObject({ detail: "waiting_on_human", waitingKind: "question", waitingReason: "Build: Question: which DB?" });
   });
