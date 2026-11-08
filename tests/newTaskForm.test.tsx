@@ -18,15 +18,17 @@ it("selects a repository that arrives after the form opens and submits it", asyn
   await act(async () => { root.render(<NewTaskForm {...props} repos={["acme/app"]} />); });
   const select = container.querySelector("select")!;
   expect(select.value).toBe("acme/app");
-  const input = container.querySelector("input")!;
+  expect(container.querySelector('button[type="submit"]')!.hasAttribute("disabled")).toBe(true);
+  expect(container.querySelector("input")).toBeNull();
+  const input = container.querySelector("textarea")!;
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Fix login");
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Fix login");
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   const button = container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
   expect(button.disabled).toBe(false);
   await act(async () => { button.click(); });
-  expect(startTask).toHaveBeenCalledWith({ repo: "acme/app", title: "Fix login", body: "" });
+  expect(startTask).toHaveBeenCalledWith({ repo: "acme/app", body: "Fix login" });
   await act(async () => { root.unmount(); });
   container.remove();
 });

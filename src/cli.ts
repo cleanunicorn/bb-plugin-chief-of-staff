@@ -84,15 +84,15 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
         }),
         task: cliCommand({
           summary: "Start a task without a GitHub issue and take it through the workflow",
-          positionals: [{ name: "title", description: "Short task title", required: true }],
+          positionals: [{ name: "prompt", description: "What needs doing", required: true }],
           options: {
             repo: { type: "string", description: "owner/repo (required)" },
-            body: { type: "string", description: "What needs doing; defaults to the title" },
+            body: { type: "string", description: "Additional task details; defaults to the prompt" },
             json: { type: "boolean", description: "JSON output" },
           },
           async run(input, ctx) {
             if (!input.options.repo) throw new PluginCliError("--repo owner/repo is required");
-            const item = await startTask(cos, { repo: input.options.repo, title: input.positionals.title, body: input.options.body ?? "" }, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`);
+            const item = await startTask(cos, { repo: input.options.repo, title: input.options.body !== undefined ? input.positionals.prompt : undefined, body: input.options.body ?? input.positionals.prompt }, `cli${ctx.threadId ? `:${ctx.threadId}` : ""}`);
             if (!item) throw new PluginCliError("could not start the task");
             if (input.options.json) return json(item);
             return out(`started ${item.id} on ${item.repo} (workflow ${item.workflow.name}): ${item.status}${item.threadId ? ` (thread ${item.threadId})` : ""}\n`);
