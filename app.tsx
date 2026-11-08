@@ -16,6 +16,7 @@ import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow } from "@/components/cos/stepFlow";
+import { StateMark, StepMiniMap, QueueIllustration } from "./components/cos/taskVisuals";
 import { activitySummary } from "./components/cos/activitySummary";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
@@ -62,10 +63,10 @@ function ErrorLine({ error }: { error: { message: string } | string | null }) {
   );
 }
 
-function Empty({ icon, title, children }: { icon: string; title: string; children?: ReactNode }) {
+function Empty({ icon, title, children, illustration = false }: { icon: string; title: string; children?: ReactNode; illustration?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-8 text-center">
-      <Icon name={icon} fallback="Circle" className="size-6 text-muted-foreground" aria-hidden />
+      {illustration ? <QueueIllustration /> : <Icon name={icon} fallback="Circle" className="size-6 text-muted-foreground" aria-hidden />}
       <p className="text-sm font-medium text-foreground">{title}</p>
       {children ? <p className="max-w-md text-xs text-muted-foreground">{children}</p> : null}
     </div>
@@ -210,15 +211,22 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const finished = entry.detail === "done" || entry.detail === "failed";
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
+  const visual = entryTone(entry);
   return (
     <article className={cn("flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-4", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
-      <div className="min-w-0">
-        <h3 className="text-base font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
-        <p className="mt-1 text-sm text-muted-foreground [overflow-wrap:anywhere]">
-          {entry.repo.split("/")[1] ?? entry.repo}
-          {entry.issueNumber ? ` #${entry.issueNumber}` : ""}
-        </p>
-      </div>
+      <header className="flex items-start gap-3">
+        <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
+          <p className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground [overflow-wrap:anywhere]">
+            <Icon name="FolderGit2" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            <span title={entry.repo}>
+            {entry.repo.split("/")[1] ?? entry.repo}
+            {entry.issueNumber ? ` #${entry.issueNumber}` : ""}
+            </span>
+          </p>
+        </div>
+      </header>
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
@@ -233,6 +241,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       {entry.steps.length ? <details className="text-sm">
         <summary className="cursor-pointer rounded py-1 text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           Workflow progress · {entry.steps.filter((step) => step.status === "done").length}/{entry.steps.length} complete
+          <StepMiniMap steps={entry.steps} />
         </summary>
         <div className="pt-2"><StepFlow entry={entry} /></div>
       </details> : null}
@@ -260,19 +269,19 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       ) : null}
       <dl className="mt-auto flex flex-wrap gap-x-5 gap-y-2 pt-2 text-sm">
         <div className="min-w-0">
-          <dt className="text-muted-foreground">Last activity</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Activity" className="size-3.5" aria-hidden />Last activity</dt>
           <dd className="font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
         </div>
         {entry.usage?.totalTokens != null ? <div>
-          <dt className="text-muted-foreground">Tokens</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Tokens</dt>
           <dd className="font-medium text-foreground tabular-nums">{compact(entry.usage.totalTokens)}</dd>
         </div> : null}
         {entry.usage?.cost != null ? <div>
-          <dt className="text-muted-foreground">Cost</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Cost</dt>
           <dd className="font-medium text-foreground tabular-nums">{entry.usage.cost.amount.toFixed(2)} {entry.usage.cost.currency}</dd>
         </div> : null}
         {entry.fixAttempts > 0 ? <div>
-          <dt className="text-muted-foreground">Fix cycles</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="RefreshCw" className="size-3.5" aria-hidden />Fix cycles</dt>
           <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
         </div> : null}
       </dl>
@@ -414,7 +423,7 @@ export function PipelineTab() {
       ) : null}
       {failures + stalled + humanInput > 0 ? (
         <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3">
-          <span className="mr-2 text-sm font-semibold text-foreground">Needs attention</span>
+          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
           {failures ? <Button className="h-auto max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
             <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
           </Button> : null}
@@ -427,11 +436,11 @@ export function PipelineTab() {
         </section>
       ) : null}
       <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-sm">
-        <Button variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>All tasks</Button>
+        <Button variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name="LayoutGrid" aria-hidden />All tasks</Button>
         {STAGES.map((st) => <Button key={st.key} variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
           <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
         </Button>)}
-        <span className="px-3 py-2 text-muted-foreground">Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
+        <span className="flex items-center gap-2 px-3 py-2 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
       </nav>
       {/* Agents */}
       <Panel
@@ -455,7 +464,7 @@ export function PipelineTab() {
       >
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
         {!roster.isLoading && !visible.length ? (
-          <Empty icon="Bot" title={filter === "all" ? "No agents working right now" : "Nothing in this stage"}>
+          <Empty icon="Bot" illustration={filter === "all"} title={filter === "all" ? "No active tasks" : "Nothing in this stage"}>
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}

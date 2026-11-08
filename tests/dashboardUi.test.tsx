@@ -17,7 +17,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   }),
   ThreadTitle: () => null, UrlLink: () => null,
 }));
-vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
+vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
 vi.mock("../components/cos/question", () => ({ QuestionSheet: () => null }));
 vi.mock("../components/cos/workflowCanvas", () => ({ WorkflowCanvas: () => null }));
@@ -95,4 +95,13 @@ it("shows readable activity with expandable diagnostics and preserves problem fi
   await act(async () => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === "Problems only")!.click());
   expect(container.textContent).not.toContain("Started Review agent");
   expect(container.textContent).toContain("Build failed (exit 1)");
+});
+
+
+it("pairs task state pictograms with explicit labels", async () => {
+  mocks.entries = [entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error", current: ["Build"] })];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.querySelector('header [data-icon="OctagonAlert"]')).not.toBeNull();
+  expect(card.textContent).toContain("CoS stuck");
 });

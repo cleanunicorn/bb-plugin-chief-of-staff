@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Visual task cues.** Larger state pictograms, repository and usage icons,
+  recorded step-state symbols, and a theme-aware empty-queue illustration make
+  the dashboard easier to scan without replacing text labels.
+
 - **Active work first.** The dashboard puts attention items and task cards above
   historical throughput and capacity, with compact stage filters. Failure
   decisions and stalls have separate drill-downs; terminal failures remain
