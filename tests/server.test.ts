@@ -187,6 +187,21 @@ describe("chief-of-staff server", () => {
     await host.harness.lifecycle.dispose();
   });
 
+  it("loads pre-model-choice workflows with defaults and completes their reports", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const db = host.bb.storage.database();
+    const store = new StateStore(db);
+    const item = store.listWorkItems()[0];
+    const legacy = JSON.parse(JSON.stringify(item.workflow));
+    for (const step of legacy.steps) delete step.chooses;
+    db.prepare("UPDATE work_items SET workflow_json=? WHERE id=?").run(JSON.stringify(legacy), item.id);
+    host = await host.harness.lifecycle.reload(plugin);
+    expect(new StateStore(host.bb.storage.database()).getWorkItem(item.id)?.workflow.steps[0]).toHaveProperty("chooses", []);
+    expect(JSON.stringify(await report("build"))).toContain("Recorded");
+    await idle();
+    expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
   it("holds workflow progress and intake while paused, then resumes recorded reports", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await host.harness.behavior.callRpc("cos_set_paused", { paused: true });

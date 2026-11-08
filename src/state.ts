@@ -5,7 +5,7 @@
 // feature are left in place and unused.
 import type { Database } from "better-sqlite3";
 import type { MachineEvent, Nodes, StepReport } from "./machine";
-import type { Workflow } from "./workflow";
+import { stepSchema, type Workflow } from "./workflow";
 
 /**
  * Who holds the ball, derived from the item's step states:
@@ -230,6 +230,12 @@ function parseJson<T>(value: unknown, fallback: T): T {
 /** Placeholder for rows written before workflows were stored per item (adopted at startup). */
 export const NO_WORKFLOW: Workflow = { id: "none", name: "None", steps: [] };
 
+/** Apply additive schema defaults to old snapshots without replacing their graph. */
+function storedWorkflow(value: unknown): Workflow {
+  const workflow = parseJson<Workflow>(value, NO_WORKFLOW);
+  return { ...workflow, steps: workflow.steps.map((step) => stepSchema.parse(step)) };
+}
+
 function rowToWorkItem(row: Row): WorkItem {
   return {
     id: row.id as string,
@@ -256,7 +262,7 @@ function rowToWorkItem(row: Row): WorkItem {
     waitingKind: (row.waiting_kind as WaitingKind | null) ?? null,
     jobStartedAt: (row.job_started_at as string | null) ?? null,
     taskBody: (row.task_body as string | null) ?? null,
-    workflow: parseJson<Workflow>(row.workflow_json, NO_WORKFLOW),
+    workflow: storedWorkflow(row.workflow_json),
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
   };
