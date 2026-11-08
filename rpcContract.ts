@@ -4,6 +4,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 const rosterEntry = z.object({
+  occupiesCapacity: z.boolean(),
   id: z.string(),
   status: z.enum(["queued", "running", "waiting on human", "blocked", "done", "failed"]),
   detail: z.string(),
@@ -12,7 +13,7 @@ const rosterEntry = z.object({
     z.object({
       id: z.string(),
       name: z.string(),
-      type: z.enum(["agent", "check", "ship"]),
+      type: z.enum(["agent", "check", "ship", "model"]),
       depth: z.number(),
       status: z.enum(["pending", "running", "waiting", "done"]),
       phase: z.string().nullable(),
@@ -133,6 +134,7 @@ export const rpcContract = defineRpcContract({
     input: z.null(),
     output: z.object({
       paused: z.boolean(),
+      occupiedCapacity: z.number(),
       tokenSource: z.enum(["setting", "gh-cli", "none"]),
       repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), intake: z.boolean(), workflowId: z.string(), workflowName: z.string(), stepNames: z.array(z.string()) })),
       errors: z.array(z.string()),

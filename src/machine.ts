@@ -9,7 +9,7 @@
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
 import type { WaitingKind, WorkItem } from "./state";
-import { descendants, finalSteps, predecessors, stepById, topoOrder, type Step, type Workflow } from "./workflow";
+import { chosenModel, descendants, finalSteps, predecessors, stepById, topoOrder, type Step, type Workflow } from "./workflow";
 
 export type ReportOutcome = "done" | "failed" | "needs_input";
 
@@ -17,6 +17,8 @@ export interface StepReport {
   outcome: ReportOutcome;
   summary: string;
   question?: string | null;
+  /** On a step with model choices: the id of the one the agent picked. */
+  choice?: string | null;
   at: string;
   via: "tool" | "text";
 }
@@ -116,7 +118,7 @@ export function initialNodes(wf: Workflow): Nodes {
 }
 
 const agentsOf = (step: Step) => (step.type === "agent" ? step.agents : 1);
-const limitOf = (step: Step) => (step.type === "agent" ? step.maxRounds : step.maxAttempts);
+const limitOf = (step: Step) => (step.type === "agent" ? step.maxRounds : step.type === "model" ? 0 : step.maxAttempts);
 const label = (item: WorkItem) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
 
 const WAIT_TITLE: Record<WaitingKind, string> = {
@@ -147,7 +149,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const count = agentsOf(s);
     Object.assign(n, { status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
     if (s.type === "agent") for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
-    else if (s.type === "check") {
+    else if (s.type === "model") {
+      // Nothing to run: agent steps after it read its settings when they spawn.
+      Object.assign(n, { status: "done", finishedAt: iso });
+    } else if (s.type === "check") {
       patch.jobStartedAt = iso;
       effects.push({ type: "check", step: id });
     } else {
@@ -207,6 +212,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (s.verdict) return fail(id, failed.map((r) => r!.summary).join("\n\n---\n\n"));
       return wait(id, "escalation", `The agent reported it could not finish: ${failed[0]!.summary}`);
     }
+    if (s.chooses.length && !chosenModel(s, n)) return wait(id, "escalation", `The agent did not pick one of the model choices (${s.chooses.map((c) => c.id).join(", ")}). Approve to continue with the current model, or send it instructions.`);
     if (s.approval) return wait(id, "approval", `${s.name} is ready for your approval.`);
     complete(id);
   };
@@ -311,8 +317,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       patch.prUrl = event.prUrl;
       if (!n || n.status !== "running") break;
       patch.jobStartedAt = null;
-      n.phase = "ci";
       n.retry = null;
+      const s = step(event.step);
+      if (s?.type === "ship" && s.action === "pr") complete(event.step);
+      else n.phase = "ci";
       break;
     }
 
@@ -357,18 +365,21 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
 
     case "pr_merged": {
+      // Confirm delivery and its prerequisites, then schedule successors normally.
+      const ship = topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
+      if (!ship) break;
       patch.jobStartedAt = null;
-      // A merged PR ships the task, whatever else was still open.
-      for (const s of wf.steps) if (node(s.id)?.status !== "done") complete(s.id);
+      for (const s of wf.steps) {
+        if (node(s.id)?.status !== "done" && (s.id === ship || descendants(wf, s.id).has(ship))) complete(s.id);
+      }
       break;
     }
 
     case "pr_closed": {
-      if (item.status === "done") break;
-      for (const s of wf.steps) complete(s.id);
+      if (item.status === "done" || item.status === "failed") break;
       patch.lastError = "PR closed without merge";
       patch.jobStartedAt = null;
-      patch.status = "done";
+      patch.status = "failed";
       patch.finishedAt = iso;
       return { nodes, patch, effects };
     }

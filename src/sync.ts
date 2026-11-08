@@ -9,7 +9,7 @@
 // (keyed on the thread's updatedAt), and idles from before Chief of Staff's
 // latest prompt to that thread are ignored.
 import type { Cos } from "./context";
-import { dispatchLocked, jobRunning, withItemLock } from "./delivery";
+import { resumeQueued, dispatchLocked, jobRunning, withItemLock } from "./delivery";
 import { runningWriter } from "./prompts";
 import { parseTextReport } from "./report";
 import type { ItemThread, WorkItem } from "./state";
@@ -114,7 +114,7 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
     const report = fromTool ?? (fromText && fromText.step === step.id ? fromText : null);
     const question = report ? null : plainTextQuestion(text);
     if (row) cos.store.updateThread(threadId, { idleSeenAt: updatedAt || row.idleSeenAt, pendingReport: null });
-    await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, at: report.at, via: report.via } : null, question }, actor);
+    await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, at: report.at, via: report.via } : null, question }, actor);
   });
 }
 
@@ -169,6 +169,7 @@ export interface SyncResult {
 
 /** Bring one item in line with one of its threads. */
 export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnapshot, actor: string): Promise<void> {
+  if (item.queuedEvent) return;
   const ctx = threadContext(cos, item, snapshot.id);
   if (!ctx) return;
   if (snapshot.gone) {
@@ -269,9 +270,11 @@ export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> 
 
 /** Retry due infrastructure errors, restart lost jobs, start queued items. */
 export async function tickItems(cos: Cos, actor: string): Promise<void> {
+  await resumeQueued(cos, actor);
   const now = cos.now().getTime();
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
     if (!item.workflow.steps.length) continue;
+    if (item.queuedEvent) continue;
     for (const [stepId, node] of Object.entries(item.nodes)) {
       if (node.retry?.at && Date.parse(node.retry.at) <= now) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId }, actor));
     }

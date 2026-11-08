@@ -7,11 +7,11 @@ import type { RepoConfig } from "./config";
 import { GitHubError } from "./github";
 import { deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
-import type { WorkItem } from "./state";
+import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
-import { stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
+import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
 
 const OUTPUT_TAIL = 12_000;
 
@@ -61,25 +61,53 @@ export async function settleJobs(): Promise<void> {
 // ---- dispatch ----
 
 /** Apply an engine event to a stored item and run the resulting effects. */
-export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: string): Promise<WorkItem | null> {
-  return withItemLock(itemId, () => dispatchLocked(cos, itemId, event, actor));
+export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false): Promise<WorkItem | null> {
+  return withItemLock(itemId, () => dispatchLocked(cos, itemId, event, actor, force));
 }
 
 /** dispatch() for callers that already hold the item's lock. */
-export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, deferredId?: number): Promise<WorkItem | null> {
+export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false, deferredId?: number): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(itemId);
-  if (!item || !item.workflow.steps.length) return null;
+  if (!item || !item.workflow.steps.length) {
+    if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+    return null;
+  }
   if (cos.store.isPaused()) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
-  const { policy } = await cos.config();
+  if (item.queuedEvent) {
+    if (event.type === "start" || event.type === "retry" || event.type === "approve") event = item.queuedEvent;
+    else if (!["rerun", "revise", "pr_closed", "pr_merged"].includes(event.type)) {
+      if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+      return item;
+    }
+  }
+  const { policy, repos, values } = await cos.config();
   if (cos.store.isPaused()) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
   const t = transition(item, event, policy, cos.now());
-  const updated = cos.store.updateWorkItem(item.id, applyTransition(item, t.nodes, t.patch));
+  const patch = { ...applyTransition(item, t.nodes, t.patch), queuedEvent: null };
+  const proposed = { ...item, ...patch };
+  // No await between counting and storing the reservation: dispatches for other
+  // items observe it before running their own admission check.
+  if (!force && occupiesCapacity(proposed) && (!occupiesCapacity(item) || event.type === "start")) {
+    const repo = repos.find((r) => `${r.owner}/${r.repo}` === item.repo);
+    const full = !repo || cos.store.countOccupied(item.repo, item.id) >= repo.maxConcurrent || cos.store.countOccupied(undefined, item.id) >= values.maxConcurrentTotal;
+    if (full) {
+      const queued = cos.store.updateWorkItem(item.id, {
+        queuedEvent: event, status: "queued", jobStartedAt: null,
+        waitingKind: null, waitingReason: "Waiting for task capacity",
+        ...(event.type === "pr_opened" ? { prNumber: event.prNumber, prUrl: event.prUrl } : {}),
+      });
+      if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+      cos.invalidate();
+      return queued;
+    }
+  }
+  const updated = cos.store.updateWorkItem(item.id, patch);
   if (!updated) return null;
   if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
@@ -109,10 +137,19 @@ export function replayDeferred(cos: Cos): Promise<void> {
       const entry = cos.store.nextDeferredEvent();
       if (!entry) return;
       if (!cos.store.getWorkItem(entry.item_id)) { cos.store.deleteDeferredEvent(entry.id); continue; }
-      await withItemLock(entry.item_id, () => dispatchLocked(cos, entry.item_id, JSON.parse(entry.event_json) as MachineEvent, entry.actor, entry.id));
+      await withItemLock(entry.item_id, () => dispatchLocked(cos, entry.item_id, JSON.parse(entry.event_json) as MachineEvent, entry.actor, false, entry.id));
     }
   })().finally(() => { replaying = null; });
   return replaying;
+}
+
+/** Resume older deferred transitions before admitting fresh intake. */
+export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
+  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER })
+    .filter((i) => i.queuedEvent)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  for (const item of items) await dispatch(cos, item.id, { type: "start" }, actor);
+
 }
 
 /**
@@ -211,6 +248,8 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   const mentionsIn = (text: string) => (usesSkills ? skillMentions(text, step.instructions, skills) : []);
   // Record the send time first: an idle that predates it belongs to an older turn.
   const sentAt = cos.now().getTime();
+  // Model steps before this one choose the provider, model and reasoning of threads spawned for it.
+  const settings = settingsFor(item.workflow, step.id, item.nodes);
   cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
 
   if (step.writes) {
@@ -222,6 +261,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
         title: item.branch ?? item.issueTitle,
         prompt,
         mentions: mentionsIn(prompt),
+        settings,
         pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, branch: item.branch, role: "builder" },
       });
       cos.store.updateWorkItem(item.id, { threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model });
@@ -262,6 +302,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
     prompt: stepThreadPrompt,
     mentions: mentionsIn(stepThreadPrompt),
+    settings,
     pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, step: step.id, agent: effect.agent },
   });
   cos.store.upsertThread({ threadId: spawned.thread.id, itemId: item.id, role: "step", stepId: step.id, agent: effect.agent, environmentId: spawned.thread.environmentId ?? item.environmentId, round, promptSentAt: sentAt });
@@ -477,7 +518,7 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
     const reports = n.reports.filter(Boolean);
     if (!reports.length) continue;
     const body = reports.map((r, i) => (reports.length > 1 ? `**Agent ${i + 1}:** ${r!.summary}` : r!.summary)).join("\n\n");
-    sections.push(`### ${s.name}${s.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
+    sections.push(`### ${s.name}${s.type === "agent" && s.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
   }
   const fallback = !sections.length && item.threadId ? await lastAssistantText(cos, item.threadId) : null;
   const lines = [
@@ -510,9 +551,18 @@ function openShip(item: WorkItem): ShipStep | null {
   return null;
 }
 
+/** Keep tracking a delivery during CI repairs, but stop after its ship step finishes. */
+function trackingPull(item: WorkItem): boolean {
+  return item.workflow.steps.some((s) => {
+    const n = item.nodes[s.id];
+    return s.type === "ship" && n && n.status !== "done" &&
+      (["ci", "ready", "merging"].includes(n.phase ?? "") || (n.status === "pending" && n.attempts > 0));
+  });
+}
+
 /** Poll every open PR we own. Called from the sweep. */
 export async function watchCi(cos: Cos, actor: string): Promise<void> {
-  const items = cos.store.listWorkItems({ activeOnly: true }).filter((i) => i.prNumber);
+  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => i.prNumber && trackingPull(i));
   if (!items.length) return;
   const github = await cos.github();
   if (!github.hasToken) return;
@@ -529,8 +579,14 @@ export async function watchCi(cos: Cos, actor: string): Promise<void> {
         await dispatch(cos, item.id, { type: "pr_closed" }, actor);
         continue;
       }
+      if (item.queuedEvent) continue;
       const ship = openShip(item);
       if (!ship) continue;
+      // Upgrade unfinished PR-only deliveries after confirming the PR exists.
+      if (ship.action === "pr") {
+        await dispatch(cos, item.id, { type: "pr_opened", step: ship.id, prNumber: pr.number, prUrl: pr.html_url }, actor);
+        continue;
+      }
       const ci = await github.ciSummary(repo.owner, repo.repo, pr.head.sha);
       if (ci.state === "failing") {
         // React once per head sha.

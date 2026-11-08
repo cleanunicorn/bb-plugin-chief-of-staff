@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Model steps.** A new workflow step type sets the agent (provider), model and
+  reasoning level for the agent steps after it, and keeps applying until another
+  Model step changes them. It does no work of its own and completes instantly.
+  A running builder thread keeps the model it started with. An agent step can
+  also list model choices and pick one by analysing the task, so the agent
+  decides which model the later steps use.
+
+- **Shipping has a completion boundary.** PR-only delivery finishes when the PR
+  opens; merge delivery finishes after GitHub confirms the merge. CI and review
+  waits release task capacity, while repairs and successors queue for an available
+  slot. Stored PR-only CI/ready items reconcile after restart. Closed, unmerged
+  PRs fail delivery. The dashboard reports task reservations separately from
+  unfinished work. Use merge mode when delivery must include merging; PR-only
+  mode no longer watches or repairs later CI failures.
+
 - **Finished tasks archive their threads.** When a task's workflow is done,
   Chief of Staff archives the builder and step threads it started, so the
   sidebar only shows work in flight. Failed tasks keep theirs. Turn it off with

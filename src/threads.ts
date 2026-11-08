@@ -2,6 +2,7 @@
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import type { KnownSkill, SkillMention } from "./skills";
+import type { AgentSettings } from "./workflow";
 
 /** A prompt as `prompt`, or as text input carrying skill mentions when there are any. */
 function promptArgs(prompt: string, mentions: SkillMention[] | undefined) {
@@ -27,6 +28,8 @@ export interface SpawnOptions {
   mentions?: SkillMention[];
   /** Base the worktree on this branch instead of the default branch. */
   baseBranch?: string;
+  /** Set by model steps of the workflow; wins over the repository and global defaults. */
+  settings?: AgentSettings;
   pluginMetadata: Record<string, string | number | boolean | null>;
   parentThreadId?: string;
 }
@@ -34,8 +37,9 @@ export interface SpawnOptions {
 export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
   const { values } = await cos.config();
   const checkout = await cos.checkout(opts.repo);
-  const providerId = opts.repo.providerId || values.defaultProviderId || undefined;
-  const model = opts.repo.model || values.defaultModel || undefined;
+  const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
+  const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
+  const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
     environment: {
@@ -47,7 +51,7 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
     title: opts.title,
     ...(providerId ? { providerId } : {}),
     ...(model ? { model } : {}),
-    ...(opts.repo.reasoningLevel ? { reasoningLevel: opts.repo.reasoningLevel } : {}),
+    ...(reasoningLevel ? { reasoningLevel } : {}),
     permissionMode: opts.repo.permissionMode,
     visibility: "visible",
     pluginMetadata: opts.pluginMetadata,
@@ -64,6 +68,7 @@ export interface StepSpawnOptions {
   title: string;
   prompt: string;
   mentions?: SkillMention[];
+  settings?: AgentSettings;
   pluginMetadata: Record<string, string | number | boolean | null>;
 }
 
@@ -73,10 +78,11 @@ export interface StepSpawnOptions {
  * built yet, so there is nothing to see but the repository).
  */
 export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
-  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
+  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
   const { values } = await cos.config();
-  const providerId = opts.repo.providerId || values.defaultProviderId || undefined;
-  const model = opts.repo.model || values.defaultModel || undefined;
+  const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
+  const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
+  const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
     environment: { type: "reuse", environmentId: opts.environmentId },
@@ -84,7 +90,7 @@ export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
     title: opts.title,
     ...(providerId ? { providerId } : {}),
     ...(model ? { model } : {}),
-    ...(opts.repo.reasoningLevel ? { reasoningLevel: opts.repo.reasoningLevel } : {}),
+    ...(reasoningLevel ? { reasoningLevel } : {}),
     permissionMode: opts.repo.permissionMode,
     visibility: "visible",
     pluginMetadata: opts.pluginMetadata,

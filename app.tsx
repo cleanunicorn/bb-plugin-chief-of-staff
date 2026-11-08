@@ -7,14 +7,16 @@ import { rpcContract } from "./rpcContract";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import { ColumnChart, DataTable, Legend, Meter, Panel, PaletteProvider, STATUS, SegmentedBar, StatTile, StatusPill, Swatch, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
+import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, SegmentedBar, StatTile, StatusPill, Swatch, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
-import { ACTOR, STAGES, columns, stageColor, stageOf } from "@/components/cos/stages";
+import { ACTOR, STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { WorkflowCanvas, type LiveStatus } from "@/components/cos/workflowCanvas";
 import type { Workflow } from "./src/workflow";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
+import { StepFlow } from "@/components/cos/stepFlow";
+import { NewTaskForm } from "@/components/cos/newTaskForm";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -128,50 +130,6 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
 }
 
 
-// ---------- step flow ----------
-
-type RosterStep = RosterEntry["steps"][number];
-
-function stepColor(st: RosterStep, palette: ReturnType<typeof usePalette>): string {
-  if (st.status === "done") return STATUS.good;
-  if (st.status === "waiting") return st.waitingKind === "cos_error" ? STATUS.serious : STATUS.warning;
-  if (st.status === "running") return st.retrying ? STATUS.serious : palette.accent;
-  return "var(--border)";
-}
-
-/** The workflow's steps in columns; a column holds steps that run in parallel. */
-function StepFlow({ entry }: { entry: RosterEntry }) {
-  const palette = usePalette();
-  const cols = columns(entry.steps);
-  return (
-    <ol className="flex items-stretch gap-1 overflow-x-auto" aria-label={`Workflow ${entry.workflowName}`}>
-      {cols.map((col, i) => (
-        <li key={i} className="flex items-center gap-1">
-          <span className="flex flex-col gap-0.5">
-            {col.map((st) => {
-              const color = stepColor(st, palette);
-              const live = st.status === "running" || st.status === "waiting";
-              return (
-                <span
-                  key={st.id}
-                  title={`${st.name}: ${st.status}${st.phase ? ` (${st.phase})` : ""}${st.agents > 1 ? ` · ${st.reported}/${st.agents} agents` : ""}${st.attempts ? ` · failed ${st.attempts}×` : ""}`}
-                  className={cn("inline-flex max-w-28 items-center gap-1 rounded-full border px-1.5 py-px text-[10px]", live ? "font-semibold text-foreground" : st.status === "done" ? "text-foreground" : "text-muted-foreground")}
-                  style={{ borderColor: color, background: st.status === "done" ? "color-mix(in srgb, var(--cos-good, #16a34a) 8%, transparent)" : undefined }}
-                >
-                  {st.status === "done" ? <Icon name="Check" fallback="Circle" className="size-2.5 shrink-0" style={{ color }} aria-hidden /> : <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", live && st.status === "running" && "animate-pulse")} style={{ background: color }} />}
-                  <span className="truncate">{st.name}</span>
-                  {st.agents > 1 && live ? <span className="tabular-nums text-muted-foreground">{st.reported}/{st.agents}</span> : null}
-                </span>
-              );
-            })}
-          </span>
-          {i < cols.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 /** One task's workflow on the canvas, coloured live, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
   const rpc = useRpc<Contract>();
@@ -225,6 +183,7 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
             {step.instructions ? <p className="mt-3 whitespace-pre-wrap break-words">{step.instructions}</p> : null}
             {step.type === "check" ? <p className="mt-3 break-all"><b>Command:</b> {step.command}</p> : null}
             {step.type === "ship" ? <p className="mt-3"><b>Action:</b> {step.action}</p> : null}
+            {step.type === "model" ? <p className="mt-3"><b>Sets:</b> {[step.providerId, step.model, step.reasoningLevel].filter(Boolean).join(" · ") || "nothing"}</p> : null}
             {step.type === "agent" ? <p className="mt-3">{step.writes ? "Writes code" : "Read-only"} · {step.agents} {step.agents === 1 ? "agent" : "agents"}{step.approval ? " · Approval required" : ""}{step.verdict ? " · Pass/fail" : ""}</p> : null}
           </aside> : null}
         </div> : null}
@@ -380,70 +339,6 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
 
 // ---------- new task ----------
 
-const fieldClass = "w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
-
-/** Hand Chief of Staff a task that has no GitHub issue; it runs the repo's workflow. */
-function NewTaskForm({ repos, onCancel, onStarted }: { repos: string[]; onCancel: () => void; onStarted: () => void | Promise<void> }) {
-  const rpc = useRpc<Contract>();
-  const [repo, setRepo] = useState(repos[0] ?? "");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const start = async () => {
-    setSending(true);
-    setError(null);
-    try {
-      await rpc.call("cos_start_task", { repo, title: title.trim(), body: body.trim() });
-      await onStarted();
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setSending(false);
-    }
-  };
-  if (!repos.length) return <p className="mb-3 text-sm text-muted-foreground">Configure a repository first (Configure tab).</p>;
-  return (
-    <form
-      className="mb-4 flex flex-col gap-2 rounded-lg border border-border p-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (title.trim() && repo) void start();
-      }}
-    >
-      <div className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_1fr]">
-        <label className="text-xs font-medium text-muted-foreground">
-          Repository
-          <select className={cn(fieldClass, "mt-1")} value={repo} disabled={sending} onChange={(e) => setRepo(e.target.value)}>
-            {repos.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-xs font-medium text-muted-foreground">
-          Title
-          <input className={cn(fieldClass, "mt-1")} value={title} disabled={sending} placeholder="Add rate limiting to /login" onChange={(e) => setTitle(e.target.value)} />
-        </label>
-      </div>
-      <label className="text-xs font-medium text-muted-foreground">
-        What needs doing
-        <textarea className={cn(fieldClass, "mt-1 min-h-24")} value={body} disabled={sending} placeholder="Context, acceptance criteria, constraints. The agent starts from this instead of an issue." onChange={(e) => setBody(e.target.value)} />
-      </label>
-      {error ? <p className="text-xs" style={{ color: STATUS.critical }}>{error}</p> : null}
-      <div className="flex justify-end gap-2">
-        <Button type="button" size="sm" variant="ghost" disabled={sending} onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" size="sm" disabled={sending || !title.trim() || !repo}>
-          <Icon name="Play" fallback="Circle" aria-hidden /> {sending ? "Starting…" : "Start"}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
 // ---------- pipeline tab ----------
 
 function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
@@ -495,7 +390,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   }, [active]);
   const s = stats.data;
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
-  const running = active.filter((e) => e.detail !== "queued").length;
+  const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const needsYou = byStage.human;
   const stalled = active.filter((e) => e.stalled).length;
   const openPrs = active.filter((e) => e.prNumber != null).length;
@@ -514,10 +409,24 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
         <div><div className="font-semibold">{overview.data?.paused ? "Chief of Staff is paused" : "Automation control"}</div><p className="text-sm text-muted-foreground">{overview.data?.paused ? "New workflow actions are held until you resume. Already running agents and jobs can continue." : "Pause intake and hold new workflow actions. Already running agents and jobs can continue."}</p></div>
         <Button size="lg" className="bg-red-700 text-white hover:bg-red-800" disabled={pausing || !overview.data} onClick={async () => { setPausing(true); setActionError(null); try { await rpc.call("cos_set_paused", { paused: !overview.data!.paused }); await refetchAll(); } catch (error) { setActionError(errorText(error)); } finally { setPausing(false); } }}><Icon name={overview.data?.paused ? "Play" : "Pause"} fallback="Circle" aria-hidden />{overview.data?.paused ? "Resume everything" : "Pause everything"}</Button>
       </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4">
+        <div>
+          <p className="font-medium text-foreground">Start a described task</p>
+          <p className="text-sm text-muted-foreground">Use a configured repository; no GitHub issue or automatic intake needed.</p>
+        </div>
+        <Button size="sm" variant="outline" aria-expanded={newTask} aria-controls="new-task" onClick={() => setNewTask((v) => !v)}>
+          <Icon name="Plus" fallback="Circle" aria-hidden /> New task
+        </Button>
+      </div>
+      {newTask ? (
+        <div id="new-task">
+          <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
+        </div>
+      ) : null}
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <StatTile hero label="Active agents" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>
-          {maxTotal ? <div className="mt-2"><Meter value={running} max={maxTotal} label="Agent slots in use" /></div> : null}
+        <StatTile hero label="Tasks using capacity" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>
+          {maxTotal ? <div className="mt-2"><Meter value={running} max={maxTotal} label="Task slots in use" /></div> : null}
         </StatTile>
         <StatTile label="Needs you" icon={needsYou ? "Hand" : "CircleCheck"} tone={needsYou ? "warning" : "good"} value={needsYou} sub={needsYou ? "waiting on a person" : "nothing blocked"} onClick={() => setFilter("human")} />
         <StatTile label="Open PRs" icon="GitPullRequest" tone="info" value={openPrs} sub={fixingCi ? `${fixingCi} back in build for fixes` : "CI green or running"} onClick={() => goTab("issues")} />
@@ -529,7 +438,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
       {/* Pipeline */}
       <Panel title="Pipeline" icon="Workflow" dim={roster.isFetching && !roster.isLoading} actions={<ViewToggle table={pipelineTable} onChange={setPipelineTable} />}>
         {pipelineTable ? (
-          <DataTable columns={["Stage", "Items", "Meaning"]} rows={[...STAGES.map((st) => [st.label, byStage[st.key], st.hint]), [`Done (${WINDOW_DAYS}d)`, s?.doneInWindow ?? 0, "Closed by a merged PR"], [`Failed (${WINDOW_DAYS}d)`, s?.failedInWindow ?? 0, "Gave up or marked failed"]]} />
+          <DataTable columns={["Stage", "Items", "Meaning"]} rows={[...STAGES.map((st) => [st.label, byStage[st.key], st.hint]), [`Done (${WINDOW_DAYS}d)`, s?.doneInWindow ?? 0, "Finished the configured workflow"], [`Failed (${WINDOW_DAYS}d)`, s?.failedInWindow ?? 0, "Gave up or marked failed"]]} />
         ) : (
           <div className="flex flex-col gap-4">
             <SegmentedBar parts={parts} label="Active work by stage" unit="items" />
@@ -544,13 +453,13 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                     title={st.hint}
                     aria-pressed={selected}
                     onClick={() => setFilter(selected ? "all" : st.key)}
-                    className={cn("relative flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", selected ? "border-foreground/40 bg-state-active" : "border-border")}
+                    className={cn("relative flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", selected ? "border-foreground/40 bg-state-active" : "border-border", st.tone && byStage[st.key] > 0 && !selected && "border-amber-400/60")}
                   >
-                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="flex items-start gap-1.5 text-xs text-muted-foreground">
                       {st.tone ? <Icon name={st.icon} fallback="Circle" className="size-3.5" style={{ color }} aria-hidden /> : <Swatch color={color} />}
-                      <span className="truncate">{st.label}</span>
+                      <span className="leading-tight">{st.label}</span>
                     </span>
-                    <span className="text-2xl font-semibold leading-none text-foreground tabular-nums">{byStage[st.key]}</span>
+                    <span className={cn("text-2xl font-semibold leading-none tabular-nums", byStage[st.key] === 0 ? "text-muted-foreground/50" : "text-foreground")}>{byStage[st.key]}</span>
                     {i < STAGES.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="absolute top-1/2 -right-2.5 z-10 hidden size-3.5 -translate-y-1/2 text-muted-foreground lg:block" aria-hidden /> : null}
                   </button>
                 );
@@ -570,7 +479,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                 </div>
               ))}
             </div>
-            <Legend items={parts.map((p) => ({ label: p.label, color: p.color, icon: STAGES.find((st) => st.key === p.key)?.tone ? p.icon : undefined }))} />
           </div>
         )}
       </Panel>
@@ -634,9 +542,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
-            <Button size="sm" variant="outline" aria-expanded={newTask} onClick={() => setNewTask((v) => !v)}>
-              <Icon name="Plus" fallback="Circle" aria-hidden /> New task
-            </Button>
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
@@ -644,20 +549,10 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
           </>
         }
       >
-        {newTask ? (
-          <NewTaskForm
-            repos={(overview.data?.repos ?? []).map((r) => r.key)}
-            onCancel={() => setNewTask(false)}
-            onStarted={async () => {
-              setNewTask(false);
-              await refetchAll();
-            }}
-          />
-        ) : null}
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
         {!roster.isLoading && !visible.length ? (
           <Empty icon="Bot" title={filter === "all" ? "No agents working right now" : "Nothing in this stage"}>
-            {filter === "all" ? "Issues that match a repo's label filter are picked up on the next intake sweep, or run intake from Repos & PRs." : "Pick another stage, or clear the filter."}
+            {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -808,10 +703,10 @@ function ReposTab() {
                     {r.active}
                     <span className="text-sm font-normal text-muted-foreground">/{r.maxConcurrent}</span>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">agents</div>
+                  <div className="text-[11px] text-muted-foreground">tasks using capacity</div>
                 </div>
               </div>
-              <Meter size="sm" value={r.active} max={r.maxConcurrent} label={`${r.key} agent slots`} />
+              <Meter size="sm" value={r.active} max={r.maxConcurrent} label={`${r.key} task slots`} />
               <ol className="flex flex-wrap items-center gap-1 text-[11px]" aria-label="Workflow">
                 <li className="flex items-center gap-1 pr-1 font-medium text-foreground">
                   <Icon name="Workflow" fallback="Circle" className="size-3" aria-hidden /> {r.workflowName}:

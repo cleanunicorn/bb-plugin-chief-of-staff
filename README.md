@@ -67,7 +67,41 @@ Every step has a name, instructions and arrows to the steps after it. Its
 | --- | --- | --- |
 | Agent | Agents work on the instructions. | **Writes code** (runs in the task's main thread, one code-writing step at a time; off = read-only, may run in parallel), **agents in parallel** (read-only steps, e.g. two planners), **needs my approval** (approve the report or send it back), **pass/fail verdict** (fail sends the work back), on fail → step, rounds |
 | Check | Chief of Staff runs a command in the worktree; non-zero exit fails it. | command, timeout, on fail → step, attempts |
-| Ship | Push the branch, open a PR (you merge), or open it and merge when CI is green. | action, draft, wait for an approving review, when CI is red → step, attempts |
+| Ship | Push the branch, finish when a PR opens, or finish after the PR merges with green CI. | action, draft, wait for an approving review, when CI is red → step, attempts |
+| Model | Does no work. Sets the agent (provider), model and reasoning level for the agent steps after it. | provider, model, reasoning level (empty = keep the current one) |
+
+**Model steps.** A Model step's settings apply to every agent step after it, not just the next one, until
+another Model step changes them (field by field: a later step that sets only the model keeps the earlier
+provider). They apply to threads started after the step: read-only steps, and the builder when it is first
+spawned. An already running builder thread keeps the model it started with. Without a Model step before it,
+a step uses the repository's settings, then the global default.
+
+**Letting an agent choose.** An agent step can list **model choices** (an id, a "use when" description and a
+provider, model and reasoning level each). The agent analyses the task and reports the id it picks as `choice`
+(the `cos_report` tool rejects a missing or unknown id; a text report uses a `choice:` line). The steps after it run
+with that choice until a Model step or another choosing step changes it. If the agent names no valid choice, the
+step waits for you: approve to continue with the current model, or send it instructions.
+
+**Shipping completion.** Choose `action: "pr"` to finish the ship step as soon as
+its PR is created or an existing open PR is confirmed. Review, CI and merge then
+belong to the PR owner; Chief of Staff does not repair later CI failures for that
+finished delivery. Choose `action: "merge"` to keep watching CI, repair failures
+within the configured budget, and finish only after GitHub confirms the merge.
+`requireApproval` controls the approving-review gate in merge mode (on by default).
+`push` finishes after a successful push. Steps configured after shipping still run.
+
+CI, review and human decisions in shipping release the task's concurrency slot.
+The waiting item stays tracked, and intake can start another task. A CI repair,
+manual rerun or agent step after shipping reacquires capacity; if the repo or
+global limit is full, it queues and resumes automatically. Limits count task
+reservations, including non-shipping human gates, rather than individual parallel
+agent threads. Other branches still working in the same task retain its slot.
+The dashboard shows occupied task capacity separately from waiting PRs.
+
+**Upgrade behavior:** unfinished PR-only items in CI/ready finish after their PR
+is confirmed open or merged. Closed, unmerged PRs fail delivery; a GitHub error
+leaves completion unconfirmed for a later retry. Stored workflow choices remain
+unchanged. Select merge mode for new tasks whose delivery must include merging.
 
 “On fail” goes back to an earlier step: that step and everything after it run
 again, with the failure (check output, review findings, CI log) as feedback.
@@ -86,7 +120,7 @@ the skill; anything else stays plain text.
 The default workflow is **Plan** (needs approval) → **Build** (writes code) →
 **Review** (pass/fail, back to Build) → **Ship** (PR). Edit it, or add your own,
 under **Configure → Workflows**: drag steps on the canvas, connect a step's
-right edge to another step, select an arrow and press Backspace to remove it,
+bottom edge to another step, select an arrow and press Backspace to remove it,
 or use the list view. Each repository picks a workflow; a task keeps the
 workflow it started with. On a task card, **Workflow** shows the task live on
 the canvas and lets you run any step again from there.
@@ -121,7 +155,9 @@ converted automatically.
 
 Start a task without an issue from the dashboard (**New task**), with
 `bb cos task "Title" --repo owner/repo --body …`, or let another agent call the
-`cos_start_task` tool.
+`cos_start_task` tool. Configure the repository first; neither a GitHub issue
+nor automatic intake is required. The task uses that repository's configured
+workflow and counts against its concurrency limits.
 
 ## Configure
 
