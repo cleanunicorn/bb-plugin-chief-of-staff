@@ -213,12 +213,12 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
   return (
-    <article className={cn("flex min-w-0 flex-col gap-3 rounded-xl border bg-card p-4", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
-      <header className="flex items-start gap-3">
+    <article className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
+      <header className="flex items-start gap-2">
         <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
-          <h3 className="text-base font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
-          <p className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground [overflow-wrap:anywhere]">
+          <h3 className="text-sm font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
+          <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             <Icon name="FolderGit2" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             <span title={entry.repo}>
             {entry.repo.split("/")[1] ?? entry.repo}
@@ -232,15 +232,15 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           <StagePill entry={entry} />
           {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
         </div>
-        <span className="flex shrink-0 items-center gap-1 text-sm text-muted-foreground tabular-nums" title={`Task started ${new Date(entry.startedAt).toLocaleString()}`} aria-label={`Task age ${duration(elapsedMin)}`}>
+        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums" title={`Task started ${new Date(entry.startedAt).toLocaleString()}`} aria-label={`Task age ${duration(elapsedMin)}`}>
           <Icon name="Timer" fallback="Clock" className="size-3.5" aria-hidden />
           {finished ? relative(entry.startedAt, now) : duration(elapsedMin)}
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
-      {entry.steps.length ? <details className="text-sm">
-        <summary className="cursor-pointer rounded py-1 text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-          Workflow progress · {entry.steps.filter((step) => step.status === "done").length}/{entry.steps.length} complete
+      {entry.steps.length ? <details className="text-xs">
+        <summary className="cursor-pointer rounded text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+          Workflow progress · {entry.steps.filter((step) => step.status === "done").length}/{entry.steps.length} complete{" "}
           <StepMiniMap steps={entry.steps} />
         </summary>
         <div className="pt-2"><StepFlow entry={entry} /></div>
@@ -267,7 +267,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           <span className="line-clamp-2">{entry.lastError}</span>
         </p>
       ) : null}
-      <dl className="mt-auto flex flex-wrap gap-x-5 gap-y-2 pt-2 text-sm">
+      <dl className="mt-auto flex flex-wrap gap-x-3 gap-y-1 text-xs [&>div]:flex [&>div]:items-center [&>div]:gap-1.5">
         <div className="min-w-0">
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Activity" className="size-3.5" aria-hidden />Last activity</dt>
           <dd className="font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
@@ -285,13 +285,13 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
         </div> : null}
       </dl>
-      <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
         {entry.threadId ? (
-          <Button onClick={() => navigate.toThread(entry.threadId!)}>
+          <Button size="sm" className="h-7 px-2" onClick={() => navigate.toThread(entry.threadId!)}>
             <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
           </Button>
         ) : null}
-        <Button variant="outline" onClick={() => onWorkflow(entry.id)}>
+        <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => onWorkflow(entry.id)}>
           <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
         </Button>
         {entry.prUrl ? (
@@ -301,11 +301,11 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           </span>
         ) : null}
         {entry.waitingKind === "approval" ? (
-          <Button size="sm" className="text-sm" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
+          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
             <Icon name="Check" fallback="Circle" aria-hidden /> Approve
           </Button>
         ) : needsHuman && entry.waitingKind !== "question" ? (
-          <Button size="sm" className="text-sm" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
+          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
             <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
           </Button>
         ) : null}
@@ -408,44 +408,57 @@ export function PipelineTab() {
   return (
     <div className="flex flex-col gap-4">
       <ErrorLine error={roster.error ?? stats.error ?? actionError} />
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-700/50 bg-red-950/20 p-4">
-        <div><div className="font-semibold">{overview.data?.paused ? "Chief of Staff is paused" : "Automation control"}</div><p className="text-sm text-muted-foreground">{overview.data?.paused ? "New workflow actions are held until you resume. Already running agents and jobs can continue." : "Pause intake and hold new workflow actions. Already running agents and jobs can continue."}</p></div>
-        <Button size="lg" className="bg-red-700 text-white hover:bg-red-800" disabled={pausing || !overview.data} onClick={async () => { setPausing(true); setActionError(null); try { await rpc.call("cos_set_paused", { paused: !overview.data!.paused }); await refetchAll(); } catch (error) { setActionError(errorText(error)); } finally { setPausing(false); } }}><Icon name={overview.data?.paused ? "Play" : "Pause"} fallback="Circle" aria-hidden />{overview.data?.paused ? "Resume everything" : "Pause everything"}</Button>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-foreground">Work overview</h2>
-          <p className="text-sm text-muted-foreground">Start a task in a configured repository, with or without an issue.</p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-base font-semibold text-foreground">Work overview</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" aria-describedby="automation-scope" disabled={pausing || !overview.data} onClick={async () => {
+            setPausing(true);
+            setActionError(null);
+            try {
+              await rpc.call("cos_set_paused", { paused: !overview.data!.paused });
+              await refetchAll();
+            } catch (error) {
+              setActionError(errorText(error));
+            } finally {
+              setPausing(false);
+            }
+          }}>
+            <Icon name={overview.data?.paused ? "Play" : "Pause"} fallback="Circle" aria-hidden />{overview.data?.paused ? "Resume everything" : "Pause everything"}
+          </Button>
+          <Button size="sm" aria-expanded={newTask} aria-controls="new-task" onClick={() => setNewTask((v) => !v)}>
+            <Icon name="Plus" fallback="Circle" aria-hidden /> New task
+          </Button>
         </div>
-        <Button aria-expanded={newTask} aria-controls="new-task" onClick={() => setNewTask((v) => !v)}>
-          <Icon name="Plus" fallback="Circle" aria-hidden /> New task
-        </Button>
       </div>
+      <p id="automation-scope" className={cn("text-xs text-muted-foreground", !overview.data?.paused && "sr-only")}>
+        {overview.data?.paused ? <strong className="text-foreground">Chief of Staff is paused. </strong> : null}
+        {overview.data?.paused ? "New workflow actions are held until you resume." : "Pause intake and hold new workflow actions."} Already running agents and jobs can continue.
+      </p>
       {newTask ? (
         <div id="new-task">
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
         </div>
       ) : null}
       {failures + stalled + humanInput > 0 ? (
-        <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3">
+        <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
           <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
-          {failures ? <Button className="h-auto max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
+          {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
             <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
           </Button> : null}
-          {stalled ? <Button variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
+          {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
             <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
           </Button> : null}
-          {humanInput ? <Button className="h-auto max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => setFilter("input")}>
+          {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => setFilter("input")}>
             <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
           </Button> : null}
         </section>
       ) : null}
-      <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-sm">
-        <Button variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name="LayoutGrid" aria-hidden />All tasks</Button>
-        {STAGES.map((st) => <Button key={st.key} variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
+      <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-xs">
+        <Button size="sm" variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name="LayoutGrid" aria-hidden />All tasks</Button>
+        {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
           <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
         </Button>)}
-        <span className="flex items-center gap-2 px-3 py-2 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
+        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
       </nav>
       {/* Agents */}
       <Panel
@@ -473,7 +486,7 @@ export function PipelineTab() {
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((e) => (
             <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={setAnswering} onWorkflow={setViewing} />
           ))}

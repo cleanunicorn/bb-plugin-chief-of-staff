@@ -2,24 +2,24 @@ import { Icon } from "../ui/icon";
 import { STATUS, toneColor, usePalette, type Tone } from "./viz";
 import type { RosterStep } from "../../src/roster";
 
-/** Large state pictogram; the adjacent status label supplies the accessible name. */
+/** Compact state pictogram; the adjacent status label supplies the accessible name. */
 export function StateMark({ icon, tone }: { icon: string; tone: Tone }) {
   const color = toneColor(tone, usePalette());
-  return <span aria-hidden className="flex size-11 shrink-0 items-center justify-center rounded-xl border" style={{ color, borderColor: `color-mix(in srgb, ${color} 24%, transparent)`, background: `color-mix(in srgb, ${color} 10%, transparent)` }}>
-    <Icon name={icon} fallback="Circle" className="size-6" />
+  return <span aria-hidden className="flex size-8 shrink-0 items-center justify-center rounded-lg border" style={{ color, borderColor: `color-mix(in srgb, ${color} 24%, transparent)`, background: `color-mix(in srgb, ${color} 10%, transparent)` }}>
+    <Icon name={icon} fallback="Circle" className="size-4" />
   </span>;
 }
 
 /** Each mark represents a recorded step state, never an estimate of time remaining. */
 export function StepMiniMap({ steps }: { steps: Pick<RosterStep, "id" | "name" | "status" | "retrying">[] }) {
   const palette = usePalette();
-  return <span aria-hidden className="mt-2 flex flex-wrap items-center gap-1.5">
+  return <span aria-hidden className="inline-flex max-w-full flex-wrap items-center gap-1 align-middle">
     {steps.slice(0, 12).map((step) => {
       const status = step.retrying && step.status === "running" ? "retrying" : step.status;
       const color = status === "done" ? STATUS.good : status === "waiting" || status === "retrying" ? STATUS.serious : status === "running" ? palette.accent : "var(--muted-foreground)";
       const icon = status === "done" ? "Check" : status === "waiting" ? "Hand" : status === "retrying" ? "RefreshCw" : status === "running" ? "Play" : "Circle";
-      return <span key={step.id} title={`${step.name}: ${status}`} className="flex size-5 items-center justify-center rounded-md border" style={{ color, borderColor: `color-mix(in srgb, ${color} 35%, transparent)`, background: status === "pending" ? undefined : `color-mix(in srgb, ${color} 10%, transparent)` }}>
-        <Icon name={icon} fallback="Circle" className="size-3" />
+      return <span key={step.id} title={`${step.name}: ${status}`} className="flex size-4 items-center justify-center rounded border" style={{ color, borderColor: `color-mix(in srgb, ${color} 35%, transparent)`, background: status === "pending" ? undefined : `color-mix(in srgb, ${color} 10%, transparent)` }}>
+        <Icon name={icon} fallback="Circle" className="size-2.5" />
       </span>;
     })}
     {steps.length > 12 ? <span className="text-xs text-muted-foreground">+{steps.length - 12}</span> : null}
