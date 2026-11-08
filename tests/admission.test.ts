@@ -58,4 +58,39 @@ describe("shipping repair admission", () => {
     expect([store.getWorkItem("a")!.status, store.getWorkItem("b")!.status].sort()).toEqual(["agent", "queued"]);
     expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
   });
+  it("queues a successor after merge without skipping it", async () => {
+    const { cos, store, add, host } = setup();
+    const a = add("a", true); add("b");
+    const extended = workflowSchema.parse({ ...workflow, steps: [
+      workflow.steps[0], { ...workflow.steps[1], next: ["follow"] },
+      { id: "follow", name: "Follow", type: "agent", writes: true },
+    ] });
+    store.updateWorkItem(a.id, { workflow: extended, nodes: { ...a.nodes, follow: freshNode() } });
+    await dispatch(cos, a.id, { type: "pr_merged" }, "test");
+    expect(store.getWorkItem(a.id)).toMatchObject({ status: "queued", queuedEvent: { type: "pr_merged" } });
+    store.updateWorkItem("b", { status: "done" });
+    await tickItems(cos, "test");
+    expect(store.getWorkItem(a.id)).toMatchObject({ status: "agent", nodes: { ship: { status: "done" }, follow: { status: "running" } } });
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+  });
+
+  it("applies global capacity across repositories and gates operator reruns", async () => {
+    const { cos, store, add, host } = setup();
+    add("a", true); add("b");
+    store.updateWorkItem("b", { repo: "other/repo" });
+    const config = await cos.config();
+    config.repos.push({ ...config.repos[0], owner: "other", repo: "repo" });
+    cos.config = async () => config;
+    await dispatch(cos, "a", { type: "rerun", step: "build", feedback: "retry manually" }, "test");
+    expect(store.getWorkItem("a")!.status).toBe("queued");
+    expect(store.countOccupied("a/b")).toBe(0);
+    expect(store.countOccupied()).toBe(1);
+    await dispatch(cos, "a", { type: "retry" }, "test");
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    store.updateWorkItem("b", { status: "failed" });
+    await tickItems(cos, "test");
+    expect(store.getWorkItem("a")!.status).toBe("agent");
+    expect(JSON.stringify(host.harness.inspection.sdk.callsTo("threads.send"))).toContain("retry manually");
+  });
+
 });

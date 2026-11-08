@@ -67,7 +67,28 @@ Every step has a name, instructions and arrows to the steps after it. Its
 | --- | --- | --- |
 | Agent | Agents work on the instructions. | **Writes code** (runs in the task's main thread, one code-writing step at a time; off = read-only, may run in parallel), **agents in parallel** (read-only steps, e.g. two planners), **needs my approval** (approve the report or send it back), **pass/fail verdict** (fail sends the work back), on fail → step, rounds |
 | Check | Chief of Staff runs a command in the worktree; non-zero exit fails it. | command, timeout, on fail → step, attempts |
-| Ship | Push the branch, open a PR (you merge), or open it and merge when CI is green. | action, draft, wait for an approving review, when CI is red → step, attempts |
+| Ship | Push the branch, finish when a PR opens, or finish after the PR merges with green CI. | action, draft, wait for an approving review, when CI is red → step, attempts |
+
+**Shipping completion.** Choose `action: "pr"` to finish the ship step as soon as
+its PR is created or an existing open PR is confirmed. Review, CI and merge then
+belong to the PR owner; Chief of Staff does not repair later CI failures for that
+finished delivery. Choose `action: "merge"` to keep watching CI, repair failures
+within the configured budget, and finish only after GitHub confirms the merge.
+`requireApproval` controls the approving-review gate in merge mode (on by default).
+`push` finishes after a successful push. Steps configured after shipping still run.
+
+CI, review and human decisions in shipping release the task's concurrency slot.
+The waiting item stays tracked, and intake can start another task. A CI repair,
+manual rerun or agent step after shipping reacquires capacity; if the repo or
+global limit is full, it queues and resumes automatically. Limits count task
+reservations, including non-shipping human gates, rather than individual parallel
+agent threads. Other branches still working in the same task retain its slot.
+The dashboard shows occupied task capacity separately from waiting PRs.
+
+**Upgrade behavior:** unfinished PR-only items in CI/ready finish after their PR
+is confirmed open or merged. Closed, unmerged PRs fail delivery; a GitHub error
+leaves completion unconfirmed for a later retry. Stored workflow choices remain
+unchanged. Select merge mode for new tasks whose delivery must include merging.
 
 “On fail” goes back to an earlier step: that step and everything after it run
 again, with the failure (check output, review findings, CI log) as feedback.

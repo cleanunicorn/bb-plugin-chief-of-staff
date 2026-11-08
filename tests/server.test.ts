@@ -248,9 +248,62 @@ describe("chief-of-staff server", () => {
     const overview = await host.harness.behavior.callRpc("cos_overview", null) as { repos: { active: number }[]; occupiedCapacity: number };
     expect(overview.repos[0].active).toBe(0);
     expect(overview.occupiedCapacity).toBe(0);
-    await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Another task", body: "Work while review waits" });
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "thr_2", environmentId: "env_2" }));
+    const b = await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Another task", body: "Work while review waits" }) as { id: string };
     const after = await host.harness.behavior.callRpc("cos_overview", null) as typeof overview;
     expect(after.occupiedCapacity).toBe(1);
+    expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(0);
+    host = await host.harness.lifecycle.reload(plugin);
+    await host.harness.behavior.runService("cos-reconcile").done;
+    expect(new StateStore(host.bb.storage.database()).listWorkItems().find((i) => i.id !== b.id)).toMatchObject({ status: "ready" });
+    ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [{ state: "APPROVED", user: { login: "alice" }, submitted_at: "" }] });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      await sweep();
+    } finally { vi.useRealTimers(); }
+    const store = new StateStore(host.bb.storage.database());
+    const a = store.listWorkItems().find((i) => i.id !== b.id)!;
+    expect(a).toMatchObject({ status: "done", prNumber: 7, finishedAt: expect.any(String) });
+    expect(store.getWorkItem(b.id)).toMatchObject({ status: "agent", finishedAt: null });
+    expect(store.countOccupied()).toBe(1);
+    expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(1);
+    expect(archivedIds).not.toContain("thr_2");
+  });
+
+  it.each(["red CI", "changes requested", "merge rejected"])("does not finalize merge delivery after %s", async (failure) => {
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }) });
+    if (failure === "red CI") ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "CI", status: "completed", conclusion: "failure" }] } });
+    if (failure === "changes requested") ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [{ state: "APPROVED", user: { login: "alice" } }, { state: "CHANGES_REQUESTED", user: { login: "bob" } }] });
+    if (failure === "merge rejected") ghRoutes["PUT /repos/acme/app/pulls/7/merge"] = () => ({ status: 405, body: { message: "Branch protection" } });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle(); await sweep();
+    const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+    expect(item.status).not.toBe("done");
+    expect(item.finishedAt).toBeNull();
+    expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(failure === "merge rejected" ? 1 : 0);
+  });
+
+  it("releases capacity at PR creation and starts the next task", async () => {
+    await host.harness.behavior.setSettings({ maxConcurrentTotal: 1 });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const a = store.listWorkItems()[0];
+    expect(a).toMatchObject({ status: "done", prUrl: pull.html_url, finishedAt: expect.any(String) });
+    expect(store.countOccupied()).toBe(0);
+    host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: "thr_2", environmentId: "env_2" }));
+    await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Next", body: "Next task" });
+    expect(store.countOccupied()).toBe(1);
+    expect(currentPull.merged).toBe(false);
+    expect(store.getWorkItem(a.id)!.status).toBe("done");
+  });
+
+  it("does not finish PR-only delivery after PR creation fails", async () => {
+    ghRoutes["POST /repos/acme/app/pulls"] = () => ({ status: 503, body: { message: "Unavailable" } });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build"); await idle();
+    expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]).toMatchObject({ status: "retrying", finishedAt: null, prNumber: null });
   });
 
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {

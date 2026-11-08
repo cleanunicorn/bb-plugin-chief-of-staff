@@ -360,8 +360,12 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "pr_merged": {
       patch.jobStartedAt = null;
-      // A merged PR ships the task, whatever else was still open.
-      for (const s of wf.steps) if (node(s.id)?.status !== "done") complete(s.id);
+      // Confirm delivery and its prerequisites, then schedule successors normally.
+      const ship = topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
+      if (!ship) break;
+      for (const s of wf.steps) {
+        if (node(s.id)?.status !== "done" && (s.id === ship || descendants(wf, s.id).has(ship))) complete(s.id);
+      }
       break;
     }
 

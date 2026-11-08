@@ -368,6 +368,12 @@ describe("shipping completion boundary", () => {
     expect(item.prUrl).toBe("https://github.com/acme/app/pull/7");
     expect(item.nodes.ship!.status).toBe(action === "pr" ? "done" : "running");
     expect(agentFx(fx).length).toBe(action === "pr" ? 1 : 0);
+    if (action === "merge") {
+      [item, fx] = run(item, { type: "pr_merged" });
+      expect(item.nodes.ship!.status).toBe("done");
+      expect(item.nodes.follow!.status).toBe("running");
+      expect(agentFx(fx)).toHaveLength(1);
+    }
     expect(item.finishedAt).toBeNull();
   });
 });
