@@ -311,8 +311,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       patch.prUrl = event.prUrl;
       if (!n || n.status !== "running") break;
       patch.jobStartedAt = null;
-      n.phase = "ci";
       n.retry = null;
+      const s = step(event.step);
+      if (s?.type === "ship" && s.action === "pr") complete(event.step);
+      else n.phase = "ci";
       break;
     }
 

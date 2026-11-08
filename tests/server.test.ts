@@ -223,21 +223,10 @@ describe("chief-of-staff server", () => {
     expect(body.body).toContain("claude-code");
     expect(body.body).toContain("npm test → 12 passing");
     expect(body.body).toContain("all green");
-    expect(await roster()).toMatchObject({ status: "running", detail: "ci", prNumber: 7 });
-
-    // CI green → ready to merge; merged → done (CI is polled every 2 minutes).
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      await sweep();
-      expect(await roster()).toMatchObject({ detail: "ready", actor: "human" });
-      currentPull = { ...currentPull, merged: true, merged_at: "2026-11-05T02:00:00Z", state: "closed" };
-      vi.setSystemTime(Date.now() + 3 * 60_000);
-      await sweep();
-      expect(await roster()).toMatchObject({ status: "done" });
-      expect(archivedIds).toEqual(["thr_1"]);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(await roster()).toMatchObject({ status: "done", detail: "done", prNumber: 7 });
+    expect(archivedIds).toEqual(["thr_1"]);
+    await sweep();
+    expect(ghCalls.some((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toBe(false);
 
     // The token went to GitHub as a bearer header and nowhere else.
     expect(ghCalls.every((c) => c.auth === "Bearer ghp_secret_token")).toBe(true);
@@ -328,7 +317,7 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ current: ["Docs"] });
     await report("docs", "done", "Docs fine", "thr_docs");
     await idle("ok2", "thr_docs");
-    expect(await roster()).toMatchObject({ detail: "ci", prNumber: 7 });
+    expect(await roster()).toMatchObject({ detail: "done", prNumber: 7 });
     const pr = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")!.body as { body: string };
     expect(pr.body).toContain("## Workflow: Careful");
     expect(pr.body).toContain("### Plan (approved)");
@@ -403,7 +392,7 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     expect(ranChecks()).toBe(1);
     expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("nudges an agent that stops without reporting, then hands it to a human", async () => {
@@ -458,7 +447,7 @@ describe("chief-of-staff server", () => {
     expect(sentTexts().at(-1)).toContain("The flaky test needs a retry");
     await report("build");
     await idle();
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("tracks questions and resumes in step with the thread", async () => {
@@ -500,7 +489,7 @@ describe("chief-of-staff server", () => {
     await report("build", "done", "Used Postgres.");
     await idle("## Summary\nUsed Postgres.");
     expect(ranChecks()).toBe(1);
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("retries its own infrastructure failures with backoff instead of blaming the human", async () => {
@@ -523,7 +512,7 @@ describe("chief-of-staff server", () => {
       vi.setSystemTime(new Date("2026-11-06T10:02:00Z"));
       await sweep();
       expect(ranChecks()).toBe(2);
-      expect(await roster()).toMatchObject({ detail: "ci", waitingReason: null });
+      expect(await roster()).toMatchObject({ detail: "done", waitingReason: null });
     } finally {
       vi.useRealTimers();
     }
@@ -577,7 +566,7 @@ describe("chief-of-staff server", () => {
     release();
     await new Promise((r) => setTimeout(r, 10));
     const entry = await roster();
-    expect(entry.detail).toBe("ci");
+    expect(entry.detail).toBe("done");
     expect(ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toHaveLength(1);
   });
 
@@ -605,7 +594,7 @@ describe("chief-of-staff server", () => {
     await pause();
     await idle("Used Postgres.", "thr_1", Date.now());
     expect(ranChecks()).toBe(1);
-    expect(await roster()).toMatchObject({ detail: "ci" });
+    expect(await roster()).toMatchObject({ detail: "done" });
   });
 
   it("does not nudge the idle builder while the independent reviewer works", async () => {
@@ -634,7 +623,7 @@ describe("chief-of-staff server", () => {
   });
 
   it("counts a CI failure again when a fix pushes no new commit", async () => {
-    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { maxCiFixes: 1 } } }) });
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", maxCiFixes: 1 } } }) });
     ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
     ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
     openPulls = [];
@@ -682,7 +671,7 @@ describe("chief-of-staff server", () => {
     expect(byIssue(30).workflowName).toBe("acme/app (converted)");
     expect(byIssue(30).steps.find((st) => st.id === "build")!.status).toBe("done");
     expect(ranChecks()).toBe(1);
-    expect(byIssue(30)).toMatchObject({ detail: "ci" });
+    expect(byIssue(30)).toMatchObject({ detail: "done" });
     // Was waiting on CI: still watching the same PR.
     expect(byIssue(31)).toMatchObject({ detail: "ci", prNumber: 7 });
     expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "running", phase: "ci" });

@@ -104,7 +104,7 @@ function loop() {
 }
 
 describe("workflow engine", () => {
-  it("walks the default workflow to a merged PR", () => {
+  it("walks the default workflow to an open PR", () => {
     let item = itemFor(DEFAULT_WORKFLOW);
     let fx: Effect[];
     [item, fx] = run(item, { type: "start" });
@@ -127,12 +127,13 @@ describe("workflow engine", () => {
     expect([item.status, item.jobStartedAt]).toEqual(["cos", NOW.toISOString()]);
 
     [item] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
-    expect([item.status, item.prNumber, item.nodes.ship!.phase]).toEqual(["ci", 7, "ci"]);
-    [item] = run(item, { type: "ci_passing" });
-    expect(item.status).toBe("ready");
-    [item, fx] = run(item, { type: "pr_merged" });
+    expect([item.status, item.prNumber]).toEqual(["done", 7]);
+    expect(item.finishedAt).toBe(NOW.toISOString());
+    [item, fx] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
+    expect(fx).toEqual([]);
+    [item, fx] = run(item, { type: "ci_failing", log: "late failure" });
     expect(item.status).toBe("done");
-    expect(fx.at(-1)).toMatchObject({ type: "notify", title: expect.stringContaining("Shipped") });
+    expect(fx).toEqual([]);
   });
 
   it("runs parallel read-only agents and joins before the next step", () => {
@@ -348,5 +349,25 @@ describe("text step reports", () => {
     const text = "## Stage report\n```\n- **stage**: review\n- **outcome**: Changes requested\n- **summary**: 1. fix x\n```";
     expect(parseTextReport(text, "t")).toMatchObject({ step: "review", outcome: "failed", summary: "1. fix x" });
     expect(parseTextReport("All done!", "t")).toBeNull();
+  });
+});
+
+
+describe("shipping completion boundary", () => {
+  it.each(["pr", "merge"])("handles a confirmed open PR in %s mode", (action) => {
+    const workflow = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action, next: ["follow"] },
+      { id: "follow", name: "Follow", type: "agent" },
+    ]);
+    let item = itemFor(workflow);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
+    expect(item.prUrl).toBe("https://github.com/acme/app/pull/7");
+    expect(item.nodes.ship!.status).toBe(action === "pr" ? "done" : "running");
+    expect(agentFx(fx).length).toBe(action === "pr" ? 1 : 0);
+    expect(item.finishedAt).toBeNull();
   });
 });
