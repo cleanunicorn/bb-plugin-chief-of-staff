@@ -120,8 +120,8 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
 }
 
 function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number): string | null {
-  if (cos.store.countActive(repoKey(repo)) >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
-  if (cos.store.countActiveAll() >= maxTotal) return `global max concurrency (${maxTotal})`;
+  if (cos.store.countOccupied(repoKey(repo)) >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
+  if (cos.store.countOccupied() >= maxTotal) return `global max concurrency (${maxTotal})`;
   return null;
 }
 

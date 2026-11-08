@@ -199,6 +199,18 @@ export function isActiveStatus(status: WorkStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
 }
 
+/** Task reservations, distinct from unfinished work tracked for deduplication and CI. */
+export function occupiesCapacity(item: WorkItem): boolean {
+  if (!isActiveStatus(item.status)) return false;
+  const outstanding = item.workflow.steps.filter((s) => ["running", "waiting"].includes(item.nodes[s.id]?.status));
+  if (!outstanding.length) return true; // Newly admitted or legacy item.
+  return outstanding.some((s) => {
+    const n = item.nodes[s.id]!;
+    if (s.type !== "ship") return true;
+    return n.status === "running" && n.phase === "pushing";
+  });
+}
+
 type Row = Record<string, unknown>;
 
 function parseJson<T>(value: unknown, fallback: T): T {
@@ -347,6 +359,13 @@ export class StateStore {
   countActiveAll(): number {
     const row = this.db.prepare(`SELECT COUNT(*) AS n FROM work_items WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`).get(...ACTIVE_STATUSES) as { n: number };
     return row.n;
+  }
+
+  /** Count reservations without the roster's display limit. */
+  countOccupied(repo?: string, excludeId?: string): number {
+    const rows = this.db.prepare(`SELECT * FROM work_items WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})${repo ? " AND repo = ?" : ""}`)
+      .all(...ACTIVE_STATUSES, ...(repo ? [repo] : [])) as Row[];
+    return rows.reduce((n, row) => n + (row.id !== excludeId && occupiesCapacity(rowToWorkItem(row)) ? 1 : 0), 0);
   }
 
   // ---- item threads ----
