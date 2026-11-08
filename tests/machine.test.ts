@@ -485,6 +485,24 @@ describe("an agent step that chooses the model", () => {
 
 
 describe("per-agent delivery retries", () => {
+  it.each([false, true])("preserves thread-failure precedence over a sibling's interrupted send (legacy=%s)", (legacy) => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "thread deleted" });
+    if (legacy) {
+      delete item.nodes.review.retry!.cause;
+      delete item.nodes.review.agentRetries;
+    }
+    const failure = structuredClone(item.nodes.review.retry);
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 1, kind: "start" }, message: "interrupted send", uncertain: true });
+    expect(item.nodes.review.retry).toEqual(failure);
+    expect(item.nodes.review.agentRetries?.[0]).toEqual(failure);
+    expect(item.nodes.review.agentRetries?.[1]).toMatchObject({ cause: "prompt_delivery", uncertain: true });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    [item] = run(item, ended("review", report(), item, 0));
+    expect(item.nodes.review).toMatchObject({ status: "waiting", retry: failure, reports: [null, null] });
+  });
+
   it.each([false, true])("does not acknowledge a thread failure as delivery recovery (legacy=%s)", (legacy) => {
     let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
     [item] = run(item, { type: "start" });

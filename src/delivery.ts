@@ -297,10 +297,13 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
     sending: () => saveDelivery("sending", existing),
     accepted: (thread?: { id: string; environmentId?: string | null; providerId?: string | null }) => {
       const threadId = thread?.id ?? existing!;
-      // Persist acceptance before logging, notification, branch discovery or other bookkeeping.
-      saveDelivery("accepted", threadId);
-      if (step.writes && thread) cos.store.updateWorkItem(item.id, { threadId, environmentId: thread.environmentId ?? null, providerId: thread.providerId ?? null });
-      cos.store.upsertThread({ threadId, itemId: item.id, role: step.writes ? "builder" : "step", stepId: step.id, agent: effect.agent, environmentId: thread?.environmentId ?? item.environmentId, round, promptSentAt: sentAt });
+      // Acceptance and the thread binding are one durable fact. A failed write
+      // leaves the attempt uncertain, so its matching report can repair it.
+      cos.store.transaction(() => {
+        saveDelivery("accepted", threadId);
+        if (step.writes && thread) cos.store.updateWorkItem(item.id, { threadId, environmentId: thread.environmentId ?? null, providerId: thread.providerId ?? null });
+        cos.store.upsertThread({ threadId, itemId: item.id, role: step.writes ? "builder" : "step", stepId: step.id, agent: effect.agent, environmentId: thread?.environmentId ?? item.environmentId, round, promptSentAt: sentAt });
+      });
     },
   };
   if (existing) {

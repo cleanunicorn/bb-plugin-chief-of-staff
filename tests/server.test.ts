@@ -441,6 +441,55 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ detail: "done" });
   });
 
+  it("accepts a current report after transient thread bookkeeping failure", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const binding = vi.spyOn(StateStore.prototype, "upsertThread").mockImplementationOnce(() => { throw new Error("transient row update failed"); });
+    try {
+      await host.harness.behavior.callRpc("cos_item_action", { id: item.id, action: "rerun_step", step: "build" });
+      expect(store.getWorkItem(item.id)?.nodes.build.deliveries?.[0].state).toBe("uncertain");
+      expect(store.getThread("thr_1")?.round).toBe(1);
+      expect(store.getWorkItem(item.id)?.nodes.build.round).toBe(2);
+      binding.mockImplementationOnce(() => { throw new Error("report binding failed"); });
+      await expect(report("build")).rejects.toThrow("report binding failed");
+      expect(store.getThread("thr_1")?.round).toBe(1);
+      expect(store.getWorkItem(item.id)?.nodes.build.deliveries?.[0].state).toBe("uncertain");
+      expect(JSON.stringify(await report("build"))).toContain("Recorded");
+      expect(store.getThread("thr_1")?.round).toBe(2);
+      expect(store.getWorkItem(item.id)?.nodes.build.deliveries?.[0].state).toBe("accepted");
+      await idle();
+      expect(await roster()).toMatchObject({ detail: "done" });
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    } finally { vi.restoreAllMocks(); }
+  });
+
+  it.each([false, true])("preserves a failed thread when reconciling an interrupted delivery (legacy=%s)", async (legacy) => {
+    await host.harness.behavior.setSettings({
+      repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "default" }] }),
+      workflow: JSON.stringify({ default: "default", workflows: [{ id: "default", name: "Review", steps: [{ id: "review", name: "Review", type: "agent" }] }] }),
+    });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    item.nodes.review.deliveries![0].state = "sending";
+    store.updateWorkItem(item.id, { nodes: item.nodes });
+    await host.harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "thr_review" }) });
+    expect(store.getWorkItem(item.id)?.nodes.review.retry?.cause).toBe("thread_failure");
+    if (legacy) {
+      const failed = store.getWorkItem(item.id)!;
+      delete failed.nodes.review.retry!.cause;
+      delete failed.nodes.review.agentRetries;
+      store.updateWorkItem(item.id, { nodes: failed.nodes });
+    }
+    const before = store.getWorkItem(item.id)!.nodes.review;
+    await sweep();
+    expect(store.getWorkItem(item.id)?.nodes.review).toEqual(before);
+    expect(JSON.stringify(await report("review", "done", "old thread", "thr_review"))).toContain("not running");
+    await idle("old thread done", "thr_review");
+    expect(store.getWorkItem(item.id)?.nodes.review.status).toBe("waiting");
+  });
+
   it("holds workflow progress and intake while paused, then resumes recorded reports", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await host.harness.behavior.callRpc("cos_set_paused", { paused: true });

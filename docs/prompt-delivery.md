@@ -12,7 +12,10 @@ The delivery boundary now distinguishes:
 - Sending: a per-agent attempt is persisted immediately before the SDK call.
 - Accepted: SDK success is persisted before logs, GitHub comments, branch
   discovery, and other bookkeeping. Failures in those operations cannot cause
-  another prompt or park the agent.
+  another prompt or park the agent. Acceptance and the thread binding commit
+  in one SQLite transaction, including when a matching report repairs a send.
+  If either write fails, the attempt stays uncertain and can be retried by the
+  report without resending the prompt.
 - Uncertain: transport threw, or restart found an interrupted send. Automatic
   resend is disabled. A busy thread or an attempt timestamp is not acceptance.
 
@@ -30,7 +33,8 @@ Legacy rows retain round validation and may recover only agent-delivery
 cause. Legacy agent retries requesting a fresh thread (`fresh: true`) are treated
 as thread failures, not recoverable delivery errors. Approval and thread-failure
 waits do not become reportable; failed/deleted reviewers require a fresh-thread
-retry even when the old report has a valid delivery token.
+retry even when the old report has a valid delivery token. Interrupted-send
+reconciliation cannot replace a known thread-failure wait.
 Reports still pass through the usual verdict, model-choice and approval logic
 on idle. One agent cannot clear another agent's retry or discard its report.
 

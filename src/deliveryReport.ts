@@ -30,10 +30,12 @@ export async function acknowledgeReport(cos: Cos, item: WorkItem, step: AgentSte
   const node = item.nodes[step.id];
   const attempt = node.deliveries?.[agent];
   if (attempt) {
-    node.deliveries = { ...node.deliveries, [agent]: { ...attempt, state: "accepted" } };
-    cos.store.updateWorkItem(item.id, { nodes: item.nodes });
-    const row = cos.store.getThread(threadId);
-    cos.store.upsertThread({ threadId, itemId: item.id, role: step.writes ? "builder" : "step", stepId: step.id, agent, environmentId: row?.environmentId ?? item.environmentId, round: node.round, promptSentAt: attempt.sentAt });
+    cos.store.transaction(() => {
+      node.deliveries = { ...node.deliveries, [agent]: { ...attempt, state: "accepted" } };
+      cos.store.updateWorkItem(item.id, { nodes: item.nodes });
+      const row = cos.store.getThread(threadId);
+      cos.store.upsertThread({ threadId, itemId: item.id, role: step.writes ? "builder" : "step", stepId: step.id, agent, environmentId: row?.environmentId ?? item.environmentId, round: node.round, promptSentAt: attempt.sentAt });
+    });
   }
   await dispatchLocked(cos, item.id, { type: "delivery_ack", step: step.id, agent, round: node.round }, `report:${threadId}`);
 }
