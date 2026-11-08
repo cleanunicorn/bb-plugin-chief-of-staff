@@ -35,7 +35,9 @@ push or open pull requests; Chief of Staff does that.
   (RPCs `cos_question {id}` and `cos_answer {id, answer}`).
 - `bb cos intake [--repo owner/repo] [--dry-run]` — pick up eligible issues now.
 - `bb cos task "<title>" --repo owner/repo [--body "..."]` — start a task with no
-  GitHub issue (also the `cos_start_task` agent tool).
+  GitHub issue (also the `cos_start_task` agent tool). The repository must be
+  configured, but automatic intake need not be enabled. The task follows its
+  configured workflow and counts against capacity limits.
 - `bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message "..."]`
   — act on a tracked work item (ids come from `bb cos status --json`).
   `approve` approves the waiting step or moves past a stuck one; `revise

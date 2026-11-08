@@ -402,7 +402,7 @@ function NewTaskForm({ repos, onCancel, onStarted }: { repos: string[]; onCancel
       setSending(false);
     }
   };
-  if (!repos.length) return <p className="mb-3 text-sm text-muted-foreground">Configure a repository first (Configure tab).</p>;
+  if (!repos.length) return <p className="mb-3 text-sm text-muted-foreground">Configure a repository first in the Configure tab. A GitHub issue and automatic intake are not required.</p>;
   return (
     <form
       className="mb-4 flex flex-col gap-2 rounded-lg border border-border p-3"
@@ -411,6 +411,7 @@ function NewTaskForm({ repos, onCancel, onStarted }: { repos: string[]; onCancel
         if (title.trim() && repo) void start();
       }}
     >
+      <p className="text-sm text-muted-foreground">Choose a configured repository and describe the work. No GitHub issue or automatic intake is required; the task runs the repository's configured workflow and uses its capacity.</p>
       <div className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_1fr]">
         <label className="text-xs font-medium text-muted-foreground">
           Repository
@@ -509,6 +510,20 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   return (
     <div className="flex flex-col gap-4">
       <ErrorLine error={roster.error ?? stats.error ?? actionError} />
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4">
+        <div>
+          <p className="font-medium text-foreground">Start a described task</p>
+          <p className="text-sm text-muted-foreground">Use a configured repository; no GitHub issue or automatic intake needed.</p>
+        </div>
+        <Button size="sm" variant="outline" aria-expanded={newTask} aria-controls="new-task" onClick={() => setNewTask((v) => !v)}>
+          <Icon name="Plus" fallback="Circle" aria-hidden /> New task
+        </Button>
+      </div>
+      {newTask ? (
+        <div id="new-task">
+          <NewTaskForm repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
+        </div>
+      ) : null}
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <StatTile hero label="Active agents" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>
@@ -629,9 +644,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
-            <Button size="sm" variant="outline" aria-expanded={newTask} onClick={() => setNewTask((v) => !v)}>
-              <Icon name="Plus" fallback="Circle" aria-hidden /> New task
-            </Button>
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
@@ -639,20 +651,10 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
           </>
         }
       >
-        {newTask ? (
-          <NewTaskForm
-            repos={(overview.data?.repos ?? []).map((r) => r.key)}
-            onCancel={() => setNewTask(false)}
-            onStarted={async () => {
-              setNewTask(false);
-              await refetchAll();
-            }}
-          />
-        ) : null}
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
         {!roster.isLoading && !visible.length ? (
           <Empty icon="Bot" title={filter === "all" ? "No agents working right now" : "Nothing in this stage"}>
-            {filter === "all" ? "Issues that match a repo's label filter are picked up on the next intake sweep, or run intake from Repos & PRs." : "Pick another stage, or clear the filter."}
+            {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

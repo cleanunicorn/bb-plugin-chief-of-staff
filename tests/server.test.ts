@@ -710,6 +710,19 @@ describe("chief-of-staff server", () => {
     expect(JSON.stringify(tool)).toContain("Started");
   });
 
+  it("starts a described task through the configured workflow with intake disabled and no issue", async () => {
+    const paused = JSON.parse(repos);
+    paused.repos[0].allow.intake = false;
+    await host.harness.behavior.setSettings({ repos: JSON.stringify(paused) });
+    const started = await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Improve login", body: "Explain errors" }) as { id: string; workflow: string };
+    expect(started.workflow).toBe("acme/app (converted)");
+    const entry = await roster();
+    expect(entry).toMatchObject({ id: started.id, issueNumber: null, current: ["Build"] });
+    const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
+    expect(spawn.prompt).toContain("Explain errors");
+    expect(ghCalls.some((call) => call.path === "/repos/acme/app/issues")).toBe(false);
+  });
+
   it("shows the open question with options and context, and answers it from the dashboard", async () => {
     const question = {
       id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1,
