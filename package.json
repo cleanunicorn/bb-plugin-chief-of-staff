@@ -60,6 +60,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "bb plugin build"
+    "build": "bb plugin build",
+    "check": "npm run typecheck && npm test"
   }
 }
