@@ -625,6 +625,18 @@ function ReposTab() {
       setBusy(false);
     }
   };
+  const setRepoPaused = async (repo: string, paused: boolean) => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await rpc.call("cos_set_repo_paused", { repo, paused });
+      await refetchAll();
+    } catch (error) {
+      setMessage(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  };
   const prs = (roster.data?.entries ?? []).filter((e) => e.prNumber);
   const data = overview.data;
   const authOk = data?.tokenSource !== "none";
@@ -700,10 +712,14 @@ function ReposTab() {
                   </li>
                 ))}
               </ol>
+              {r.paused ? <StatusPill tone="neutral" icon="Pause" label="Project paused" /> : null}
               {!r.intake ? <StatusPill tone="neutral" icon="Pause" label="Intake paused" /> : null}
               <div className="flex gap-1.5">
-                <Button size="sm" variant="outline" className="h-7 px-2" disabled={busy} onClick={() => void runIntake(r.key)}>
+                <Button size="sm" variant="outline" className="h-7 px-2" disabled={busy || r.paused} onClick={() => void runIntake(r.key)}>
                   <Icon name="Inbox" fallback="Circle" aria-hidden /> Intake
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 px-2" disabled={busy} aria-label={`${r.paused ? "Resume" : "Pause"} project ${r.key}`} onClick={() => void setRepoPaused(r.key, !r.paused)}>
+                  <Icon name={r.paused ? "Play" : "Pause"} fallback="Circle" aria-hidden /> {r.paused ? "Resume" : "Pause"}
                 </Button>
               </div>
             </article>

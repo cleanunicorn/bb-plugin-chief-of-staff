@@ -66,6 +66,11 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   return lines.join("\n");
 }
 
+/** Why an operator action was refused: everything is paused, or just this project. */
+export function pausedMessage(cos: Cos, repo: string, action: string): string {
+  return cos.store.isRepoPaused(repo) && !cos.store.isPaused() ? `Project ${repo} is paused. Resume it before ${action}.` : `Chief of Staff is paused. Resume it before ${action}.`;
+}
+
 export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
   if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting intake.");
   const config = await cos.config();
@@ -83,6 +88,10 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     if (opts.repo && opts.repo !== key) continue;
     const result: IntakeResult = { repo: key, considered: 0, started: [], skipped: [] };
     results.push(result);
+    if (cos.store.isRepoPaused(key)) {
+      result.error = "this project is paused";
+      continue;
+    }
     if (!repo.intake) {
       result.error = "intake is paused for this repo";
       continue;
@@ -91,7 +100,7 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
       const issues = await eligibleIssues(github, repo);
       result.considered = issues.length;
       for (const issue of issues) {
-        if (cos.store.isPaused()) break;
+        if (cos.store.isPaused(key)) break;
         if (cos.store.findActiveForIssue(key, issue.number)) {
           result.skipped.push({ issue: issue.number, reason: "active thread exists" });
           continue;
@@ -158,7 +167,7 @@ export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue,
 
 /** Start a task the operator described, without a GitHub issue. */
 export async function startTask(cos: Cos, input: { repo: string; title?: string; body: string; force?: boolean }, actor: string): Promise<WorkItem | null> {
-  if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting a task.");
+  if (cos.store.isPaused(input.repo)) throw new Error(pausedMessage(cos, input.repo, "starting a task"));
   const repo = await cos.repo(input.repo);
   if (!repo) throw new Error(`repo ${input.repo} is not configured`);
   const body = input.body.trim();

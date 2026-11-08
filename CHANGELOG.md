@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Pause a single project.** Each project card now has its own Pause/Resume
+  button, alongside the existing global “Pause everything”. A paused project
+  holds its intake, new tasks, workflow events and sweeps, then replays held
+  events in order on resume; other projects are unaffected. Existing
+  installations gain a `paused_repos` table via an appended migration.
+
 - **Group workflow threads in the sidebar.** Planning, building, and review
   threads now share a persistent parent thread in BB’s native tree. Existing
   active workflows are grouped automatically, child-result notifications are

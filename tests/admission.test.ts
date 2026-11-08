@@ -120,6 +120,15 @@ describe("shipping repair admission", () => {
     store.deferEvent("existing", { type: "retry" }, "test");
     expect(store.nextDeferredEvent()).toMatchObject({ item_id: "existing", event_json: '{"type":"retry"}' });
     expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "queued_event_json" })]));
+    // Per-project pause: a paused repo's deferred events wait while others replay.
+    store.setPaused(false);
+    store.setRepoPaused("a/b", true);
+    expect(store.isPaused()).toBe(false);
+    expect(store.isPaused("a/b")).toBe(true);
+    expect(store.isPaused("c/d")).toBe(false);
+    expect(store.nextDeferredEvent()).toBeUndefined();
+    store.setRepoPaused("a/b", false);
+    expect(store.nextDeferredEvent()).toMatchObject({ item_id: "existing" });
   });
 
   it.each([[previousMigrations], [reorderedMigrations]])("rejects unknown hashes without changing the database", (history) => {

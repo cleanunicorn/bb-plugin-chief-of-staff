@@ -74,7 +74,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
     return null;
   }
-  if (cos.store.isPaused()) {
+  if (cos.store.isPaused(item.repo)) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
@@ -86,7 +86,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     }
   }
   const { policy, repos, values } = await cos.config();
-  if (cos.store.isPaused()) {
+  if (cos.store.isPaused(item.repo)) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
@@ -177,7 +177,7 @@ export function replayDeferred(cos: Cos): Promise<void> {
 /** Resume older deferred transitions before admitting fresh intake. */
 export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
   const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER })
-    .filter((i) => i.queuedEvent)
+    .filter((i) => i.queuedEvent && !cos.store.isPaused(i.repo))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   for (const item of items) await dispatch(cos, item.id, { type: "start" }, actor);
 
@@ -586,7 +586,7 @@ function trackingPull(item: WorkItem): boolean {
 
 /** Poll every open PR we own. Called from the sweep. */
 export async function watchCi(cos: Cos, actor: string): Promise<void> {
-  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => i.prNumber && trackingPull(i));
+  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => i.prNumber && trackingPull(i) && !cos.store.isPaused(i.repo));
   if (!items.length) return;
   const github = await cos.github();
   if (!github.hasToken) return;

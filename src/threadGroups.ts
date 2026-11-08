@@ -46,14 +46,15 @@ export async function itemParent(cos: Cos, item: WorkItem): Promise<string | und
 export async function groupExistingThreads(cos: Cos): Promise<void> {
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
     if (cos.store.isPaused()) return;
+    if (cos.store.isPaused(item.repo)) continue;
     await withItemLock(item.id, async () => {
       const fresh = cos.store.getWorkItem(item.id);
-      if (!fresh || fresh.status === "done" || fresh.status === "failed" || cos.store.isPaused()) return;
+      if (!fresh || fresh.status === "done" || fresh.status === "failed" || cos.store.isPaused(fresh.repo)) return;
       const ids = itemThreadIds(cos, fresh);
       const parentThreadId = await itemParent(cos, fresh);
       if (!parentThreadId) return;
       for (const threadId of ids) {
-        if (threadId === parentThreadId || cos.store.isPaused()) continue;
+        if (threadId === parentThreadId || cos.store.isPaused(fresh.repo)) continue;
         try {
           const thread = await readThread(cos, threadId);
           if (!thread || thread.archivedAt || thread.deletedAt) continue;
