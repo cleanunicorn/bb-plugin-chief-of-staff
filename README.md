@@ -155,7 +155,9 @@ converted automatically.
 
 Start a task without an issue from the dashboard (**New task**), with
 `bb cos task "Title" --repo owner/repo --body …`, or let another agent call the
-`cos_start_task` tool.
+`cos_start_task` tool. Configure the repository first; neither a GitHub issue
+nor automatic intake is required. The task uses that repository's configured
+workflow and counts against its concurrency limits.
 
 ## Configure
 

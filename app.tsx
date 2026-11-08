@@ -16,6 +16,7 @@ import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow } from "@/components/cos/stepFlow";
+import { NewTaskForm } from "@/components/cos/newTaskForm";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -338,70 +339,6 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
 
 // ---------- new task ----------
 
-const fieldClass = "w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
-
-/** Hand Chief of Staff a task that has no GitHub issue; it runs the repo's workflow. */
-function NewTaskForm({ repos, onCancel, onStarted }: { repos: string[]; onCancel: () => void; onStarted: () => void | Promise<void> }) {
-  const rpc = useRpc<Contract>();
-  const [repo, setRepo] = useState(repos[0] ?? "");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const start = async () => {
-    setSending(true);
-    setError(null);
-    try {
-      await rpc.call("cos_start_task", { repo, title: title.trim(), body: body.trim() });
-      await onStarted();
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setSending(false);
-    }
-  };
-  if (!repos.length) return <p className="mb-3 text-sm text-muted-foreground">Configure a repository first (Configure tab).</p>;
-  return (
-    <form
-      className="mb-4 flex flex-col gap-2 rounded-lg border border-border p-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (title.trim() && repo) void start();
-      }}
-    >
-      <div className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_1fr]">
-        <label className="text-xs font-medium text-muted-foreground">
-          Repository
-          <select className={cn(fieldClass, "mt-1")} value={repo} disabled={sending} onChange={(e) => setRepo(e.target.value)}>
-            {repos.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-xs font-medium text-muted-foreground">
-          Title
-          <input className={cn(fieldClass, "mt-1")} value={title} disabled={sending} placeholder="Add rate limiting to /login" onChange={(e) => setTitle(e.target.value)} />
-        </label>
-      </div>
-      <label className="text-xs font-medium text-muted-foreground">
-        What needs doing
-        <textarea className={cn(fieldClass, "mt-1 min-h-24")} value={body} disabled={sending} placeholder="Context, acceptance criteria, constraints. The agent starts from this instead of an issue." onChange={(e) => setBody(e.target.value)} />
-      </label>
-      {error ? <p className="text-xs" style={{ color: STATUS.critical }}>{error}</p> : null}
-      <div className="flex justify-end gap-2">
-        <Button type="button" size="sm" variant="ghost" disabled={sending} onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" size="sm" disabled={sending || !title.trim() || !repo}>
-          <Icon name="Play" fallback="Circle" aria-hidden /> {sending ? "Starting…" : "Start"}
-        </Button>
-      </div>
-    </form>
-  );
-}
-
 // ---------- pipeline tab ----------
 
 function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
@@ -467,6 +404,20 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   return (
     <div className="flex flex-col gap-4">
       <ErrorLine error={roster.error ?? stats.error ?? actionError} />
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4">
+        <div>
+          <p className="font-medium text-foreground">Start a described task</p>
+          <p className="text-sm text-muted-foreground">Use a configured repository; no GitHub issue or automatic intake needed.</p>
+        </div>
+        <Button size="sm" variant="outline" aria-expanded={newTask} aria-controls="new-task" onClick={() => setNewTask((v) => !v)}>
+          <Icon name="Plus" fallback="Circle" aria-hidden /> New task
+        </Button>
+      </div>
+      {newTask ? (
+        <div id="new-task">
+          <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
+        </div>
+      ) : null}
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <StatTile hero label="Tasks using capacity" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>
@@ -587,9 +538,6 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
-            <Button size="sm" variant="outline" aria-expanded={newTask} onClick={() => setNewTask((v) => !v)}>
-              <Icon name="Plus" fallback="Circle" aria-hidden /> New task
-            </Button>
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
@@ -597,20 +545,10 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
           </>
         }
       >
-        {newTask ? (
-          <NewTaskForm
-            repos={(overview.data?.repos ?? []).map((r) => r.key)}
-            onCancel={() => setNewTask(false)}
-            onStarted={async () => {
-              setNewTask(false);
-              await refetchAll();
-            }}
-          />
-        ) : null}
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
         {!roster.isLoading && !visible.length ? (
           <Empty icon="Bot" title={filter === "all" ? "No agents working right now" : "Nothing in this stage"}>
-            {filter === "all" ? "Issues that match a repo's label filter are picked up on the next intake sweep, or run intake from Repos & PRs." : "Pick another stage, or clear the filter."}
+            {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
