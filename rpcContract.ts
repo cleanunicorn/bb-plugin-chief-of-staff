@@ -132,6 +132,7 @@ export const rpcContract = defineRpcContract({
   cos_overview: {
     input: z.null(),
     output: z.object({
+      paused: z.boolean(),
       tokenSource: z.enum(["setting", "gh-cli", "none"]),
       repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), intake: z.boolean(), workflowId: z.string(), workflowName: z.string(), stepNames: z.array(z.string()) })),
       errors: z.array(z.string()),
@@ -139,6 +140,7 @@ export const rpcContract = defineRpcContract({
       settings: z.object({ stallThresholdMinutes: z.number(), maxConcurrentTotal: z.number(), intakeIntervalMinutes: z.number() }),
     }),
   },
+  cos_set_paused: { input: z.object({ paused: z.boolean() }), output: z.object({ paused: z.boolean() }) },
   cos_roster: { input: z.object({ repo: z.string().optional(), includeDone: z.boolean().default(false), withUsage: z.boolean().default(false) }), output: z.object({ entries: z.array(rosterEntry) }) },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: {

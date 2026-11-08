@@ -192,6 +192,8 @@ export const MIGRATIONS = [
   )`,
   `CREATE INDEX IF NOT EXISTS item_threads_item ON item_threads(item_id)`,
   `UPDATE work_items SET waiting_kind = 'approval' WHERE waiting_kind = 'plan_approval'`,
+  `CREATE TABLE IF NOT EXISTS cos_control (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS deferred_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, event_json TEXT NOT NULL, actor TEXT NOT NULL)`,
 ];
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
@@ -271,6 +273,24 @@ export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingRea
 
 export class StateStore {
   constructor(private readonly db: Database, private readonly now: () => Date = () => new Date()) {}
+
+  isPaused(): boolean {
+    return Boolean((this.db.prepare("SELECT paused FROM cos_control WHERE id = 1").get() as { paused: number } | undefined)?.paused);
+  }
+
+  setPaused(paused: boolean): void {
+    this.db.prepare("INSERT INTO cos_control (id, paused) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET paused = excluded.paused").run(paused ? 1 : 0);
+  }
+
+  deferEvent(itemId: string, event: unknown, actor: string): void {
+    this.db.prepare("INSERT INTO deferred_events (item_id, event_json, actor) VALUES (?, ?, ?)").run(itemId, JSON.stringify(event), actor);
+  }
+
+  nextDeferredEvent(): { id: number; item_id: string; event_json: string; actor: string } | undefined {
+    return this.db.prepare("SELECT id, item_id, event_json, actor FROM deferred_events ORDER BY id LIMIT 1").get() as { id: number; item_id: string; event_json: string; actor: string } | undefined;
+  }
+
+  deleteDeferredEvent(id: number): void { this.db.prepare("DELETE FROM deferred_events WHERE id = ?").run(id); }
 
   // ---- work items ----
   insertWorkItem(item: NewWorkItem): WorkItem {

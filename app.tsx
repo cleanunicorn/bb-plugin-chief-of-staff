@@ -461,6 +461,7 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
     await Promise.all([roster.refetch(), stats.refetch(), overview.refetch()]);
   }, [roster, stats, overview]);
   useLiveRefresh(refetchAll);
+  const [pausing, setPausing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
@@ -509,6 +510,10 @@ function PipelineTab({ goTab }: { goTab: (t: Tab) => void }) {
   return (
     <div className="flex flex-col gap-4">
       <ErrorLine error={roster.error ?? stats.error ?? actionError} />
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-700/50 bg-red-950/20 p-4">
+        <div><div className="font-semibold">{overview.data?.paused ? "Chief of Staff is paused" : "Automation control"}</div><p className="text-sm text-muted-foreground">{overview.data?.paused ? "New workflow actions are held until you resume. Already running agents and jobs can continue." : "Pause intake and hold new workflow actions. Already running agents and jobs can continue."}</p></div>
+        <Button size="lg" className="bg-red-700 text-white hover:bg-red-800" disabled={pausing || !overview.data} onClick={async () => { setPausing(true); setActionError(null); try { await rpc.call("cos_set_paused", { paused: !overview.data!.paused }); await refetchAll(); } catch (error) { setActionError(errorText(error)); } finally { setPausing(false); } }}><Icon name={overview.data?.paused ? "Play" : "Pause"} fallback="Circle" aria-hidden />{overview.data?.paused ? "Resume everything" : "Pause everything"}</Button>
+      </div>
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         <StatTile hero label="Active agents" icon="Bot" tone="info" value={running} sub={maxTotal ? `of ${maxTotal} slots · ${byStage.queued} queued` : `${byStage.queued} queued`} onClick={() => setFilter("all")}>

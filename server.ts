@@ -10,7 +10,7 @@ import { reconcile } from "./src/roster";
 import { observeActive, observeFailure, observeIdle, observeInteraction, snapshotOf, syncThread } from "./src/sync";
 import { describeInteraction } from "./src/threads";
 import { sweep } from "./src/sweep";
-import { dispatch, newJobGeneration } from "./src/delivery";
+import { dispatch, newJobGeneration, replayDeferred } from "./src/delivery";
 
 export type { rpcContract } from "./rpcContract";
 
@@ -80,7 +80,10 @@ export default async function plugin(bb: BbPluginApi) {
     async start(signal) {
       if (signal.aborted) return;
       try {
-        await reconcile(cos);
+        if (!store.isPaused()) {
+          await replayDeferred(cos);
+          await reconcile(cos);
+        }
       } catch (error) {
         bb.log.warn(`reconcile failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
       }

@@ -3,10 +3,10 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Cos } from "./context";
 import { generalSettingsSchema, rpcContract } from "../rpcContract";
 import type { GeneralSettings } from "../rpcContract";
-import { buildRoster, rosterSteps } from "./roster";
+import { buildRoster, rosterSteps, reconcile } from "./roster";
 import { runIntake, startTask } from "./intake";
 import { parseWorkflows, stepById, topoOrder } from "./workflow";
-import { dispatch } from "./delivery";
+import { dispatch, replayDeferred } from "./delivery";
 import { parseRepos } from "./config";
 import { computeStats } from "./stats";
 import { answerQuestion, getQuestion } from "./answer";
@@ -22,6 +22,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
       async cos_overview() {
         const config = await cos.config();
         return {
+          paused: cos.store.isPaused(),
           tokenSource: await cos.tokenSource(),
           repos: await Promise.all(
             config.repos.map(async (r) => {
@@ -49,6 +50,16 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
           },
         };
       },
+      async cos_set_paused(input, ctx) {
+        cos.store.setPaused(input.paused);
+        cos.store.log({ level: "info", kind: "control", repo: null, workItemId: null, message: input.paused ? "automation paused" : "automation resumed", actor: callerActor(ctx) });
+        cos.invalidate();
+        if (!input.paused) {
+          await replayDeferred(cos);
+          if (!cos.store.isPaused()) await reconcile(cos);
+        }
+        return { paused: cos.store.isPaused() };
+      },
       async cos_roster(input) {
         return { entries: await buildRoster(cos, input) };
       },
@@ -56,6 +67,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return { results: await runIntake(cos, { repo: input.repo, dryRun: input.dryRun, actor: "rpc:client" }) };
       },
       async cos_item_action(input) {
+        if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before changing a task.");
         const item = await itemAction(cos, input.id, input.action, "rpc:client", { step: input.step, feedback: input.feedback });
         return { status: item?.status ?? "unknown" };
       },
@@ -74,6 +86,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return getQuestion(cos, input.id);
       },
       async cos_answer(input, ctx) {
+        if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before answering.");
         return answerQuestion(cos, input.id, input.answer, callerActor(ctx));
       },
       async cos_stats(input) {

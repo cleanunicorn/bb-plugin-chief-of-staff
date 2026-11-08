@@ -66,13 +66,22 @@ export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: s
 }
 
 /** dispatch() for callers that already hold the item's lock. */
-export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string): Promise<WorkItem | null> {
+export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, deferredId?: number): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(itemId);
   if (!item || !item.workflow.steps.length) return null;
+  if (cos.store.isPaused()) {
+    if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
+    return item;
+  }
   const { policy } = await cos.config();
+  if (cos.store.isPaused()) {
+    if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
+    return item;
+  }
   const t = transition(item, event, policy, cos.now());
   const updated = cos.store.updateWorkItem(item.id, applyTransition(item, t.nodes, t.patch));
   if (!updated) return null;
+  if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
   for (const effect of t.effects) {
     if (effect.type === "check" || effect.type === "ship" || effect.type === "merge") {
@@ -89,6 +98,21 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   }
   if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
   return cos.store.getWorkItem(item.id);
+}
+
+/** Replay events received during a pause in their original order. */
+let replaying: Promise<void> | null = null;
+export function replayDeferred(cos: Cos): Promise<void> {
+  if (replaying) return replaying;
+  replaying = (async () => {
+    while (!cos.store.isPaused()) {
+      const entry = cos.store.nextDeferredEvent();
+      if (!entry) return;
+      if (!cos.store.getWorkItem(entry.item_id)) { cos.store.deleteDeferredEvent(entry.id); continue; }
+      await withItemLock(entry.item_id, () => dispatchLocked(cos, entry.item_id, JSON.parse(entry.event_json) as MachineEvent, entry.actor, entry.id));
+    }
+  })().finally(() => { replaying = null; });
+  return replaying;
 }
 
 /**
