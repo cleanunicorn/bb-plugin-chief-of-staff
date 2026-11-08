@@ -178,6 +178,13 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
   const [selected, setSelected] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setExpanded(false); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const data = view.data;
@@ -198,8 +205,8 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
     }
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-label="Task workflow" className="flex h-[85vh] w-full max-w-6xl flex-col gap-3 overflow-hidden rounded-xl border border-border bg-background p-4 shadow-lg">
+    <div className={cn("fixed inset-0 z-50 flex items-center justify-center bg-black/40", !expanded && "p-4")} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div role="dialog" aria-modal="true" aria-label="Task workflow" className={cn("flex w-full flex-col gap-3 overflow-hidden border border-border bg-background p-4 shadow-lg", expanded ? "h-full" : "h-[85vh] max-w-6xl rounded-xl")}>
         <header className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
@@ -210,7 +217,17 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
           </Button>
         </header>
         <ErrorLine error={view.error ?? error} />
-        {wf && data ? <WorkflowCanvas workflow={wf} live={data.live as Record<string, LiveStatus>} selected={selected} onSelect={setSelected} className="min-h-0 flex-1" /> : null}
+        {wf && data ? <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
+          <WorkflowCanvas workflow={wf} live={data.live as Record<string, LiveStatus>} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className="min-h-0 flex-1" />
+          {step ? <aside aria-label="Step details" className="max-h-[35%] overflow-y-auto rounded-lg border border-border p-3 text-sm md:max-h-none md:w-72 md:shrink-0">
+            <h3 className="font-semibold">{step.name}</h3>
+            <p className="mt-1 text-xs text-muted-foreground">{step.type} · {data.live[step.id]?.status ?? "pending"}</p>
+            {step.instructions ? <p className="mt-3 whitespace-pre-wrap break-words">{step.instructions}</p> : null}
+            {step.type === "check" ? <p className="mt-3 break-all"><b>Command:</b> {step.command}</p> : null}
+            {step.type === "ship" ? <p className="mt-3"><b>Action:</b> {step.action}</p> : null}
+            {step.type === "agent" ? <p className="mt-3">{step.writes ? "Writes code" : "Read-only"} · {step.agents} {step.agents === 1 ? "agent" : "agents"}{step.approval ? " · Approval required" : ""}{step.verdict ? " · Pass/fail" : ""}</p> : null}
+          </aside> : null}
+        </div> : null}
         <footer className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           {step ? (
             <>
