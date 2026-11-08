@@ -482,3 +482,47 @@ describe("an agent step that chooses the model", () => {
     expect(prompt).toContain("choice: <id of the model you pick>");
   });
 });
+
+describe("delivery recovery boundaries", () => {
+  const workflow = wf([{ id: "review", type: "agent", name: "Review", agents: 2, instructions: "Review" }]);
+  it("keeps another agent's retry when a report or delivery confirmation arrives", () => {
+    let [item] = run(itemFor(workflow), { type: "start" });
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 1, kind: "start" }, message: "preflight failed" });
+    const retry = item.nodes.review.retry;
+    [item] = run(item, { type: "delivery_confirmed", step: "review", agent: 0, round: item.nodes.review.round });
+    expect(item.nodes.review.retry).toEqual(retry);
+    [item] = run(item, ended("review", report(), item, 0));
+    expect(item.nodes.review.retry).toEqual(retry);
+    expect(item.nodes.review.status).toBe("running");
+  });
+
+  it("keeps a second unknown delivery parked when the first is confirmed", () => {
+    let [item] = run(itemFor(workflow), { type: "start" });
+    [item] = run(item, { type: "delivery_unknown", step: "review", agent: 0, message: "unknown" });
+    item.nodes.review.deliveries = {
+      0: { id: "first", round: item.nodes.review.round, threadId: "t0", startedAt: 0, status: "sent" },
+      1: { id: "second", round: item.nodes.review.round, threadId: "t1", startedAt: 0, status: "unknown" },
+    };
+    [item] = run(item, { type: "delivery_confirmed", step: "review", agent: 0, round: item.nodes.review.round, attempt: "first" });
+    expect(item.nodes.review.waiting).toMatchObject({ kind: "cos_error", agent: 1 });
+    expect(item.nodes.review.retry?.effect).toMatchObject({ type: "agent", agent: 1 });
+  });
+
+  it("does not recover a stale round, stale attempt, replaced thread, or another agent's wait", () => {
+    let [item] = run(itemFor(workflow), { type: "start" });
+    [item] = run(item, { type: "delivery_unknown", step: "review", agent: 1, message: "unknown" });
+    item.nodes.review.deliveries = { 1: { id: "current", round: item.nodes.review.round, threadId: "t", startedAt: 0, status: "unknown" } };
+    for (const event of [
+      { agent: 1, round: 0, attempt: "current" },
+      { agent: 1, round: item.nodes.review.round, attempt: "old" },
+      { agent: 0, round: item.nodes.review.round },
+    ]) {
+      const [after] = run(item, { type: "delivery_confirmed", step: "review", ...event });
+      expect(after.nodes.review.status).toBe("waiting");
+      expect(after.nodes.review.retry).toEqual(item.nodes.review.retry);
+    }
+    item.nodes.review.retry!.effect = { type: "agent", step: "review", agent: 1, kind: "start", fresh: true };
+    const [after] = run(item, { type: "delivery_confirmed", step: "review", agent: 1, round: item.nodes.review.round, attempt: "current" });
+    expect(after.nodes.review.status).toBe("waiting");
+  });
+});

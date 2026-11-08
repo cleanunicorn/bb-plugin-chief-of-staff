@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
 import { StateStore } from "../src/state";
-import { settleJobs } from "../src/delivery";
+import { settleJobs, withItemLock } from "../src/delivery";
 
 type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string } | undefined;
 
@@ -185,6 +185,227 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     globalThis.fetch = originalFetch;
     await host.harness.lifecycle.dispose();
+  });
+
+  it("reconciles a delivered-then-rejected send without resending after reload", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    let input: { type: "text"; text: string }[] = [];
+    host.harness.inspection.sdk.stub("threads.send", async (args) => {
+      input = (args as { input: typeof input }).input;
+      throw new TypeError("Cannot read properties of undefined (reading 'length')");
+    });
+    host.harness.inspection.sdk.stub("threads.queuedMessages.list", async () => []);
+    host.harness.inspection.sdk.stub("threads.promptHistory", async () => [{ id: "p", createdAt: Date.now(), input }] as never);
+    await idle("Working");
+    const store = new StateStore(host.bb.storage.database());
+    expect(store.listWorkItems()[0].nodes.build.deliveries?.[0].status).toBe("sent");
+    expect(store.listWorkItems()[0].nodes.build.retry).toBeNull();
+    threadStatus = "active";
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    host = await host.harness.lifecycle.reload(plugin);
+    await sweep();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    expect(await report("build")).not.toHaveProperty("isError", true);
+    await idle();
+    expect(ranChecks()).toBe(1);
+  });
+
+  it.each(["done", "failed", "needs_input"])("accepts %s with the exact unknown delivery attempt", async (outcome) => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("lost response"); });
+    await idle("Working");
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    expect(item.nodes.build.waiting?.kind).toBe("cos_error");
+    const attempt = item.nodes.build.deliveries![0].id;
+    expect(await report("build")).toHaveProperty("isError", true);
+    const result = await host.harness.behavior.callAgentTool("cos_report", { step: "build", attempt, outcome, summary: "Result", ...(outcome === "needs_input" ? { question: "Which option?" } : {}) }, { threadId: "thr_1" });
+    expect(result).not.toHaveProperty("isError", true);
+    await idle();
+    const after = store.getWorkItem(item.id)!;
+    expect(after.nodes.build.retry).toBeNull();
+    if (outcome === "needs_input") expect(after.nodes.build.waiting?.kind).toBe("question");
+    else expect(after.nodes.build.reports[0]?.outcome).toBe(outcome);
+  });
+
+  it.each(["tool", "text"])("recovers legacy send-error waits via %s reports", async (via) => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const node = item.nodes.build;
+    delete node.deliveries;
+    node.status = "waiting";
+    node.waiting = { kind: "cos_error", reason: "send failed" };
+    node.retry = { effect: { type: "agent", step: "build", agent: 0, kind: "start" }, at: null, count: 4 };
+    store.updateWorkItem(item.id, { nodes: item.nodes, status: "waiting_on_human" });
+    if (via === "tool") expect(await report("build")).not.toHaveProperty("isError", true);
+    await idle("## Step report\nstep: build\noutcome: done\nsummary: Built");
+    expect(store.getWorkItem(item.id)!.nodes.build.status).toBe("done");
+    expect(ranChecks()).toBe(1);
+  });
+
+  it("leaves unknown sends parked without duplicates despite an active older turn", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("no response"); });
+    await idle("Working");
+    threadStatus = "active";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let i = 0; i < 4; i++) {
+        vi.setSystemTime(Date.now() + 20 * 60_000);
+        await sweep();
+      }
+    } finally { vi.useRealTimers(); }
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    expect((await roster()).waitingKind).toBe("cos_error");
+  });
+
+  it("does not confuse old activity with pickup of a queued nudge", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    let input: { type: "text"; text: string }[] = [];
+    host.harness.inspection.sdk.stub("threads.send", async (args) => {
+      input = (args as { input: typeof input }).input;
+      return { ok: true, delivery: "queued", queuedMessage: { id: "q", content: input } } as never;
+    });
+    let queued = true;
+    host.harness.inspection.sdk.stub("threads.queuedMessages.list", async () => queued ? [{ content: input }] as never : []);
+    host.harness.inspection.sdk.stub("threads.promptHistory", async () => [{ id: "p", createdAt: Date.now(), input }] as never);
+    await idle("Working");
+    await idle("Earlier turn completed");
+    await sweep();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    expect(await report("build")).toHaveProperty("isError", true);
+    queued = false;
+    await sweep();
+    expect(await report("build")).not.toHaveProperty("isError", true);
+    await idle();
+    expect(ranChecks()).toBe(1);
+  });
+
+  it("does not retry a successful send when prompt logging throws", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const original = StateStore.prototype.log;
+    const spy = vi.spyOn(StateStore.prototype, "log").mockImplementation(function (this: StateStore, entry) {
+      if (entry.kind === "prompt") throw new TypeError("post-send bookkeeping");
+      return original.call(this, entry);
+    });
+    try { await idle("Working"); } finally { spy.mockRestore(); }
+    const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+    expect(item.nodes.build.retry).toBeNull();
+    expect(item.nodes.build.status).toBe("running");
+    await report("build");
+    await idle();
+    expect(ranChecks()).toBe(1);
+  });
+
+  it("rejects stale delivery IDs and reports from an earlier round", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const oldAttempt = item.nodes.build.deliveries![0].id;
+    await idle("Working");
+    const result = await host.harness.behavior.callAgentTool("cos_report", { step: "build", attempt: oldAttempt, outcome: "done", summary: "Stale" }, { threadId: "thr_1" });
+    expect(result).toHaveProperty("isError", true);
+    store.updateThread("thr_1", { round: 0 });
+    expect(await report("build")).toHaveProperty("isError", true);
+    expect(store.getThread("thr_1")!.pendingReport).toBeNull();
+  });
+
+  it.each(["approval", "question", "cos_error"])("does not recover protected %s waits from another kind of failure", async (kind) => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    item.nodes.build.status = "waiting";
+    item.nodes.build.waiting = { kind: kind as never, reason: "Protected", agent: 1 };
+    item.nodes.build.retry = { effect: { type: "check", step: "build" }, at: null, count: 4 };
+    store.updateWorkItem(item.id, { nodes: item.nodes, status: "waiting_on_human" });
+    expect(await report("build")).toHaveProperty("isError", true);
+  });
+
+  it("reconciles a spawn that created a thread but lost its response", async () => {
+    let metadata: Record<string, unknown> = {};
+    let input: { type: "text"; text: string }[] = [];
+    host.harness.inspection.sdk.stub("threads.spawn", async (args) => {
+      metadata = (args as { pluginMetadata?: Record<string, unknown> }).pluginMetadata ?? {};
+      input = [{ type: "text", text: (args as { prompt?: string }).prompt ?? "" }];
+      throw new Error("spawn response lost");
+    });
+    host.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => metadata as never);
+    host.harness.inspection.sdk.stub("threads.queuedMessages.list", async () => []);
+    host.harness.inspection.sdk.stub("threads.promptHistory", async () => [{ id: "p", createdAt: Date.now(), input }] as never);
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+    expect(item.threadId).toBe("thr_1");
+    expect(item.nodes.build.status).toBe("running");
+    expect(await report("build")).not.toHaveProperty("isError", true);
+    await idle();
+    expect(ranChecks()).toBe(1);
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  });
+
+  it("retries a preflight failure without labeling it ambiguous delivery", async () => {
+    host.harness.inspection.sdk.stub("projects.list", async () => { throw new Error("checkout unavailable"); });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+    expect(item.nodes.build.retry?.at).toBeTruthy();
+    expect(item.nodes.build.deliveries?.[0].status).toBe("preparing");
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+  });
+
+  it("keeps a silent but active builder running beyond the stall threshold", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    threadStatus = "active";
+    threadUpdatedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 2 * 60 * 60_000);
+      await sweep();
+      expect((await roster()).waitingKind).toBeNull();
+      expect(await report("build")).not.toHaveProperty("isError", true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("recovers an unknown attempt from text after a restart, without sending again", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("lost response"); });
+    await idle("Working");
+    const item = new StateStore(host.bb.storage.database()).listWorkItems()[0];
+    const attempt = item.nodes.build.deliveries![0].id;
+    host = await host.harness.lifecycle.reload(plugin);
+    await idle(`## Step report\nstep: build\nattempt: ${attempt}\noutcome: done\nsummary: Built`);
+    expect(ranChecks()).toBe(1);
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+  });
+
+  it("does not use an earlier prompt's history to reconcile a later attempt", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const oldId = store.listWorkItems()[0].nodes.build.deliveries![0].id;
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new Error("ambiguous nudge"); });
+    host.harness.inspection.sdk.stub("threads.queuedMessages.list", async () => []);
+    host.harness.inspection.sdk.stub("threads.promptHistory", async () => [{ id: "p", createdAt: Date.now(), input: [{ type: "text", text: `[Chief of Staff delivery: ${oldId}]` }] }] as never);
+    await idle("Working");
+    await sweep();
+    expect(store.listWorkItems()[0].nodes.build.waiting?.kind).toBe("cos_error");
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+  });
+
+  it("rechecks report admission after acquiring the item lock", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const held = withItemLock(item.id, () => gate);
+    const reporting = report("build");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(store.getThread("thr_1")!.pendingReport).toBeNull();
+    item.nodes.build.round += 1;
+    store.updateWorkItem(item.id, { nodes: item.nodes });
+    release();
+    await held;
+    expect(await reporting).toHaveProperty("isError", true);
+    expect(store.getThread("thr_1")!.pendingReport).toBeNull();
   });
 
   it("holds workflow progress and intake while paused, then resumes recorded reports", async () => {

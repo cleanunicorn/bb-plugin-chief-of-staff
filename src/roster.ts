@@ -191,6 +191,10 @@ export async function detectStalls(cos: Cos, actor: string): Promise<string[]> {
     for (const threadId of new Set(ids)) {
       try {
         const thread = await cos.bb.sdk.threads.get({ threadId });
+        if (["active", "starting", "pending", "provisioning", "waiting-for-host", "stopping"].includes(thread.runtime?.displayStatus ?? thread.status)) {
+          fresh = true;
+          break;
+        }
         const updated = typeof thread.updatedAt === "number" ? thread.updatedAt : Date.parse(String(thread.updatedAt));
         if (Number.isFinite(updated) && now - updated <= stallMs) {
           cos.store.updateWorkItem(item.id, { lastActivityAt: new Date(updated).toISOString() });

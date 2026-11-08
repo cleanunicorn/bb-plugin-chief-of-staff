@@ -2,10 +2,11 @@
 // lock, run effects (agent prompts, check commands, ship, merge), and watch CI.
 // Long effects run as detached jobs so event handlers and the sweep never
 // block on a 30-minute test run; a job's result is dropped if the item moved on.
+import { bindDelivery, deliveryMarker, newDelivery, reconcileDelivery, saveDelivery, UnknownDelivery } from "./agent-delivery";
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import { GitHubError } from "./github";
-import { deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
+import { deriveStatus, transition, type AgentDelivery, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
@@ -116,12 +117,21 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
       startJob(cos, item.id, effect, actor);
       continue;
     }
+    const previousAttempt = effect.type === "agent" ? cos.store.getWorkItem(item.id)?.nodes[effect.step]?.deliveries?.[effect.agent]?.id : undefined;
     try {
       await runEffect(cos, item.id, effect, actor);
     } catch (error) {
+      const delivery = effect.type === "agent" ? cos.store.getWorkItem(item.id)?.nodes[effect.step]?.deliveries?.[effect.agent] : undefined;
+      if (delivery && delivery.id !== previousAttempt && ["sent", "queued"].includes(delivery.status)) {
+        // Even bookkeeping in dispatch must never turn acceptance into a resend.
+        try { cos.bb.log.warn(`Prompt ${delivery.id} accepted; dispatch bookkeeping failed: ${String(error)}`); } catch { /* host disposed */ }
+        continue;
+      }
       const message = await cos.safe(error instanceof Error ? error.message : String(error));
       cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}`, actor });
-      if (effect.type !== "notify") await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message }, actor);
+      if (effect.type === "agent" && error instanceof UnknownDelivery) {
+        await dispatchLocked(cos, item.id, { type: "delivery_unknown", step: effect.step, agent: effect.agent, message }, actor);
+      } else if (effect.type !== "notify") await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message }, actor);
     }
   }
   if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
@@ -224,11 +234,15 @@ async function runEffect(cos: Cos, itemId: string, effect: Effect, actor: string
     return;
   }
   if (effect.type !== "agent") return;
+  const attempt = newDelivery(item.nodes[effect.step]?.round ?? 0, cos.now().getTime());
+  saveDelivery(cos, item.id, effect.step, effect.agent, attempt);
   const repo = await cos.repo(item.repo);
   if (!repo) throw new Error(`repo ${item.repo} is no longer configured`);
   const step = stepById(item.workflow, effect.step);
   if (!step || step.type !== "agent") throw new Error(`step ${effect.step} is not an agent step`);
-  await promptAgent(cos, item, repo, step, effect, actor);
+  await promptAgent(cos, item, repo, step, effect, actor, attempt);
+  const delivery = cos.store.getWorkItem(item.id)?.nodes[step.id]?.deliveries?.[effect.agent];
+  if (delivery && ["sent", "queued"].includes(delivery.status)) await dispatchLocked(cos, item.id, { type: "delivery_confirmed", step: step.id, agent: effect.agent, round: delivery.round, attempt: delivery.id }, actor);
 }
 
 async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undefined> {
@@ -239,75 +253,108 @@ async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undef
   }
 }
 
-async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentStep, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
-  const round = item.nodes[step.id]?.round ?? 0;
-  const body = effect.kind === "nudge" ? nudgePrompt(step) : stepPrompt(item, step, effect.agent, { defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined });
+async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentStep, effect: Extract<Effect, { type: "agent" }>, actor: string, delivery: AgentDelivery): Promise<void> {
+  const body = `${deliveryMarker(delivery.id)}\nInclude \`attempt: "${delivery.id}"\` in cos_report (or \`attempt: ${delivery.id}\` before summary in a text Step report).\n\n` + (effect.kind === "nudge" ? nudgePrompt(step) : stepPrompt(item, step, effect.agent, { defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined }));
   // `/skill` references in the instructions become skill mentions (only skills the workspace has).
   const usesSkills = effect.kind !== "nudge" && referencedSkills(step.instructions).length > 0;
   const skills = usesSkills ? await listSkills(cos, repo.projectId, item.environmentId) : [];
   const mentionsIn = (text: string) => (usesSkills ? skillMentions(text, step.instructions, skills) : []);
-  // Record the send time first: an idle that predates it belongs to an older turn.
-  const sentAt = cos.now().getTime();
   // Model steps before this one choose the provider, model and reasoning of threads spawned for it.
   const settings = settingsFor(item.workflow, step.id, item.nodes);
   cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
 
-  if (step.writes) {
-    if (!item.threadId || effect.fresh) {
-      const brief = await taskBrief(cos, repo, item);
-      const prompt = `${brief}\n\n---\n\n${body}`;
-      const spawned = await spawnWorktreeThread(cos, {
-        repo,
-        title: item.branch ?? item.issueTitle,
-        prompt,
-        mentions: mentionsIn(prompt),
-        settings,
-        pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, branch: item.branch, role: "builder" },
-      });
-      cos.store.updateWorkItem(item.id, { threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model });
-      cos.store.upsertThread({ threadId: spawned.thread.id, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: spawned.thread.environmentId ?? null, round, promptSentAt: sentAt });
-      cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned builder ${spawned.thread.id} for ${step.name} (${spawned.providerId ?? "default provider"}${spawned.model ? ` / ${spawned.model}` : ""})`, actor });
-      if (item.issueNumber && !item.threadId) {
-        const github = await cos.github();
-        await github
-          .createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).\n\nBB thread: ${threadUrl(cos, spawned.thread.id)}`)
-          .catch((error) => cos.bb.log.warn(`issue comment failed: ${error instanceof Error ? error.message : String(error)}`));
+  let invoked = false;
+  let accepted = false;
+  const begin = (threadId: string | null, environmentId = item.environmentId) => {
+    delivery.status = "unknown";
+    delivery.threadId = threadId;
+    delivery.startedAt = cos.now().getTime();
+    saveDelivery(cos, item.id, step.id, effect.agent, delivery);
+    if (threadId) {
+      bindDelivery(cos, item, step, effect.agent, delivery, environmentId);
+      cos.store.updateThread(threadId, { pendingReport: null });
+    }
+    invoked = true;
+  };
+  const accept = (threadId: string, status: "sent" | "queued", environmentId = item.environmentId) => {
+    accepted = true;
+    delivery.threadId = threadId;
+    delivery.status = status;
+    saveDelivery(cos, item.id, step.id, effect.agent, delivery);
+    bindDelivery(cos, item, step, effect.agent, delivery, environmentId);
+  };
+  try {
+    if (step.writes) {
+      if (!item.threadId || effect.fresh) {
+        const brief = await taskBrief(cos, repo, item);
+        const prompt = `${brief}\n\n---\n\n${body}`;
+        const spawned = await spawnWorktreeThread(cos, {
+          beforeSpawn: () => begin(null),
+          repo,
+          title: item.branch ?? item.issueTitle,
+          prompt,
+          mentions: mentionsIn(prompt),
+          settings,
+          pluginMetadata: { deliveryAttempt: delivery.id, workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, branch: item.branch, role: "builder" },
+        });
+        accept(spawned.thread.id, "sent", spawned.thread.environmentId ?? null);
+        cos.store.updateWorkItem(item.id, { threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model });
+        cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned builder ${spawned.thread.id} for ${step.name} (${spawned.providerId ?? "default provider"}${spawned.model ? ` / ${spawned.model}` : ""})`, actor });
+        if (item.issueNumber && !item.threadId) {
+          const github = await cos.github();
+          await github
+            .createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).\n\nBB thread: ${threadUrl(cos, spawned.thread.id)}`)
+            .catch((error) => cos.bb.log.warn(`issue comment failed: ${error instanceof Error ? error.message : String(error)}`));
+        }
+        void recordEnvironmentBranch(cos, item.id, spawned.thread.id);
+        cos.invalidate();
+        return;
       }
-      void recordEnvironmentBranch(cos, item.id, spawned.thread.id);
-      cos.invalidate();
+      begin(item.threadId);
+      const result = await sendToThread(cos, item.threadId, body, mentionsIn(body));
+      accept(item.threadId, result.delivery);
+      cos.store.log({ level: "info", kind: "prompt", repo: item.repo, workItemId: item.id, message: `sent ${effect.kind === "nudge" ? "a nudge" : step.name} to the builder`, actor });
       return;
     }
-    if (!cos.store.getThread(item.threadId)) cos.store.upsertThread({ threadId: item.threadId, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: item.environmentId, round, promptSentAt: sentAt });
-    else cos.store.updateThread(item.threadId, { round, promptSentAt: sentAt });
-    await sendToThread(cos, item.threadId, body, mentionsIn(body));
-    cos.store.log({ level: "info", kind: "prompt", repo: item.repo, workItemId: item.id, message: `sent ${effect.kind === "nudge" ? "a nudge" : step.name} to the builder`, actor });
-    return;
-  }
 
-  // Read-only step: its own thread, in the builder's workspace once there is one.
-  const existing = cos.store.stepThread(item.id, step.id, effect.agent);
-  const reusable = existing && !effect.fresh && (existing.environmentId === item.environmentId || !item.environmentId);
-  if (reusable) {
-    cos.store.updateThread(existing.threadId, { round, promptSentAt: sentAt });
-    await sendToThread(cos, existing.threadId, body, mentionsIn(body));
-    cos.store.log({ level: "info", kind: "prompt", repo: item.repo, workItemId: item.id, message: `sent ${effect.kind === "nudge" ? "a nudge" : step.name} to agent ${effect.agent + 1}`, actor });
-    return;
+    // Read-only step: its own thread, in the builder's workspace once there is one.
+    const existing = cos.store.stepThread(item.id, step.id, effect.agent);
+    const reusable = existing && !effect.fresh && (existing.environmentId === item.environmentId || !item.environmentId);
+    if (reusable) {
+      begin(existing.threadId, existing.environmentId);
+      const result = await sendToThread(cos, existing.threadId, body, mentionsIn(body));
+      accept(existing.threadId, result.delivery, existing.environmentId);
+      cos.store.log({ level: "info", kind: "prompt", repo: item.repo, workItemId: item.id, message: `sent ${effect.kind === "nudge" ? "a nudge" : step.name} to agent ${effect.agent + 1}`, actor });
+      return;
+    }
+    const brief = await taskBrief(cos, repo, item);
+    const stepThreadPrompt = `${stepThreadBrief(item, step, brief)}\n\n---\n\n${body}`;
+    const spawned = await spawnStepThread(cos, {
+      beforeSpawn: () => begin(null),
+      repo,
+      environmentId: item.environmentId,
+      parentThreadId: item.threadId ?? undefined,
+      title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
+      prompt: stepThreadPrompt,
+      mentions: mentionsIn(stepThreadPrompt),
+      settings,
+      pluginMetadata: { deliveryAttempt: delivery.id, workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, step: step.id, agent: effect.agent },
+    });
+    accept(spawned.thread.id, "sent", spawned.thread.environmentId ?? item.environmentId);
+    cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name}${step.agents > 1 ? ` agent ${effect.agent + 1}` : ""} ${spawned.thread.id}`, actor });
+    cos.invalidate();
+  } catch (error) {
+    if (!invoked) throw error;
+    if (accepted) {
+      // A successful SDK response is not undone by ancillary failures.
+      try { cos.bb.log.warn(`Prompt accepted; bookkeeping failed: ${String(error)}`); } catch { /* host disposed */ }
+      return;
+    }
+    const current = cos.store.getWorkItem(item.id) ?? item;
+    const evidence = await reconcileDelivery(cos, current, step, effect.agent);
+    if (evidence) return;
+    throw new UnknownDelivery(error instanceof Error ? error.message : String(error));
   }
-  const brief = await taskBrief(cos, repo, item);
-  const stepThreadPrompt = `${stepThreadBrief(item, step, brief)}\n\n---\n\n${body}`;
-  const spawned = await spawnStepThread(cos, {
-    repo,
-    environmentId: item.environmentId,
-    parentThreadId: item.threadId ?? undefined,
-    title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
-    prompt: stepThreadPrompt,
-    mentions: mentionsIn(stepThreadPrompt),
-    settings,
-    pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, step: step.id, agent: effect.agent },
-  });
-  cos.store.upsertThread({ threadId: spawned.thread.id, itemId: item.id, role: "step", stepId: step.id, agent: effect.agent, environmentId: spawned.thread.environmentId ?? item.environmentId, round, promptSentAt: sentAt });
-  cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name}${step.agents > 1 ? ` agent ${effect.agent + 1}` : ""} ${spawned.thread.id}`, actor });
-  cos.invalidate();
 }
 
 // ---- jobs: check, ship, merge ----

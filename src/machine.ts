@@ -14,6 +14,7 @@ import { chosenModel, descendants, finalSteps, predecessors, stepById, topoOrder
 export type ReportOutcome = "done" | "failed" | "needs_input";
 
 export interface StepReport {
+  attempt?: string;
   outcome: ReportOutcome;
   summary: string;
   question?: string | null;
@@ -26,7 +27,17 @@ export interface StepReport {
 export type NodeStatus = "pending" | "running" | "waiting" | "done";
 export type ShipPhase = "pushing" | "ci" | "ready" | "merging";
 
+export interface AgentDelivery {
+  id: string;
+  round: number;
+  threadId: string | null;
+  startedAt: number;
+  status: "preparing" | "unknown" | "sent" | "queued";
+}
+
 export interface NodeState {
+  /** Persisted before invoking BB; absent on items created by older versions. */
+  deliveries?: Record<number, AgentDelivery>;
   status: NodeStatus;
   /** Incremented every time the step starts; work from an older round is ignored. */
   round: number;
@@ -63,6 +74,8 @@ export type Effect =
 
 export type MachineEvent =
   | { type: "start" }
+  | { type: "delivery_confirmed"; step: string; agent: number; round: number; attempt?: string }
+  | { type: "delivery_unknown"; step: string; agent: number; message: string }
   | { type: "turn_started"; step: string; agent: number }
   | { type: "turn_ended"; step: string; agent: number; round: number; report: StepReport | null; question: string | null }
   | { type: "interaction_pending"; step: string; agent: number; reason: string | null }
@@ -147,7 +160,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const n = node(id);
     if (!s || !n) return;
     const count = agentsOf(s);
-    Object.assign(n, { status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
+    Object.assign(n, { status: "running", round: n.round + 1, deliveries: {}, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
     if (s.type === "agent") for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
     else if (s.type === "model") {
       // Nothing to run: agent steps after it read its settings when they spawn.
@@ -229,10 +242,39 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "start":
       break; // scheduling below starts the entry steps
 
+    case "delivery_unknown": {
+      const n = node(event.step);
+      if (!n || n.status !== "running") break;
+      n.retry = { effect: { type: "agent", step: event.step, agent: event.agent, kind: "start" }, at: null, count: 0 };
+      wait(event.step, "cos_error", `Prompt delivery is unknown; automatic resend is paused to avoid duplicate work: ${event.message}`, event.agent);
+      break;
+    }
+    case "delivery_confirmed": {
+      const n = node(event.step);
+      if (!n || n.round !== event.round || n.status === "done" || n.status === "pending") break;
+      const delivery = n.deliveries?.[event.agent];
+      if (event.attempt && delivery?.id !== event.attempt) break;
+      const matching = n.retry?.effect.type === "agent" && n.retry.effect.agent === event.agent && !n.retry.effect.fresh;
+      if (matching) {
+        n.retry = null;
+        if (n.status === "waiting" && n.waiting?.kind === "cos_error") {
+          n.status = "running";
+          n.waiting = null;
+          const unresolved = Object.entries(n.deliveries ?? {}).find(([agent, d]) => Number(agent) !== event.agent && d.status === "unknown" && d.round === n.round);
+          if (unresolved) {
+            const agent = Number(unresolved[0]);
+            n.retry = { effect: { type: "agent", step: event.step, agent, kind: "start" }, at: null, count: 0 };
+            wait(event.step, "cos_error", "Another agent's prompt delivery is still unknown; automatic resend is paused.", agent);
+          }
+        }
+      }
+      break;
+    }
+
     case "turn_started": {
       const n = node(event.step);
       if (!n || n.status !== "waiting" || !n.waiting) break;
-      if (["question", "no_report", "stalled"].includes(n.waiting.kind)) {
+      if (["question", "no_report", "stalled"].includes(n.waiting.kind) && (n.waiting.agent ?? event.agent) === event.agent) {
         n.status = "running";
         n.waiting = null;
         n.nudges = n.nudges.map(() => 0);
@@ -246,13 +288,13 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!s || s.type !== "agent" || !n || n.status !== "running" || event.round !== n.round) break;
       if (n.reports[event.agent]) break; // this agent already reported
       const report = event.report;
+      if (report && n.retry?.effect.type === "agent" && n.retry.effect.agent === event.agent) n.retry = null;
       if (report?.outcome === "needs_input") {
         wait(event.step, "question", report.question || report.summary, event.agent);
         break;
       }
       if (report) {
         n.reports[event.agent] = report;
-        n.retry = null;
         if (n.reports.every(Boolean)) agentStepFinished(event.step);
         break;
       }
@@ -425,6 +467,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "stalled": {
       const n = node(event.step);
       if (n?.status !== "running" || step(event.step)?.type !== "agent") break;
+      if (Object.values(n.deliveries ?? {}).some((d) => d.status !== "sent")) break;
       wait(event.step, "stalled", "No activity past the stall threshold.", event.agent);
       break;
     }

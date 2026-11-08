@@ -21,6 +21,7 @@ export async function listSkills(cos: Cos, projectId: string, environmentId: str
 }
 
 export interface SpawnOptions {
+  beforeSpawn?: () => void;
   repo: RepoConfig;
   title: string;
   prompt: string;
@@ -40,6 +41,7 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
   const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
   const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
   const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
+  opts.beforeSpawn?.();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
     environment: {
@@ -61,6 +63,7 @@ export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
 }
 
 export interface StepSpawnOptions {
+  beforeSpawn?: () => void;
   repo: RepoConfig;
   /** The builder's environment, when it exists: read-only steps then see exactly what was built. */
   environmentId: string | null;
@@ -78,11 +81,12 @@ export interface StepSpawnOptions {
  * built yet, so there is nothing to see but the repository).
  */
 export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
-  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
+  if (!opts.environmentId) return spawnWorktreeThread(cos, { beforeSpawn: opts.beforeSpawn, repo: opts.repo, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
   const { values } = await cos.config();
   const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
   const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
   const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
+  opts.beforeSpawn?.();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
     environment: { type: "reuse", environmentId: opts.environmentId },
@@ -135,8 +139,8 @@ export async function readThreadUsage(cos: Cos, threadId: string): Promise<Threa
   return usage;
 }
 
-export async function sendToThread(cos: Cos, threadId: string, text: string, mentions: SkillMention[] = []): Promise<void> {
-  await cos.bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions }] });
+export async function sendToThread(cos: Cos, threadId: string, text: string, mentions: SkillMention[] = []) {
+  return cos.bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions }] });
 }
 
 export async function lastAssistantText(cos: Cos, threadId: string): Promise<string | null> {

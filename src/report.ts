@@ -37,5 +37,5 @@ export function parseTextReport(text: string | null | undefined, at: string): (S
   const choice = field("choice");
   // Fall back to the message before the block when the summary is empty.
   const body = summary || text.slice(0, last.index).trim().slice(-8000);
-  return { step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), at, via: "text" };
+  return { ...(field("attempt") ? { attempt: field("attempt")! } : {}), step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), at, via: "text" };
 }
