@@ -27,7 +27,15 @@ export interface StepReport {
 export type NodeStatus = "pending" | "running" | "waiting" | "done";
 export type ShipPhase = "pushing" | "ci" | "ready" | "merging";
 
+export interface AgentRetry {
+  effect: Extract<Effect, { type: "agent" }>;
+  at: string | null;
+  count: number;
+  blocked?: boolean;
+}
+
 export interface AgentDelivery {
+  effect?: Extract<Effect, { type: "agent" }>;
   id: string;
   round: number;
   threadId: string | null;
@@ -38,6 +46,8 @@ export interface AgentDelivery {
 export interface NodeState {
   /** Persisted before invoking BB; absent on items created by older versions. */
   deliveries?: Record<number, AgentDelivery>;
+  /** Independent retry work; retry remains the representative slot for UI/legacy state. */
+  agentRetries?: Record<number, AgentRetry>;
   status: NodeStatus;
   /** Incremented every time the step starts; work from an older round is ignored. */
   round: number;
@@ -91,7 +101,7 @@ export type MachineEvent =
   | { type: "pr_merged" }
   | { type: "pr_closed" }
   | { type: "effect_error"; step: string; effect: Effect; message: string }
-  | { type: "retry_due"; step: string }
+  | { type: "retry_due"; step: string; agent?: number }
   /** Jobs this process is not running (restart): start them again. */
   | { type: "resume_job" }
   | { type: "stalled"; step: string; agent: number }
@@ -145,8 +155,14 @@ const WAIT_TITLE: Record<WaitingKind, string> = {
 
 export function transition(item: WorkItem, event: MachineEvent, policy: MachinePolicy = DEFAULT_POLICY, now: Date = new Date()): Transition {
   const wf = item.workflow;
-  const nodes: Nodes = Object.fromEntries(Object.entries(item.nodes).map(([k, v]) => [k, { ...v, reports: [...v.reports], nudges: [...v.nudges] }]));
+  const nodes: Nodes = Object.fromEntries(Object.entries(item.nodes).map(([k, v]) => [k, { ...v, reports: [...v.reports], nudges: [...v.nudges], agentRetries: { ...v.agentRetries } }]));
   for (const s of wf.steps) if (!nodes[s.id]) nodes[s.id] = freshNode();
+  for (const n of Object.values(nodes)) {
+    if (n.retry?.effect.type === "agent" && !n.agentRetries?.[n.retry.effect.agent]) {
+      n.agentRetries ??= {};
+      n.agentRetries[n.retry.effect.agent] = { ...n.retry, effect: n.retry.effect, blocked: n.status === "waiting" && n.waiting?.kind === "cos_error" && (n.waiting.agent ?? n.retry.effect.agent) === n.retry.effect.agent };
+    }
+  }
   const effects: Effect[] = [];
   const patch: Partial<WorkItem> = {};
   const iso = now.toISOString();
@@ -160,7 +176,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const n = node(id);
     if (!s || !n) return;
     const count = agentsOf(s);
-    Object.assign(n, { status: "running", round: n.round + 1, deliveries: {}, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
+    Object.assign(n, { status: "running", round: n.round + 1, deliveries: {}, agentRetries: {}, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
     if (s.type === "agent") for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
     else if (s.type === "model") {
       // Nothing to run: agent steps after it read its settings when they spawn.
@@ -178,7 +194,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
   const complete = (id: string) => {
     const n = node(id);
     if (!n) return;
-    Object.assign(n, { status: "done", waiting: null, feedback: null, phase: null, retry: null, finishedAt: iso });
+    Object.assign(n, { status: "done", agentRetries: {}, waiting: null, feedback: null, phase: null, retry: null, finishedAt: iso });
   };
 
   const wait = (id: string, kind: WaitingKind, reason: string, agent?: number) => {
@@ -236,6 +252,21 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
   /** The ship step currently tracking a PR. */
   const shipNode = () => wf.steps.find((s) => s.type === "ship" && node(s.id)?.status === "running" && node(s.id)?.phase && node(s.id)!.phase !== "pushing")?.id;
 
+  // A wait belongs to one agent, while other agents may still have timed work.
+  const refreshAgentRetry = (n: NodeState) => {
+    const retries = Object.values(n.agentRetries ?? {});
+    if (n.waiting?.kind === "cos_error" && n.waiting.agent !== undefined && !n.agentRetries?.[n.waiting.agent]?.blocked) {
+      n.waiting = null;
+      n.status = "running";
+    }
+    const blocked = retries.find((r) => r.blocked);
+    if (blocked && !n.waiting) {
+      n.status = "waiting";
+      n.waiting = { kind: "cos_error", agent: blocked.effect.agent, reason: "An agent's prompt delivery needs recovery; other agents' retries are preserved." };
+    }
+    n.retry = retries.find((r) => r.effect.agent === n.waiting?.agent) ?? retries[0] ?? null;
+  };
+
   // ---- events ----
 
   switch (event.type) {
@@ -244,9 +275,11 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "delivery_unknown": {
       const n = node(event.step);
-      if (!n || n.status !== "running") break;
-      n.retry = { effect: { type: "agent", step: event.step, agent: event.agent, kind: "start" }, at: null, count: 0 };
-      wait(event.step, "cos_error", `Prompt delivery is unknown; automatic resend is paused to avoid duplicate work: ${event.message}`, event.agent);
+      if (!n || !["running", "waiting"].includes(n.status)) break;
+      n.agentRetries ??= {};
+      n.agentRetries[event.agent] = { effect: n.deliveries?.[event.agent]?.effect ?? { type: "agent", step: event.step, agent: event.agent, kind: "start" }, at: null, count: 0, blocked: true };
+      if (!n.waiting) wait(event.step, "cos_error", `Prompt delivery is unknown; automatic resend is paused to avoid duplicate work: ${event.message}`, event.agent);
+      refreshAgentRetry(n);
       break;
     }
     case "delivery_confirmed": {
@@ -254,19 +287,18 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!n || n.round !== event.round || n.status === "done" || n.status === "pending") break;
       const delivery = n.deliveries?.[event.agent];
       if (event.attempt && delivery?.id !== event.attempt) break;
-      const matching = n.retry?.effect.type === "agent" && n.retry.effect.agent === event.agent && !n.retry.effect.fresh;
-      if (matching) {
-        n.retry = null;
-        if (n.status === "waiting" && n.waiting?.kind === "cos_error") {
-          n.status = "running";
-          n.waiting = null;
-          const unresolved = Object.entries(n.deliveries ?? {}).find(([agent, d]) => Number(agent) !== event.agent && d.status === "unknown" && d.round === n.round);
-          if (unresolved) {
-            const agent = Number(unresolved[0]);
-            n.retry = { effect: { type: "agent", step: event.step, agent, kind: "start" }, at: null, count: 0 };
-            wait(event.step, "cos_error", "Another agent's prompt delivery is still unknown; automatic resend is paused.", agent);
+      const retry = n.agentRetries?.[event.agent];
+      if (retry && !retry.effect.fresh) {
+        delete n.agentRetries![event.agent];
+        // Upgrade old waits whose owner was only recorded in the retry slot.
+        if (n.waiting?.kind === "cos_error" && n.waiting.agent === undefined) n.waiting = { ...n.waiting, agent: event.agent };
+        for (const [key, d] of Object.entries(n.deliveries ?? {})) {
+          const agent = Number(key);
+          if (agent !== event.agent && d.status === "unknown" && d.round === n.round && !n.agentRetries![agent]) {
+            n.agentRetries![agent] = { effect: d.effect ?? { type: "agent", step: event.step, agent, kind: "start" }, at: null, count: 0, blocked: true };
           }
         }
+        refreshAgentRetry(n);
       }
       break;
     }
@@ -288,7 +320,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!s || s.type !== "agent" || !n || n.status !== "running" || event.round !== n.round) break;
       if (n.reports[event.agent]) break; // this agent already reported
       const report = event.report;
-      if (report && n.retry?.effect.type === "agent" && n.retry.effect.agent === event.agent) n.retry = null;
+      if (report && n.agentRetries?.[event.agent]) {
+        delete n.agentRetries[event.agent];
+        refreshAgentRetry(n);
+      }
       if (report?.outcome === "needs_input") {
         wait(event.step, "question", report.question || report.summary, event.agent);
         break;
@@ -331,7 +366,9 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       }
       const n = node(event.step);
       if (!n || n.status === "done" || n.status === "pending") break;
-      n.retry = { effect: { type: "agent", step: event.step, agent: event.agent, kind: "start", fresh: true }, at: null, count: 0 };
+      n.agentRetries ??= {};
+      n.agentRetries[event.agent] = { effect: { type: "agent", step: event.step, agent: event.agent, kind: "start", fresh: true }, at: null, count: 0, blocked: true };
+      n.retry = n.agentRetries[event.agent];
       wait(event.step, "cos_error", `The agent's thread failed (${event.error}). Retry starts a new one.`, event.agent);
       break;
     }
@@ -429,8 +466,18 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "effect_error": {
       const n = node(event.step);
       if (!n || n.status === "done" || n.status === "pending") break;
+      if (event.effect.type === "agent") {
+        n.agentRetries ??= {};
+        const count = (n.agentRetries[event.effect.agent]?.count ?? 0) + 1;
+        const blocked = count > policy.maxInfraRetries;
+        n.agentRetries[event.effect.agent] = { effect: event.effect, at: blocked ? null : new Date(now.getTime() + infraBackoffMs(count)).toISOString(), count, blocked };
+        patch.lastError = event.message.slice(0, 1000);
+        if (blocked && !n.waiting) wait(event.step, "cos_error", `Chief of Staff could not send the agent its prompt after ${policy.maxInfraRetries} retries: ${event.message}`, event.effect.agent);
+        refreshAgentRetry(n);
+        break;
+      }
       const count = (n.retry?.count ?? 0) + 1;
-      if (event.effect.type !== "agent") patch.jobStartedAt = null;
+      patch.jobStartedAt = null;
       patch.lastError = event.message.slice(0, 1000);
       if (count <= policy.maxInfraRetries) {
         n.retry = { effect: event.effect, at: new Date(now.getTime() + infraBackoffMs(count)).toISOString(), count };
@@ -443,6 +490,15 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "retry_due": {
       const n = node(event.step);
+      if (n && (event.agent !== undefined || n.retry?.effect.type === "agent")) {
+        const agent = event.agent ?? (n.retry!.effect as Extract<Effect, { type: "agent" }>).agent;
+        const retry = n.agentRetries?.[agent];
+        if (!retry?.at || Date.parse(retry.at) > now.getTime() || (n.status === "waiting" && n.waiting?.kind !== "cos_error")) break;
+        n.agentRetries![agent] = { ...retry, at: null };
+        effects.push(retry.effect);
+        refreshAgentRetry(n);
+        break;
+      }
       if (!n?.retry?.at || n.status === "waiting") break;
       const effect = n.retry.effect;
       n.retry = { ...n.retry, at: null };
@@ -525,12 +581,14 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!id || !n) break;
       if (n.retry) {
         const effect = n.retry.effect;
+        if (effect.type === "agent") delete n.agentRetries?.[effect.agent];
         n.retry = null;
         if (n.status === "waiting") {
           n.status = "running";
           n.waiting = null;
         }
         if (effect.type !== "agent" && effect.type !== "notify") patch.jobStartedAt = iso;
+        if (effect.type === "agent") refreshAgentRetry(n);
         effects.push(effect);
       } else if (n.status !== "pending") {
         resetFrom(id, n.feedback);

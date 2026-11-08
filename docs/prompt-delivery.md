@@ -22,6 +22,20 @@ observation API is **unknown**, not proof of non-delivery. Such attempts pause
 automatic resends, with an explicit reason, and are reconciled on later sweeps.
 Failures before invoking the SDK retain the existing retry/backoff behavior.
 
+Each agent has an independent persisted retry record. A prompt-delivery wait
+belongs to its agent; it does not prevent another agent's due preflight retry
+from running. Resolving that wait preserves the other retry's count, deadline,
+and effect. The original node-level retry remains a representative record for
+existing UI and legacy state.
+
+Preparation also records its intended effect before asynchronous work begins.
+The sweep checks preparing attempts under the same item lock held throughout
+live preparation. A preparing attempt still present once that lock is acquired,
+without a scheduled or blocked retry, was interrupted before BB invocation and
+can safely enter retry backoff. This also recovers interruption during a retry;
+it preserves the nudge/start effect and retry budget. Unknown delivery after BB
+invocation continues to require evidence and is never handled as preparation.
+
 Agents should include the prompt's `attempt` in `cos_report`, or as an `attempt:`
 field before `summary:` in a text Step report. This lets a report establish
 receipt even while delivery is unknown. Reports are validated and stored under

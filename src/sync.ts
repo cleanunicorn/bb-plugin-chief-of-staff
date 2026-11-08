@@ -294,12 +294,25 @@ export async function tickItems(cos: Cos, actor: string): Promise<void> {
           for (const key of Object.keys(node.deliveries ?? {})) {
             const agent = Number(key);
             const fresh = cos.store.getWorkItem(item.id)!;
+            const current = fresh.nodes[stepId];
+            const delivery = current.deliveries?.[agent];
+            const retry = current.agentRetries?.[agent] ?? (current.retry?.effect.type === "agent" && current.retry.effect.agent === agent ? current.retry : null);
+            // Prompt preparation holds this same item lock until it finishes.
+            // A preparing record still present under the lock is orphaned, not live.
+            if (delivery?.status === "preparing" && delivery.round === current.round && (!retry || (!retry.at && !current.agentRetries?.[agent]?.blocked)) && !current.reports[agent]) {
+              await dispatchLocked(cos, item.id, { type: "effect_error", step: stepId, effect: delivery.effect ?? { type: "agent", step: stepId, agent, kind: "start" }, message: "Prompt preparation was interrupted before invoking BB; retrying safely." }, actor);
+              continue;
+            }
             const evidence = await reconcileDelivery(cos, fresh, step, agent);
             if (evidence) await dispatchLocked(cos, item.id, { type: "delivery_confirmed", step: stepId, agent, round: evidence.round, attempt: evidence.id }, actor);
           }
         });
       }
-      if (node.retry?.at && Date.parse(node.retry.at) <= now) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId }, actor));
+      const current = cos.store.getWorkItem(item.id)?.nodes[stepId];
+      for (const [key, retry] of Object.entries(current?.agentRetries ?? {})) {
+        if (retry.at && Date.parse(retry.at) <= now) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId, agent: Number(key) }, actor));
+      }
+      if (current?.retry?.at && (current.retry.effect.type !== "agent" || !current.agentRetries?.[current.retry.effect.agent]) && Date.parse(current.retry.at) <= now) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId }, actor));
     }
     const fresh = cos.store.getWorkItem(item.id) ?? item;
     if (fresh.jobStartedAt && !jobRunning(item.id) && now - Date.parse(fresh.jobStartedAt) > LOST_JOB_GRACE_MS) {

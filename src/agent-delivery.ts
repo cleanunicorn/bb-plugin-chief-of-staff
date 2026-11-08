@@ -79,5 +79,6 @@ export async function reconcileDelivery(cos: Cos, item: WorkItem, step: AgentSte
 /** Only a prompt-send failure for this agent can be cleared by its report. */
 export function deliveryWait(item: WorkItem, step: string, agent: number): boolean {
   const node = item.nodes[step];
-  return node?.waiting?.kind === "cos_error" && node.retry?.effect.type === "agent" && node.retry.effect.agent === agent && !node.retry.effect.fresh;
+  const retry = node?.agentRetries?.[agent] ?? (node?.retry?.effect.type === "agent" && node.retry.effect.agent === agent ? node.retry : null);
+  return node?.waiting?.kind === "cos_error" && retry?.effect.type === "agent" && !retry.effect.fresh;
 }

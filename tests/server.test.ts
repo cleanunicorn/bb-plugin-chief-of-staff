@@ -408,6 +408,119 @@ describe("chief-of-staff server", () => {
     expect(store.getThread("thr_1")!.pendingReport).toBeNull();
   });
 
+  it.each([{ unknownAgent: 0, confirmFirst: false }, { unknownAgent: 1, confirmFirst: false }, { unknownAgent: 0, confirmFirst: true }, { unknownAgent: 1, confirmFirst: true }])("completes mixed failures: %j", async ({ unknownAgent, confirmFirst }) => {
+    await host.harness.behavior.setSettings({
+      workflow: JSON.stringify({ workflows: [{ id: "mixed", name: "Mixed", steps: [{ id: "plan", name: "Plan", type: "agent", agents: 2, instructions: "Plan" }] }], default: "mixed" }),
+      repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "mixed", issueFilter: { labels: ["agent-ready"] } }] }),
+    });
+    const preflightAgent = 1 - unknownAgent;
+    const store = new StateStore(host.bb.storage.database());
+    let failedPreflight = false;
+    let evidenceVisible = false;
+    const metadata: Record<string, Record<string, unknown>> = {};
+    const prompts: Record<string, string> = {};
+    host.harness.inspection.sdk.stub("projects.list", async () => {
+      const delivery = store.listWorkItems()[0]?.nodes.plan?.deliveries?.[preflightAgent];
+      if (delivery?.status === "preparing" && !failedPreflight) {
+        failedPreflight = true;
+        throw new Error("preflight checkout unavailable");
+      }
+      return [{ id: "proj_1", kind: "git", name: "app", gitRemoteUrl: "https://github.com/acme/app", sources: [{ hostId: "host_1", path: "/work/app", isDefault: true }] }] as never;
+    });
+    host.harness.inspection.sdk.stub("threads.spawn", async (raw) => {
+      const args = raw as { pluginMetadata: Record<string, unknown>; prompt: string };
+      const agent = Number(args.pluginMetadata.agent);
+      const id = `thr_plan-${agent + 1}`;
+      metadata[id] = args.pluginMetadata;
+      prompts[id] = args.prompt;
+      if (agent === unknownAgent) throw new Error("spawn response lost");
+      return makeThreadResponse({ id, environmentId: "env_1", status: "active" });
+    });
+    host.harness.inspection.sdk.stub("threads.list", async () => Object.keys(metadata).map((id) => makeThreadResponse({ id, environmentId: "env_1", status: "active" })));
+    host.harness.inspection.sdk.stub("threads.getPluginMetadata", async (raw) => evidenceVisible ? metadata[(raw as { threadId: string }).threadId] as never : {});
+    host.harness.inspection.sdk.stub("threads.queuedMessages.list", async () => []);
+    host.harness.inspection.sdk.stub("threads.promptHistory", async (raw) => evidenceVisible ? [{ id: "p", createdAt: Date.now(), input: [{ type: "text", text: prompts[(raw as { threadId: string }).threadId] }] }] as never : []);
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const id = store.listWorkItems()[0].id;
+    let node = store.getWorkItem(id)!.nodes.plan;
+    expect(node.waiting?.agent).toBe(unknownAgent);
+    expect(node.agentRetries?.[unknownAgent].blocked).toBe(true);
+    expect(node.agentRetries?.[preflightAgent].at).toBeTruthy();
+    if (confirmFirst) {
+      evidenceVisible = true;
+      await sweep();
+      node = store.getWorkItem(id)!.nodes.plan;
+      expect(node.status).toBe("running");
+      expect(node.agentRetries?.[preflightAgent].at).toBeTruthy();
+    }
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 2 * 60_000);
+      await sweep(); // Retry the independent preflight while the unknown agent is still parked.
+      node = store.getWorkItem(id)!.nodes.plan;
+      expect(node.deliveries?.[preflightAgent].status).toBe("sent");
+      expect(node.agentRetries?.[preflightAgent]).toBeUndefined();
+      if (!confirmFirst) expect(node.waiting?.agent).toBe(unknownAgent);
+      evidenceVisible = true;
+      await sweep();
+      expect(store.getWorkItem(id)!.nodes.plan.status).toBe("running");
+      for (const agent of [0, 1]) {
+        const threadId = `thr_plan-${agent + 1}`;
+        expect(await report("plan", "done", "Planned", threadId)).not.toHaveProperty("isError", true);
+        await idle("done", threadId);
+      }
+      expect(store.getWorkItem(id)!.status).toBe("done");
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([false, true])("recovers orphaned preparation after reload (interrupted retry: %s)", async (retrying) => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    item.nodes.build.deliveries![0] = { id: "interrupted", round: item.nodes.build.round, threadId: null, startedAt: Date.now(), status: "preparing", effect: { type: "agent", step: "build", agent: 0, kind: "nudge" } };
+    item.nodes.build.retry = null;
+    item.nodes.build.agentRetries = retrying ? { 0: { effect: { type: "agent", step: "build", agent: 0, kind: "nudge" }, at: null, count: 1, blocked: false } } : {};
+    store.updateWorkItem(item.id, { nodes: item.nodes });
+    host = await host.harness.lifecycle.reload(plugin);
+    const recovered = new StateStore(host.bb.storage.database());
+    await sweep();
+    expect(recovered.getWorkItem(item.id)!.nodes.build.agentRetries?.[0].at).toBeTruthy();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 5 * 60_000);
+      await sweep();
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+      expect(sentTexts().at(-1)).toContain("without reporting the step");
+      expect(await report("build")).not.toHaveProperty("isError", true);
+      await idle();
+      expect(recovered.getWorkItem(item.id)!.status).toBe("done");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("waits for live preparation before deciding whether recovery is needed", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    threadStatus = "active";
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const held = withItemLock(item.id, async () => {
+      item.nodes.build.deliveries![0].status = "preparing";
+      store.updateWorkItem(item.id, { nodes: item.nodes });
+      await gate;
+      item.nodes.build.deliveries![0].status = "sent";
+      store.updateWorkItem(item.id, { nodes: item.nodes });
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const sweeping = sweep();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all([held, sweeping]);
+    expect(store.getWorkItem(item.id)!.nodes.build.retry).toBeNull();
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+  });
+
   it("holds workflow progress and intake while paused, then resumes recorded reports", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await host.harness.behavior.callRpc("cos_set_paused", { paused: true });

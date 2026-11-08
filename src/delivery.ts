@@ -235,6 +235,7 @@ async function runEffect(cos: Cos, itemId: string, effect: Effect, actor: string
   }
   if (effect.type !== "agent") return;
   const attempt = newDelivery(item.nodes[effect.step]?.round ?? 0, cos.now().getTime());
+  attempt.effect = effect;
   saveDelivery(cos, item.id, effect.step, effect.agent, attempt);
   const repo = await cos.repo(item.repo);
   if (!repo) throw new Error(`repo ${item.repo} is no longer configured`);
