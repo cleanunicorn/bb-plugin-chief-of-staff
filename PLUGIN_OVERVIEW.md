@@ -24,5 +24,6 @@ open PR is never picked up twice.
 Define how work gets done: a graph of steps on a canvas. Agent steps run agents
 on your instructions (read-only ones can run several agents in parallel, e.g.
 two planners), check steps run a command, ship steps push, open or merge the
-PR. Steps can need your approval, pass/fail verdicts and failed checks send the
+PR, and model steps (or an agent that analyses the task and picks) set the
+agent and model the later steps use. Steps can need your approval, pass/fail verdicts and failed checks send the
 work back to an earlier step, and every task shows live where it is.

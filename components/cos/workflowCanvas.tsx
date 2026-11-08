@@ -35,6 +35,7 @@ export const STEP_TYPE_META: Record<StepType, { label: string; icon: string; hin
   agent: { label: "Agent", icon: "Bot", hint: "An agent works on the instructions" },
   check: { label: "Check", icon: "FlaskConical", hint: "Chief of Staff runs a command" },
   ship: { label: "Ship", icon: "Rocket", hint: "Push, open a PR, or merge" },
+  model: { label: "Model", icon: "Settings", hint: "Sets the agent and model for the agent steps after it, until another Model step changes them" },
 };
 
 const COL = 320;
@@ -58,9 +59,11 @@ export function layout(wf: Workflow, force = false): Map<string, { x: number; y:
 function subtitle(s: Step): string {
   switch (s.type) {
     case "agent":
-      return [s.writes ? "writes code" : "read-only", s.agents > 1 ? `×${s.agents} agents` : null, s.verdict ? "pass/fail" : null, s.approval ? "your approval" : null].filter(Boolean).join(" · ");
+      return [s.writes ? "writes code" : "read-only", s.agents > 1 ? `×${s.agents} agents` : null, s.chooses.length ? `picks model (${s.chooses.length})` : null, s.verdict ? "pass/fail" : null, s.approval ? "your approval" : null].filter(Boolean).join(" · ");
     case "check":
       return s.command;
+    case "model":
+      return [s.providerId, s.model, s.reasoningLevel].filter(Boolean).join(" · ") || "not set";
     case "ship":
       return s.action === "merge" ? "finish after merge" : s.action === "push" ? "push branch" : "finish when PR opens";
   }

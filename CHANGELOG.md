@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Model steps.** A new workflow step type sets the agent (provider), model and
+  reasoning level for the agent steps after it, and keeps applying until another
+  Model step changes them. It does no work of its own and completes instantly.
+  A running builder thread keeps the model it started with. An agent step can
+  also list model choices and pick one by analysing the task, so the agent
+  decides which model the later steps use.
+
 - **Shipping has a completion boundary.** PR-only delivery finishes when the PR
   opens; merge delivery finishes after GitHub confirms the merge. CI and review
   waits release task capacity, while repairs and successors queue for an available

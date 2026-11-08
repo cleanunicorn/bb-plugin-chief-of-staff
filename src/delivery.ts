@@ -11,7 +11,7 @@ import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
-import { stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
+import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
 
 const OUTPUT_TAIL = 12_000;
 
@@ -216,6 +216,8 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   const mentionsIn = (text: string) => (usesSkills ? skillMentions(text, step.instructions, skills) : []);
   // Record the send time first: an idle that predates it belongs to an older turn.
   const sentAt = cos.now().getTime();
+  // Model steps before this one choose the provider, model and reasoning of threads spawned for it.
+  const settings = settingsFor(item.workflow, step.id, item.nodes);
   cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
 
   if (step.writes) {
@@ -227,6 +229,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
         title: item.branch ?? item.issueTitle,
         prompt,
         mentions: mentionsIn(prompt),
+        settings,
         pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, branch: item.branch, role: "builder" },
       });
       cos.store.updateWorkItem(item.id, { threadId: spawned.thread.id, environmentId: spawned.thread.environmentId ?? null, providerId: spawned.providerId, model: spawned.model });
@@ -267,6 +270,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
     prompt: stepThreadPrompt,
     mentions: mentionsIn(stepThreadPrompt),
+    settings,
     pluginMetadata: { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, step: step.id, agent: effect.agent },
   });
   cos.store.upsertThread({ threadId: spawned.thread.id, itemId: item.id, role: "step", stepId: step.id, agent: effect.agent, environmentId: spawned.thread.environmentId ?? item.environmentId, round, promptSentAt: sentAt });
@@ -482,7 +486,7 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
     const reports = n.reports.filter(Boolean);
     if (!reports.length) continue;
     const body = reports.map((r, i) => (reports.length > 1 ? `**Agent ${i + 1}:** ${r!.summary}` : r!.summary)).join("\n\n");
-    sections.push(`### ${s.name}${s.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
+    sections.push(`### ${s.name}${s.type === "agent" && s.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
   }
   const fallback = !sections.length && item.threadId ? await lastAssistantText(cos, item.threadId) : null;
   const lines = [

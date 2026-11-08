@@ -7,11 +7,13 @@
 //          parallel, gated by a human approval or by its own pass/fail verdict)
 //   check: Chief of Staff runs a command in the worktree
 //   ship:  push, open a pull request, or merge it when CI is green
+//   model: no work of its own; sets the provider, model and reasoning level
+//          for the agent steps after it, until another model step changes them
 // `next` edges form a DAG; `onFail` points back to an earlier step to re-run
 // from when a verdict, check or CI fails.
 import { z } from "zod";
 
-export const STEP_TYPES = ["agent", "check", "ship"] as const;
+export const STEP_TYPES = ["agent", "check", "ship", "model"] as const;
 export type StepType = (typeof STEP_TYPES)[number];
 
 const stepId = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/, "lowercase letters, digits, - and _ (max 40)");
@@ -27,6 +29,18 @@ const base = {
   position: position.optional(),
 };
 
+/** A model an agent step may pick for the steps after it. */
+export const modelChoiceSchema = z.object({
+  /** What the agent reports to pick it. */
+  id: stepId,
+  /** When this is the right choice; shown to the agent. */
+  when: z.string().min(1).max(1000),
+  providerId: z.string().max(200).optional(),
+  model: z.string().max(200).optional(),
+  reasoningLevel: z.string().max(50).optional(),
+});
+export type ModelChoice = z.output<typeof modelChoiceSchema>;
+
 export const agentStepSchema = z.object({
   ...base,
   type: z.literal("agent"),
@@ -40,6 +54,11 @@ export const agentStepSchema = z.object({
   verdict: z.boolean().default(false),
   onFail: stepId.optional(),
   maxRounds: attempts.default(2),
+  /**
+   * With choices, the agent analyses the task and picks one in its report; the
+   * agent steps after this one then run with it (until another step changes it).
+   */
+  chooses: z.array(modelChoiceSchema).max(12).default([]),
 });
 
 export const checkStepSchema = z.object({
@@ -63,11 +82,34 @@ export const shipStepSchema = z.object({
   maxAttempts: attempts.default(2),
 });
 
-export const stepSchema = z.discriminatedUnion("type", [agentStepSchema, checkStepSchema, shipStepSchema]);
+/**
+ * Sets how agents run from here on. Empty fields leave the setting as it was
+ * (an earlier model step, else the repository's, else the global default).
+ */
+export const modelStepSchema = z.object({
+  ...base,
+  type: z.literal("model"),
+  /** The agent: a BB provider id such as "claude-code". */
+  providerId: z.string().max(200).optional(),
+  model: z.string().max(200).optional(),
+  reasoningLevel: z.string().max(50).optional(),
+  /** A model step cannot fail; declared so code can read `onFail` on any step. */
+  onFail: z.undefined().optional(),
+});
+
+export const stepSchema = z.discriminatedUnion("type", [agentStepSchema, checkStepSchema, shipStepSchema, modelStepSchema]);
 export type Step = z.output<typeof stepSchema>;
 export type AgentStep = z.output<typeof agentStepSchema>;
 export type CheckStep = z.output<typeof checkStepSchema>;
 export type ShipStep = z.output<typeof shipStepSchema>;
+export type ModelStep = z.output<typeof modelStepSchema>;
+
+/** The provider, model and reasoning level a step's agents run with; unset fields fall back to the repository's, then the global default. */
+export interface AgentSettings {
+  providerId?: string;
+  model?: string;
+  reasoningLevel?: string;
+}
 
 export const workflowSchema = z.object({ id: stepId, name: z.string().min(1).max(80), steps: z.array(stepSchema).min(1) });
 export type Workflow = z.output<typeof workflowSchema>;
@@ -169,7 +211,38 @@ export function topoOrder(wf: Workflow): string[] {
 
 /** Steps that use the task's worktree exclusively: code-writing agents, checks, ship. */
 export function isExclusive(step: Step): boolean {
-  return step.type !== "agent" || step.writes;
+  return step.type === "agent" ? step.writes : step.type !== "model";
+}
+
+/** The choice an agent step's report named, when it has choices and one of its reports names a valid one. */
+export function chosenModel(step: AgentStep, node: { reports: ({ choice?: string | null } | null)[] } | undefined): ModelChoice | undefined {
+  if (!step.chooses.length || !node) return undefined;
+  for (const r of node.reports) {
+    const found = r?.choice ? step.chooses.find((c) => c.id === r.choice!.trim()) : undefined;
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * The settings set by the model steps (and model choices of agent steps) before `id`. Model steps apply to
+ * everything after them until a later one overrides a field, so the last one
+ * before `id` (in topological order, among its ancestors) wins, field by field.
+ */
+export function settingsFor(wf: Workflow, id: string, nodes?: Record<string, { reports: ({ choice?: string | null } | null)[] }>): AgentSettings {
+  const before = new Set(wf.steps.filter((s) => reachable(wf, s.id, id)).map((s) => s.id));
+  const out: AgentSettings = {};
+  for (const sid of topoOrder(wf)) {
+    const s = stepById(wf, sid);
+    if (!s || !before.has(sid)) continue;
+    const source = s.type === "model" ? s : s.type === "agent" ? chosenModel(s, nodes?.[sid]) : undefined;
+    if (!source) continue;
+    for (const key of ["providerId", "model", "reasoningLevel"] as const) {
+      const value = source[key]?.trim();
+      if (value) out[key] = value;
+    }
+  }
+  return out;
 }
 
 /** Problems that make a workflow unrunnable, as human-readable messages. */
@@ -197,7 +270,16 @@ export function validateWorkflow(wf: Workflow): string[] {
       if (!ids.has(s.onFail)) problems.push(`${s.name}: on fail goes to a missing step "${s.onFail}"`);
       else if (s.onFail !== s.id && !reachable(wf, s.onFail, s.id)) problems.push(`${s.name}: on fail must go back to a step before it (${name(s.onFail)} is not)`);
     }
-    if (s.type !== "agent") {
+    if (s.type === "agent" && s.chooses.length) {
+      const seen = new Set<string>();
+      for (const c of s.chooses) {
+        if (seen.has(c.id)) problems.push(`${s.name}: two model choices have the id "${c.id}"`);
+        seen.add(c.id);
+        if (!c.providerId?.trim() && !c.model?.trim() && !c.reasoningLevel?.trim()) problems.push(`${s.name}: model choice "${c.id}" sets nothing`);
+      }
+    }
+    if (s.type === "model" && !s.providerId?.trim() && !s.model?.trim() && !s.reasoningLevel?.trim()) problems.push(`${s.name}: set a provider, a model or a reasoning level`);
+    if (s.type !== "agent" && s.type !== "model") {
       const writerBefore = wf.steps.some((w) => w.type === "agent" && w.writes && reachable(wf, w.id, s.id));
       if (!writerBefore) problems.push(`${s.name}: needs a step that writes code before it`);
     }
@@ -330,5 +412,7 @@ export function blankStep(type: StepType, id: string, name: string): Step {
       return checkStepSchema.parse({ id, name, type, command: "npm test" });
     case "ship":
       return shipStepSchema.parse({ id, name, type });
+    case "model":
+      return modelStepSchema.parse({ id, name, type });
   }
 }

@@ -49,16 +49,18 @@ export function inputReports(wf: Workflow, nodes: Nodes, stepId: string): string
 
 function contract(step: AgentStep): string[] {
   const outcomes = step.verdict ? '`"done"` if it passes, or `"failed"` with the findings that must change' : '`"done"`';
+  const picks = step.chooses.length > 0;
   return [
     ``,
     `### When you finish this step`,
-    `Call the \`${REPORT_TOOL}\` tool with \`step: "${step.id}"\`, \`outcome\`: ${outcomes}, and a Markdown \`summary\` of your result (the next steps read it).`,
+    `Call the \`${REPORT_TOOL}\` tool with \`step: "${step.id}"\`, \`outcome\`: ${outcomes}, ${picks ? "`choice` (the model you pick, below), " : ""}and a Markdown \`summary\` of your result (the next steps read it${picks ? "; say which model you picked and why" : ""}).`,
     `If you need a decision from a person, ask it with your question tool, or call \`${REPORT_TOOL}\` with \`outcome: "needs_input"\` and the \`question\`. Do not stop without doing one of these: Chief of Staff waits for the report before moving on.`,
     `If the \`${REPORT_TOOL}\` tool is unavailable, end your final message with:`,
     "```",
     `## Step report`,
     `step: ${step.id}`,
     `outcome: done`,
+    ...(picks ? [`choice: <id of the model you pick>`] : []),
     `summary: <your result>`,
     "```",
   ];
@@ -77,6 +79,14 @@ export function stepPrompt(item: WorkItem, step: AgentStep, agent: number, ctx: 
   if (step.agents > 1) lines.push(`${step.agents} agents work on this step independently; you are agent ${agent + 1}. Do your own work; Chief of Staff combines the reports.`);
   if (step.approval) lines.push(`A person approves your report before the workflow moves on.`);
   if (step.instructions.trim()) lines.push(``, `### Instructions`, step.instructions.trim());
+  if (step.chooses.length) {
+    lines.push(
+      ``,
+      `### Choose the model for the steps after this one`,
+      `Analyse the task and pick the model that fits it. The steps after this one run with your pick. Options (report the id as \`choice\`):`,
+      ...step.chooses.map((c) => `- \`${c.id}\`: ${c.when.trim()}`),
+    );
+  }
   const inputs = inputReports(wf, item.nodes, step.id);
   if (inputs.length) lines.push(``, `### Input from earlier steps`, ...inputs);
   if (node?.feedback) lines.push(``, `### Why this step runs again`, clip(node.feedback, FEEDBACK_MAX));

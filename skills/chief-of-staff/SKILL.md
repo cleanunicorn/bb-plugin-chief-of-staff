@@ -1,13 +1,13 @@
 ---
 name: chief-of-staff
-description: Inspect or drive the Chief of Staff plugin from the bb CLI — user-defined agent workflows (agent, check and ship steps, parallel steps), the roster, GitHub issue intake and ad-hoc tasks, and approvals.
+description: Inspect or drive the Chief of Staff plugin from the bb CLI — user-defined agent workflows (agent, check, ship and model steps, parallel steps), the roster, GitHub issue intake and ad-hoc tasks, and approvals.
 ---
 
 # Chief of Staff
 
 The plugin turns GitHub issues (or described tasks) into agent work and takes
 each one through the repository's workflow: a graph of steps (agent, check,
-ship) where steps side by side run in parallel. It moves on only when an agent
+ship, model) where steps side by side run in parallel. It moves on only when an agent
 reports its step done, pushes questions and approvals to the operator, and
 sends failures back to an earlier step on a budget. Every command lives under
 `bb cos`.
@@ -18,7 +18,9 @@ Your prompt names the step you are on and its id. When the step is finished,
 call the `cos_report` tool with that `step` id, an `outcome` (`done`;
 `failed` on a pass/fail step that does not pass, or when you cannot finish;
 `needs_input` with a `question` when a person must decide) and a Markdown
-`summary` (the next steps read it). Then end your turn. If the tool is
+`summary` (the next steps read it). If your prompt lists model choices, also
+pass the `choice` id you pick (a text report uses a `choice:` line). Then end
+your turn. If the tool is
 unavailable, end your message with a `## Step report` block (`step:`,
 `outcome:`, `summary:` lines). On a read-only step, do not change files. Never
 push or open pull requests; Chief of Staff does that.

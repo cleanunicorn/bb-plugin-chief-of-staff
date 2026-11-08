@@ -114,7 +114,7 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
     const report = fromTool ?? (fromText && fromText.step === step.id ? fromText : null);
     const question = report ? null : plainTextQuestion(text);
     if (row) cos.store.updateThread(threadId, { idleSeenAt: updatedAt || row.idleSeenAt, pendingReport: null });
-    await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, at: report.at, via: report.via } : null, question }, actor);
+    await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, at: report.at, via: report.via } : null, question }, actor);
   });
 }
 
