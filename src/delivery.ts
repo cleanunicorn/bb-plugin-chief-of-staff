@@ -7,7 +7,7 @@ import type { RepoConfig } from "./config";
 import { GitHubError } from "./github";
 import { deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
-import type { WorkItem } from "./state";
+import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
@@ -61,17 +61,38 @@ export async function settleJobs(): Promise<void> {
 // ---- dispatch ----
 
 /** Apply an engine event to a stored item and run the resulting effects. */
-export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: string): Promise<WorkItem | null> {
-  return withItemLock(itemId, () => dispatchLocked(cos, itemId, event, actor));
+export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false): Promise<WorkItem | null> {
+  return withItemLock(itemId, () => dispatchLocked(cos, itemId, event, actor, force));
 }
 
 /** dispatch() for callers that already hold the item's lock. */
-export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string): Promise<WorkItem | null> {
+export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(itemId);
   if (!item || !item.workflow.steps.length) return null;
-  const { policy } = await cos.config();
+  if (item.queuedEvent) {
+    if (event.type === "start" || event.type === "retry" || event.type === "approve") event = item.queuedEvent;
+    else if (!["rerun", "retry", "approve", "revise", "pr_closed", "pr_merged"].includes(event.type)) return item;
+  }
+  const { policy, repos, values } = await cos.config();
   const t = transition(item, event, policy, cos.now());
-  const updated = cos.store.updateWorkItem(item.id, applyTransition(item, t.nodes, t.patch));
+  const patch = { ...applyTransition(item, t.nodes, t.patch), queuedEvent: null };
+  const proposed = { ...item, ...patch };
+  // No await between counting and storing the reservation: dispatches for other
+  // items observe it before running their own admission check.
+  if (!force && occupiesCapacity(proposed) && (!occupiesCapacity(item) || event.type === "start")) {
+    const repo = repos.find((r) => `${r.owner}/${r.repo}` === item.repo);
+    const full = !repo || cos.store.countOccupied(item.repo, item.id) >= repo.maxConcurrent || cos.store.countOccupied(undefined, item.id) >= values.maxConcurrentTotal;
+    if (full) {
+      const queued = cos.store.updateWorkItem(item.id, {
+        queuedEvent: event, status: "queued", jobStartedAt: null,
+        waitingKind: null, waitingReason: "Waiting for task capacity",
+        ...(event.type === "pr_opened" ? { prNumber: event.prNumber, prUrl: event.prUrl } : {}),
+      });
+      cos.invalidate();
+      return queued;
+    }
+  }
+  const updated = cos.store.updateWorkItem(item.id, patch);
   if (!updated) return null;
   logChanges(cos, item, updated, event, actor);
   for (const effect of t.effects) {
@@ -89,6 +110,14 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   }
   if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
   return cos.store.getWorkItem(item.id);
+}
+
+/** Resume older deferred transitions before admitting fresh intake. */
+export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
+  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER })
+    .filter((i) => i.queuedEvent)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  for (const item of items) await dispatch(cos, item.id, { type: "start" }, actor);
 }
 
 /**
@@ -505,6 +534,7 @@ export async function watchCi(cos: Cos, actor: string): Promise<void> {
         await dispatch(cos, item.id, { type: "pr_closed" }, actor);
         continue;
       }
+      if (item.queuedEvent) continue;
       const ship = openShip(item);
       if (!ship) continue;
       const ci = await github.ciSummary(repo.owner, repo.repo, pr.head.sha);

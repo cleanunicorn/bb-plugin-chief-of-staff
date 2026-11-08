@@ -4,7 +4,7 @@
 // activity_log. Columns from the fixed-stage model and the removed routines
 // feature are left in place and unused.
 import type { Database } from "better-sqlite3";
-import type { Nodes, StepReport } from "./machine";
+import type { MachineEvent, Nodes, StepReport } from "./machine";
 import type { Workflow } from "./workflow";
 
 /**
@@ -55,6 +55,8 @@ export interface WorkItem {
   jobStartedAt: string | null;
   /** Free-text task for items not backed by a GitHub issue. */
   taskBody: string | null;
+  /** A transition deferred until this task can reserve capacity. */
+  queuedEvent?: MachineEvent | null;
   /** The workflow the item runs, frozen when it started. */
   workflow: Workflow;
   /** State of each step. */
@@ -191,6 +193,7 @@ export const MIGRATIONS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS item_threads_item ON item_threads(item_id)`,
+  `ALTER TABLE work_items ADD COLUMN queued_event_json TEXT`,
   `UPDATE work_items SET waiting_kind = 'approval' WHERE waiting_kind = 'plan_approval'`,
 ];
 
@@ -200,8 +203,8 @@ export function isActiveStatus(status: WorkStatus): boolean {
 }
 
 /** Task reservations, distinct from unfinished work tracked for deduplication and CI. */
-export function occupiesCapacity(item: WorkItem): boolean {
-  if (!isActiveStatus(item.status)) return false;
+export function occupiesCapacity(item: Pick<WorkItem, "status" | "workflow" | "nodes" | "queuedEvent">): boolean {
+  if (!isActiveStatus(item.status) || item.queuedEvent) return false;
   const outstanding = item.workflow.steps.filter((s) => ["running", "waiting"].includes(item.nodes[s.id]?.status));
   if (!outstanding.length) return true; // Newly admitted or legacy item.
   return outstanding.some((s) => {
@@ -253,6 +256,7 @@ function rowToWorkItem(row: Row): WorkItem {
     taskBody: (row.task_body as string | null) ?? null,
     workflow: parseJson<Workflow>(row.workflow_json, NO_WORKFLOW),
     nodes: parseJson<Nodes>(row.nodes_json, {}),
+    queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
   };
 }
 
@@ -271,11 +275,11 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson`;
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson`;
 
 function toRow(item: WorkItem): Record<string, unknown> {
-  const { workflow, nodes, ...rest } = item;
-  return { ...rest, workflowJson: workflow.steps.length ? JSON.stringify(workflow) : null, nodesJson: JSON.stringify(nodes) };
+  const { workflow, nodes, queuedEvent, ...rest } = item;
+  return { ...rest, queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null, workflowJson: workflow.steps.length ? JSON.stringify(workflow) : null, nodesJson: JSON.stringify(nodes) };
 }
 
 export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &

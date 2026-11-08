@@ -8,12 +8,12 @@ const workflow = workflowSchema.parse({ id: "test", name: "Test", steps: [
   { id: "ship", name: "Ship", type: "ship", action: "merge" },
   { id: "docs", name: "Docs", type: "agent" },
 ] });
-function item(phase: "ci" | "ready" | "merging" | "pushing", parallel = false): WorkItem {
+function item(phase: "ci" | "ready" | "merging" | "pushing", parallel = false): Pick<WorkItem, "status" | "workflow" | "nodes" | "queuedEvent"> {
   return { status: "ready", workflow, nodes: {
     build: { ...freshNode(), status: "done" },
     ship: { ...freshNode(), status: "running", phase },
     docs: { ...freshNode(), status: parallel ? "running" : "done" },
-  } } as WorkItem;
+  } };
 }
 
 describe("capacity reservations", () => {
