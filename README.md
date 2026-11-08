@@ -96,7 +96,14 @@ manual rerun or agent step after shipping reacquires capacity; if the repo or
 global limit is full, it queues and resumes automatically. Limits count task
 reservations, including non-shipping human gates, rather than individual parallel
 agent threads. Other branches still working in the same task retain its slot.
-The dashboard shows occupied task capacity separately from waiting PRs.
+The dashboard shows occupied task capacity separately from waiting PRs. The
+Pipeline view places active tasks before historical throughput and repository
+capacity. Stage filters count tasks; task slots retain the admission semantics
+above. “Failures needing a decision” counts active human waits caused by an
+escalation, a missing report, or a Chief of Staff error. Stalled work is shown
+separately. Terminal failed runs are historical outcomes, not unresolved
+incidents; they remain accessible with **Show finished**. Retrying work stays in
+Checks & shipping until it requires a decision.
 
 **Upgrade behavior:** unfinished PR-only items in CI/ready finish after their PR
 is confirmed open or merged. Closed, unmerged PRs fail delivery; a GitHub error
@@ -154,10 +161,11 @@ code-writing step before them. The fixed-stage config from earlier versions is
 converted automatically.
 
 Start a task without an issue from the dashboard (**New task**), with
-`bb cos task "Title" --repo owner/repo --body …`, or let another agent call the
+`bb cos task "Describe the work" --repo owner/repo`, or let another agent call the
 `cos_start_task` tool. Configure the repository first; neither a GitHub issue
 nor automatic intake is required. The task uses that repository's configured
-workflow and counts against its concurrency limits.
+workflow and counts against its concurrency limits. Enter only the prompt; a short
+task title is derived automatically. The agent tool also accepts an optional title.
 
 ## Configure
 
@@ -226,7 +234,7 @@ intake, and options of the removed routines feature are ignored.
 ```
 bb cos status [--repo owner/repo] [--all] [--usage] [--json]
 bb cos intake [--repo owner/repo] [--dry-run]
-bb cos task "<title>" --repo owner/repo [--body "..."]
+bb cos task "<prompt>" --repo owner/repo [--body "..."]
 bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message "..."]
 bb cos log [--limit n] [--item id]
 ```

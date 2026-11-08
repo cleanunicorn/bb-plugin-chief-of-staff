@@ -20,7 +20,10 @@ call the `cos_report` tool with that `step` id, an `outcome` (`done`;
 `needs_input` with a `question` when a person must decide) and a Markdown
 `summary` (the next steps read it). If your prompt lists model choices, also
 pass the `choice` id you pick (a text report uses a `choice:` line). Then end
-your turn. If the tool is
+your turn. When the prompt includes a delivery id, pass it as `delivery` (or
+put `delivery:` before `summary:` in the text report). This associates the
+report with the current prompt, including recovery after a lost send response.
+If the tool is
 unavailable, end your message with a `## Step report` block (`step:`,
 `outcome:`, `summary:` lines). On a read-only step, do not change files. Never
 push or open pull requests; Chief of Staff does that.
@@ -36,7 +39,7 @@ push or open pull requests; Chief of Staff does that.
   question opens it with its options and context and answers it in place
   (RPCs `cos_question {id}` and `cos_answer {id, answer}`).
 - `bb cos intake [--repo owner/repo] [--dry-run]` — pick up eligible issues now.
-- `bb cos task "<title>" --repo owner/repo [--body "..."]` — start a task with no
+- `bb cos task "<prompt>" --repo owner/repo [--body "..."]` — start a task with no
   GitHub issue (also the `cos_start_task` agent tool). The repository must be
   configured, but automatic intake need not be enabled. The task follows its
   configured workflow and counts against capacity limits.
@@ -47,6 +50,12 @@ push or open pull requests; Chief of Staff does that.
   Staff failed on; `rerun --step <id>` runs a step and everything after it
   again.
 - `bb cos log [--limit n] [--item id]` — activity log with who/what triggered each step.
+
+A prompt delivery marked uncertain is not automatically resent, including after
+restart. A report with the matching delivery id can recover it. If no agent
+received the prompt, inspect the thread before explicitly retrying; the SDK does
+not guarantee that a thrown send/spawn call delivered nothing. Activity alone
+does not prove delivery. Preparation failures still retry with bounded backoff.
 
 Agents also have the `chief_of_staff_status` tool, which returns the same roster.
 

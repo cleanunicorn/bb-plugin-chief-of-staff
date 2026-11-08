@@ -8,6 +8,8 @@ import { REPORT_OUTCOMES } from "./report";
 import { threadContext } from "./sync";
 import { startTask } from "./intake";
 import type { ReportOutcome } from "./machine";
+import { withItemLock } from "./delivery";
+import { acknowledgeReport, deliveryWait, reportMatches, recoverSpawn } from "./deliveryReport";
 import { chosenModel } from "./workflow";
 
 export function registerTools(bb: BbPluginApi, cos: Cos): void {
@@ -16,6 +18,7 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
     description:
       "Report to Chief of Staff that you finished your current workflow step, or that you need a human decision. Chief of Staff moves the task on when your turn ends. Only for threads Chief of Staff started; your prompt names the step id.",
     parameters: z.object({
+      delivery: z.string().max(100).optional().describe("Delivery id from your current prompt"),
       step: z.string().min(1).max(40).describe("The step id from your prompt"),
       outcome: z.enum(REPORT_OUTCOMES as [ReportOutcome, ...ReportOutcome[]]).describe('"done"; "failed" on a pass/fail step that does not pass (or when you cannot finish); "needs_input" when a person must decide'),
       summary: z.string().min(1).max(40_000).describe("The step's result in Markdown (a plan, what changed, evidence, findings). The next steps read it."),
@@ -24,29 +27,36 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
     }),
     async execute(params, ctx) {
       const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
-      const item = cos.store.getWorkItemByThread(ctx.threadId);
-      if (!item) return err("This thread is not tracked by Chief of Staff; nothing to report.");
-      if (item.status === "done") return "This task is already finished.";
-      const tc = threadContext(cos, item, ctx.threadId);
-      if (!tc?.step) return err("Chief of Staff has no step running on this thread right now.");
-      if (params.step !== tc.step.id) return err(`This thread is working on the step "${tc.step.id}" (${tc.step.name}), not "${params.step}". Report step "${tc.step.id}".`);
-      const node = item.nodes[tc.step.id];
-      // A step parked on this agent's question resumed (we may have missed the turn starting): its report counts.
-      const resumed = node?.status === "waiting" && node.waiting && ["question", "no_report", "stalled"].includes(node.waiting.kind);
-      if (node?.status !== "running" && !resumed) return err(`The step ${tc.step.name} is not running (it is ${node?.status ?? "unknown"}).`);
-      if (params.outcome === "needs_input" && !params.question?.trim()) return err('With outcome "needs_input", put the question for the human in `question`.');
-      if (tc.step.chooses.length && params.outcome === "done" && !chosenModel(tc.step, { reports: [{ choice: params.choice }] })) {
-        return err(`This step picks a model: set \`choice\` to one of ${tc.step.chooses.map((c) => `"${c.id}"`).join(", ")}.`);
-      }
-      const report = { step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, choice: params.choice?.trim() || null, at: cos.now().toISOString(), via: "tool" as const };
-      if (tc.row) cos.store.updateThread(ctx.threadId, { pendingReport: report });
-      else cos.store.upsertThread({ threadId: ctx.threadId, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: item.environmentId, round: node!.round, promptSentAt: null, pendingReport: report });
-      cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
-      cos.store.log({ level: "info", kind: "report", repo: item.repo, workItemId: item.id, message: `${tc.step.name}${tc.step.agents > 1 ? ` agent ${tc.agent + 1}` : ""} reported ${params.outcome}`, actor: `tool:${ctx.threadId}` });
-      cos.invalidate();
-      return params.outcome === "needs_input"
-        ? "Recorded. End your turn; your question goes to a human and their answer comes back to this thread."
-        : `Recorded ${tc.step.name}: ${params.outcome}. End your turn now; Chief of Staff takes it from here.`;
+      const tracked = cos.store.getWorkItemByThread(ctx.threadId) ?? await recoverSpawn(cos, ctx.threadId);
+      if (!tracked) return err("This thread is not tracked by Chief of Staff; nothing to report.");
+      return withItemLock(tracked.id, async () => {
+        const item = cos.store.getWorkItem(tracked.id);
+        if (!item) return err("This thread is not tracked by Chief of Staff; nothing to report.");
+        if (item.status === "failed") return err("This task has failed; retry it before reporting new work.");
+        if (item.status === "done") return "This task is already finished.";
+        const tc = threadContext(cos, item, ctx.threadId);
+        if (!tc?.step) return err("Chief of Staff has no step running on this thread right now.");
+        if (params.step !== tc.step.id) return err(`This thread is working on the step "${tc.step.id}" (${tc.step.name}), not "${params.step}". Report step "${tc.step.id}".`);
+        const node = item.nodes[tc.step.id];
+        // A step parked on this agent's question resumed (we may have missed the turn starting): its report counts.
+        const resumed = node?.status === "waiting" && node.waiting && ["question", "no_report", "stalled"].includes(node.waiting.kind);
+        if (node?.status !== "running" && !resumed && !deliveryWait(item, tc.step.id)) return err(`The step ${tc.step.name} is not running (it is ${node?.status ?? "unknown"}).`);
+        if (params.outcome === "needs_input" && !params.question?.trim()) return err('With outcome "needs_input", put the question for the human in `question`.');
+        if (tc.step.chooses.length && params.outcome === "done" && !chosenModel(tc.step, { reports: [{ choice: params.choice }] })) {
+          return err(`This step picks a model: set \`choice\` to one of ${tc.step.chooses.map((c) => `"${c.id}"`).join(", ")}.`);
+        }
+        if (!reportMatches(cos, item, tc.step, tc.agent, ctx.threadId, params.delivery)) return err("This report is from an earlier or unconfirmed delivery. Use the delivery id from the current prompt.");
+        await acknowledgeReport(cos, item, tc.step, tc.agent, ctx.threadId);
+        const report = { ...(params.delivery ? { delivery: params.delivery } : {}), step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, choice: params.choice?.trim() || null, at: cos.now().toISOString(), via: "tool" as const };
+        if (tc.row) cos.store.updateThread(ctx.threadId, { pendingReport: report });
+        else cos.store.upsertThread({ threadId: ctx.threadId, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: item.environmentId, round: node!.round, promptSentAt: null, pendingReport: report });
+        cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
+        cos.store.log({ level: "info", kind: "report", repo: item.repo, workItemId: item.id, message: `${tc.step.name}${tc.step.agents > 1 ? ` agent ${tc.agent + 1}` : ""} reported ${params.outcome}`, actor: `tool:${ctx.threadId}` });
+        cos.invalidate();
+        return params.outcome === "needs_input"
+          ? "Recorded. End your turn; your question goes to a human and their answer comes back to this thread."
+          : `Recorded ${tc.step.name}: ${params.outcome}. End your turn now; Chief of Staff takes it from here.`;
+      });
     },
   });
 
@@ -73,13 +83,13 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
     description: "Hand a task to Chief of Staff: it starts an agent on a configured repository and takes the task through the workflow (plan, build, verify, review, ship). Use when the user asks to delegate work to Chief of Staff.",
     parameters: z.object({
       repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/).describe("owner/repo, as configured in Chief of Staff"),
-      title: z.string().min(1).max(200).describe("Short task title"),
+      title: z.string().max(200).optional().describe("Optional short task title; defaults to the description"),
       description: z.string().min(1).max(20_000).describe("What needs doing and why, with any acceptance criteria"),
     }),
     async execute(params, ctx) {
       const item = await startTask(cos, { repo: params.repo, title: params.title, body: params.description }, `tool:${ctx.threadId}`);
       if (!item) return { content: [{ type: "text", text: "Could not start the task." }], isError: true };
-      return `Started "${params.title}" on ${params.repo} (item ${item.id}, workflow ${item.workflow.name}${item.threadId ? `, thread ${item.threadId}` : ""}). Track it with chief_of_staff_status.`;
+      return `Started "${item.issueTitle}" on ${params.repo} (item ${item.id}, workflow ${item.workflow.name}${item.threadId ? `, thread ${item.threadId}` : ""}). Track it with chief_of_staff_status.`;
     },
   });
 }

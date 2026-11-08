@@ -482,3 +482,71 @@ describe("an agent step that chooses the model", () => {
     expect(prompt).toContain("choice: <id of the model you pick>");
   });
 });
+
+
+describe("per-agent delivery retries", () => {
+  it.each([false, true])("preserves thread-failure precedence over a sibling's interrupted send (legacy=%s)", (legacy) => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "thread deleted" });
+    if (legacy) {
+      delete item.nodes.review.retry!.cause;
+      delete item.nodes.review.agentRetries;
+    }
+    const failure = structuredClone(item.nodes.review.retry);
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 1, kind: "start" }, message: "interrupted send", uncertain: true });
+    expect(item.nodes.review.retry).toEqual(failure);
+    expect(item.nodes.review.agentRetries?.[0]).toEqual(failure);
+    expect(item.nodes.review.agentRetries?.[1]).toMatchObject({ cause: "prompt_delivery", uncertain: true });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    [item] = run(item, ended("review", report(), item, 0));
+    expect(item.nodes.review).toMatchObject({ status: "waiting", retry: failure, reports: [null, null] });
+  });
+
+  it.each([false, true])("does not acknowledge a thread failure as delivery recovery (legacy=%s)", (legacy) => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 1, kind: "start" }, message: "response lost", uncertain: true });
+    [item] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "thread deleted" });
+    if (legacy) {
+      delete item.nodes.review.retry!.cause;
+      delete item.nodes.review.agentRetries;
+    }
+    const before = structuredClone(item.nodes.review);
+    for (const agent of [0, 1]) {
+      [item] = run(item, { type: "delivery_ack", step: "review", agent, round: 1 });
+      [item] = run(item, ended("review", report(), item, agent));
+      expect(item.nodes.review).toEqual(before);
+    }
+  });
+
+  it("drops downstream delivery attempts and retries when an earlier step is rerun", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true, next: ["review"] }, { id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    item.nodes.review.deliveries = { 0: { id: "old", round: 1, threadId: "old", state: "sending", sentAt: 1 } };
+    [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent: 0, kind: "start" }, message: "failed" });
+    [item] = run(item, { type: "rerun", step: "build" });
+    expect(item.nodes.review).toMatchObject({ status: "pending", deliveries: {}, agentRetries: {}, retry: null });
+    const [, effects] = run(item, { type: "retry_due", step: "review" });
+    expect(effects).toEqual([]);
+  });
+
+  it("keeps both uncertain deliveries until each matching agent acknowledges", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    for (const agent of [0, 1]) [item] = run(item, { type: "effect_error", step: "review", effect: { type: "agent", step: "review", agent, kind: "start" }, message: "response lost", uncertain: true });
+    expect(Object.keys(item.nodes.review.agentRetries!)).toEqual(["0", "1"]);
+    const [retried, effects] = run(item, { type: "retry", step: "review" });
+    expect(effects).toContainEqual({ type: "agent", step: "review", agent: 0, kind: "start" });
+    expect(retried.nodes.review).toMatchObject({ status: "waiting", retry: { effect: { agent: 1 } } });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 0 });
+    expect(Object.keys(item.nodes.review.agentRetries!)).toHaveLength(2);
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    [item] = run(item, ended("review", report(), item, 0));
+    expect(item.nodes.review).toMatchObject({ status: "waiting", retry: { effect: { agent: 1 }, uncertain: true }, reports: [{ outcome: "done" }, null] });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 1, round: 1 });
+    [item] = run(item, ended("review", report(), item, 1));
+    expect(item.status).toBe("done");
+  });
+});

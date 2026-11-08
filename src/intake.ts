@@ -157,18 +157,19 @@ export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue,
 }
 
 /** Start a task the operator described, without a GitHub issue. */
-export async function startTask(cos: Cos, input: { repo: string; title: string; body: string; force?: boolean }, actor: string): Promise<WorkItem | null> {
+export async function startTask(cos: Cos, input: { repo: string; title?: string; body: string; force?: boolean }, actor: string): Promise<WorkItem | null> {
   if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting a task.");
   const repo = await cos.repo(input.repo);
   if (!repo) throw new Error(`repo ${input.repo} is not configured`);
-  const title = input.title.trim();
-  if (!title) throw new Error("the task needs a title");
+  const body = input.body.trim();
+  const title = input.title?.trim() || body.replace(/\s+/g, " ").slice(0, 200);
+  if (!title) throw new Error("the task needs a prompt");
   await resumeQueued(cos, actor);
   if (!input.force) {
     const capacity = capacityProblem(cos, repo, (await cos.config()).values.maxConcurrentTotal);
     if (capacity) throw new Error(`${capacity}; try again later`);
   }
-  const item = cos.store.insertWorkItem(await newItem(cos, repo, { issueNumber: null, issueTitle: title, branch: `${BRANCH_PREFIX}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: input.body.trim() || title }));
+  const item = cos.store.insertWorkItem(await newItem(cos, repo, { issueNumber: null, issueTitle: title, branch: `${BRANCH_PREFIX}task-${slugify(title)}`, source: actor.startsWith("tool") ? "tool" : "task", taskBody: body || title }));
   cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `started task: ${title}`, actor });
   cos.invalidate();
   return dispatch(cos, item.id, { type: "start" }, actor, input.force);

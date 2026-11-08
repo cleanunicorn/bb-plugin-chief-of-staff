@@ -8,6 +8,7 @@
 // under the item's lock and is idempotent: an idle is handled once per thread
 // (keyed on the thread's updatedAt), and idles from before Chief of Staff's
 // latest prompt to that thread are ignored.
+import { acknowledgeReport, deliveryWait, reportMatches, recoverSpawn } from "./deliveryReport";
 import type { Cos } from "./context";
 import { resumeQueued, dispatchLocked, jobRunning, withItemLock } from "./delivery";
 import { runningWriter } from "./prompts";
@@ -18,12 +19,19 @@ import { stepById, type AgentStep } from "./workflow";
 
 /** Runtime statuses that mean a turn is in progress (or about to be). */
 const BUSY = new Set(["active", "starting", "pending", "provisioning", "waiting-for-host", "stopping"]);
+export const isBusy = (status: string): boolean => BUSY.has(status);
 /** Failed items are still re-synced this long after failing, so a resumed thread revives them. */
 const FAILED_LOOKBACK_MS = 3 * 24 * 60 * 60_000;
 /** A prompt not picked up by the thread within this long is re-sent. */
 const PROMPT_PICKUP_MS = 10 * 60_000;
 /** A job whose start is older than this without a running job in this process was lost. */
 const LOST_JOB_GRACE_MS = 30_000;
+/**
+ * A step still running this long after its agent's turn ended, with nothing in
+ * flight (no prompt pending, no retry, no report from that agent), lost the
+ * turn end: look at the turn again.
+ */
+export const SETTLED_IDLE_MS = 3 * 60_000;
 
 export interface ThreadSnapshot {
   id: string;
@@ -76,7 +84,7 @@ export function threadContext(cos: Cos, item: WorkItem, threadId: string): Threa
  * A turn ended on one of the item's threads. Decide whether the agent finished
  * its step (report), asked something, or went quiet.
  */
-export async function observeIdle(cos: Cos, itemId: string, threadId: string, thread: Pick<ThreadSnapshot, "updatedAt">, lastText: string | null | undefined, actor: string): Promise<void> {
+export async function observeIdle(cos: Cos, itemId: string, threadId: string, thread: Pick<ThreadSnapshot, "updatedAt">, lastText: string | null | undefined, actor: string, opts: { force?: boolean } = {}): Promise<void> {
   await withItemLock(itemId, async () => {
     let item = cos.store.getWorkItem(itemId);
     if (!item) return;
@@ -86,7 +94,8 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
     const row = ctx.row;
     const updatedAt = thread.updatedAt;
     // Handled already (event and sync both saw it), or a turn older than our latest prompt.
-    if (updatedAt && row?.idleSeenAt && updatedAt <= row.idleSeenAt) return;
+    // `force`: the idle was marked handled, yet the step is still running with nothing in flight.
+    if (!opts.force && updatedAt && row?.idleSeenAt && updatedAt <= row.idleSeenAt) return;
     if (updatedAt && row?.promptSentAt && updatedAt < row.promptSentAt) return;
 
     const pending = await pendingInteractions(cos, threadId);
@@ -104,17 +113,27 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
       if (!item) return;
     }
     const node = item.nodes[step.id];
-    if (node?.status !== "running") return;
-    const round = row?.round ?? node.round;
-    if (round !== node.round) return; // this thread worked on an earlier round
+    if (node?.status !== "running" && !deliveryWait(item, step.id)) return;
+    const round = node.round;
 
     const text = lastText === undefined ? await lastAssistantText(cos, threadId) : lastText;
     const fromTool = row?.pendingReport && row.pendingReport.step === step.id && row.pendingReport.round === round ? row.pendingReport : null;
     const fromText = fromTool ? null : parseTextReport(text, cos.now().toISOString());
     const report = fromTool ?? (fromText && fromText.step === step.id ? fromText : null);
+    if (report) {
+      if (!reportMatches(cos, item, step, ctx.agent, threadId, report.delivery)) return;
+      await acknowledgeReport(cos, item, step, ctx.agent, threadId);
+    } else if (deliveryWait(item, step.id) || (row && row.round !== round) || (node.deliveries?.[ctx.agent] && node.deliveries[ctx.agent].state !== "accepted")) return;
     const question = report ? null : plainTextQuestion(text);
     if (row) cos.store.updateThread(threadId, { idleSeenAt: updatedAt || row.idleSeenAt, pendingReport: null });
-    await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, at: report.at, via: report.via } : null, question }, actor);
+    try {
+      await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, at: report.at, via: report.via } : null, question }, actor);
+    } catch (error) {
+      // The engine did not take the turn end: keep the report and the idle
+      // unhandled so the next sweep tries again instead of losing them.
+      if (row) cos.store.updateThread(threadId, { idleSeenAt: row.idleSeenAt, pendingReport: row.pendingReport });
+      throw error;
+    }
   });
 }
 
@@ -194,7 +213,7 @@ export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnaps
   }
   if (snapshot.status !== "idle") return;
   const row = ctx.row;
-  if (node.status === "running" && row?.promptSentAt && row.round === node.round && snapshot.updatedAt && snapshot.updatedAt < row.promptSentAt) {
+  if (!node.deliveries?.[ctx.agent] && node.status === "running" && row?.promptSentAt && row.round === node.round && snapshot.updatedAt && snapshot.updatedAt < row.promptSentAt) {
     // We sent a prompt the thread never picked up: send it again.
     if (cos.now().getTime() - row.promptSentAt > PROMPT_PICKUP_MS) {
       const step = ctx.step.id;
@@ -202,7 +221,22 @@ export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnaps
     }
     return;
   }
-  await observeIdle(cos, item.id, snapshot.id, snapshot, undefined, actor);
+  await observeIdle(cos, item.id, snapshot.id, snapshot, undefined, actor, { force: lostIdle(cos, item, ctx, snapshot) });
+}
+
+/**
+ * The agent's turn ended and was marked handled, yet its step still runs with
+ * nothing in flight: Chief of Staff dropped the turn end (a crash, a reload).
+ * Reading it again moves the step on (report), parks it (question) or nudges
+ * the agent, within the usual nudge budget.
+ */
+function lostIdle(cos: Cos, item: WorkItem, ctx: ThreadContext, snapshot: ThreadSnapshot): boolean {
+  const row = ctx.row;
+  const node = ctx.step ? item.nodes[ctx.step.id] : undefined;
+  if (!row || !node || node.status !== "running" || node.retry || node.reports[ctx.agent]) return false;
+  if (row.round !== node.round || !snapshot.updatedAt || !row.idleSeenAt || snapshot.updatedAt > row.idleSeenAt) return false;
+  if (row.promptSentAt && row.promptSentAt > snapshot.updatedAt) return false; // our latest prompt is still to be picked up
+  return cos.now().getTime() - snapshot.updatedAt >= SETTLED_IDLE_MS;
 }
 
 async function snapshots(cos: Cos, ids: string[]): Promise<Map<string, ThreadSnapshot>> {
@@ -241,6 +275,15 @@ export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> 
     if (item.status === "failed") return item.finishedAt !== null && now - Date.parse(item.finishedAt) <= FAILED_LOOKBACK_MS;
     return true;
   });
+  if (items.some((item) => Object.values(item.nodes).some((node) => Object.values(node.deliveries ?? {}).some((attempt) => !attempt.threadId && attempt.round === node.round)))) {
+    // Bounded discovery after a spawn response was lost. Metadata, never status,
+    // identifies candidates. An undiscovered thread remains uncertain.
+    try {
+      const candidates = await cos.bb.sdk.threads.list({ includeHidden: true, limit: 200 });
+      for (const thread of candidates) await recoverSpawn(cos, thread.id);
+    } catch (error) { cos.bb.log.debug(`spawn reconciliation failed: ${error instanceof Error ? error.message : String(error)}`); }
+    for (let i = 0; i < items.length; i++) items[i] = cos.store.getWorkItem(items[i].id) ?? items[i];
+  }
   const perItem = new Map(items.map((i) => [i.id, threadIdsOf(cos, i)]));
   const threads = await snapshots(cos, [...new Set([...perItem.values()].flat())]);
   let changed = 0;
@@ -275,15 +318,29 @@ export async function tickItems(cos: Cos, actor: string): Promise<void> {
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
     if (!item.workflow.steps.length) continue;
     if (item.queuedEvent) continue;
-    for (const [stepId, node] of Object.entries(item.nodes)) {
-      if (node.retry?.at && Date.parse(node.retry.at) <= now) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId }, actor));
-    }
-    const fresh = cos.store.getWorkItem(item.id) ?? item;
-    if (fresh.jobStartedAt && !jobRunning(item.id) && now - Date.parse(fresh.jobStartedAt) > LOST_JOB_GRACE_MS) {
-      cos.store.log({ level: "warn", kind: "job", repo: item.repo, workItemId: item.id, message: "a Chief of Staff job was not running (restart?); starting it again", actor });
-      await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "resume_job" }, actor));
-    } else if (fresh.status === "queued" && now - Date.parse(fresh.updatedAt) > LOST_JOB_GRACE_MS) {
-      await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "start" }, actor));
+    // One item failing must not hold up other items.
+    try {
+      for (const [stepId, node] of Object.entries(item.nodes)) {
+        if (Object.values(node.deliveries ?? {}).some((a) => a.state === "sending" && a.round === node.round)) {
+          await withItemLock(item.id, async () => {
+            const current = cos.store.getWorkItem(item.id)?.nodes[stepId];
+            for (const [agent, attempt] of Object.entries(current?.deliveries ?? {})) {
+              if (attempt.state !== "sending" || attempt.round !== current?.round) continue;
+              await dispatchLocked(cos, item.id, { type: "effect_error", step: stepId, effect: { type: "agent", step: stepId, agent: Number(agent), kind: "start" }, message: "Delivery was interrupted before its acceptance could be recorded.", uncertain: true }, actor);
+            }
+          });
+        }
+        if ((node.retry?.at && Date.parse(node.retry.at) <= now) || Object.values(node.agentRetries ?? {}).some((r) => r.at && Date.parse(r.at) <= now)) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "retry_due", step: stepId }, actor));
+      }
+      const fresh = cos.store.getWorkItem(item.id) ?? item;
+      if (fresh.jobStartedAt && !jobRunning(item.id) && now - Date.parse(fresh.jobStartedAt) > LOST_JOB_GRACE_MS) {
+        cos.store.log({ level: "warn", kind: "job", repo: item.repo, workItemId: item.id, message: "a Chief of Staff job was not running (restart?); starting it again", actor });
+        await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "resume_job" }, actor));
+      } else if (fresh.status === "queued" && now - Date.parse(fresh.updatedAt) > LOST_JOB_GRACE_MS) {
+        await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "start" }, actor));
+      }
+    } catch (error) {
+      cos.bb.log.warn(`tick ${item.id} failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
     }
   }
 }

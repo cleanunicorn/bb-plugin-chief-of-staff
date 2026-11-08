@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **Group workflow threads in the sidebar.** Planning, building, and review
+  threads now share a persistent parent thread in BB’s native tree. Existing
+  active workflows are grouped automatically, child-result notifications are
+  disabled, and completion archives children before their parent.
+
+- **No more silent stalls after an agent finishes.** Chief of Staff no longer
+  loses a step report when it fails to handle the turn end: the report and the
+  idle stay unhandled, the failure shows on the task (last error and activity
+  log), and the next sweep tries again. A step still running a few minutes
+  after its agent went idle, with nothing in flight, has its turn end read
+  again (report → move on, question → park, otherwise nudge). When that still
+  cannot move it, the stall notice says the agent finished rather than blaming
+  a quiet agent, and engine errors send a notification. Tasks started before model choices existed no
+  longer crash with `Cannot read properties of undefined (reading 'length')`:
+  stored workflow snapshots get the defaults of newer step fields.
+
+- **Upgrade migration fix.** Restore the recorded index of the queued-event
+  migration so existing installations can update without a migration 27 mismatch.
+  Pause-control tables are appended after the existing migrations. Installations
+  that already recorded the reordered pause migrations retain that history, with
+  all statement hashes still validated by the SDK.
+
+- **Visual task cues.** Larger state pictograms, repository and usage icons,
+  recorded step-state symbols, and a theme-aware empty-queue illustration make
+  the dashboard easier to scan without replacing text labels.
+
+- **Active work first.** The dashboard puts attention items and task cards above
+  historical throughput and capacity, with compact stage filters. Failure
+  decisions and stalls have separate drill-downs; terminal failures remain
+  historical outcomes. Cards lead with task titles and Open thread, collapse
+  workflow details, and hide unavailable usage. Activity shows readable updates
+  with expandable technical details and links to the task workflow.
+
 - **Model steps.** A new workflow step type sets the agent (provider), model and
   reasoning level for the agent steps after it, and keeps applying until another
   Model step changes them. It does no work of its own and completes instantly.

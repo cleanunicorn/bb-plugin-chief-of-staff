@@ -158,7 +158,7 @@ export const rpcContract = defineRpcContract({
       live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number() })),
     }),
   },
-  cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().min(1).max(200), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },
+  cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().max(200).optional(), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },
   cos_question: { input: z.object({ id: z.string() }), output: questionView },
   cos_answer: { input: z.object({ id: z.string(), answer: answerInput }), output: z.object({ status: z.string() }) },
   cos_stats: {
