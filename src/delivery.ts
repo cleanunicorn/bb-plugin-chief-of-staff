@@ -13,6 +13,7 @@ import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
 import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
+import { itemParent, archiveOrder } from "./threadGroups";
 
 const OUTPUT_TAIL = 12_000;
 
@@ -191,7 +192,7 @@ export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
 async function archiveItemThreads(cos: Cos, item: WorkItem, actor: string): Promise<void> {
   const { values } = await cos.config();
   if (!values.archiveThreadsOnDone) return;
-  const ids = [...new Set([...cos.store.listThreads(item.id).map((t) => t.threadId), ...(item.threadId ? [item.threadId] : [])])];
+  const ids = await archiveOrder(cos, item);
   const archived: string[] = [];
   for (const threadId of ids) {
     try {
@@ -314,11 +315,12 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   const brief = await taskBrief(cos, repo, item);
   const prompt = `${step.writes ? brief : stepThreadBrief(item, step, brief)}\n\n---\n\n${body}`;
   const metadata = { workItemId: item.id, repo: item.repo, issueNumber: item.issueNumber, step: step.id, agent: effect.agent, delivery: deliveryId, round };
+  const parentThreadId = await itemParent(cos, item);
   const spawned = step.writes ? await spawnWorktreeThread(cos, {
-    repo, title: item.branch ?? item.issueTitle, prompt, mentions: mentionsIn(prompt), settings, delivery,
+    repo, parentThreadId, title: item.branch ?? item.issueTitle, prompt, mentions: mentionsIn(prompt), settings, delivery,
     pluginMetadata: { ...metadata, branch: item.branch, role: "builder" },
   }) : await spawnStepThread(cos, {
-    repo, environmentId: item.environmentId, parentThreadId: item.threadId ?? undefined,
+    repo, environmentId: item.environmentId, parentThreadId,
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
     prompt, mentions: mentionsIn(prompt), settings, delivery, pluginMetadata: metadata,
   });

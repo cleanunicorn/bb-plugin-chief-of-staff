@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Group workflow threads in the sidebar.** Planning, building, and review
+  threads now share a persistent parent thread in BB’s native tree. Existing
+  active workflows are grouped automatically, child-result notifications are
+  disabled, and completion archives children before their parent.
+
 - **No more silent stalls after an agent finishes.** Chief of Staff no longer
   loses a step report when it fails to handle the turn end: the report and the
   idle stay unhandled, the failure shows on the task (last error and activity
