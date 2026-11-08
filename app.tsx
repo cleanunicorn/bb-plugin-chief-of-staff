@@ -9,12 +9,13 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { ColumnChart, DataTable, Legend, Meter, Panel, PaletteProvider, STATUS, SegmentedBar, StatTile, StatusPill, Swatch, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
-import { ACTOR, STAGES, columns, stageColor, stageOf } from "@/components/cos/stages";
+import { ACTOR, STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { WorkflowCanvas, type LiveStatus } from "@/components/cos/workflowCanvas";
 import type { Workflow } from "./src/workflow";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
+import { StepFlow } from "@/components/cos/stepFlow";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -127,50 +128,6 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
   );
 }
 
-
-// ---------- step flow ----------
-
-type RosterStep = RosterEntry["steps"][number];
-
-function stepColor(st: RosterStep, palette: ReturnType<typeof usePalette>): string {
-  if (st.status === "done") return STATUS.good;
-  if (st.status === "waiting") return st.waitingKind === "cos_error" ? STATUS.serious : STATUS.warning;
-  if (st.status === "running") return st.retrying ? STATUS.serious : palette.accent;
-  return "var(--border)";
-}
-
-/** The workflow's steps in columns; a column holds steps that run in parallel. */
-function StepFlow({ entry }: { entry: RosterEntry }) {
-  const palette = usePalette();
-  const cols = columns(entry.steps);
-  return (
-    <ol className="flex items-stretch gap-1 overflow-x-auto" aria-label={`Workflow ${entry.workflowName}`}>
-      {cols.map((col, i) => (
-        <li key={i} className="flex items-center gap-1">
-          <span className="flex flex-col gap-0.5">
-            {col.map((st) => {
-              const color = stepColor(st, palette);
-              const live = st.status === "running" || st.status === "waiting";
-              return (
-                <span
-                  key={st.id}
-                  title={`${st.name}: ${st.status}${st.phase ? ` (${st.phase})` : ""}${st.agents > 1 ? ` · ${st.reported}/${st.agents} agents` : ""}${st.attempts ? ` · failed ${st.attempts}×` : ""}`}
-                  className={cn("inline-flex max-w-28 items-center gap-1 rounded-full border px-1.5 py-px text-[10px]", live ? "font-semibold text-foreground" : st.status === "done" ? "text-foreground" : "text-muted-foreground")}
-                  style={{ borderColor: color, background: st.status === "done" ? "color-mix(in srgb, var(--cos-good, #16a34a) 8%, transparent)" : undefined }}
-                >
-                  {st.status === "done" ? <Icon name="Check" fallback="Circle" className="size-2.5 shrink-0" style={{ color }} aria-hidden /> : <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", live && st.status === "running" && "animate-pulse")} style={{ background: color }} />}
-                  <span className="truncate">{st.name}</span>
-                  {st.agents > 1 && live ? <span className="tabular-nums text-muted-foreground">{st.reported}/{st.agents}</span> : null}
-                </span>
-              );
-            })}
-          </span>
-          {i < cols.length - 1 ? <Icon name="ChevronRight" fallback="Circle" className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null}
-        </li>
-      ))}
-    </ol>
-  );
-}
 
 /** One task's workflow on the canvas, coloured live, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
