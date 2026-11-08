@@ -2,7 +2,7 @@
 // default), and for the selected one a canvas and a list view of its steps.
 // Every step has a name, instructions and arrows to the steps after it; its
 // type (agent, check, ship) adds the rest.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
@@ -48,6 +48,13 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
   const [current, setCurrent] = useState(doc.default);
   const [view, setView] = useState<"canvas" | "list">("canvas");
   const [selected, setSelected] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setExpanded(false); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
   // The `/` typeahead is a convenience: without the list, instructions are plain text.
   const skillsQuery = experimental_useRpcQuery<typeof rpcContract, "cos_skills">({ contract: rpcContract, method: "cos_skills", input: null });
   const skills: KnownSkill[] | null = skillsQuery.data?.skills ?? null;
@@ -137,9 +144,9 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
       <Problems items={[...problems, ...docProblems]} />
 
       {view === "canvas" ? (
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]">
-          <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} className="h-[520px]" />
-          <div className="min-w-0">
+        <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "fixed inset-0 z-50 grid-rows-[minmax(0,1fr)_auto] bg-background p-3 md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
+          <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
+          <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
             {selected && wf.steps.some((s) => s.id === selected) ? (
               <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
             ) : (

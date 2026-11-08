@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Background,
   Controls,
+  ControlButton,
   Handle,
   MarkerType,
   Position,
@@ -126,9 +127,11 @@ export interface WorkflowCanvasProps {
   /** Read-only live view: status per step id. */
   live?: Record<string, LiveStatus>;
   className?: string;
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
 }
 
-function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className }: WorkflowCanvasProps) {
+function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
@@ -252,7 +255,9 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={16} size={1} />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false}>
+          {onToggleExpanded ? <ControlButton onClick={onToggleExpanded} title={expanded ? "Exit full screen" : "Full screen"} aria-label={expanded ? "Exit full screen" : "Full screen"}><Icon name={expanded ? "Minimize" : "Maximize"} fallback="Square" aria-hidden /></ControlButton> : null}
+        </Controls>
       </ReactFlow>
       {editable ? (
         <div className="absolute top-2 left-2 z-10 flex flex-wrap gap-1 rounded-md border border-border bg-card p-1 shadow-sm">
