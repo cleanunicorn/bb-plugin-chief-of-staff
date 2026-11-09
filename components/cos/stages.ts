@@ -52,14 +52,6 @@ export function stageColor(stage: Stage, palette: Palette): string {
   return palette.ramp[stage.ramp ?? 0] ?? palette.accent;
 }
 
-export const ACTOR: Record<string, { label: string; icon: string }> = {
-  agent: { label: "Agent", icon: "Bot" },
-  cos: { label: "Chief of Staff", icon: "Cog" },
-  human: { label: "You", icon: "Hand" },
-  system: { label: "Chief of Staff", icon: "RefreshCw" },
-  none: { label: "", icon: "Circle" },
-};
-
 /** Steps grouped into columns by depth: one column runs in parallel. */
 export function columns<T extends { depth: number }>(steps: T[]): T[][] {
   const out: T[][] = [];

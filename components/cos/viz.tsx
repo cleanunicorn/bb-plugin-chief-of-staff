@@ -164,33 +164,6 @@ export function StatusPill({ tone, label, icon, pulse }: { tone: Tone; label: st
   );
 }
 
-// ---------- stat tiles ----------
-
-export function StatTile({ label, value, sub, icon, tone, hero, children, onClick }: { label: string; value: ReactNode; sub?: ReactNode; icon: string; tone?: Tone; hero?: boolean; children?: ReactNode; onClick?: () => void }) {
-  const palette = usePalette();
-  const Tag = onClick ? "button" : "div";
-  return (
-    <Tag
-      type={onClick ? "button" : undefined}
-      onClick={onClick}
-      className={cn(
-        "flex min-w-0 flex-col gap-1 rounded-xl border border-border bg-card p-4 text-left",
-        onClick && "cursor-pointer transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-      )}
-    >
-      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-        <Icon name={icon} fallback="Circle" className="size-3.5" style={tone && tone !== "neutral" ? { color: toneColor(tone, palette) } : undefined} aria-hidden />
-        {label}
-      </span>
-      <span className={cn("font-semibold leading-none tracking-tight text-foreground", hero ? "text-5xl" : "text-3xl")} style={{ fontVariantNumeric: "proportional-nums" }}>
-        {value}
-      </span>
-      {sub ? <span className="text-xs text-muted-foreground">{sub}</span> : null}
-      {children}
-    </Tag>
-  );
-}
-
 // ---------- meter ----------
 
 export function Meter({ value, max, label, size = "md" }: { value: number; max: number; label: string; size?: "sm" | "md" }) {
@@ -225,58 +198,6 @@ function Tooltip({ tip }: { tip: { x: number; content: ReactNode } | null }) {
   return (
     <div role="tooltip" className="pointer-events-none absolute bottom-full z-10 mb-2 -translate-x-1/2 rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs whitespace-nowrap text-popover-foreground shadow-md" style={{ left: `${tip.x}%`, background: "var(--popover, var(--card))" }}>
       {tip.content}
-    </div>
-  );
-}
-
-// ---------- tall segmented bar (part-to-whole, <= 6 parts) ----------
-
-export interface Part {
-  key: string;
-  label: string;
-  value: number;
-  color: string;
-  icon?: string;
-}
-
-export function SegmentedBar({ parts, total, label, unit = "items" }: { parts: Part[]; total?: number; label: string; unit?: string }) {
-  const sum = total ?? parts.reduce((a, p) => a + p.value, 0);
-  const { tip, show, hide } = useTooltip();
-  const visible = parts.filter((p) => p.value > 0);
-  let offset = 0;
-  return (
-    <div className="relative">
-      <Tooltip tip={tip} />
-      <div role="img" aria-label={`${label}: ${parts.map((p) => `${p.label} ${p.value}`).join(", ")}`} className="flex h-7 w-full gap-0.5 overflow-hidden rounded-[4px]">
-        {sum === 0 ? <div className="h-full w-full rounded-[4px] bg-muted" /> : null}
-        {visible.map((p) => {
-          const pct = (p.value / sum) * 100;
-          const mid = offset + pct / 2;
-          offset += pct;
-          const content = (
-            <span className="flex items-center gap-1.5">
-              <Swatch color={p.color} />
-              <span className="font-medium">{p.label}</span>
-              <span className="text-muted-foreground">
-                {p.value} {unit} · {Math.round(pct)}%
-              </span>
-            </span>
-          );
-          return (
-            <button
-              key={p.key}
-              type="button"
-              aria-label={`${p.label}: ${p.value}`}
-              className="h-full min-w-1 transition-[flex-grow] duration-500 first:rounded-l-[4px] last:rounded-r-[4px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-              style={{ flexGrow: p.value, flexBasis: 0, background: p.color }}
-              onMouseEnter={() => show(mid, content)}
-              onFocus={() => show(mid, content)}
-              onMouseLeave={hide}
-              onBlur={hide}
-            />
-          );
-        })}
-      </div>
     </div>
   );
 }
