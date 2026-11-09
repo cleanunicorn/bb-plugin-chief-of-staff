@@ -158,13 +158,13 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
   };
   return (
     <div className={cn("fixed inset-0 z-50 flex items-center justify-center bg-black/40", !expanded && "p-4")} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-label="Task workflow" className={cn("flex w-full flex-col gap-3 overflow-hidden border border-border bg-background p-4 shadow-lg", expanded ? "h-full" : "h-[85vh] max-w-6xl rounded-xl")}>
+      <div role="dialog" aria-modal="true" aria-label="Task workflow" className={cn("flex w-full flex-col gap-3 overflow-hidden border border-border bg-background p-4 shadow-lg", expanded ? "h-full" : "h-[85dvh] max-h-full max-w-6xl rounded-xl")}>
         <header className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <p className="text-xs text-muted-foreground">{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
+            <p className="line-clamp-2 text-xs text-muted-foreground" title={data ? `${data.title} · workflow “${wf?.name}”` : undefined}>{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
             <h2 className="text-base font-semibold text-foreground">Where this task is</h2>
           </div>
-          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="Close" onClick={onClose}>
+          <Button size="sm" variant="ghost" className="size-9 shrink-0 p-0 sm:size-7" aria-label="Close" onClick={onClose}>
             <Icon name="X" fallback="Circle" aria-hidden />
           </Button>
         </header>
@@ -673,9 +673,9 @@ function ReposTab() {
         {data && !data.repos.length ? <Empty icon="FolderGit2" title="No repositories configured">
             <ConfigureLink section="repos" label="Add a repository" />
           </Empty> : null}
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {(data?.repos ?? []).map((r) => (
-            <article key={r.key} className="flex flex-col gap-3 rounded-lg border border-border p-3.5">
+            <article key={r.key} className="flex min-w-0 flex-col gap-3 rounded-lg border border-border p-3.5">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <h3 className="truncate text-sm font-semibold text-foreground">{r.key}</h3>
@@ -692,12 +692,12 @@ function ReposTab() {
                     )}
                   </p>
                 </div>
-                <div className="text-right">
+                <div className="shrink-0 text-right">
                   <div className="text-2xl font-semibold leading-none text-foreground tabular-nums">
                     {r.active}
                     <span className="text-sm font-normal text-muted-foreground">/{r.maxConcurrent}</span>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">tasks using capacity</div>
+                  <div className="text-[11px] whitespace-nowrap text-muted-foreground">tasks using capacity</div>
                 </div>
               </div>
               <Meter size="sm" value={r.active} max={r.maxConcurrent} label={`${r.key} task slots`} />
@@ -740,7 +740,7 @@ function ReposTab() {
               <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm">
                 <StagePill entry={e} />
                 <span className="inline-flex items-center gap-1 font-medium tabular-nums">{e.prUrl ? <UrlLink href={e.prUrl}>#{e.prNumber}</UrlLink> : `#${e.prNumber}`}</span>
-                <span className="min-w-0 flex-1 truncate text-foreground">{e.issueTitle}</span>
+                {e.issueTitle ? <span className="line-clamp-2 min-w-0 basis-full text-foreground sm:line-clamp-1 sm:flex-1 sm:basis-0" title={e.issueTitle}>{e.issueTitle}</span> : null}
                 {e.fixAttempts ? (
                   <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={`${e.fixAttempts} CI fix cycles`}>
                     <Icon name="Wrench" fallback="Circle" className="size-3.5" aria-hidden />
@@ -768,10 +768,14 @@ const LEVEL: Record<string, { tone: Tone; icon: string; label: string }> = {
   error: { tone: "critical", icon: "CircleX", label: "Error" },
 };
 
+const MOBILE_ACTIVITY_ROWS = 12;
+
 export function ActivityFeed() {
   const palette = usePalette();
   const now = useNow();
   const [onlyProblems, setOnlyProblems] = useState(false);
+  // Phones get no nested scroll box: show the latest rows and expand in place.
+  const [showAll, setShowAll] = useState(false);
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60 } });
   useLiveRefresh(log.refetch);
   const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
@@ -788,25 +792,30 @@ export function ActivityFeed() {
     >
       <ErrorLine error={log.error} />
       {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{onlyProblems ? "No warnings or errors." : "No activity yet."}</p> : null}
-      <ol className="max-h-80 overflow-auto">
-        {entries.map((e) => {
+      <ol className="sm:max-h-80 sm:overflow-auto">
+        {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
           return (
-            <li key={e.id} className="flex items-start gap-2.5 py-1.5 text-xs">
+            <li key={e.id} className={cn("flex-wrap items-start gap-x-2.5 gap-y-0.5 py-1.5 text-xs sm:flex-nowrap", !showAll && i >= MOBILE_ACTIVITY_ROWS ? "hidden sm:flex" : "flex")}>
               <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
               <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{e.kind}</span>
-              <span className="min-w-0 flex-1 text-foreground [overflow-wrap:anywhere]">
+              <time className="ml-auto shrink-0 text-muted-foreground tabular-nums sm:order-last sm:ml-0" dateTime={e.at} title={new Date(e.at).toLocaleString()}>
+                {relative(e.at, now)}
+              </time>
+              <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
                 {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
                 {e.message}
                 <span className="text-muted-foreground"> · {e.actor}</span>
               </span>
-              <time className="shrink-0 text-muted-foreground tabular-nums" dateTime={e.at} title={new Date(e.at).toLocaleString()}>
-                {relative(e.at, now)}
-              </time>
             </li>
           );
         })}
       </ol>
+      {!showAll && entries.length > MOBILE_ACTIVITY_ROWS ? (
+        <Button size="sm" variant="ghost" className="mt-1 w-full sm:hidden" onClick={() => setShowAll(true)}>
+          Show {entries.length - MOBILE_ACTIVITY_ROWS} more
+        </Button>
+      ) : null}
     </Panel>
   );
 }
@@ -843,14 +852,14 @@ function Dashboard({ subPath }: { subPath: string }) {
               <p className="text-xs text-muted-foreground">Plan, build, verify, review, ship. Live view of every agent.</p>
             </div>
           </div>
-          <nav className="flex rounded-lg border border-border bg-card p-1" aria-label="Dashboard tabs">
+          <nav className="flex w-full rounded-lg border border-border bg-card p-1 sm:w-auto" aria-label="Dashboard tabs">
             {TABS.map((t) => (
               <button
                 key={t.id}
                 type="button"
                 aria-pressed={tab === t.id}
                 onClick={() => goTab(t.id)}
-                className={cn("flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors", tab === t.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}
+                className={cn("flex flex-auto items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:flex-none sm:px-3", tab === t.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}
               >
                 <Icon name={t.icon} fallback="Circle" className="size-4" aria-hidden />
                 {t.label}
@@ -894,8 +903,8 @@ function SettingsSection() {
   const navigate = useBbNavigate();
   return (
     <PaletteProvider className="flex flex-col gap-3 text-sm">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">Everything below saves to this plugin's settings. The dashboard has the same editor under Configure.</p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="min-w-0 flex-1 basis-60 text-xs text-muted-foreground">Everything below saves to this plugin's settings. The dashboard has the same editor under Configure.</p>
         <Button size="sm" variant="outline" onClick={() => navigate.toPluginPanel("cos", { subPath: "config" })}>
           Open dashboard
         </Button>
