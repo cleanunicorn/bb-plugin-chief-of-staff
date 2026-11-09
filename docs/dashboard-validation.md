@@ -49,3 +49,48 @@ integration. The running plugin was not reinstalled or reloaded.
 
 BB reports installed SDK 0.6.132 versus the repository pin 0.6.104. Build succeeds
 with the existing pin; no SDK upgrade is included.
+
+## Keyboard and focus (issue #67)
+
+What changed: the task workflow sheet and the question sheet are built on the
+vendored dialog (`components/cos/sheet.tsx`); canvas selection comes from
+React Flow's `onSelectionChange`; the workflow sheet has a List view; single-select
+question options use a roving tabindex; the skill typeahead sets
+`aria-controls` only while its list is mounted.
+
+Decisions worth knowing:
+
+- The sheets open from state, not from a dialog trigger, so the opener is
+  recorded on click and focused again on close. If it has left the page (a
+  question card changes once answered) focus goes to the “Work overview”
+  heading.
+- The sheets always use the centred dialog, never the swipe-to-close drawer.
+- A canvas selection that is an arrow or several steps leaves the open step
+  panel alone, as before. Arrows are tab stops in the editor only.
+- Switching the workflow sheet to List leaves full screen.
+
+Checks:
+
+- `npm run check` (193 tests in 20 files) and `npm run build` pass.
+- jsdom: `tests/sheetFocus.test.tsx` (focus in, Tab wrap, Escape order, focus
+  return, fallback, rerun from the list), `tests/workflowCanvas.test.tsx` (the
+  real React Flow canvas: Enter selects, Escape clears, a selection made by the
+  parent is not undone, node names), `tests/questionField.test.tsx`,
+  `tests/skillTextarea.test.tsx`.
+- Real browser (BetterWright, Chromium) at 1280 px and 390 px, keyboard only
+  where possible, on the actual components with the built plugin CSS, fixture
+  RPC data and a simulated host theme: both sheets open, trap Tab and return
+  focus; Enter and Space select a canvas step; Escape order; backdrop click;
+  wheel zoom on the canvas and scrolling inside the question sheet under the
+  dialog's scroll lock; rerun from the List view; arrow keys on single-select
+  options; arrow-key resize, reset and maximize of the question sheet; phone
+  bottom-sheet layout; no horizontal overflow at 390 px; dark theme reaches the
+  portaled sheets. In the editor: keyboard select, Add step keeps its new
+  selection, selecting an arrow keeps the panel, Backspace removes the arrow,
+  a pane click deselects.
+
+Not checked: a screen reader, Safari, and a live BB installation (host
+navigation, icons and theme). The running plugin was not reinstalled.
+
+Not in this change: the workflow editor's full screen is still not a dialog,
+and the task card's “More actions” menu has no menu keyboard behaviour.

@@ -44,7 +44,8 @@ export const Sheet = forwardRef<HTMLDivElement, SheetProps>(({ onClose, restoreF
         hideCloseButton
         aria-describedby={undefined}
         style={style}
-        className={cn("flex flex-col overflow-hidden border-border shadow-lg outline-none", className)}
+        // No transition: the dialog's `duration-200` would otherwise animate every size change (resize, maximize, full screen).
+        className={cn("flex flex-col overflow-hidden border-border shadow-lg outline-none transition-none", className)}
         onEscapeKeyDown={onEscapeKeyDown}
         // Focus the sheet itself, so a screen reader starts at its title and Enter does not land on Close.
         onOpenAutoFocus={(event) => {

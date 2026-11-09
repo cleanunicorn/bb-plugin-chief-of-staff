@@ -287,6 +287,8 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           onConnect={onConnect}
           onSelectionChange={onSelectionChange}
           nodesConnectable={editable}
+          // Arrows can only be removed, so they are tab stops in the editor only.
+          edgesFocusable={editable}
           elementsSelectable
           deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
           colorMode="system"

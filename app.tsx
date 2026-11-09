@@ -167,6 +167,9 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
         } else if (selected && document.activeElement?.closest(".react-flow__node")) {
           event.preventDefault();
           setSelected(null);
+          // React Flow blurs the step on the next frame; put focus back so the keyboard keeps its place.
+          const node = document.activeElement.closest<HTMLElement>(".react-flow__node");
+          requestAnimationFrame(() => requestAnimationFrame(() => node?.isConnected && node.focus({ preventScroll: true })));
         }
       }}
       className={cn("gap-3 p-4", expanded ? "h-dvh max-w-none rounded-none sm:rounded-none" : "h-[85dvh] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-6xl rounded-xl sm:rounded-xl")}
