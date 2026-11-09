@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Dashboard works on phones.** Dashboard tabs stay on one line; the
+  Repositories panel no longer scrolls sideways; pull request titles wrap
+  instead of being cut short; the activity feed stacks each entry and expands
+  in place instead of using a nested scroll box; chart dates stay on one line;
+  configuration sections wrap so the selected one is always visible; the
+  workflow editor's add-step toolbar no longer covers the top steps; long task
+  titles in the workflow sheet are clamped; the question sheet fits the
+  visible screen height.
+
 - **Pause a single project.** Each project card now has its own Pause/Resume
   button, alongside the existing global “Pause everything”. A paused project
   holds its intake, new tasks, workflow events and sweeps, then replays held

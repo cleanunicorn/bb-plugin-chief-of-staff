@@ -158,7 +158,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
             ) : (
               <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                 <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
-                Select a step to edit it. Drag from a step's right edge to another step to run it after. Select an arrow and press Backspace to remove it.
+                Select a step to edit it. Drag from a step's right edge to another step to run it after. Select an arrow and press Backspace to remove it, or change the links under Runs next.
               </div>
             )}
           </div>

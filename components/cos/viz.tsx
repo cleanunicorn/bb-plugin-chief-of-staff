@@ -131,12 +131,12 @@ export function compact(n: number): string {
 export function Panel({ title, icon, actions, children, className, dim }: { title: string; icon?: string; actions?: ReactNode; children: ReactNode; className?: string; dim?: boolean }) {
   return (
     <section className={cn("flex min-w-0 flex-col rounded-xl border border-border bg-card", className)}>
-      <header className="flex items-center justify-between gap-2 px-4 pt-3.5 pb-2">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+      <header className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3.5 pb-2">
+        <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
           {icon ? <Icon name={icon} fallback="Circle" className="size-4 text-muted-foreground" aria-hidden /> : null}
           {title}
         </h2>
-        <div className="flex items-center gap-1">{actions}</div>
+        <div className="flex flex-wrap items-center gap-1">{actions}</div>
       </header>
       <div className={cn("min-w-0 px-4 pb-4 transition-opacity", dim && "opacity-60")}>{children}</div>
     </section>
@@ -371,7 +371,7 @@ export function ColumnChart<Row extends Record<string, number | string>>({ rows,
           </div>
           <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
             {rows.map((r, i) => (
-              <span key={String(r[xKey])} className="flex-1 text-center">
+              <span key={String(r[xKey])} className="flex-1 text-center whitespace-nowrap">
                 {labelIdx.has(i) ? formatX(String(r[xKey])) : ""}
               </span>
             ))}

@@ -239,31 +239,10 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   };
 
   return (
-    <div className={cn("relative h-[420px] w-full overflow-hidden rounded-lg border border-border bg-background", className)}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onNodeClick={(_, n) => onSelect?.(n.id)}
-        onPaneClick={() => onSelect?.(null)}
-        nodesConnectable={editable}
-        elementsSelectable
-        deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
-        colorMode="system"
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background gap={16} size={1} />
-        <Controls showInteractive={false}>
-          {onToggleExpanded ? <ControlButton onClick={onToggleExpanded} title={expanded ? "Exit full screen" : "Full screen"} aria-label={expanded ? "Exit full screen" : "Full screen"}><Icon name={expanded ? "Minimize" : "Maximize"} fallback="Square" aria-hidden /></ControlButton> : null}
-        </Controls>
-      </ReactFlow>
+    <div className={cn("relative flex h-[420px] w-full flex-col overflow-hidden rounded-lg border border-border bg-background", className)}>
+      {/* On phones the add-step toolbar sits above the canvas instead of covering its nodes. */}
       {editable ? (
-        <div className="absolute top-2 left-2 z-10 flex flex-wrap gap-1 rounded-md border border-border bg-card p-1 shadow-sm">
+        <div className="flex shrink-0 flex-wrap gap-1 border-b border-border bg-card p-1 sm:absolute sm:top-2 sm:left-2 sm:z-10 sm:rounded-md sm:border sm:shadow-sm">
           {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
             <Button key={t} size="sm" variant="ghost" className="h-7 px-2" aria-label={`Add ${STEP_TYPE_META[t].label} step: ${STEP_TYPE_META[t].hint}`} onClick={() => add(t)}>
               <Icon name="Plus" fallback="Circle" aria-hidden /> {STEP_TYPE_META[t].label}
@@ -274,6 +253,30 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           </Button>
         </div>
       ) : null}
+      <div className="min-h-0 flex-1">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeClick={(_, n) => onSelect?.(n.id)}
+          onPaneClick={() => onSelect?.(null)}
+          nodesConnectable={editable}
+          elementsSelectable
+          deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
+          colorMode="system"
+          fitView
+          fitViewOptions={{ padding: 0.2 }}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background gap={16} size={1} />
+          <Controls showInteractive={false}>
+            {onToggleExpanded ? <ControlButton onClick={onToggleExpanded} title={expanded ? "Exit full screen" : "Full screen"} aria-label={expanded ? "Exit full screen" : "Full screen"}><Icon name={expanded ? "Minimize" : "Maximize"} fallback="Square" aria-hidden /></ControlButton> : null}
+          </Controls>
+        </ReactFlow>
+      </div>
     </div>
   );
 }

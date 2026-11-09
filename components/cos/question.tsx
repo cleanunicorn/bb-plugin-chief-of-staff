@@ -145,7 +145,7 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
         aria-modal="true"
         aria-labelledby="cos-question-title"
         style={panelStyle}
-        className="relative flex h-[90vh] max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-t-xl border border-border bg-background shadow-lg outline-none sm:h-[85vh] sm:rounded-xl"
+        className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-t-xl border border-border bg-background shadow-lg outline-none sm:h-[85vh] sm:rounded-xl"
       >
         <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0">

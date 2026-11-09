@@ -435,7 +435,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
 
   return (
     <div className={cn("flex flex-col gap-4", compact ? "" : "lg:flex-row lg:items-start")}>
-      <nav className={cn("flex gap-1 overflow-x-auto", compact ? "flex-row" : "flex-row lg:w-52 lg:shrink-0 lg:flex-col")} aria-label="Configuration sections">
+      <nav className={cn("flex flex-wrap gap-1", compact ? "flex-row" : "flex-row lg:w-52 lg:shrink-0 lg:flex-col lg:flex-nowrap")} aria-label="Configuration sections">
         {SECTIONS.map((s) => (
           <button
             key={s.id}
