@@ -1,32 +1,154 @@
-# Chief of Staff — BB plugin
+<h1 align="center">Chief of Staff</h1>
 
-An engineering chief of staff for one or more GitHub repositories. It takes
-each GitHub issue (or task you describe) through a workflow you define, a graph
-of agent, check and ship steps that can run in parallel, and always knows
-where each agent is. It
+<p align="center">
+  A <a href="https://getbb.app">BB</a> plugin that takes GitHub issues, or tasks you describe,<br>
+  through a workflow you design, and always shows where each agent is.
+</p>
 
-- **watches agents**: a live roster of the threads it spawned (status, repo,
-  issue, PR, started-at, last activity, token usage when the provider reports
-  it), with stall and failure detection and notifications;
-- **turns GitHub issues (or tasks you describe) into agent work**: issues
-  matching a per-repo filter become isolated worktree threads with a prompt
-  built from the issue, its comments and the repo's `AGENTS.md` /
-  `CONTRIBUTING.md`;
-- **runs your workflows**: steps you define on a canvas or as a list, each an
-  agent (with your instructions), a check command, or shipping; parallel
-  read-only steps; approvals and questions pushed to you; failures sent back
-  to an earlier step on a budget;
-- **knows where every agent is**: which steps are running, and who holds the
-  ball (an agent, Chief of Staff, you, or an infrastructure retry).
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#workflows">Workflows</a> ·
+  <a href="#configure">Configure</a> ·
+  <a href="#cli-and-agent-tools">CLI</a> ·
+  <a href="#internals">Internals</a>
+</p>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/pipeline-dark.png">
+  <img src="docs/images/pipeline-light.png" alt="The Pipeline tab: six active tasks, each showing its current step, workflow progress, token usage and actions; one task is waiting for plan approval.">
+</picture>
+
+<p align="center"><sub>The Pipeline tab. Screenshots in this README use demo data.</sub></p>
+
+Setup is one install command and one repository entry, and a first task needs
+no GitHub issue: see [Install](#install).
+
+## What it does
+
+- **Turns issues into agent work.** Issues matching a per-repository filter
+  become isolated worktree threads, with a prompt built from the issue, its
+  comments and the repository's `AGENTS.md` / `CONTRIBUTING.md`. You can also
+  start a task by describing it.
+- **Runs your workflow.** Each task follows a graph of steps you draw: agents
+  with your instructions, check commands, and shipping. Read-only steps run in
+  parallel, and a failed check or review sends the work back to an earlier
+  step on a budget.
+- **Asks you only when it must.** Approvals, questions and failures that need a
+  decision are pushed to you and answered from the dashboard.
+- **Knows where every agent is.** A live roster shows each task's status,
+  repository, issue, PR, age, last activity and token usage (when the provider
+  reports it), and who holds the ball: an agent, Chief of Staff, or you. Stalls
+  and failures are detected and notified.
+
+## How it works
+
+```mermaid
+flowchart LR
+  issue["Labelled issue"] --> plan
+  describe["Task you describe"] --> plan
+
+  subgraph workflow["Your workflow, run in the task's own worktree (the default shown)"]
+    direction LR
+    plan["Plan"] --> approve{{"You approve"}}
+    approve --> build["Build"]
+    build --> review["Review"]
+    review --> ship["Ship"]
+    review -. "fail" .-> build
+  end
+
+  ship --> pr(["Pull request"])
+```
+
+1. **Intake.** On a schedule (every 10 minutes by default), Chief of Staff
+   looks in each configured repository for open issues that carry every label
+   you chose (and are assigned to the user you chose, if you set one). An issue
+   with an active task or an open PR is never picked up twice. Tasks you
+   describe skip this step.
+2. **A task starts** when the repository and the global limit have a free slot.
+   When they are full, an issue waits for a later intake run and a task you
+   describe is refused until a slot frees. A task gets its own worktree and
+   keeps the workflow it started with, even if you edit that workflow later.
+3. **Steps run.** A step starts when every step pointing at it is done. Each
+   agent's prompt carries the step's instructions plus the reports of the
+   steps before it. Chief of Staff moves on only when the agent reports its
+   step, and nudges an agent that stops without reporting.
+4. **Failures go back.** A failed check, a failing review or red CI reruns an
+   earlier step with the failure as feedback. Past the limit you set, the task
+   waits for you.
+5. **Shipping** pushes the branch and opens the PR, and can keep watching CI
+   and merge it.
+
+### Who holds the ball
+
+Every task has one status, derived from its steps:
+
+| Status | Who acts | Meaning |
+| --- | --- | --- |
+| `queued` | Chief of Staff | Waiting to start, or waiting for a free task slot. |
+| `agent` | Agent | An agent is working on a step. |
+| `cos` | Chief of Staff | Running a check, pushing or merging. |
+| `ci` | Chief of Staff | PR open, CI running. |
+| `retrying` | Chief of Staff | Retrying after an error. |
+| `ready` | You | PR is green and ready to merge. |
+| `waiting_on_human` | You | A question, an approval or a decision. |
+| `blocked` | You | Stalled: no activity past the stall threshold. |
+| `done` / `failed` | Nobody | Finished. Shown with **Show finished**. |
+
+### See a task on its workflow
+
+**Workflow** on a task card shows the task live on the canvas: green steps are
+done, blue ones are running, and dashed arrows are the “on fail” paths. Select
+a step to run it, and everything after it, again.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/task-workflow-dark.png">
+  <img src="docs/images/task-workflow-light.png" alt="A task on its workflow canvas: Plan, Build and Tests are done, Review and Docs are running in parallel, Ship is pending." width="560">
+</picture>
+
+### Approve or send back
+
+When a step needs your approval, the task card says so. Click it to read the
+agents' report and approve it, or send it back with feedback. Agent questions
+are answered the same way.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/approval-dark.png">
+  <img src="docs/images/approval-light.png" alt="The approval sheet for a Plan step: the combined report of two planning agents, a feedback box, and Send back and Approve buttons." width="820">
+</picture>
 
 ## Install
 
-From GitHub (recommended, every BB instance tracks the same repository):
+1. Install the plugin from GitHub:
 
-```sh
-bb plugin install git:github.com/cleanunicorn/bb-plugin-chief-of-staff --yes
-bb settings experiment pluginUpdates true   # opt in to automatic updates
-```
+   ```sh
+   bb plugin install git:github.com/cleanunicorn/bb-plugin-chief-of-staff --yes
+   bb settings experiment pluginUpdates true   # optional: automatic updates
+   ```
+
+2. Open **Chief of Staff** in the sidebar and go to **Configure → Repositories**.
+3. Add a repository: pick the BB project that holds its checkout, then save.
+   The GitHub repository is filled in from the project's remote, and the agent
+   and workflow use the defaults. Issues labelled `agent-ready` are picked up
+   unless you change the label.
+4. Click **New task** on the Pipeline tab and describe a small piece of work.
+   It starts right away if the repository is below its task limit. To use an
+   issue instead, give it the label; intake checks every 10 minutes by
+   default, and `bb cos intake --repo owner/repo` runs it now.
+5. The task appears on the **Pipeline** tab with its current step, as in the
+   screenshot at the top.
+
+With the default workflow, the task stops for your approval after Plan; Build
+and Review then run, and Ship opens a pull request. Nothing is merged unless
+you set the Ship action to `merge`. **Pause everything** on the dashboard
+stops intake and holds new workflow events; agents already running continue.
+
+GitHub access needs no setup if `gh` is signed in on the server host;
+otherwise store a token under **Configure → GitHub access**. `bb cos status`
+shows the roster from a terminal.
+
+<details>
+<summary>Updating, pinning a release, installing from a checkout</summary>
 
 With `pluginUpdates` on, BB checks the tracked source every 6 hours and pulls
 new commits on `main` automatically. To update right away:
@@ -45,20 +167,29 @@ bb plugin build
 bb plugin install .
 ```
 
-Then open **Chief of Staff** in the sidebar, or run `bb cos status`.
-
-Note: `bb plugin remove` deletes the plugin's settings, so switch sources with
+`bb plugin remove` deletes the plugin's settings, so switch sources with
 `bb plugin install` rather than remove + install.
+
+</details>
 
 ## Workflows
 
-A workflow is the path every task takes: a set of **steps** connected by
-arrows. A step starts when every step pointing at it is done; steps side by
-side run in parallel, and a step with several arrows into it waits for all of
-them. Chief of Staff moves on only when the agent reports its step (the
-`cos_report` tool, or a `## Step report` block), and nudges an agent that stops
-without reporting. Each step's prompt carries its instructions plus the reports
-of the steps before it.
+A workflow is the path every task takes: **steps** connected by arrows. Steps
+side by side run in parallel, and a step with several arrows into it waits for
+all of them. Edit workflows under **Configure → Workflows**: drag steps on the
+canvas, connect a step's bottom edge to another step, select an arrow and press
+Backspace to remove it, or use the list view.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/workflow-editor-dark.png">
+  <img src="docs/images/workflow-editor-light.png" alt="The workflow editor: a canvas with Plan, Build, Tests, parallel Review and Docs, and Ship, with dashed on-fail arrows back to Build, and the Review step's settings beside it.">
+</picture>
+
+The default workflow is **Plan** (needs approval) → **Build** (writes code) →
+**Review** (pass/fail, back to Build) → **Ship** (PR). Each repository picks a
+workflow; a task keeps the workflow it started with.
+
+### Step types
 
 Every step has a name, instructions and arrows to the steps after it. Its
 **type** adds the rest:
@@ -69,6 +200,33 @@ Every step has a name, instructions and arrows to the steps after it. Its
 | Check | Chief of Staff runs a command in the worktree; non-zero exit fails it. | command, timeout, on fail → step, attempts |
 | Ship | Push the branch, finish when a PR opens, or finish after the PR merges with green CI. | action, draft, wait for an approving review, when CI is red → step, attempts |
 | Model | Does no work. Sets the agent (provider), model and reasoning level for the agent steps after it. | provider, model, reasoning level (empty = keep the current one) |
+
+An agent finishes a step by reporting it: the `cos_report` tool, or a
+`## Step report` block.
+
+### Going back on failure
+
+“On fail” points back to an earlier step: that step and everything after it run
+again, with the failure (check output, review findings, CI log) as feedback.
+Past the limit, the task waits on you: approve to continue anyway, or send
+instructions back.
+
+```mermaid
+flowchart LR
+  build["Build"] --> tests["Tests<br>npm test"]
+  tests --> review["Review"]
+  tests --> docs["Docs"]
+  review --> ship["Ship"]
+  docs --> ship
+  tests -. "non-zero exit" .-> build
+  review -. "fail verdict" .-> build
+  ship -. "CI red" .-> build
+```
+
+Read-only steps run in their own threads, in the task's workspace once code
+exists, so a reviewer sees exactly what was built.
+
+### Choosing models
 
 **Model steps.** A Model step's settings apply to every agent step after it, not just the next one, until
 another Model step changes them (field by field: a later step that sets only the model keeps the earlier
@@ -82,13 +240,29 @@ provider, model and reasoning level each). The agent analyses the task and repor
 with that choice until a Model step or another choosing step changes it. If the agent names no valid choice, the
 step waits for you: approve to continue with the current model, or send it instructions.
 
-**Shipping completion.** Choose `action: "pr"` to finish the ship step as soon as
-its PR is created or an existing open PR is confirmed. Review, CI and merge then
-belong to the PR owner; Chief of Staff does not repair later CI failures for that
-finished delivery. Choose `action: "merge"` to keep watching CI, repair failures
-within the configured budget, and finish only after GitHub confirms the merge.
-`requireApproval` controls the approving-review gate in merge mode (on by default).
-`push` finishes after a successful push. Steps configured after shipping still run.
+### Agent skills
+
+An agent step's instructions can name skills the way the bb
+composer does: type `/` in **Instructions for the agent** to pick one (e.g.
+`Use /tdd, then implement the plan.`). The editor lists the skills of your
+configured repositories' projects and flags any it does not know. When Chief of
+Staff prompts the agent, each `/skill` reference to a skill installed in that
+workspace is sent as a skill mention, so Claude Code, Codex and ACP agents load
+the skill; anything else stays plain text.
+
+### Shipping
+
+| `action` | The ship step finishes when | Afterwards |
+| --- | --- | --- |
+| `push` | The push succeeds. | Nothing is watched. |
+| `pr` | The PR is created, or an existing open PR is confirmed. | Review, CI and merge belong to the PR owner; Chief of Staff does not repair later CI failures. |
+| `merge` | GitHub confirms the merge. | Until then, Chief of Staff watches CI and repairs failures within the configured budget. |
+
+`requireApproval` controls the approving-review gate in merge mode (on by
+default). Steps configured after shipping still run.
+
+<details>
+<summary>Capacity, dashboard counts and upgrade behavior</summary>
 
 CI, review and human decisions in shipping release the task's concurrency slot.
 The waiting item stays tracked, and intake can start another task. A CI repair,
@@ -110,27 +284,9 @@ is confirmed open or merged. Closed, unmerged PRs fail delivery; a GitHub error
 leaves completion unconfirmed for a later retry. Stored workflow choices remain
 unchanged. Select merge mode for new tasks whose delivery must include merging.
 
-“On fail” goes back to an earlier step: that step and everything after it run
-again, with the failure (check output, review findings, CI log) as feedback.
-Past the limit, the task waits on you: approve to continue anyway, or send
-instructions back. Read-only steps run in their own threads, in the task's
-workspace once code exists, so a reviewer sees exactly what was built.
+</details>
 
-**Agent skills.** An agent step's instructions can name skills the way the bb
-composer does: type `/` in **Instructions for the agent** to pick one (e.g.
-`Use /tdd, then implement the plan.`). The editor lists the skills of your
-configured repositories' projects and flags any it does not know. When Chief of
-Staff prompts the agent, each `/skill` reference to a skill installed in that
-workspace is sent as a skill mention, so Claude Code, Codex and ACP agents load
-the skill; anything else stays plain text.
-
-The default workflow is **Plan** (needs approval) → **Build** (writes code) →
-**Review** (pass/fail, back to Build) → **Ship** (PR). Edit it, or add your own,
-under **Configure → Workflows**: drag steps on the canvas, connect a step's
-bottom edge to another step, select an arrow and press Backspace to remove it,
-or use the list view. Each repository picks a workflow; a task keeps the
-workflow it started with. On a task card, **Workflow** shows the task live on
-the canvas and lets you run any step again from there.
+### Workflows as JSON
 
 Stored in the `workflow` setting:
 
@@ -160,12 +316,15 @@ to go back), code-writing steps, checks and ship must run one after another,
 code-writing step before them. The fixed-stage config from earlier versions is
 converted automatically.
 
-Start a task without an issue from the dashboard (**New task**), with
-`bb cos task "Describe the work" --repo owner/repo`, or let another agent call the
-`cos_start_task` tool. Configure the repository first; neither a GitHub issue
-nor automatic intake is required. The task uses that repository's configured
-workflow and counts against its concurrency limits. Enter only the prompt; a short
-task title is derived automatically. The agent tool also accepts an optional title.
+### Starting a task without an issue
+
+Use **New task** on the dashboard,
+`bb cos task "Describe the work" --repo owner/repo`, or let another agent call
+the `cos_start_task` tool. Configure the repository first; neither a GitHub
+issue nor automatic intake is required. The task uses that repository's
+configured workflow and counts against its concurrency limits. Enter only the
+prompt; a short task title is derived automatically. The agent tool also
+accepts an optional title.
 
 ## Configure
 
@@ -221,15 +380,16 @@ The same settings, as stored:
 `projectId` is the BB project whose checkout hosts the work (`bb project list`).
 `owner` and `repo` are optional: they default to the project's GitHub remote,
 so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
-when they carry every label in `issueFilter.labels` (or are assigned to
-`issueFilter.assignee`); set `intake: false` to run only tasks you start.
+when they carry every label in `issueFilter.labels` and, if
+`issueFilter.assignee` is set, are assigned to that user. With neither set,
+no issue is picked up. Set `intake: false` to run only tasks you start.
 
 `workflow` names one of your workflows (empty: the default). Entries written
 for earlier versions keep working: per-stage overrides and `checkCommand` are
 converted into a workflow for that repository, `allow.intake: false` pauses
 intake, and options of the removed routines feature are ignored.
 
-## CLI
+## CLI and agent tools
 
 ```
 bb cos status [--repo owner/repo] [--all] [--usage] [--json]
@@ -239,18 +399,41 @@ bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message
 bb cos log [--limit n] [--item id]
 ```
 
-Agents get three tools: `chief_of_staff_status` (the roster), `cos_report`
-(workflow agents report a finished step) and `cos_start_task` (hand a task to
-Chief of Staff).
+| Agent tool | Purpose |
+| --- | --- |
+| `chief_of_staff_status` | Read the roster. |
+| `cos_report` | Workflow agents report a finished step. |
+| `cos_start_task` | Hand a task to Chief of Staff. |
 
-## How it works
+## Pausing
+
+- **Pause everything** on the dashboard pauses intake and holds workflow events
+  until resumed, including across plugin reloads. Agents and jobs already
+  running continue; pause does not interrupt them.
+- **Pause** on a project card on the Repositories tab pauses just that project
+  in the same way: its intake, task starts and workflow events are held (and
+  replayed in order on resume) while other projects keep running. The setting
+  persists across plugin reloads.
+
+## Internals
+
+```mermaid
+flowchart TB
+  tick["Schedule<br>every minute"] --> engine
+  threads["Agent threads<br>reports, questions"] --> engine
+  human["You<br>approve, answer, retry"] --> engine
+  engine["Workflow engine<br>src/machine.ts"] <--> db[("SQLite")]
+  engine --> prompt["Prompt or spawn<br>agent threads"]
+  engine --> jobs["Jobs on the host<br>checks, push, merge"]
+  engine --> gh["GitHub<br>PRs, CI, reviews"]
+  jobs -. "results" .-> engine
+  gh -. "CI and review state" .-> engine
+```
 
 - State lives in the plugin's SQLite database: `work_items` (each task with a
   snapshot of its workflow and the state of every step), `item_threads` (which
   agent thread works on which step) and `activity_log`. On startup the plugin
   reconciles every active item against its threads.
-- **Pause everything** on the dashboard pauses intake and holds workflow events until resumed, including across plugin reloads. Agents and jobs already running continue; pause does not interrupt them.
-- **Pause** on a project card on the Repositories tab pauses just that project in the same way: its intake, task starts and workflow events are held (and replayed in order on resume) while other projects keep running. The setting persists across plugin reloads.
 - One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
   retries and stall detection.
 - Workflow engine (`src/machine.ts`, pure): each step has a state (pending,
@@ -286,14 +469,6 @@ Chief of Staff).
   title is set to `cos/issue-<n>-<slug>` so the derived name follows it); the
   plugin records the real branch name once the environment is ready.
 
-## Development
-
-```sh
-npm test            # vitest: workflow engine and validation, stats, fake plugin host e2e
-npm run typecheck
-bb plugin dev       # build + install + reload on change
-```
-
 ### Workflow thread grouping
 
 Chief of Staff uses BB’s native parent-thread tree to group each workflow in project view. The first live workflow thread becomes its parent; planning agents, the builder, reviewers, and replacement threads are grouped beneath it across worktrees. The parent identity is stored separately from the builder and survives restarts. No extra coordinator agent or custom sidebar is created.
@@ -303,3 +478,15 @@ Child-result notifications are disabled (`parentNotifications: "off"`); Chief of
 The regular sweep groups existing active workflows and preserves threads attached to parents outside the workflow. BB can send an assignment notice to the parent when existing threads are attached, even with child-result notifications disabled. A missing or archived parent is replaced with a live workflow thread when available. Failed grouping is logged for a later retry.
 
 On completion, Chief of Staff archives children before their parent when automatic archiving is enabled. Manually archiving the parent detaches live children; deleting a parent also deletes its descendants. BB limits nesting to four levels. This implementation creates no native sections and does not change sidebar preferences.
+
+## Development
+
+```sh
+npm test            # vitest: workflow engine and validation, stats, fake plugin host e2e
+npm run typecheck
+bb plugin dev       # build + install + reload on change
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and releases. The
+screenshots are captured from the running plugin, with its RPC calls answered
+by [docs/images/demo-data.js](docs/images/demo-data.js).
