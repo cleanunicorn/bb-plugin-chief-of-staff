@@ -33,7 +33,7 @@ export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Pr
  * thread is spawned; step prompts that follow refer back to it.
  */
 export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Promise<string> {
-  let github: GitHubClient | null = null;
+  let github: GitHubClient | null;
   try {
     github = await cos.github();
   } catch {
