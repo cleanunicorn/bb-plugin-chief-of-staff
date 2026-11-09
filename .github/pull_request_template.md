@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] `npm run typecheck` and `npm test` pass
+- [ ] `npm run check` passes (lint, typecheck, tests)
 - [ ] Tests added or updated for the behavior change
 - [ ] `CHANGELOG.md` has an entry under `## Unreleased` (or the `skip-changelog` label applies)
 - [ ] README / docs updated if behavior or settings changed
