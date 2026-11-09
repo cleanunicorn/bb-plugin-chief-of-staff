@@ -10,8 +10,10 @@ import { cn } from "@/lib/utils";
 import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, StatusPill, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
-import { WorkflowCanvas, type LiveStatus } from "@/components/cos/workflowCanvas";
-import type { Workflow } from "./src/workflow";
+import { STEP_TYPE_META, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
+import { topoOrder, type Workflow } from "./src/workflow";
+import { Sheet, useSheetFocus } from "@/components/cos/sheet";
+import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
@@ -124,24 +126,21 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
   return <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{entry.activity}</p>;
 }
 
-/** One task's workflow on the canvas, coloured live, with "run again from here". */
-function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
+/** One task's workflow, coloured live, as a canvas or a list of steps, with "run again from here". */
+function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  useEffect(() => {
-    if (!expanded) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setExpanded(false); };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [expanded]);
+  const [mode, setMode] = useState<"canvas" | "list">("canvas");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const data = view.data;
   const wf = data?.workflow as Workflow | undefined;
+  const live = (data?.live ?? {}) as Record<string, LiveStatus>;
   const step = wf?.steps.find((s) => s.id === selected);
+  const statusLabel = (stepId: string) => liveTone(live[stepId])?.label ?? "pending";
   const rerun = async () => {
     if (!selected) return;
     setBusy(true);
@@ -157,46 +156,109 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
     }
   };
   return (
-    <div className={cn("fixed inset-0 z-50 flex items-center justify-center bg-black/40", !expanded && "p-4")} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-label="Task workflow" className={cn("flex w-full flex-col gap-3 overflow-hidden border border-border bg-background p-4 shadow-lg", expanded ? "h-full" : "h-[85dvh] max-h-full max-w-6xl rounded-xl")}>
-        <header className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="line-clamp-2 text-xs text-muted-foreground" title={data ? `${data.title} · workflow “${wf?.name}”` : undefined}>{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
-            <h2 className="text-base font-semibold text-foreground">Where this task is</h2>
+    <Sheet
+      onClose={onClose}
+      restoreFocus={restoreFocus}
+      // Escape undoes one thing at a time: full screen, then a focused step's selection, then the sheet.
+      onEscapeKeyDown={(event) => {
+        if (expanded) {
+          event.preventDefault();
+          setExpanded(false);
+        } else if (selected && document.activeElement?.closest(".react-flow__node")) {
+          event.preventDefault();
+          setSelected(null);
+        }
+      }}
+      className={cn("gap-3 p-4", expanded ? "h-dvh max-w-none rounded-none sm:rounded-none" : "h-[85dvh] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-6xl rounded-xl sm:rounded-xl")}
+    >
+      <header className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="line-clamp-2 text-xs text-muted-foreground" title={data ? `${data.title} · workflow “${wf?.name}”` : undefined}>{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
+          <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <div className="flex rounded-md border border-border p-0.5">
+            {(["canvas", "list"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                aria-pressed={mode === v}
+                onClick={() => {
+                  setMode(v);
+                  // The full-screen control lives on the canvas.
+                  if (v === "list") setExpanded(false);
+                }}
+                className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", mode === v ? "bg-state-active text-foreground" : "text-muted-foreground")}
+              >
+                <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />
+                {v === "canvas" ? "Canvas" : "List"}
+              </button>
+            ))}
           </div>
-          <Button size="sm" variant="ghost" className="size-9 shrink-0 p-0 sm:size-7" aria-label="Close" onClick={onClose}>
-            <Icon name="X" fallback="Circle" aria-hidden />
-          </Button>
-        </header>
-        <ErrorLine error={view.error ?? error} />
-        {wf && data ? <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
-          <WorkflowCanvas workflow={wf} live={data.live as Record<string, LiveStatus>} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className="min-h-0 flex-1" />
-          {step ? <aside aria-label="Step details" className="max-h-[35%] overflow-y-auto rounded-lg border border-border p-3 text-sm md:max-h-none md:w-72 md:shrink-0">
-            <h3 className="font-semibold">{step.name}</h3>
-            <p className="mt-1 text-xs text-muted-foreground">{step.type} · {data.live[step.id]?.status ?? "pending"}</p>
-            {step.instructions ? <p className="mt-3 whitespace-pre-wrap break-words">{step.instructions}</p> : null}
-            {step.type === "check" ? <p className="mt-3 break-all"><b>Command:</b> {step.command}</p> : null}
-            {step.type === "ship" ? <p className="mt-3"><b>Action:</b> {step.action}</p> : null}
-            {step.type === "model" ? <p className="mt-3"><b>Sets:</b> {[step.providerId, step.model, step.reasoningLevel].filter(Boolean).join(" · ") || "nothing"}</p> : null}
-            {step.type === "agent" ? <p className="mt-3">{step.writes ? "Writes code" : "Read-only"} · {step.agents} {step.agents === 1 ? "agent" : "agents"}{step.approval ? " · Approval required" : ""}{step.verdict ? " · Pass/fail" : ""}</p> : null}
-          </aside> : null}
-        </div> : null}
-        <footer className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          {step ? (
-            <>
-              <span>
-                <b className="text-foreground">{step.name}</b> · {data?.live[step.id]?.status ?? "pending"}
-              </span>
-              <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => void rerun()}>
-                <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
-              </Button>
-            </>
-          ) : (
-            <span>Select a step to run it (and everything after it) again.</span>
-          )}
-        </footer>
-      </div>
-    </div>
+          <DialogClose asChild>
+            <Button size="sm" variant="ghost" className="size-9 shrink-0 p-0 sm:size-7" aria-label="Close">
+              <Icon name="X" fallback="Circle" aria-hidden />
+            </Button>
+          </DialogClose>
+        </div>
+      </header>
+      <ErrorLine error={view.error ?? error} />
+      {wf && data ? <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
+        {mode === "canvas" ? (
+          <WorkflowCanvas workflow={wf} live={live} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className="min-h-0 flex-1" />
+        ) : (
+          <ol aria-label="Workflow steps" className="flex min-h-0 min-w-0 flex-1 flex-col gap-1.5 overflow-y-auto p-px">
+            {topoOrder(wf).map((stepId) => {
+              const s = wf.steps.find((x) => x.id === stepId)!;
+              const tone = liveTone(live[stepId]);
+              return (
+                <li key={stepId}>
+                  <button
+                    type="button"
+                    aria-pressed={selected === stepId}
+                    onClick={() => setSelected(selected === stepId ? null : stepId)}
+                    className={cn("flex w-full items-center gap-2.5 rounded-md border px-3 py-2 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", selected === stepId ? "border-[color:var(--ring)] bg-muted" : "border-border")}
+                  >
+                    <Icon name={STEP_TYPE_META[s.type].icon} fallback="Circle" className="size-4 shrink-0 text-foreground" aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-foreground">{s.name}</span>
+                      <span className="block text-xs text-muted-foreground">{STEP_TYPE_META[s.type].label}</span>
+                    </span>
+                    <span className="flex max-w-[45%] shrink-0 items-center gap-1.5 text-xs font-medium text-foreground">
+                      <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: tone?.color ?? "var(--border)" }} />
+                      <span className="truncate">{statusLabel(stepId)}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+        {step ? <aside aria-label="Step details" className="max-h-[35%] overflow-y-auto rounded-lg border border-border p-3 text-sm md:max-h-none md:w-72 md:shrink-0">
+          <h3 className="font-semibold">{step.name}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{step.type} · {statusLabel(step.id)}</p>
+          {step.instructions ? <p className="mt-3 whitespace-pre-wrap break-words">{step.instructions}</p> : null}
+          {step.type === "check" ? <p className="mt-3 break-all"><b>Command:</b> {step.command}</p> : null}
+          {step.type === "ship" ? <p className="mt-3"><b>Action:</b> {step.action}</p> : null}
+          {step.type === "model" ? <p className="mt-3"><b>Sets:</b> {[step.providerId, step.model, step.reasoningLevel].filter(Boolean).join(" · ") || "nothing"}</p> : null}
+          {step.type === "agent" ? <p className="mt-3">{step.writes ? "Writes code" : "Read-only"} · {step.agents} {step.agents === 1 ? "agent" : "agents"}{step.approval ? " · Approval required" : ""}{step.verdict ? " · Pass/fail" : ""}</p> : null}
+        </aside> : null}
+      </div> : null}
+      <footer className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {step ? (
+          <>
+            <span>
+              <b className="text-foreground">{step.name}</b> · {statusLabel(step.id)}
+            </span>
+            <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => void rerun()}>
+              <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
+            </Button>
+          </>
+        ) : (
+          <span>Select a step to run it (and everything after it) again.</span>
+        )}
+      </footer>
+    </Sheet>
   );
 }
 
@@ -204,7 +266,7 @@ function WorkflowSheet({ id, onClose, onChanged }: { id: string; onClose: () => 
 
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
-function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string) => void; onWorkflow: (id: string) => void; now: number }) {
+function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
   const [menu, setMenu] = useState(false);
   const finished = entry.detail === "done" || entry.detail === "failed";
@@ -247,7 +309,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
         <button
           type="button"
-          onClick={() => onAnswer(entry.id)}
+          onClick={(event) => onAnswer(entry.id, event.currentTarget)}
           className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
           aria-label={entry.waitingKind === "approval" ? "Open the report to approve it" : "Open the question to answer it"}
         >
@@ -290,7 +352,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
             <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => onWorkflow(entry.id)}>
+        <Button size="sm" variant="outline" className="h-7 px-2" onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
           <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
         </Button>
         {entry.prUrl ? (
@@ -368,6 +430,8 @@ export function PipelineTab() {
   const [newTask, setNewTask] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
+  const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const act = useCallback(
     async (id: string, action: ItemAction) => {
       setBusy(id);
@@ -408,7 +472,7 @@ export function PipelineTab() {
     <div className="flex flex-col gap-4">
       <ErrorLine error={roster.error ?? stats.error ?? actionError} />
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-semibold text-foreground">Work overview</h2>
+        <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="outline" aria-describedby="automation-scope" disabled={pausing || !overview.data} onClick={async () => {
             setPausing(true);
@@ -487,7 +551,7 @@ export function PipelineTab() {
         ) : null}
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={setAnswering} onWorkflow={setViewing} />
+            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
           ))}
         </div>
       </Panel>
@@ -543,8 +607,8 @@ export function PipelineTab() {
         </Panel>
       </div>
 
-      {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} /> : null}
-      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} /> : null}
+      {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }
