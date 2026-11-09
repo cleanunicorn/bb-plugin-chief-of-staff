@@ -4,7 +4,7 @@
 // Workflow gates (a step waiting for approval, a step out of attempts) get a decision
 // block: approve and move on, or send it back to the agent with feedback.
 import { useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Markdown, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { AnswerPayload, OpenQuestion } from "../../rpcContract";
@@ -313,6 +313,18 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
     if (q.multiSelect) onChange({ selected: value.selected.includes(v) ? value.selected.filter((s) => s !== v) : [...value.selected, v] });
     else onChange({ selected: value.selected[0] === v ? [] : [v] });
   };
+  // A single-select group is one tab stop (the checked option, else the first); arrow keys move through it and check.
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const checkedIndex = q.options.findIndex((o) => value.selected.includes(o.value));
+  const tabStop = Math.max(checkedIndex, 0);
+  const onRadioKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const next = (index + step + q.options.length) % q.options.length;
+    onChange({ selected: [q.options[next]!.value] });
+    optionRefs.current[next]?.focus();
+  };
   return (
     <fieldset className="flex flex-col gap-2" disabled={disabled}>
       <legend className="sr-only">{q.shortLabel ?? q.prompt}</legend>
@@ -321,8 +333,8 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
         {q.multiSelect ? <span className="text-xs text-muted-foreground">(pick any)</span> : null}
       </div>
       {q.options.length ? (
-        <div className="flex flex-col gap-1.5" role={q.multiSelect ? "group" : "radiogroup"}>
-          {q.options.map((o) => {
+        <div className="flex flex-col gap-1.5" role={q.multiSelect ? "group" : "radiogroup"} aria-label={q.shortLabel ?? q.prompt}>
+          {q.options.map((o, i) => {
             const on = value.selected.includes(o.value);
             return (
               <button
@@ -330,8 +342,13 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
                 type="button"
                 role={q.multiSelect ? "checkbox" : "radio"}
                 aria-checked={on}
+                ref={(el) => {
+                  optionRefs.current[i] = el;
+                }}
+                tabIndex={q.multiSelect || i === tabStop ? 0 : -1}
+                onKeyDown={q.multiSelect ? undefined : (event) => onRadioKeyDown(event, i)}
                 onClick={() => toggle(o.value)}
-                className={cn("flex items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors hover:bg-state-hover", on ? "border-[color:var(--ring)] bg-muted" : "border-border")}
+                className={cn("flex items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", on ? "border-[color:var(--ring)] bg-muted" : "border-border")}
               >
                 <Icon name={on ? (q.multiSelect ? "SquareCheck" : "CircleDot") : q.multiSelect ? "Square" : "Circle"} fallback="Circle" className="mt-0.5 size-4 shrink-0 text-foreground" aria-hidden />
                 <span className="min-w-0">
