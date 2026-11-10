@@ -12,8 +12,7 @@
     "components": "@/components",
     "ui": "@/components/ui",
     "lib": "@/lib",
-    "utils": "@/lib/utils",
-    "hooks": "@/hooks"
+    "utils": "@/lib/utils"
   },
   "registries": {
     "@bb": "https://raw.githubusercontent.com/get-bb/bb/desktop-v0.48.1/packages/plugin-registry/r/{name}.json"

@@ -1,20 +1,19 @@
 // Visual configurator: the delivery workflow, repositories, general settings
 // and GitHub access. Edits drafts locally, then saves through cos_set_config (the same
 // JSON documents the server parses) and cos_set_settings (scalar settings).
-import { useEffect, useId, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { experimental_useRpcQuery, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { blankRepo, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
 import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, validateDocument } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
 import { Button } from "../ui/button";
-import { Field, TextInput, NumberInput, ListInput, Select, Switch, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
+import { Field, TextInput, NumberInput, ListInput, Select, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
 import { STATUS, StatusPill } from "./viz";
@@ -352,7 +351,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
   const loadedWorkflow = useMemo(() => (config.data ? parseWorkflows(config.data.workflow) : null), [config.data]);
   const workflowDraft: WorkflowsDocument = workflow ?? (loadedWorkflow?.ok ? loadedWorkflow.value : DEFAULT_DOCUMENT);
 
-  const projects = settings.data?.projects ?? [];
+  const projects = useMemo(() => settings.data?.projects ?? [], [settings.data]);
   // Entries saved without owner/repo show the repository inferred from their project.
   const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
   const generalDraft = general ?? loadedGeneral;
