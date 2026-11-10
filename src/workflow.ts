@@ -263,15 +263,16 @@ export interface ModelPick {
 }
 type ReportLike = { choice?: string | null; pick?: ModelPick | null } | null;
 
-/** The pick an automatic model step's report named, when it names anything. */
+/**
+ * The pick an automatic model step's report named. A pick needs a provider and
+ * a model (a reasoning level is optional); anything less is no pick.
+ */
 export function pickedModel(node: { reports: ReportLike[] } | undefined): AgentSettings | undefined {
   for (const r of node?.reports ?? []) {
-    const out: AgentSettings = {};
-    for (const key of ["providerId", "model", "reasoningLevel"] as const) {
-      const value = r?.pick?.[key]?.trim();
-      if (value) out[key] = value;
-    }
-    if (Object.keys(out).length) return out;
+    const providerId = r?.pick?.providerId?.trim();
+    const model = r?.pick?.model?.trim();
+    const reasoningLevel = r?.pick?.reasoningLevel?.trim();
+    if (providerId && model) return { providerId, model, ...(reasoningLevel ? { reasoningLevel } : {}) };
   }
   return undefined;
 }

@@ -520,9 +520,14 @@ describe("an automatic model step", () => {
     expect(settingsFor(flow, "review", after.nodes)).toEqual({ providerId: "claude-code", model: "sonnet", reasoningLevel: "high" });
   });
 
-  it("asks a person when the agent picks nothing", () => {
+  it.each([
+    ["nothing", null],
+    ["only a reasoning level", { reasoningLevel: "high" }],
+    ["only a provider", { providerId: "codex" }],
+    ["only a model", { model: "gpt-5" }],
+  ])("asks a person when the agent picks %s", (_, pick) => {
     const [started] = run(itemFor(flow), { type: "start" });
-    const [after] = run(started, ended("pick", picked(null), started));
+    const [after] = run(started, ended("pick", picked(pick), started));
     expect(after.nodes.pick!.status).toBe("waiting");
     expect(after.nodes.pick!.waiting?.kind).toBe("escalation");
     expect(settingsFor(flow, "build", after.nodes)).toEqual({});

@@ -872,9 +872,11 @@ describe("chief-of-staff server", () => {
     expect(spawns()[0]!.prompt).toContain("Choose the best model for the job.");
     expect(spawns()[0]!.prompt).toContain("bb provider list --json");
 
-    // The pick is required.
-    const refused = await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "x" }, { threadId: "thr_pick-model" });
-    expect(JSON.stringify(refused)).toContain("This step chooses the model");
+    // A pick needs a provider and a model.
+    for (const partial of [{}, { reasoningLevel: "high" }, { providerId: "codex" }, { model: "gpt-5" }]) {
+      const refused = await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "x", ...partial }, { threadId: "thr_pick-model" });
+      expect(JSON.stringify(refused)).toContain("This step chooses the model");
+    }
     await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "Touches auth: strongest model.", providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" }, { threadId: "thr_pick-model" });
     await idle("ok", "thr_pick-model");
 
