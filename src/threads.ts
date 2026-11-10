@@ -2,7 +2,7 @@
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import type { KnownSkill, SkillMention } from "./skills";
-import type { AgentSettings } from "./workflow";
+import { resolveAgent, type AgentSettings } from "./workflow";
 
 /** A prompt as `prompt`, or as text input carrying skill mentions when there are any. */
 function promptArgs(prompt: string, mentions: SkillMention[] | undefined) {
@@ -43,9 +43,7 @@ export interface SpawnOptions {
 export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
   const { values } = await cos.config();
   const checkout = await cos.checkout(opts.repo);
-  const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
-  const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
-  const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
+  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, { providerId: values.defaultProviderId, model: values.defaultModel });
   opts.delivery?.sending();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
@@ -89,9 +87,7 @@ export interface StepSpawnOptions {
 export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
   if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, delivery: opts.delivery, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
   const { values } = await cos.config();
-  const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
-  const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
-  const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
+  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, { providerId: values.defaultProviderId, model: values.defaultModel });
   opts.delivery?.sending();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,

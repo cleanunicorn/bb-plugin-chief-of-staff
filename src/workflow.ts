@@ -155,6 +155,22 @@ export interface AgentSettings {
   providerId?: string;
   model?: string;
   reasoningLevel?: string;
+  /**
+   * Set by an automatic model step's pick: the three fields go together, so an
+   * unset one (usually the reasoning level) means the provider's own default,
+   * never an earlier step's, the repository's or the global value.
+   */
+  complete?: true;
+}
+
+/** The provider, model and reasoning level an agent spawns with: `settings` over the repository's, over the global defaults. */
+export function resolveAgent(settings: AgentSettings | undefined, repo: AgentSettings, defaults: { providerId?: string; model?: string }): AgentSettings {
+  if (settings?.complete) return { providerId: settings.providerId, model: settings.model, reasoningLevel: settings.reasoningLevel };
+  return {
+    providerId: settings?.providerId || repo.providerId || defaults.providerId || undefined,
+    model: settings?.model || repo.model || defaults.model || undefined,
+    reasoningLevel: settings?.reasoningLevel || repo.reasoningLevel || undefined,
+  };
 }
 
 export const workflowSchema = z.object({ id: stepId, name: z.string().min(1).max(80), steps: z.array(stepSchema).min(1) });
@@ -301,14 +317,22 @@ export function chosenModel(step: AgentStep, node: { reports: ReportLike[] } | u
  * The settings set by the model steps (fixed, or picked by an automatic one's agent) and model choices of agent steps before `id`. Model steps apply to
  * everything after them until a later one overrides a field, so the last one
  * before `id` (in topological order, among its ancestors) wins, field by field.
+ * An automatic step's pick is the exception: it replaces all three fields and
+ * marks the result `complete`, so nothing from before it leaks in.
  */
 export function settingsFor(wf: Workflow, id: string, nodes?: Record<string, { reports: ReportLike[] }>): AgentSettings {
   const before = new Set(wf.steps.filter((s) => reachable(wf, s.id, id)).map((s) => s.id));
-  const out: AgentSettings = {};
+  let out: AgentSettings = {};
   for (const sid of topoOrder(wf)) {
     const s = stepById(wf, sid);
     if (!s || !before.has(sid)) continue;
-    const source = s.type === "model" ? (modelMode(s) === "auto" ? pickedModel(nodes?.[sid]) : s) : s.type === "agent" ? chosenModel(s, nodes?.[sid]) : undefined;
+    if (s.type === "model" && modelMode(s) === "auto") {
+      // A pick replaces everything set before it, as a whole.
+      const pick = pickedModel(nodes?.[sid]);
+      if (pick) out = { ...pick, complete: true };
+      continue;
+    }
+    const source = s.type === "model" ? s : s.type === "agent" ? chosenModel(s, nodes?.[sid]) : undefined;
     if (!source) continue;
     for (const key of ["providerId", "model", "reasoningLevel"] as const) {
       const value = source[key]?.trim();

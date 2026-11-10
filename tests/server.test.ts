@@ -847,6 +847,16 @@ describe("chief-of-staff server", () => {
     }, { threadId: "thr_lost" }))).toContain("Recorded");
   });
 
+  it("spawns the writer with exactly the pick: no reasoning level from the repository", async () => {
+    await useAutoFlow({ reasoningLevel: "low", providerId: "claude-code", model: "sonnet" });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "GPT-5", providerId: "codex", model: "gpt-5" }, { threadId: "thr_pick-model" });
+    await idle("ok", "thr_pick-model");
+    const spawn = host.harness.inspection.sdk.callsTo("threads.spawn").at(-1)![0] as Record<string, unknown>;
+    expect(spawn).toMatchObject({ providerId: "codex", model: "gpt-5" });
+    expect(spawn).not.toHaveProperty("reasoningLevel");
+  });
+
   it("runs an automatic model step as an agent and spawns later steps with its pick", async () => {
     const flow = {
       workflows: [

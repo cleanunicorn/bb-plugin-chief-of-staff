@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
-import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, fromStages, modelMode, parseWorkflows, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
+import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, fromStages, modelMode, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
 import { pipelineLine, stepPrompt } from "../src/prompts";
 
@@ -516,8 +516,28 @@ describe("an automatic model step", () => {
     const [after, fx] = run(started, ended("pick", picked({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" }), started));
     expect(st(after)).toMatchObject({ pick: "done", build: "running" });
     expect(agentFx(fx).map((e) => (e as { step: string }).step)).toEqual(["build"]);
-    expect(settingsFor(flow, "build", after.nodes)).toEqual({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" });
-    expect(settingsFor(flow, "review", after.nodes)).toEqual({ providerId: "claude-code", model: "sonnet", reasoningLevel: "high" });
+    expect(settingsFor(flow, "build", after.nodes)).toEqual({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high", complete: true });
+    expect(settingsFor(flow, "review", after.nodes)).toEqual({ providerId: "claude-code", model: "sonnet", reasoningLevel: "high", complete: true });
+  });
+
+  it("replaces everything set before it as a whole: no reasoning level leaks from an earlier step", () => {
+    const cheap = wf([
+      { id: "cheap", name: "Cheap chooser", type: "model", providerId: "claude-code", model: "haiku", reasoningLevel: "low", next: ["pick"] },
+      { id: "pick", name: "Pick", type: "model", mode: "auto", next: ["build"] },
+      { id: "build", name: "Build", type: "agent", writes: true },
+    ]);
+    const [started] = run(itemFor(cheap), { type: "start" });
+    expect(settingsFor(cheap, "pick", started.nodes)).toEqual({ providerId: "claude-code", model: "haiku", reasoningLevel: "low" });
+    const [after] = run(started, ended("pick", picked({ providerId: "codex", model: "gpt-5" }), started));
+    expect(settingsFor(cheap, "build", after.nodes)).toEqual({ providerId: "codex", model: "gpt-5", complete: true });
+  });
+
+  it("resolves a complete pick without the repository's or global values", () => {
+    const repo = { providerId: "claude-code", model: "sonnet", reasoningLevel: "low" };
+    const defaults = { providerId: "acp-cursor", model: "default-model" };
+    expect(resolveAgent({ providerId: "codex", model: "gpt-5", complete: true }, repo, defaults)).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: undefined });
+    expect(resolveAgent({ model: "opus" }, repo, defaults)).toEqual({ providerId: "claude-code", model: "opus", reasoningLevel: "low" });
+    expect(resolveAgent(undefined, {}, defaults)).toEqual({ providerId: "acp-cursor", model: "default-model", reasoningLevel: undefined });
   });
 
   it.each([
