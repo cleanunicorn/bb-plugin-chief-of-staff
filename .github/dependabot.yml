@@ -13,6 +13,10 @@ updates:
       dev-dependencies:
         dependency-type: development
         update-types: [minor, patch]
+    ignore:
+      # Stay on the Node line in .nvmrc; bump this together with .nvmrc.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
