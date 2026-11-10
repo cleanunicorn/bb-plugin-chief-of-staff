@@ -75,7 +75,7 @@ Decisions worth knowing:
 
 Checks:
 
-- `npm run check` (196 tests in 21 files) and `npm run build` pass.
+- `npm run check` (lint, typecheck, 222 tests in 24 files) and `npm run build:ci` pass.
 - jsdom: `tests/sheetFocus.test.tsx` (focus in, Tab wrap, Escape order, focus
   return, fallback, rerun from the list), `tests/workflowCanvas.test.tsx` (the
   real React Flow canvas: Enter selects, Escape clears, a selection made by the
