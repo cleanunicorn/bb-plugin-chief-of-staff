@@ -41,8 +41,8 @@
 
 - **Removal confirmations stay with their item.** Confirming "Remove?" on a
   repository or model choice no longer leaves the next one armed (a double
-  click removed two), and selecting another step on the canvas no longer
-  carries the confirmation over to it.
+  click removed two), and selecting another step on the canvas, or another
+  workflow tab, no longer carries the confirmation over to it.
 
 - **Deleting a workflow moves its repositories to the default.** The
   confirmation names the repositories that will use the default workflow, and
