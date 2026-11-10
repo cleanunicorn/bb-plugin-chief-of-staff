@@ -63,7 +63,7 @@ function contract(step: AgentWork): string[] {
     `step: ${step.id}`,
     `outcome: done`,
     ...(picks ? [`choice: <id of the model you pick>`] : []),
-    ...(auto ? [`provider: <provider id>`, `model: <model id>`, `reasoning: <reasoning level, or leave out>`] : []),
+    ...(auto ? [`provider: <provider id>`, `model: <model id>`, `reasoning: <one of the model's reasoning levels; leave this line out if it lists none>`] : []),
     `summary: <your result>`,
     "```",
   ];
@@ -90,7 +90,7 @@ export function stepPrompt(item: WorkItem, step: AgentWork, agent: number, ctx: 
       `Pick only from what is available here:`,
       `- \`bb provider list --json\`: the providers (agents); use only those with \`"available": true\`.`,
       `- \`bb provider models <providerId> --json\`: a provider's models, each with its \`supportedReasoningEfforts\`.`,
-      `Report the provider's \`id\`, the model's \`id\`, and a \`reasoningEffort\` the model lists (or none if it lists none).`,
+      `Report the provider's \`id\` as \`providerId\` and the model's \`id\` as \`model\`. For \`reasoningLevel\`, pass one of the \`reasoningEffort\` values the model lists in \`supportedReasoningEfforts\`; if it lists none, or you have no preference, leave \`reasoningLevel\` out entirely (do not pass "none" or an empty value).`,
     );
   }
   if (step.chooses.length) {

@@ -572,6 +572,9 @@ describe("an automatic model step", () => {
     expect(prompt).toContain("bb provider list --json");
     expect(prompt).toContain("bb provider models <providerId> --json");
     expect(prompt).toContain("`providerId`, `model` and `reasoningLevel`");
+    expect(prompt).toContain("leave `reasoningLevel` out entirely");
+    expect(prompt).not.toContain("or none if it lists none");
+    expect(prompt).toContain("Report the provider's `id` as `providerId`");
     expect(prompt).toContain("This step is read-only");
   });
 
