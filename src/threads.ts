@@ -2,7 +2,7 @@
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import type { KnownSkill, SkillMention } from "./skills";
-import type { AgentSettings } from "./workflow";
+import { resolveAgent, type AgentSettings } from "./workflow";
 
 /** A prompt as `prompt`, or as text input carrying skill mentions when there are any. */
 function promptArgs(prompt: string, mentions: SkillMention[] | undefined) {
@@ -43,9 +43,7 @@ export interface SpawnOptions {
 export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
   const { values } = await cos.config();
   const checkout = await cos.checkout(opts.repo);
-  const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
-  const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
-  const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
+  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, { providerId: values.defaultProviderId, model: values.defaultModel });
   opts.delivery?.sending();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
@@ -79,23 +77,32 @@ export interface StepSpawnOptions {
   mentions?: SkillMention[];
   settings?: AgentSettings;
   pluginMetadata: Record<string, string | number | boolean | null>;
+  /**
+   * Without a builder workspace, run in the project's own checkout instead of a
+   * fresh worktree: for steps that only read (choosing a model), where a
+   * worktree would be created for nothing and never reused.
+   */
+  inCheckout?: boolean;
 }
 
 /**
  * Spawn an agent for a read-only step: in the builder's workspace when there
  * is one, otherwise in a fresh worktree of the default branch (nothing has been
- * built yet, so there is nothing to see but the repository).
+ * built yet, so there is nothing to see but the repository), or with
+ * `inCheckout` in the project's own checkout.
  */
 export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
-  if (!opts.environmentId) return spawnWorktreeThread(cos, { repo: opts.repo, delivery: opts.delivery, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
+  if (!opts.environmentId && !opts.inCheckout) return spawnWorktreeThread(cos, { repo: opts.repo, delivery: opts.delivery, title: opts.title, prompt: opts.prompt, mentions: opts.mentions, settings: opts.settings, pluginMetadata: opts.pluginMetadata, parentThreadId: opts.parentThreadId });
   const { values } = await cos.config();
-  const providerId = opts.settings?.providerId || opts.repo.providerId || values.defaultProviderId || undefined;
-  const model = opts.settings?.model || opts.repo.model || values.defaultModel || undefined;
-  const reasoningLevel = opts.settings?.reasoningLevel || opts.repo.reasoningLevel || undefined;
+  // `path: null` is the host's configured checkout of the project: no worktree is created.
+  const environment = opts.environmentId
+    ? { type: "reuse" as const, environmentId: opts.environmentId }
+    : { type: "host" as const, hostId: (await cos.checkout(opts.repo)).hostId, workspace: { type: "unmanaged" as const, path: null } };
+  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, { providerId: values.defaultProviderId, model: values.defaultModel });
   opts.delivery?.sending();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
-    environment: { type: "reuse", environmentId: opts.environmentId },
+    environment,
     ...promptArgs(opts.prompt, opts.mentions),
     title: opts.title,
     ...(providerId ? { providerId } : {}),

@@ -10,7 +10,7 @@ import { startTask } from "./intake";
 import type { ReportOutcome } from "./machine";
 import { withItemLock } from "./delivery";
 import { acknowledgeReport, deliveryWait, reportMatches, recoverSpawn } from "./deliveryReport";
-import { chosenModel } from "./workflow";
+import { chosenModel, pickedModel } from "./workflow";
 
 export function registerTools(bb: BbPluginApi, cos: Cos): void {
   bb.agents.registerTool({
@@ -24,6 +24,9 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
       summary: z.string().min(1).max(40_000).describe("The step's result in Markdown (a plan, what changed, evidence, findings). The next steps read it."),
       question: z.string().max(4_000).optional().describe('With outcome "needs_input": the question for the human'),
       choice: z.string().max(40).optional().describe("Only when your prompt lists model choices: the id of the one you pick for the steps after this"),
+      providerId: z.string().max(200).optional().describe("Only when your step chooses the model: the BB provider id you pick (from `bb provider list`)"),
+      model: z.string().max(200).optional().describe("Only when your step chooses the model: the model id you pick (from `bb provider models <providerId>`)"),
+      reasoningLevel: z.string().max(50).optional().describe("Only when your step chooses the model: the reasoning level you pick, if the model supports one"),
     }),
     async execute(params, ctx) {
       const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
@@ -45,9 +48,13 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
         if (tc.step.chooses.length && params.outcome === "done" && !chosenModel(tc.step, { reports: [{ choice: params.choice }] })) {
           return err(`This step picks a model: set \`choice\` to one of ${tc.step.chooses.map((c) => `"${c.id}"`).join(", ")}.`);
         }
+        const pick = { providerId: params.providerId?.trim() || null, model: params.model?.trim() || null, reasoningLevel: params.reasoningLevel?.trim() || null };
+        if (tc.step.picksModel && params.outcome === "done" && !pickedModel({ reports: [{ pick }] })) {
+          return err("This step chooses the model: set `providerId` and `model` (and `reasoningLevel` if the model has levels) to what you pick.");
+        }
         if (!reportMatches(cos, item, tc.step, tc.agent, ctx.threadId, params.delivery)) return err("This report is from an earlier or unconfirmed delivery. Use the delivery id from the current prompt.");
         await acknowledgeReport(cos, item, tc.step, tc.agent, ctx.threadId);
-        const report = { ...(params.delivery ? { delivery: params.delivery } : {}), step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, choice: params.choice?.trim() || null, at: cos.now().toISOString(), via: "tool" as const };
+        const report = { ...(params.delivery ? { delivery: params.delivery } : {}), step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, choice: params.choice?.trim() || null, ...(tc.step.picksModel ? { pick } : {}), at: cos.now().toISOString(), via: "tool" as const };
         if (tc.row) cos.store.updateThread(ctx.threadId, { pendingReport: report });
         else cos.store.upsertThread({ threadId: ctx.threadId, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: item.environmentId, round: node!.round, promptSentAt: null, pendingReport: report });
         cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });

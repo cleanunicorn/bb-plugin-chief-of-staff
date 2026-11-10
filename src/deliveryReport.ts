@@ -2,7 +2,7 @@
 import { isPromptDeliveryRetry } from "./machine";
 import type { Cos } from "./context";
 import type { WorkItem } from "./state";
-import type { AgentStep } from "./workflow";
+import { agentWork, type AgentStep } from "./workflow";
 import { dispatchLocked, withItemLock } from "./delivery";
 
 export function deliveryWait(item: WorkItem, step: string): boolean {
@@ -49,8 +49,8 @@ export async function recoverSpawn(cos: Cos, threadId: string): Promise<WorkItem
   if (typeof metadata.workItemId !== "string" || typeof metadata.step !== "string" || typeof metadata.agent !== "number") return null;
   return withItemLock(metadata.workItemId, async () => {
     const item = cos.store.getWorkItem(metadata.workItemId as string);
-    const step = item?.workflow.steps.find((s) => s.id === metadata.step);
-    if (!item || item.status === "done" || item.status === "failed" || step?.type !== "agent") return null;
+    const step = agentWork(item?.workflow.steps.find((s) => s.id === metadata.step));
+    if (!item || item.status === "done" || item.status === "failed" || !step) return null;
     const agent = metadata.agent as number;
     const node = item.nodes[step.id];
     const attempt = node?.deliveries?.[agent];

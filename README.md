@@ -199,7 +199,7 @@ Every step has a name, instructions and arrows to the steps after it. Its
 | Agent | Agents work on the instructions. | **Writes code** (runs in the task's main thread, one code-writing step at a time; off = read-only, may run in parallel), **agents in parallel** (read-only steps, e.g. two planners), **needs my approval** (approve the report or send it back), **pass/fail verdict** (fail sends the work back), on fail → step, rounds |
 | Check | Chief of Staff runs a command in the worktree; non-zero exit fails it. | command, timeout, on fail → step, attempts |
 | Ship | Push the branch, finish when a PR opens, or finish after the PR merges with green CI. | action, draft, wait for an approving review, when CI is red → step, attempts |
-| Model | Does no work. Sets the agent (provider), model and reasoning level for the agent steps after it. | provider, model, reasoning level (empty = keep the current one) |
+| Model | Picks the agent (provider), model and reasoning level for the agent steps after it. **Automatically** (the default): a read-only agent reads the task and your instructions and picks the best model from the ones available. **Fixed**: uses the values you set and does no work. | how it is chosen (automatically / fixed), instructions for the choosing agent, or provider, model, reasoning level (empty = keep the current one) |
 
 An agent finishes a step by reporting it: the `cos_report` tool, or a
 `## Step report` block.
@@ -227,6 +227,17 @@ Read-only steps run in their own threads, in the task's workspace once code
 exists, so a reviewer sees exactly what was built.
 
 ### Choosing models
+
+**Automatic model steps.** A new Model step picks automatically: a read-only agent gets the task, the
+reports of the steps before it and the step's instructions (by default “choose the best model for the job”),
+lists what is available with `bb provider list` and `bb provider models <provider>`, and reports the provider,
+model and reasoning level it picks (`providerId`, `model`, `reasoningLevel` in `cos_report`; `providerId:`, `model:`,
+`reasoningLevel:` lines before `summary:` in a text report). Its reasoning goes into the step report, and the task's workflow view shows
+the pick. Before any code exists it runs in the project's own checkout, so it creates no worktree. If it picks
+nothing, the step waits for you: approve to continue with the current model, or send it
+instructions. The choosing agent itself runs with the settings in effect before the step, so put a fixed Model step
+before it to choose with a cheaper model. Switch a Model step to **Fixed** to set the values yourself; a saved Model
+step that already sets values (from before the choice existed) stays fixed.
 
 **Model steps.** A Model step's settings apply to every agent step after it, not just the next one, until
 another Model step changes them (field by field: a later step that sets only the model keeps the earlier

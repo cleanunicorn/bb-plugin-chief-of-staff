@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Model steps pick the model automatically.** A Model step no longer has to
+  name a model: by default it runs a read-only agent that reads the task and
+  the step's instructions (“choose the best model for the job”), looks at the
+  providers and models available in BB, and picks the provider, model and
+  reasoning level the later agent steps run with. The task's workflow view
+  shows the pick. Choose **Fixed** to set the values yourself; existing Model
+  steps that set values keep working as fixed.
+
 - **Sheets and the workflow view work from the keyboard.** The task workflow
   sheet and the question sheet now take focus when they open, keep Tab inside,
   close on Escape, and return focus to the button that opened them. Steps on

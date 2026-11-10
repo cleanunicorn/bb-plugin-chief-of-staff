@@ -12,7 +12,7 @@ import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
-import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
+import { agentWork, settingsFor, stepById, topoOrder, type AgentWork, type CheckStep, type ShipStep } from "./workflow";
 import { itemParent, archiveOrder } from "./threadGroups";
 
 const OUTPUT_TAIL = 12_000;
@@ -257,8 +257,8 @@ async function runEffect(cos: Cos, itemId: string, effect: Effect, actor: string
   if (effect.type !== "agent") return;
   const repo = await cos.repo(item.repo);
   if (!repo) throw new Error(`repo ${item.repo} is no longer configured`);
-  const step = stepById(item.workflow, effect.step);
-  if (!step || step.type !== "agent") throw new Error(`step ${effect.step} is not an agent step`);
+  const step = agentWork(stepById(item.workflow, effect.step));
+  if (!step) throw new Error(`step ${effect.step} is not an agent step`);
   await promptAgent(cos, item, repo, step, effect, actor);
 }
 
@@ -270,7 +270,7 @@ async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undef
   }
 }
 
-async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentStep, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
+async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentWork, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
   const round = item.nodes[step.id]?.round ?? 0;
   const deliveryId = randomUUID();
   const body = (effect.kind === "nudge" ? nudgePrompt(step) : stepPrompt(item, step, effect.agent, { defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined })) + `\n\nFor this prompt, include delivery: "${deliveryId}" in cos_report (or delivery: ${deliveryId} in the Step report block).`;
@@ -323,6 +323,8 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
     repo, environmentId: item.environmentId, parentThreadId,
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
     prompt, mentions: mentionsIn(prompt), settings, delivery, pluginMetadata: metadata,
+    // Choosing a model only reads: no worktree for it before the builder's exists.
+    inCheckout: Boolean(step.picksModel),
   });
   if (step.writes) cos.store.updateWorkItem(item.id, { providerId: spawned.providerId, model: spawned.model });
   cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name} ${spawned.thread.id}`, actor });

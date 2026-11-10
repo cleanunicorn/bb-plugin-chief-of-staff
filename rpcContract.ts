@@ -156,7 +156,7 @@ export const rpcContract = defineRpcContract({
       title: z.string(),
       /** The workflow the task runs (a Workflow document). */
       workflow: z.any(),
-      live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number() })),
+      live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number(), picked: z.string().nullable().optional() })),
     }),
   },
   cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().max(200).optional(), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },

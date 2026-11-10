@@ -89,7 +89,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
       async cos_item_workflow(input) {
         const item = cos.store.getWorkItem(input.id);
         if (!item) throw new Error(`work item ${input.id} not found`);
-        const live = Object.fromEntries(rosterSteps(item).map((s) => [s.id, { status: s.status, phase: s.phase, reported: s.reported, agents: s.agents, waitingKind: s.waitingKind, retrying: s.retrying, attempts: s.attempts, round: s.round }]));
+        const live = Object.fromEntries(rosterSteps(item).map((s) => [s.id, { status: s.status, phase: s.phase, reported: s.reported, agents: s.agents, waitingKind: s.waitingKind, retrying: s.retrying, attempts: s.attempts, round: s.round, picked: s.picked ?? null }]));
         return { title: `${item.repo}${item.issueNumber ? `#${item.issueNumber}` : ""} ${item.issueTitle}`, workflow: item.workflow, live };
       },
       async cos_start_task(input, ctx) {

@@ -26,7 +26,8 @@ export function parseTextReport(text: string | null | undefined, at: string): (S
   while ((match = heading.exec(text))) last = match;
   if (!last) return null;
   const block = text.slice(last.index + last[0].length).replace(/^\s*```\w*\s*$/gm, "");
-  const field = (name: string) => new RegExp(`^\\s*[-*]?\\s*\\**${name}\\**\\s*:\\s*(.*)$`, "im").exec(block)?.[1]?.trim().replace(/^[`"']|[`"']$/g, "") ?? null;
+  const fieldIn = (part: string, name: string) => new RegExp(`^\\s*[-*]?\\s*\\**(?:${name})\\**\\s*:\\s*(.*)$`, "im").exec(part)?.[1]?.trim().replace(/^[`"']|[`"']$/g, "") ?? null;
+  const field = (name: string) => fieldIn(block, name);
   const step = (field("step") ?? field("stage"))?.toLowerCase();
   const outcome = ALIASES[field("outcome")?.toLowerCase().replace(/[\s-]+/g, "_") ?? ""];
   if (!step || !outcome) return null;
@@ -35,7 +36,10 @@ export function parseTextReport(text: string | null | undefined, at: string): (S
   const summary = summaryStart ? block.slice(summaryStart.index + summaryStart[0].length).trim() : "";
   const question = field("question");
   const choice = field("choice");
+  // A model pick comes from its own lines above the summary, never from the summary's prose.
+  const header = summaryStart ? block.slice(0, summaryStart.index) : block;
+  const pick = { providerId: fieldIn(header, "providerId|provider"), model: fieldIn(header, "model"), reasoningLevel: fieldIn(header, "reasoningLevel|reasoning") };
   // Fall back to the message before the block when the summary is empty.
   const body = summary || text.slice(0, last.index).trim().slice(-8000);
-  return { ...(field("delivery") ? { delivery: field("delivery")! } : {}), step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), at, via: "text" };
+  return { ...(field("delivery") ? { delivery: field("delivery")! } : {}), step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), ...(pick.providerId || pick.model || pick.reasoningLevel ? { pick } : {}), at, via: "text" };
 }

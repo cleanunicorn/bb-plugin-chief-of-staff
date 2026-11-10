@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
-import { DEFAULT_WORKFLOW, fromStages, parseWorkflows, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type Workflow } from "../src/workflow";
+import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
 import { pipelineLine, stepPrompt } from "../src/prompts";
 
@@ -392,9 +392,27 @@ describe("model steps", () => {
     expect(validateWorkflow(flow)).toEqual([]);
   });
 
-  it("requires something to set", () => {
-    const empty = wf([{ id: "m", name: "Nothing", type: "model", next: ["a"] }, { id: "a", name: "A", type: "agent" }]);
+  it("requires something to set when fixed", () => {
+    const empty = wf([{ id: "m", name: "Nothing", type: "model", mode: "fixed", next: ["a"] }, { id: "a", name: "A", type: "agent" }]);
     expect(validateWorkflow(empty)).toEqual(["Nothing: set a provider, a model or a reasoning level"]);
+  });
+
+  it("writes down the inferred mode of steps saved before modes existed when parsed", () => {
+    const doc = { workflows: [{ id: "w", name: "W", steps: [
+      { id: "fixed", name: "Fixed", type: "model", providerId: "claude-code", next: ["auto"] },
+      { id: "auto", name: "Auto", type: "model", next: ["a"] },
+      { id: "a", name: "A", type: "agent" },
+    ] }], default: "w" };
+    const parsed = parseWorkflows(JSON.stringify(doc));
+    expect(parsed.ok && parsed.value.workflows[0]!.steps.map((s) => (s.type === "model" ? s.mode : null))).toEqual(["fixed", "auto", null]);
+    const stored = normalizeWorkflow(doc.workflows[0] as unknown as Workflow);
+    expect(stored.steps.map((s) => (s.type === "model" ? s.mode : null))).toEqual(["fixed", "auto", null]);
+  });
+
+  it("is fixed when it sets something and has no mode (saved before modes existed), automatic otherwise", () => {
+    expect(modelMode(flow.steps[0] as ModelStep)).toBe("fixed");
+    expect(modelMode(wf([{ id: "m", name: "M", type: "model" }]).steps[0] as ModelStep)).toBe("auto");
+    expect(modelMode(wf([{ id: "m", name: "M", type: "model", mode: "auto", model: "opus" }]).steps[0] as ModelStep)).toBe("auto");
   });
 
   it("keeps the settings for every later step until another model step changes a field", () => {
@@ -483,6 +501,101 @@ describe("an agent step that chooses the model", () => {
   });
 });
 
+describe("an automatic model step", () => {
+  const flow = wf([
+    { id: "pick", name: "Pick model", type: "model", mode: "auto", instructions: "Choose the best model for the job.", next: ["build"] },
+    { id: "build", name: "Build", type: "agent", writes: true, next: ["pin"] },
+    { id: "pin", name: "Pin", type: "model", model: "sonnet", next: ["review"] },
+    { id: "review", name: "Review", type: "agent" },
+  ]);
+  const picked = (pick: StepReport["pick"]): StepReport => ({ ...report("done", "Opus: risky change"), pick });
+
+  it("is valid with nothing set and is the default for a new model step", () => {
+    expect(validateWorkflow(flow)).toEqual([]);
+    expect(blankStep("model", "m", "Model")).toMatchObject({ mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS });
+  });
+
+  it("runs one read-only agent instead of completing instantly", () => {
+    const [started, fx] = run(itemFor(flow), { type: "start" });
+    expect(st(started)).toMatchObject({ pick: "running", build: "pending" });
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "pick", agent: 0, kind: "start" }]);
+    expect(agentWork(flow.steps[0])).toMatchObject({ writes: false, agents: 1, picksModel: true });
+    expect(agentWork(flow.steps[2])).toBeNull();
+  });
+
+  it("applies the agent's pick to later steps until a model step changes it", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const [after, fx] = run(started, ended("pick", picked({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" }), started));
+    expect(st(after)).toMatchObject({ pick: "done", build: "running" });
+    expect(agentFx(fx).map((e) => (e as { step: string }).step)).toEqual(["build"]);
+    expect(settingsFor(flow, "build", after.nodes)).toEqual({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high", complete: true });
+    expect(settingsFor(flow, "review", after.nodes)).toEqual({ providerId: "claude-code", model: "sonnet", reasoningLevel: "high", complete: true });
+  });
+
+  it("replaces everything set before it as a whole: no reasoning level leaks from an earlier step", () => {
+    const cheap = wf([
+      { id: "cheap", name: "Cheap chooser", type: "model", providerId: "claude-code", model: "haiku", reasoningLevel: "low", next: ["pick"] },
+      { id: "pick", name: "Pick", type: "model", mode: "auto", next: ["build"] },
+      { id: "build", name: "Build", type: "agent", writes: true },
+    ]);
+    const [started] = run(itemFor(cheap), { type: "start" });
+    expect(settingsFor(cheap, "pick", started.nodes)).toEqual({ providerId: "claude-code", model: "haiku", reasoningLevel: "low" });
+    const [after] = run(started, ended("pick", picked({ providerId: "codex", model: "gpt-5" }), started));
+    expect(settingsFor(cheap, "build", after.nodes)).toEqual({ providerId: "codex", model: "gpt-5", complete: true });
+  });
+
+  it("resolves a complete pick without the repository's or global values", () => {
+    const repo = { providerId: "claude-code", model: "sonnet", reasoningLevel: "low" };
+    const defaults = { providerId: "acp-cursor", model: "default-model" };
+    expect(resolveAgent({ providerId: "codex", model: "gpt-5", complete: true }, repo, defaults)).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: undefined });
+    expect(resolveAgent({ model: "opus" }, repo, defaults)).toEqual({ providerId: "claude-code", model: "opus", reasoningLevel: "low" });
+    expect(resolveAgent(undefined, {}, defaults)).toEqual({ providerId: "acp-cursor", model: "default-model", reasoningLevel: undefined });
+  });
+
+  it.each([
+    ["nothing", null],
+    ["only a reasoning level", { reasoningLevel: "high" }],
+    ["only a provider", { providerId: "codex" }],
+    ["only a model", { model: "gpt-5" }],
+  ])("asks a person when the agent picks %s", (_, pick) => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const [after] = run(started, ended("pick", picked(pick), started));
+    expect(after.nodes.pick!.status).toBe("waiting");
+    expect(after.nodes.pick!.waiting?.kind).toBe("escalation");
+    expect(settingsFor(flow, "build", after.nodes)).toEqual({});
+  });
+
+  it("tells the agent how to find the available models and how to report its pick", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const prompt = stepPrompt(started, agentWork(flow.steps[0])!, 0);
+    expect(prompt).toContain("Choose the best model for the job.");
+    expect(prompt).toContain("bb provider list --json");
+    expect(prompt).toContain("bb provider models <providerId> --json");
+    expect(prompt).toContain("`providerId`, `model` and `reasoningLevel`");
+    expect(prompt).toContain("leave `reasoningLevel` out entirely");
+    expect(prompt).not.toContain("or none if it lists none");
+    expect(prompt).toContain("Report the provider's `id` as `providerId`");
+    expect(prompt).toContain("providerId: <provider id>");
+    expect(prompt).toContain("This step is read-only");
+  });
+
+  it("uses the default instructions when the step has none", () => {
+    const bare = wf([{ id: "m", name: "M", type: "model", mode: "auto" }]);
+    expect(agentWork(bare.steps[0])?.instructions).toBe(DEFAULT_MODEL_INSTRUCTIONS);
+  });
+
+  it("reads the pick from a text report", () => {
+    const r = parseTextReport("## Step report\nstep: pick\noutcome: done\nprovider: codex\nmodel: gpt-5\nreasoning: high\nsummary: big", NOW.toISOString());
+    expect(r?.pick).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: "high" });
+    expect(parseTextReport("## Step report\nstep: x\noutcome: done\nsummary: y", NOW.toISOString())?.pick).toBeUndefined();
+    // The tool's parameter names work too.
+    const named = parseTextReport("## Step report\nstep: pick\noutcome: done\nproviderId: codex\nmodel: gpt-5\nreasoningLevel: high\nsummary: big", NOW.toISOString());
+    expect(named?.pick).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: "high" });
+    // Lines in the summary are prose, not a pick.
+    const prose = parseTextReport("## Step report\nstep: pick\noutcome: done\nproviderId: codex\nsummary: Compared options.\n- **Model**: sonnet was considered\n- reasoning: high is overkill", NOW.toISOString());
+    expect(prose?.pick).toEqual({ providerId: "codex", model: null, reasoningLevel: null });
+  });
+});
 
 describe("per-agent delivery retries", () => {
   it.each([false, true])("preserves thread-failure precedence over a sibling's interrupted send (legacy=%s)", (legacy) => {
