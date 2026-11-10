@@ -180,7 +180,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <div className="flex rounded-md border border-border p-0.5">
+          <div role="group" aria-label="View" className="flex rounded-md border border-border p-0.5">
             {(["canvas", "list"] as const).map((v) => (
               <button
                 key={v}

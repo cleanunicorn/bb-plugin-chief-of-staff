@@ -17,8 +17,8 @@ export function useSheetFocus<Fallback extends HTMLElement = HTMLElement>() {
     opener.current = element;
   }, []);
   const restore = useCallback(() => {
+    // The opener is kept: the dialog can ask to restore more than once (React StrictMode remounts it).
     (opener.current?.isConnected ? opener.current : fallback.current)?.focus();
-    opener.current = null;
   }, []);
   return { fallback, remember, restore };
 }
