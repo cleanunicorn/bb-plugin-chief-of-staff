@@ -29,6 +29,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22",
     "@types/react": "^19.0.0",
@@ -37,19 +38,24 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cron-parser": "^5.5.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.14.0",
     "hono": "^4.11.9",
     "jsdom": "^31.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.72.2",
     "vitest": "^5.1.0"
   },
   "description": "Engineering chief of staff for BB: watches agents, turns GitHub issues into agent work, delivers PRs, runs scheduled routines.",
   "scripts": {
+    "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build": "bb plugin build",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run lint && npm run typecheck && npm test"
   }
 }

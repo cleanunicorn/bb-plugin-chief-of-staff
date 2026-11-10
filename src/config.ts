@@ -87,7 +87,7 @@ export const SEED_REPOS = {
 
 export type ParseResult<T> = { ok: true; value: T; warnings: string[] } | { ok: false; error: string };
 
-function parseJsonDocument<T>(raw: string, schema: z.ZodType<T, any>, emptyValue: T): ParseResult<T> {
+function parseJsonDocument<T>(raw: string, schema: z.ZodType<T, unknown>, emptyValue: T): ParseResult<T> {
   const text = raw.trim();
   if (!text) return { ok: true, value: emptyValue, warnings: [] };
   let json: unknown;
