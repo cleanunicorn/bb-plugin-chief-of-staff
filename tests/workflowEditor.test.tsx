@@ -139,7 +139,38 @@ it("adds a model step that picks automatically, and switches it to fixed values"
   expect(fields("Model")).toEqual([]);
 
   await setValue(fields("How the model is chosen")[0]!, "fixed");
-  expect(editor.changed().workflows[0]!.steps.at(-1)).toMatchObject({ type: "model", mode: "fixed" });
+  // The default choosing text goes: a fixed step chooses nothing.
+  expect(editor.changed().workflows[0]!.steps.at(-1)).toMatchObject({ type: "model", mode: "fixed", instructions: "" });
+  editor.expectInputUntouched();
+  // Re-rendered fixed (its panel stays open), its text is notes that no agent sees.
+  await mount(<WorkflowsEditor doc={editor.changed()} onChange={editor.onChange} usedBy={{}} />);
+  expect(container.textContent).toContain("No agent sees them.");
+  expect(fields("Model")).toHaveLength(1);
+});
+
+it("keeps edited choosing instructions when an automatic model step is switched to fixed", async () => {
+  const doc: WorkflowsDocument = { default: "w", workflows: [{ id: "w", name: "W", steps: [
+    { id: "pick", name: "Pick", type: "model", mode: "auto", instructions: "Prefer Claude for UI work.", next: ["build"] } as Step,
+    { ...step(DEFAULT_DOCUMENT, "build"), next: [] },
+  ] }] };
+  const editor = await open(doc);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[0]!);
+  await setValue(fields("How the model is chosen")[0]!, "fixed");
+  expect(step(editor.changed(), "pick")).toMatchObject({ mode: "fixed", instructions: "Prefer Claude for UI work." });
+  editor.expectInputUntouched();
+});
+
+it("drops the default choosing text when an automatic model step becomes another type", async () => {
+  const doc: WorkflowsDocument = { default: "w", workflows: [{ id: "w", name: "W", steps: [
+    { id: "pick", name: "Pick", type: "model", mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS, next: ["build"] } as Step,
+    { ...step(DEFAULT_DOCUMENT, "build"), next: [] },
+  ] }] };
+  const editor = await open(doc);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[0]!);
+  await setValue(fields("Type")[0]!, "agent");
+  expect(step(editor.changed(), "pick")).toMatchObject({ type: "agent", instructions: "" });
   editor.expectInputUntouched();
 });
 

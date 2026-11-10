@@ -46,10 +46,15 @@ function newChoiceId(taken: string[]): string {
 }
 
 /** Change a step's type, keeping what all types share. */
+/** The default choosing text is only for an automatic Model step: drop it (unless edited) where nothing chooses. */
+const withoutChooserDefault = (instructions: string) => (instructions.trim() === DEFAULT_MODEL_INSTRUCTIONS ? "" : instructions);
+
 function retype(step: Step, type: StepType): Step {
   if (step.type === type) return step;
   const fresh = blankStep(type, step.id, step.name);
-  return { ...fresh, instructions: step.instructions, next: step.next, position: step.position } as Step;
+  // A new automatic Model step starts with its default choosing text when there is nothing to carry over.
+  const instructions = type === "model" && !step.instructions.trim() ? fresh.instructions : withoutChooserDefault(step.instructions);
+  return { ...fresh, instructions, next: step.next, position: step.position } as Step;
 }
 
 export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]> }) {
@@ -244,7 +249,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                 <Select
                   id={id}
                   value={modelMode(step)}
-                  onChange={(v) => set({ mode: v, ...(v === "auto" && !step.instructions.trim() ? { instructions: DEFAULT_MODEL_INSTRUCTIONS } : {}) })}
+                  onChange={(v) => set({ mode: v, instructions: v === "auto" ? step.instructions.trim() ? step.instructions : DEFAULT_MODEL_INSTRUCTIONS : withoutChooserDefault(step.instructions) })}
                   options={[
                     { value: "auto", label: "Automatically: an agent picks the best model" },
                     { value: "fixed", label: "Fixed: use the model I set" },
@@ -255,7 +260,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
           ) : null}
           <Field
             label={agentRuns ? "Instructions for the agent" : "Notes"}
-            hint={autoModel ? "How to choose, e.g. what matters for this kind of task. The agent also gets the task and the reports of the steps before it." : agentRuns ? <>What this step should achieve. Type <code>/</code> to use an agent skill. The agent also gets the reports of the steps before it.</> : "Shown in prompts that follow; optional."}
+            hint={autoModel ? "How to choose, e.g. what matters for this kind of task. The agent also gets the task and the reports of the steps before it." : agentRuns ? <>What this step should achieve. Type <code>/</code> to use an agent skill. The agent also gets the reports of the steps before it.</> : "Your own notes about this step, optional. No agent sees them."}
           >
             {(id) =>
               agentRuns ? (

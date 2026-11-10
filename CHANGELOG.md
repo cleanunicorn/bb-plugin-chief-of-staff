@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fixed Model steps no longer keep the choosing text.** Switching a Model
+  step from Automatically to Fixed, or to another step type, drops the default
+  "choose the best model" instructions (text you wrote stays). The Notes field
+  of Check, Ship and fixed Model steps now says what it is: your own notes,
+  which no agent sees.
+
 - **Model steps pick the model automatically.** A Model step no longer has to
   name a model: by default it runs a read-only agent that reads the task and
   the step's instructions (“choose the best model for the job”), looks at the
