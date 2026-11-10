@@ -482,8 +482,8 @@ On completion, Chief of Staff archives children before their parent when automat
 ## Development
 
 ```sh
-npm test            # vitest: workflow engine and validation, stats, fake plugin host e2e
-npm run typecheck
+npm run check       # lint + typecheck + tests, as CI runs them
+npm test            # vitest: workflow engine and validation, stats, fake plugin host e2e, UI components
 bb plugin dev       # build + install + reload on change
 ```
 
