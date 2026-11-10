@@ -12,7 +12,7 @@ import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
-import { agentWork, settingsFor, stepById, topoOrder, type AgentWork, type CheckStep, type ShipStep } from "./workflow";
+import { agentWork, isAuthoredAgent, settingsFor, stepById, topoOrder, type AgentWork, type CheckStep, type ShipStep } from "./workflow";
 import { itemParent, archiveOrder } from "./threadGroups";
 
 const OUTPUT_TAIL = 12_000;
@@ -495,9 +495,10 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, step: ShipStep, 
 }
 
 /** The report of the step right before `shipId`, when one agent wrote it (a "Title: …" line makes it the PR text). */
-function leadReport(item: WorkItem, shipId: string): string | null {
+export function leadReport(item: WorkItem, shipId: string): string | null {
   for (const s of item.workflow.steps) {
-    if (!s.next.includes(shipId) || s.type !== "agent") continue;
+    // An authored step only: a model-choosing agent's rationale is not PR text.
+    if (!s.next.includes(shipId) || !isAuthoredAgent(s)) continue;
     const r = item.nodes[s.id]?.reports.find(Boolean);
     if (r && /^\s*Title:/im.test(r.summary)) return r.summary;
   }
@@ -553,7 +554,7 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
     const reports = n.reports.filter(Boolean);
     if (!reports.length) continue;
     const body = reports.map((r, i) => (reports.length > 1 ? `**Agent ${i + 1}:** ${r!.summary}` : r!.summary)).join("\n\n");
-    sections.push(`### ${s.name}${s.type === "agent" && s.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
+    sections.push(`### ${s.name}${agentWork(s)?.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
   }
   const fallback = !sections.length && item.threadId ? await lastAssistantText(cos, item.threadId) : null;
   const lines = [

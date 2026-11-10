@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
-import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
+import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
 import { pipelineLine, stepPrompt } from "../src/prompts";
+import { stepForStage } from "../src/roster";
+import { leadReport } from "../src/delivery";
 
 const NOW = new Date("2026-11-07T10:00:00.000Z");
 
@@ -594,6 +596,41 @@ describe("an automatic model step", () => {
     // Lines in the summary are prose, not a pick.
     const prose = parseTextReport("## Step report\nstep: pick\noutcome: done\nproviderId: codex\nsummary: Compared options.\n- **Model**: sonnet was considered\n- reasoning: high is overkill", NOW.toISOString());
     expect(prose?.pick).toEqual({ providerId: "codex", model: null, reasoningLevel: null });
+  });
+});
+
+describe("authored agent steps versus a model-choosing agent", () => {
+  const flow = wf([
+    { id: "pick", name: "Pick model", type: "model", mode: "auto", next: ["review"] },
+    { id: "review", name: "Review", type: "agent", verdict: true, next: ["build"] },
+    { id: "build", name: "Build", type: "agent", writes: true, next: ["choose"] },
+    { id: "choose", name: "Choose again", type: "model", mode: "auto", next: ["ship"] },
+    { id: "ship", name: "Ship", type: "ship" },
+  ]);
+
+  it("tells them apart", () => {
+    expect(flow.steps.map((s) => [s.id, Boolean(agentWork(s)), isAuthoredAgent(s), isWriter(s)])).toEqual([
+      ["pick", true, false, false],
+      ["review", true, true, false],
+      ["build", true, true, true],
+      ["choose", true, false, false],
+      ["ship", false, false, false],
+    ]);
+  });
+
+  it("never maps an old stage onto the model-choosing agent", () => {
+    // "plan" was the first read-only agent; the chooser before it does not count.
+    const planned = wf([{ id: "pick", name: "Pick", type: "model", next: ["think"] }, { id: "think", name: "Think", type: "agent", next: ["build"] }, { id: "build", name: "Build", type: "agent", writes: true }]);
+    expect(stepForStage(planned, "plan")).toBe("think");
+    expect(stepForStage(flow, "plan")).toBe("review");
+    expect(stepForStage(flow, "review")).toBe("review");
+    expect(stepForStage(flow, "build")).toBe("build");
+  });
+
+  it("does not use a model-choosing agent's report as the PR text", () => {
+    const item = itemFor(flow);
+    item.nodes.choose!.reports = [{ ...report("done", "Title: Use Opus\n\nIt is a risky change."), pick: { providerId: "claude-code", model: "opus" } }];
+    expect(leadReport(item, "ship")).toBeNull();
   });
 });
 

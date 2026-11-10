@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fixed Model steps no longer keep the choosing text.** Switching a Model
+  step from Automatically to Fixed, or to another step type, drops the default
+  "choose the best model" instructions (text you wrote stays). The Notes field
+  of Check, Ship and fixed Model steps now says what it is: your own notes,
+  which no agent sees.
+
 - **Stale errors and old task snapshots.** A task's card no longer keeps
   showing an error such as `Cannot read properties of undefined (reading
   'length')` once its step recovered: on a running task the error is cleared

@@ -7,7 +7,7 @@ import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
-import { agentWork, describePick, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
+import { agentWork, describePick, isAuthoredAgent, isWriter, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
 
 export interface RosterStep {
   id: string;
@@ -222,20 +222,21 @@ export async function detectStalls(cos: Cos, actor: string): Promise<string[]> {
 }
 
 /** Map a pre-workflow stage name onto a step of the item's workflow. */
-function stepForStage(wf: Workflow, stage: string): string | undefined {
+export function stepForStage(wf: Workflow, stage: string): string | undefined {
   if (stepById(wf, stage)) return stage;
   const find = (pred: (s: Workflow["steps"][number]) => boolean) => topoOrder(wf).map((id) => stepById(wf, id)!).find(pred)?.id;
   switch (stage) {
+    // Old "plan"/"review" stages were authored agent steps, never a model-choosing agent.
     case "plan":
-      return find((s) => s.type === "agent" && !s.writes);
+      return find((s) => isAuthoredAgent(s) && !s.writes);
     case "verify":
       return find((s) => s.type === "check");
     case "review":
-      return find((s) => s.type === "agent" && s.verdict);
+      return find((s) => isAuthoredAgent(s) && s.verdict);
     case "ship":
       return find((s) => s.type === "ship");
     default:
-      return find((s) => s.type === "agent" && s.writes);
+      return find(isWriter);
   }
 }
 
