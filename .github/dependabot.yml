@@ -11,6 +11,10 @@ updates:
       # Stay on the Node line in .nvmrc, so the typecheck matches the runtime.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # Held back by @get-bb/plugin-sdk's peer range (^7.6.12); a newer major
+      # breaks `npm ci` with ERESOLVE. Lift this once the SDK widens the range.
+      - dependency-name: "@types/better-sqlite3"
+        update-types: ["version-update:semver-major"]
     groups:
       radix:
         patterns: ["@radix-ui/*"]
