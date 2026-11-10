@@ -159,17 +159,18 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
     <Sheet
       onClose={onClose}
       restoreFocus={restoreFocus}
-      // Escape undoes one thing at a time: full screen, then a focused step's selection, then the sheet.
+      // Escape undoes one thing at a time: full screen, then the selection of the focused step, then the sheet.
+      // The dialog sees Escape first (capture phase on the document). Stopping it there keeps React Flow's own
+      // Escape handling out: that blurs a selected step, and selects an unselected one.
       onEscapeKeyDown={(event) => {
+        const step = document.activeElement?.closest(".react-flow__node");
+        if (step) event.stopPropagation();
         if (expanded) {
           event.preventDefault();
           setExpanded(false);
-        } else if (selected && document.activeElement?.closest(".react-flow__node")) {
+        } else if (step?.classList.contains("selected")) {
           event.preventDefault();
           setSelected(null);
-          // React Flow blurs the step on the next frame; put focus back so the keyboard keeps its place.
-          const node = document.activeElement.closest<HTMLElement>(".react-flow__node");
-          requestAnimationFrame(() => requestAnimationFrame(() => node?.isConnected && node.focus({ preventScroll: true })));
         }
       }}
       className={cn("gap-3 p-4", expanded ? "h-dvh max-w-none rounded-none sm:rounded-none" : "h-[85dvh] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-6xl rounded-xl sm:rounded-xl")}

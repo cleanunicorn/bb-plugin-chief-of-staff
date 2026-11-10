@@ -54,6 +54,14 @@ it("makes a single-select group one tab stop that arrow keys move through", asyn
   await press("ArrowLeft");
   expect(state(radios())).toEqual(["-1", "0✓", "-1"]);
 
+  await press("End");
+  expect(document.activeElement).toBe(radios()[2]);
+  expect(state(radios())).toEqual(["-1", "-1", "0✓"]);
+  await press("Home");
+  expect(document.activeElement).toBe(radios()[0]);
+  await press("ArrowDown");
+  expect(state(radios())).toEqual(["-1", "0✓", "-1"]);
+
   // Activating the checked option still clears it, as a click always has.
   await act(async () => { radios()[1]!.click(); });
   expect(state(radios())).toEqual(["0", "-1", "-1"]);

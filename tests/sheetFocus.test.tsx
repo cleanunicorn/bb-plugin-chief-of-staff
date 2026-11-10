@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { RosterEntry } from "../src/roster";
+import { entry } from "./helpers/roster";
 import { DEFAULT_WORKFLOW } from "../src/workflow";
 import type { WorkflowCanvasProps } from "../components/cos/workflowCanvas";
 
@@ -24,18 +24,16 @@ vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
 // The canvas itself is covered in workflowCanvas.test.tsx; here it is a step and the full-screen control.
 vi.mock("../components/cos/workflowCanvas", async (original) => ({
   ...(await original<typeof import("../components/cos/workflowCanvas")>()),
-  WorkflowCanvas: ({ onSelect, onToggleExpanded, expanded }: WorkflowCanvasProps) => (
+  WorkflowCanvas: ({ onSelect, onToggleExpanded, expanded, selected }: WorkflowCanvasProps) => (
     <div data-canvas>
-      <button type="button" className="react-flow__node" onClick={() => onSelect?.("plan")}>Plan node</button>
+      <button type="button" className={`react-flow__node${selected === "plan" ? " selected" : ""}`} onClick={() => onSelect?.("plan")}>Plan node</button>
+      <button type="button" className="react-flow__node">Build node</button>
       <button type="button" onClick={onToggleExpanded}>{expanded ? "Exit full screen" : "Full screen"}</button>
     </div>
   ),
 }));
 import { PipelineTab } from "../app";
 
-function entry(extra: Partial<RosterEntry> = {}): RosterEntry {
-  return { id: "one", detail: "agent", status: "running", actor: "agent", occupiesCapacity: true, workflowName: "Delivery", steps: [], current: ["Build"], activity: "Build: agent working", waitingKind: null, repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadStatus: "working", threadTitle: "Build", branch: null, prNumber: null, prUrl: null, startedAt: new Date().toISOString(), lastActivityAt: null, stalled: false, fixAttempts: 0, retryCount: 0, lastError: null, waitingReason: null, providerId: null, model: null, source: "task", usage: null, ...extra };
-}
 const waiting = () => entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "question", waitingReason: "Which database?" });
 
 const container = document.createElement("div");
@@ -105,6 +103,14 @@ it("uses Escape to leave full screen, then to clear a focused step, then to clos
   expect(dialog()).not.toBeNull();
   expect(dialog()!.querySelector('[aria-label="Step details"]')).toBeNull();
 
+  await press("Escape");
+  expect(dialog()).toBeNull();
+});
+
+it("closes on Escape from a step that is not the selected one, keeping the selection out of it", async () => {
+  await click(button("Workflow", container));
+  await click(button("Plan node", dialog()!));
+  button("Build node", dialog()!).focus();
   await press("Escape");
   expect(dialog()).toBeNull();
 });

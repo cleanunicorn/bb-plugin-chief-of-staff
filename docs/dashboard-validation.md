@@ -67,16 +67,22 @@ Decisions worth knowing:
 - The sheets always use the centred dialog, never the swipe-to-close drawer.
 - A canvas selection that is an arrow or several steps leaves the open step
   panel alone, as before. Arrows are tab stops in the editor only.
+- In the workflow sheet, Escape on a step never reaches React Flow (the dialog
+  handles it first and stops it): React Flow would blur a selected step and
+  select an unselected one. Escape on the selected step clears it and keeps
+  focus there; Escape on any other step closes the sheet.
 - Switching the workflow sheet to List leaves full screen.
 
 Checks:
 
-- `npm run check` (193 tests in 20 files) and `npm run build` pass.
+- `npm run check` (196 tests in 21 files) and `npm run build` pass.
 - jsdom: `tests/sheetFocus.test.tsx` (focus in, Tab wrap, Escape order, focus
   return, fallback, rerun from the list), `tests/workflowCanvas.test.tsx` (the
   real React Flow canvas: Enter selects, Escape clears, a selection made by the
-  parent is not undone, node names), `tests/questionField.test.tsx`,
-  `tests/skillTextarea.test.tsx`.
+  parent is not undone, node names), `tests/workflowSheetCanvas.test.tsx` (the
+  real canvas inside the real sheet: Escape clears the selected step and keeps
+  focus on it, Escape from another step closes), `tests/questionField.test.tsx`
+  (arrow keys, Home, End), `tests/skillTextarea.test.tsx`.
 - Real browser (BetterWright, Chromium) at 1280 px and 390 px, keyboard only
   where possible, on the actual components with the built plugin CSS, fixture
   RPC data and a simulated host theme: both sheets open, trap Tab and return

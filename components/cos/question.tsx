@@ -313,15 +313,16 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
     if (q.multiSelect) onChange({ selected: value.selected.includes(v) ? value.selected.filter((s) => s !== v) : [...value.selected, v] });
     else onChange({ selected: value.selected[0] === v ? [] : [v] });
   };
-  // A single-select group is one tab stop (the checked option, else the first); arrow keys move through it and check.
+  // A single-select group is one tab stop (the checked option, else the first); arrow keys, Home and End move through it and check.
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const checkedIndex = q.options.findIndex((o) => value.selected.includes(o.value));
   const tabStop = Math.max(checkedIndex, 0);
   const onRadioKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
-    const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
-    if (!step) return;
+    const last = q.options.length - 1;
+    const target: Record<string, number> = { ArrowDown: index === last ? 0 : index + 1, ArrowRight: index === last ? 0 : index + 1, ArrowUp: index === 0 ? last : index - 1, ArrowLeft: index === 0 ? last : index - 1, Home: 0, End: last };
+    const next = target[event.key];
+    if (next === undefined) return;
     event.preventDefault();
-    const next = (index + step + q.options.length) % q.options.length;
     onChange({ selected: [q.options[next]!.value] });
     optionRefs.current[next]?.focus();
   };
