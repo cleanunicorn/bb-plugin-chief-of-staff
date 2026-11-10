@@ -150,6 +150,21 @@ export function agentWork(step: Step | undefined | null): AgentWork | null {
   };
 }
 
+/**
+ * A step the user authored as an Agent step, as opposed to the agent work an
+ * automatic Model step also runs (`agentWork`). Use it only where the agent's
+ * own content matters (legacy stage mapping, PR text), never to decide whether
+ * a step runs an agent.
+ */
+export function isAuthoredAgent(step: Step | undefined | null): step is AgentStep {
+  return step?.type === "agent";
+}
+
+/** Whether a step's agent changes code (runs in the task's builder thread). */
+export function isWriter(step: Step | undefined | null): boolean {
+  return Boolean(agentWork(step)?.writes);
+}
+
 /** The provider, model and reasoning level a step's agents run with; unset fields fall back to the repository's, then the global default. */
 export interface AgentSettings {
   providerId?: string;
@@ -488,14 +503,11 @@ export function parseWorkflows(raw: string): ParsedWorkflows {
  * A work item's stored workflow snapshot, with the defaults of fields added
  * since it was taken (e.g. `chooses`). Items keep the workflow they started
  * with across plugin updates, so code must never meet a step missing a field
- * its schema defaults. A step that no longer parses is kept as stored.
+ * its schema defaults, even in a step that no longer parses.
  */
 export function normalizeWorkflow(raw: Workflow): Workflow {
   if (!raw || !Array.isArray(raw.steps)) return raw;
-  return withModelModes({ ...raw, steps: raw.steps.map((s) => {
-    const parsed = stepSchema.safeParse(s);
-    return parsed.success ? parsed.data : s;
-  }) });
+  return withModelModes({ ...raw, steps: raw.steps.map(normalizeStep) });
 }
 
 /**
@@ -504,8 +516,63 @@ export function normalizeWorkflow(raw: Workflow): Workflow {
  * clearing the last value of a fixed step must not make it automatic.
  */
 export function withModelModes(wf: Workflow): Workflow {
-  if (!wf.steps.some((s) => s.type === "model" && !s.mode)) return wf;
-  return { ...wf, steps: wf.steps.map((s) => (s.type === "model" && !s.mode ? { ...s, mode: modelMode(s) } : s)) };
+  if (!wf.steps.some((s) => s && s.type === "model" && !s.mode)) return wf;
+  return { ...wf, steps: wf.steps.map((s) => (s && s.type === "model" && !s.mode ? { ...s, mode: modelMode(s) } : s)) };
+}
+
+const STEP_SCHEMAS: Record<string, z.ZodObject> = {
+  agent: agentStepSchema,
+  check: checkStepSchema,
+  ship: shipStepSchema,
+  model: modelStepSchema,
+};
+
+const jsType = (v: unknown) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
+
+/**
+ * A stored step, parsed by its schema; one that no longer parses (e.g. a limit
+ * changed since it was saved) is repaired field by field rather than kept as
+ * stored, so code never meets a missing or wrongly typed field. A field whose
+ * value is missing or of the wrong type gets its schema default, an invalid
+ * optional field is dropped, and array entries that no longer parse are
+ * dropped. Values of the right type that break a limit (a long instruction)
+ * are kept. Required fields without a default (id, name, command) are kept
+ * as stored. Never mutates the input.
+ */
+function normalizeStep(s: Workflow["steps"][number]): Workflow["steps"][number] {
+  if (!s || typeof s !== "object") return s;
+  const parsed = stepSchema.safeParse(s);
+  if (parsed.success) return parsed.data;
+  const out: Record<string, unknown> = { ...(s as Record<string, unknown>) };
+  const shape = STEP_SCHEMAS[String(out.type)]?.shape ?? { next: base.next };
+  for (const [key, field] of Object.entries(shape) as [string, z.ZodType][]) {
+    const own = field.safeParse(out[key]);
+    if (own.success) {
+      if (own.data !== undefined) out[key] = own.data;
+      continue;
+    }
+    const fallback = field.safeParse(undefined);
+    if (!fallback.success) continue; // required (id, name, command): kept as stored
+    const value = out[key];
+    if (fallback.data === undefined) {
+      delete out[key]; // optional (onFail, position, model, ...): an invalid value is dropped
+      continue;
+    }
+    if (Array.isArray(value) && Array.isArray(fallback.data)) {
+      const element = arrayElement(field);
+      out[key] = element ? value.filter((v) => element.safeParse(v).success) : fallback.data;
+    } else if (jsType(value) !== jsType(fallback.data)) {
+      out[key] = fallback.data;
+    }
+  }
+  const retry = stepSchema.safeParse(out);
+  return (retry.success ? retry.data : out) as Workflow["steps"][number];
+}
+
+/** The element schema of a (defaulted) array field. */
+function arrayElement(field: z.ZodType): z.ZodType | undefined {
+  const inner = field instanceof z.ZodDefault ? field.unwrap() : field;
+  return inner instanceof z.ZodArray ? (inner.element as z.ZodType) : undefined;
 }
 
 export function serializeWorkflows(doc: WorkflowsDocument): string {

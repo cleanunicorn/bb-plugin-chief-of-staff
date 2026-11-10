@@ -9,7 +9,7 @@
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
 import type { WaitingKind, WorkItem } from "./state";
-import { agentWork, chosenModel, descendants, finalSteps, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
+import { agentWork, chosenModel, descendants, finalSteps, isWriter, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
 
 export type ReportOutcome = "done" | "failed" | "needs_input";
 
@@ -166,7 +166,7 @@ export function initialNodes(wf: Workflow): Nodes {
 }
 
 const agentsOf = (step: Step) => agentWork(step)?.agents ?? 1;
-const limitOf = (step: Step) => (step.type === "agent" ? step.maxRounds : step.type === "model" ? 0 : step.maxAttempts);
+const limitOf = (step: Step) => agentWork(step)?.maxRounds ?? (step.type === "check" || step.type === "ship" ? step.maxAttempts : 0);
 const label = (item: WorkItem) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
 
 const WAIT_TITLE: Record<WaitingKind, string> = {
@@ -603,7 +603,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         patch.status = undefined;
         patch.lastError = null;
         patch.finishedAt = null;
-        const writer = wf.steps.find((s) => s.type === "agent" && s.writes && node(s.id)?.status !== "done" && node(s.id)?.status !== "pending");
+        const writer = wf.steps.find((s) => isWriter(s) && node(s.id)?.status !== "done" && node(s.id)?.status !== "pending");
         if (writer) {
           start(writer.id);
           for (const e of effects) if (e.type === "agent" && e.step === writer.id) e.fresh = true;
@@ -674,7 +674,27 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     effects.push(shipped ? { type: "notify", title: `Shipped: ${label(item)}`, body: (patch.prUrl ?? item.prUrl) ? `Done: ${patch.prUrl ?? item.prUrl}` : "Workflow finished." } : { type: "notify", title: `Finished: ${label(item)}`, body: "Every step of the workflow is done." });
   }
 
+  // ---- recovered? ----
+  // On a running item lastError holds an effect error, a merge wait reason or
+  // an engine error. An effect error stays while its retry is pending; once no
+  // step holds one (a delivery went through, a report arrived, the operator
+  // retried, or it was resolved before this rule existed) the error is
+  // history and must not stay on the card next to "agent working".
+  const finishing = item.status === "done" || patch.status === "done";
+  const mergeWait = wf.steps.some((s) => s.type === "ship" && (node(s.id)?.phase === "ready" || node(s.id)?.phase === "merging"));
+  if (!failed && !finishing && !mergeWait && item.lastError && !item.lastError.startsWith(ENGINE_ERROR_PREFIX) && !("lastError" in patch) && !Object.values(nodes).some(holdsRetry)) {
+    patch.lastError = null;
+  }
+
   return { nodes, patch, effects, journal };
+}
+
+/** How an error thrown by `transition` itself starts in lastError (see delivery). */
+export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";
+
+/** The step still has an effect error to retry or to show the operator. */
+function holdsRetry(n: NodeState | undefined): boolean {
+  return !!n && (!!n.retry || Object.keys(n.agentRetries ?? {}).length > 0 || n.waiting?.kind === "cos_error");
 }
 
 export const EFFECT_LABEL: Record<Effect["type"], string> = {

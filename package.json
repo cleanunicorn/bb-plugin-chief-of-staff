@@ -23,7 +23,7 @@
     ]
   },
   "dependencies": {
-    "@get-bb/plugin-sdk": "0.6.121",
+    "@get-bb/plugin-sdk": "0.6.132",
     "@radix-ui/react-slot": "^1.2.4",
     "@xyflow/react": "^12.12.1",
     "zod": "^4.6.5"
@@ -42,7 +42,7 @@
     "eslint": "^10.14.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.14.0",
-    "hono": "^4.11.9",
+    "hono": "^4.13.17",
     "jsdom": "^31.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
