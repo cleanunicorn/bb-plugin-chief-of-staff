@@ -18,6 +18,7 @@ import { STATUS } from "./viz";
 type Contract = typeof rpcContract;
 type QuestionItem = Extract<OpenQuestion, { kind: "question" }>["questions"][number];
 type Draft = Record<string, { selected: string[]; freeText: string }>;
+type Send = (answer: AnswerPayload, label: string) => Promise<boolean>;
 
 const textareaClass =
   "min-h-20 w-full rounded-md border border-input bg-transparent p-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
@@ -105,19 +106,27 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
       ? { width: resize.size.w, height: resize.size.h, maxWidth: "none", maxHeight: "none" }
       : undefined;
 
-  const send = async (answer: AnswerPayload, label: string) => {
+  /** True once the answer reached the agent; the input that sent it then clears, so it cannot go twice. */
+  const send: Send = async (answer, label) => {
     setSending(true);
     setError(null);
     try {
       await rpc.call("cos_answer", { id: itemId, answer });
-      setSent(label);
-      onAnswered();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setSending(false);
+      return false;
+    }
+    setSent(label);
+    onAnswered();
+    try {
       await view.refetch();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }
+    return true;
   };
 
   const data = view.data;
@@ -233,7 +242,7 @@ function Notice({ tone, text }: { tone: "good" | "critical"; text: string }) {
   );
 }
 
-function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: boolean; onSend: (answer: AnswerPayload, label: string) => void }) {
+function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: boolean; onSend: Send }) {
   if (q.kind === "question") return <QuestionForm q={q} sending={sending} onSend={onSend} />;
   if (q.kind === "approval") {
     return (
@@ -251,7 +260,7 @@ function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: bo
         ) : null}
         <div className="flex flex-wrap gap-2">
           {q.decisions.map((d) => (
-            <Button key={d} size="sm" variant={d === "deny" ? "outline" : "default"} disabled={sending} onClick={() => onSend({ kind: "approval", interactionId: q.interactionId, decision: d }, DECISION_LABEL[d])}>
+            <Button key={d} size="sm" variant={d === "deny" ? "outline" : "default"} disabled={sending} onClick={() => void onSend({ kind: "approval", interactionId: q.interactionId, decision: d }, DECISION_LABEL[d])}>
               {DECISION_LABEL[d]}
             </Button>
           ))}
@@ -281,17 +290,18 @@ function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: bo
   );
 }
 
-function QuestionForm({ q, sending, onSend }: { q: Extract<OpenQuestion, { kind: "question" }>; sending: boolean; onSend: (answer: AnswerPayload, label: string) => void }) {
-  const [draft, setDraft] = useState<Draft>(() => Object.fromEntries(q.questions.map((x) => [x.id, { selected: [], freeText: "" }])));
+function QuestionForm({ q, sending, onSend }: { q: Extract<OpenQuestion, { kind: "question" }>; sending: boolean; onSend: Send }) {
+  const empty = (): Draft => Object.fromEntries(q.questions.map((x) => [x.id, { selected: [], freeText: "" }]));
+  const [draft, setDraft] = useState<Draft>(empty);
   const missing = useMemo(() => q.questions.filter((x) => x.required && !draft[x.id]?.selected.length && !draft[x.id]?.freeText.trim()), [q, draft]);
   const update = (id: string, next: Partial<Draft[string]>) => setDraft((d) => ({ ...d, [id]: { ...d[id], ...next } }));
-  const submit = () => {
+  const submit = async () => {
     const answers = Object.fromEntries(
       q.questions
         .filter((x) => draft[x.id].selected.length || draft[x.id].freeText.trim())
         .map((x) => [x.id, draft[x.id].freeText.trim() ? { selected: draft[x.id].selected, freeText: draft[x.id].freeText.trim() } : { selected: draft[x.id].selected }]),
     );
-    onSend({ kind: "question", interactionId: q.interactionId, answers }, q.questions.length > 1 ? "answers" : "answer");
+    if (await onSend({ kind: "question", interactionId: q.interactionId, answers }, q.questions.length > 1 ? "answers" : "answer")) setDraft(empty());
   };
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-border p-4">
@@ -300,7 +310,7 @@ function QuestionForm({ q, sending, onSend }: { q: Extract<OpenQuestion, { kind:
       ))}
       <div className="flex items-center justify-end gap-2">
         {missing.length ? <span className="text-xs text-muted-foreground">{missing.length === 1 ? "1 answer needed" : `${missing.length} answers needed`}</span> : null}
-        <Button size="sm" disabled={sending || missing.length > 0} onClick={submit}>
+        <Button size="sm" disabled={sending || missing.length > 0} onClick={() => void submit()}>
           <Icon name="Send" fallback="Circle" aria-hidden /> {sending ? "Sending…" : "Send answer"}
         </Button>
       </div>
@@ -383,7 +393,7 @@ const DECISION_COPY: Record<string, { title: string; approve: string; back: stri
 };
 
 /** Approve and move on, or send it back with feedback. */
-function Decision({ data, sending, onSend }: { data: DecisionData; sending: boolean; onSend: (answer: AnswerPayload, label: string) => void }) {
+function Decision({ data, sending, onSend }: { data: DecisionData; sending: boolean; onSend: Send }) {
   const copy = DECISION_COPY[data.waitingKind ?? ""] ?? DECISION_COPY.escalation!;
   const [feedback, setFeedback] = useState("");
   return (
@@ -401,10 +411,12 @@ function Decision({ data, sending, onSend }: { data: DecisionData; sending: bool
         <textarea className={cn(textareaClass, "mt-1")} placeholder={copy.placeholder} value={feedback} disabled={sending} onChange={(e) => setFeedback(e.target.value)} />
       </label>
       <div className="flex flex-wrap justify-end gap-2">
-        <Button size="sm" variant="outline" disabled={sending || !feedback.trim()} onClick={() => onSend({ kind: "revise", feedback: feedback.trim() }, copy.back.toLowerCase())}>
+        <Button size="sm" variant="outline" disabled={sending || !feedback.trim()} onClick={async () => {
+          if (await onSend({ kind: "revise", feedback: feedback.trim() }, copy.back.toLowerCase())) setFeedback("");
+        }}>
           <Icon name="Undo2" fallback="Circle" aria-hidden /> {copy.back}
         </Button>
-        <Button size="sm" disabled={sending} onClick={() => onSend({ kind: "approve" }, copy.approve.toLowerCase())}>
+        <Button size="sm" disabled={sending} onClick={() => void onSend({ kind: "approve" }, copy.approve.toLowerCase())}>
           <Icon name="Check" fallback="Circle" aria-hidden /> {copy.approve}
         </Button>
       </div>
@@ -425,8 +437,12 @@ function Collapsible({ icon, title, markdown }: { icon: string; title: string; m
   );
 }
 
-function ReplyBox({ label, placeholder, sending, onSend }: { label: string; placeholder: string; sending: boolean; onSend: (text: string) => void }) {
+function ReplyBox({ label, placeholder, sending, onSend }: { label: string; placeholder: string; sending: boolean; onSend: (text: string) => Promise<boolean> }) {
   const [text, setText] = useState("");
+  const submit = async () => {
+    if (sending || !text.trim()) return;
+    if (await onSend(text.trim())) setText("");
+  };
   return (
     <div className="flex flex-col gap-2">
       <label className="text-xs font-medium text-muted-foreground">
@@ -438,12 +454,12 @@ function ReplyBox({ label, placeholder, sending, onSend }: { label: string; plac
           disabled={sending}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) onSend(text.trim());
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
           }}
         />
       </label>
       <div className="flex justify-end">
-        <Button size="sm" disabled={sending || !text.trim()} onClick={() => onSend(text.trim())}>
+        <Button size="sm" disabled={sending || !text.trim()} onClick={() => void submit()}>
           <Icon name="Send" fallback="Circle" aria-hidden /> {sending ? "Sending…" : "Send"}
         </Button>
       </div>
