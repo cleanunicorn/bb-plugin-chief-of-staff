@@ -1,5 +1,5 @@
 // Chief of Staff — BB plugin frontend entry: dashboard nav panel + settings section.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { UrlLink, definePluginApp, experimental_useRpcQuery, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
@@ -14,6 +14,8 @@ import { STEP_TYPE_META, WorkflowCanvas, liveTone, type LiveStatus } from "@/com
 import { modelMode, topoOrder, type Workflow } from "./src/workflow";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { QuestionSheet } from "@/components/cos/question";
@@ -276,7 +278,16 @@ type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
 function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
-  const [menu, setMenu] = useState(false);
+  const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+  // After a confirmed action the trigger is disabled until the call ends: focus it then.
+  const refocusTrigger = useRef(false);
+  useEffect(() => {
+    if (busy || !refocusTrigger.current) return;
+    refocusTrigger.current = false;
+    menuTrigger.current?.focus();
+  }, [busy]);
+  const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
@@ -286,7 +297,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       <header className="flex items-start gap-2">
         <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
+          <h3 className="text-sm font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{title}</h3>
           <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             <Icon name="FolderGit2" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             <span title={entry.repo}>
@@ -379,38 +390,46 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           </Button>
         ) : null}
         {!finished || entry.detail === "failed" ? (
-          <div className="relative ml-auto">
-            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="More actions" aria-expanded={menu} disabled={busy} onClick={() => setMenu((v) => !v)}>
-              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
-            </Button>
-            {menu ? (
-              <div role="menu" className="absolute right-0 bottom-full z-20 mb-1 flex w-44 flex-col rounded-lg border border-border p-1 shadow-md" style={{ background: "var(--popover, var(--card))" }} onMouseLeave={() => setMenu(false)}>
-                {(
-                  [
-                    ["retry", "Retry the stuck step", "RotateCcw"],
-                    ["mark_done", "Mark done", "CircleCheck"],
-                    ["mark_failed", "Mark failed", "CircleX"],
-                  ] as const
-                ).map(([action, label, icon]) => (
-                  <button
-                    key={action}
-                    role="menuitem"
-                    type="button"
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground hover:bg-state-hover"
-                    onClick={() => {
-                      setMenu(false);
-                      onAction(entry.id, action);
-                    }}
-                  >
-                    <Icon name={icon} fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
+                <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top">
+              <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
+                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Retry the stuck step
+              </DropdownMenuItem>
+              {/* The confirm lives on the card, not in the menu: the menu closes when an item is chosen. */}
+              <DropdownMenuItem onSelect={() => setConfirming("mark_done")}>
+                <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Mark done…
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
+                <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Mark failed…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirming !== null}
+        title={`Mark ‘${title}’ ${confirming === "mark_failed" ? "failed" : "done"}?`}
+        description="Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is."
+        confirmLabel={confirming === "mark_failed" ? "Mark failed" : "Mark done"}
+        tone={confirming === "mark_failed" ? "destructive" : undefined}
+        onConfirm={() => {
+          if (confirming) onAction(entry.id, confirming);
+          setConfirming(null);
+        }}
+        onCancel={() => setConfirming(null)}
+        restoreFocus={() => {
+          if (menuTrigger.current?.disabled) refocusTrigger.current = true;
+          else menuTrigger.current?.focus();
+        }}
+      />
     </article>
   );
 }

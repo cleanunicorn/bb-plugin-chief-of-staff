@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
+import { clickOutside, tick } from "./dom";
 
 const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -32,7 +33,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); mocks.paused = false; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.call.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -120,4 +121,105 @@ it("preserves global pause and resume alongside the redesigned task overview", a
   expect(container.textContent).toContain("Chief of Staff is paused");
   await act(async () => button("Resume everything").click());
   expect(mocks.call).toHaveBeenLastCalledWith("cos_set_paused", { paused: false });
+});
+
+// ---------- More actions menu and confirmations ----------
+
+const menuItems = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+const menuItem = (label: string) => menuItems().find((el) => el.textContent?.trim().startsWith(label))!;
+const confirmDialog = () => document.body.querySelector<HTMLElement>('[role="dialog"]');
+const bodyButton = (label: string) => Array.from(document.body.querySelectorAll("button")).find((b) => b.textContent?.trim() === label)!;
+const keydown = (target: Element, key: string) => act(async () => { target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
+const moreActions = () => container.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+/** Radix menus open on pointerdown or the keyboard, not on click. */
+const openMenu = async () => {
+  moreActions().focus();
+  await keydown(moreActions(), "Enter");
+  await tick();
+};
+const actionCalls = () => mocks.call.mock.calls.filter(([method]) => method === "cos_item_action");
+
+it("opens More actions from the keyboard, moves through it with arrows, and closes on Escape", async () => {
+  mocks.entries = [entry()];
+  await mount();
+  await openMenu();
+  expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…", "Mark failed…"]);
+  expect(document.activeElement).toBe(menuItems()[0]);
+  await keydown(document.activeElement!, "ArrowDown");
+  await tick();
+  expect(document.activeElement).toBe(menuItems()[1]);
+  await keydown(document.activeElement!, "Escape");
+  await tick();
+  expect(document.body.querySelector('[role="menu"]')).toBeNull();
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("closes More actions on a click outside", async () => {
+  mocks.entries = [entry()];
+  await mount();
+  await openMenu();
+  await clickOutside(container.querySelector("h2")!);
+  expect(document.body.querySelector('[role="menu"]')).toBeNull();
+});
+
+it("asks before marking a task done, and sends it once on confirm", async () => {
+  mocks.entries = [entry()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Mark done").click());
+  await tick();
+  expect(document.body.querySelector('[role="menu"]')).toBeNull();
+  expect(actionCalls()).toHaveLength(0);
+  expect(confirmDialog()?.textContent).toContain("Mark ‘Fix login’ done?");
+  await act(async () => bodyButton("Mark done").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "mark_done" }]]);
+  expect(confirmDialog()).toBeNull();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("sends nothing when marking failed is cancelled", async () => {
+  mocks.entries = [entry()];
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Mark failed").click());
+  await tick();
+  expect(confirmDialog()?.textContent).toContain("Mark ‘Fix login’ failed?");
+  await act(async () => bodyButton("Cancel").click());
+  await tick(5);
+  expect(confirmDialog()).toBeNull();
+  expect(mocks.call).not.toHaveBeenCalled();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("retries the stuck step from the menu at once, without asking", async () => {
+  mocks.entries = [entry()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Retry the stuck step").click());
+  await tick();
+  expect(confirmDialog()).toBeNull();
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "retry" }]]);
+});
+
+it("keeps Approve and Resume on the card to one click", async () => {
+  mocks.entries = [
+    entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Review the plan" }),
+    entry({ id: "two", issueTitle: "Repair deploy", detail: "waiting_on_human", status: "waiting on human", waitingKind: "stalled" }),
+  ];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  const [first, second] = Array.from(container.querySelectorAll("article"));
+  await act(async () => Array.from(first!.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Approve")!.click());
+  await act(async () => Array.from(second!.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Resume")!.click());
+  expect(confirmDialog()).toBeNull();
+  expect(actionCalls()).toEqual([
+    ["cos_item_action", { id: "one", action: "approve" }],
+    ["cos_item_action", { id: "two", action: "retry" }],
+  ]);
 });
