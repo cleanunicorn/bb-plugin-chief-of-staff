@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Clearer workflow canvas controls.** Fit view uses a crosshair, and a
+  labeled Full screen button uses outward arrows. The expanded workflow editor
+  has its own Exit full screen bar with an Escape hint, separated from step
+  removal; the task workflow sheet also has a labeled exit button.
+
 - **Fixed Model steps no longer keep the choosing text.** Switching a Model
   step from Automatically to Fixed, or to another step type, drops the default
   "choose the best model" instructions (text you wrote stays). The Notes field
