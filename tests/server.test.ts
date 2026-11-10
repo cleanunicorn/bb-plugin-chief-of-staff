@@ -815,6 +815,38 @@ describe("chief-of-staff server", () => {
     expect(spawns().at(-1)).toMatchObject({ title: expect.stringMatching(/^Review:/), providerId: "codex", model: "sonnet", reasoningLevel: "high" });
   });
 
+  const autoFlow = {
+    workflows: [
+      {
+        id: "auto",
+        name: "Auto",
+        steps: [
+          { id: "pick", name: "Pick model", type: "model", mode: "auto", instructions: "This is the task. Choose the best model for the job.", next: ["build"] },
+          { id: "build", name: "Build", type: "agent", writes: true, instructions: "Build it." },
+        ],
+      },
+    ],
+    default: "auto",
+  };
+  const useAutoFlow = (repo: Record<string, unknown> = {}) =>
+    host.harness.behavior.setSettings({ workflow: JSON.stringify(autoFlow), repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, workflow: "auto", ...repo }] }), defaultModel: "default-model" });
+
+  it("recovers a lost spawn response for an automatic model step", async () => {
+    let metadata: Record<string, unknown> = {};
+    host.harness.inspection.sdk.stub("threads.spawn", async (args) => {
+      metadata = (args as { pluginMetadata: Record<string, unknown> }).pluginMetadata;
+      throw new Error("created the thread, lost the response");
+    });
+    host.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => metadata as never);
+    await useAutoFlow();
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    expect(metadata.step).toBe("pick");
+    expect((await roster()).waitingKind).toBe("cos_error");
+    expect(JSON.stringify(await host.harness.behavior.callAgentTool("cos_report", {
+      step: "pick", delivery: metadata.delivery, outcome: "done", summary: "Opus", providerId: "claude-code", model: "claude-opus-5-5",
+    }, { threadId: "thr_lost" }))).toContain("Recorded");
+  });
+
   it("runs an automatic model step as an agent and spawns later steps with its pick", async () => {
     const flow = {
       workflows: [
