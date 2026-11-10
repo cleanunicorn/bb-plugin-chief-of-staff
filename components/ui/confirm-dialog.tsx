@@ -2,8 +2,8 @@
 // owns `open` and closes it from onConfirm / onCancel. Escape and a click
 // outside count as Cancel. Always the centred dialog, never the swipe drawer,
 // so there is no swipe-to-close path to handle.
-import { useRef } from "react";
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import type { ReactNode, RefObject } from "react";
 import { Button } from "./button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./dialog";
 import { CompactViewportOverrideProvider } from "./hooks/use-compact-viewport";
@@ -60,4 +60,22 @@ export function ConfirmDialog({ open, title, description, confirmLabel, cancelLa
       </Dialog>
     </CompactViewportOverrideProvider>
   );
+}
+
+/**
+ * Returns a focus function for a ConfirmDialog's `restoreFocus`: it focuses `ref`
+ * now, or once `disabled` turns false. A confirmed action usually disables the
+ * button that asked while its call runs, and a disabled button cannot take focus.
+ */
+export function useFocusWhenEnabled(ref: RefObject<HTMLButtonElement | null>, disabled: boolean): () => void {
+  const pending = useRef(false);
+  useEffect(() => {
+    if (disabled || !pending.current) return;
+    pending.current = false;
+    ref.current?.focus();
+  }, [disabled, ref]);
+  return useCallback(() => {
+    if (ref.current?.disabled) pending.current = true;
+    else ref.current?.focus();
+  }, [ref]);
 }

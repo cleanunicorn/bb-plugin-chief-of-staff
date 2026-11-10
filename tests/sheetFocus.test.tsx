@@ -125,6 +125,8 @@ it("runs a step again from the step list, without the canvas", async () => {
   expect(rows[1]!.getAttribute("aria-pressed")).toBe("true");
   expect(dialog()!.querySelector('[aria-label="Step details"]')!.textContent).toContain("needs approval");
   await click(button("Run again from here", dialog()!));
+  expect(mocks.call).not.toHaveBeenCalled();
+  await click(button("Run again", document.querySelectorAll<HTMLElement>('[role="dialog"]')[1]!));
   expect(mocks.call).toHaveBeenCalledWith("cos_item_action", { id: "one", action: "rerun_step", step: "build" });
 
   // The selection survives switching views.

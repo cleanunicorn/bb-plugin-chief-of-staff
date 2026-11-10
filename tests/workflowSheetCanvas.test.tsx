@@ -6,11 +6,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { stubReactFlowDom } from "./helpers/reactFlow";
 
-const mocks = vi.hoisted(() => ({ entries: [] as unknown[], workflow: {} as unknown }));
+const mocks = vi.hoisted(() => ({ entries: [] as unknown[], workflow: {} as unknown, call: vi.fn() }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => ({ toThread: vi.fn() }),
-  useRpc: () => ({ call: vi.fn() }),
+  useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
   experimental_useRpcQuery: ({ method }: { method: string }) => ({
     data: method === "cos_roster" ? { entries: mocks.entries } : method === "cos_item_workflow" ? mocks.workflow : method === "cos_stats" ? { doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [] } : { paused: false, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 } },
@@ -38,6 +38,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   stubReactFlowDom();
   mocks.entries = [entry()];
+  mocks.call.mockReset().mockResolvedValue({});
   mocks.workflow = { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {} };
   document.body.append(container);
   root = createRoot(container);
@@ -66,4 +67,41 @@ it("closes on Escape from an unselected step instead of selecting it", async () 
   node("build").focus();
   await press("Escape");
   expect(dialog()).toBeNull();
+});
+
+const button = (label: string) => Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.trim() === label)!;
+const confirm = () => document.querySelectorAll<HTMLElement>('[role="dialog"]')[1] ?? null;
+const reruns = () => mocks.call.mock.calls.filter(([, input]) => (input as { action?: string }).action === "rerun_step");
+
+it("asks before running a step again; Escape closes only the question", async () => {
+  node("build").focus();
+  await press("Enter");
+  await act(async () => button("Run again from here").click());
+  expect(reruns()).toHaveLength(0);
+  expect(confirm()?.textContent).toContain("Run ‘Build’ again?");
+  // Build is followed by Review and Ship in the default workflow.
+  expect(confirm()?.textContent).toContain("This resets Build and the 2 steps after it");
+
+  await press("Escape");
+  expect(confirm()).toBeNull();
+  expect(dialog()).not.toBeNull();
+  expect(details()).toBe("Build");
+  expect(reruns()).toHaveLength(0);
+
+  await act(async () => button("Run again from here").click());
+  await act(async () => button("Run again").click());
+  expect(reruns()).toEqual([["cos_item_action", { id: "one", action: "rerun_step", step: "build" }]]);
+  expect(confirm()).toBeNull();
+  expect(dialog()).not.toBeNull();
+});
+
+it("sends nothing when running a step again is cancelled, and keeps the sheet as it was", async () => {
+  node("ship").focus();
+  await press("Enter");
+  await act(async () => button("Run again from here").click());
+  expect(confirm()?.textContent).toContain("This resets Ship and runs it again.");
+  await act(async () => button("Cancel").click());
+  expect(confirm()).toBeNull();
+  expect(details()).toBe("Ship");
+  expect(mocks.call).not.toHaveBeenCalled();
 });

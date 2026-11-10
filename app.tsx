@@ -11,10 +11,10 @@ import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, StatusPi
 import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
-import { modelMode, topoOrder, type Workflow } from "./src/workflow";
+import { descendants, modelMode, topoOrder, type Workflow } from "./src/workflow";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
@@ -128,6 +128,13 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
   return <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{entry.activity}</p>;
 }
 
+/** What "Run again from here" resets: the step and every step reachable after it (the server's rerun does the same). */
+function rerunEffect(wf: Workflow, stepId: string, name: string): string {
+  const after = descendants(wf, stepId).size - 1;
+  if (after <= 0) return `This resets ${name} and runs it again.`;
+  return `This resets ${name} and the ${after === 1 ? "step" : `${after} steps`} after it, then runs ${name} again.`;
+}
+
 /** One task's workflow, coloured live, as a canvas or a list of steps, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
@@ -137,6 +144,9 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<"canvas" | "list">("canvas");
   const [busy, setBusy] = useState(false);
+  const [confirmRerun, setConfirmRerun] = useState(false);
+  const rerunButton = useRef<HTMLButtonElement>(null);
+  const focusRerun = useFocusWhenEnabled(rerunButton, busy);
   const [error, setError] = useState<string | null>(null);
   const data = view.data;
   const wf = data?.workflow as Workflow | undefined;
@@ -260,9 +270,21 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
             <span>
               <b className="text-foreground">{step.name}</b> · {statusLabel(step.id)}
             </span>
-            <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => void rerun()}>
+            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun(true)}>
               <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
             </Button>
+            <ConfirmDialog
+              open={confirmRerun}
+              title={`Run ‘${step.name}’ again?`}
+              description={rerunEffect(wf!, step.id, step.name)}
+              confirmLabel="Run again"
+              onConfirm={() => {
+                setConfirmRerun(false);
+                void rerun();
+              }}
+              onCancel={() => setConfirmRerun(false)}
+              restoreFocus={focusRerun}
+            />
           </>
         ) : (
           <span>Select a step to run it (and everything after it) again.</span>
@@ -280,13 +302,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const navigate = useBbNavigate();
   const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
-  // After a confirmed action the trigger is disabled until the call ends: focus it then.
-  const refocusTrigger = useRef(false);
-  useEffect(() => {
-    if (busy || !refocusTrigger.current) return;
-    refocusTrigger.current = false;
-    menuTrigger.current?.focus();
-  }, [busy]);
+  const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
@@ -425,10 +441,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           setConfirming(null);
         }}
         onCancel={() => setConfirming(null)}
-        restoreFocus={() => {
-          if (menuTrigger.current?.disabled) refocusTrigger.current = true;
-          else menuTrigger.current?.focus();
-        }}
+        restoreFocus={focusTrigger}
       />
     </article>
   );
