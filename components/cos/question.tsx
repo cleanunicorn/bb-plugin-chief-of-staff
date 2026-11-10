@@ -3,7 +3,7 @@
 // message, failing checks), then answers through cos_answer or opens the thread.
 // Workflow gates (a step waiting for approval, a step out of attempts) get a decision
 // block: approve and move on, or send it back to the agent with feedback.
-import { useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Markdown, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
@@ -13,6 +13,7 @@ import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
 import { Sheet } from "./sheet";
 import { DialogClose, DialogTitle } from "../ui/dialog";
+import { ConfirmDialog } from "../ui/confirm-dialog";
 import { STATUS } from "./viz";
 
 type Contract = typeof rpcContract;
@@ -89,6 +90,19 @@ function useResizableSize() {
   return { size, maximized, setMaximized, startDrag, resizeBy, reset: () => { setMaximized(false); save(null); } };
 }
 
+/** Inputs report whether they hold unsent text, so closing the sheet can ask before dropping it. */
+const DraftContext = createContext<(key: string, dirty: boolean) => void>(() => {});
+
+function useReportDraft(dirty: boolean) {
+  const key = useId();
+  const report = useContext(DraftContext);
+  useEffect(() => {
+    report(key, dirty);
+    // Unmounting (the question was answered, the sheet moved on) leaves nothing to lose.
+    return () => report(key, false);
+  }, [key, dirty, report]);
+}
+
 const DECISION_LABEL = { allow_once: "Allow once", allow_for_session: "Allow for session", deny: "Deny" } as const;
 
 export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { itemId: string; onClose: () => void; onAnswered: () => void; restoreFocus?: () => void }) {
@@ -130,16 +144,32 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
   };
 
   const data = view.data;
+  const drafts = useRef(new Set<string>());
+  const reportDraft = useCallback((key: string, dirty: boolean) => {
+    if (dirty) drafts.current.add(key);
+    else drafts.current.delete(key);
+  }, []);
+  // What to do once an unsent draft is discarded: close, or close and open the thread.
+  const [discarding, setDiscarding] = useState<"close" | "thread" | null>(null);
+  const leave = (to: "close" | "thread") => {
+    onClose();
+    if (to === "thread" && data?.threadId) navigate.toThread(data.threadId);
+  };
+  const requestLeave = (to: "close" | "thread") => {
+    if (drafts.current.size === 0) return true;
+    setDiscarding(to);
+    return false;
+  };
   const openThread = () => {
     if (!data?.threadId) return;
-    onClose();
-    navigate.toThread(data.threadId);
+    if (requestLeave("thread")) leave("thread");
   };
 
   return (
     <Sheet
       ref={panelRef}
       onClose={onClose}
+      onRequestClose={() => requestLeave("close")}
       restoreFocus={restoreFocus}
       style={panelStyle}
       // A bottom sheet on phones, centred from `sm` up.
@@ -172,6 +202,7 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
         </div>
       </header>
 
+      <DraftContext.Provider value={reportDraft}>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
         {view.error ? <Notice tone="critical" text={view.error.message} /> : null}
         {!data && !view.error ? <p className="text-sm text-muted-foreground">Reading the thread…</p> : null}
@@ -199,6 +230,21 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
           </>
         ) : null}
       </div>
+      </DraftContext.Provider>
+      <ConfirmDialog
+        open={discarding !== null}
+        title="Discard your reply?"
+        description="It has not been sent, and what you typed will be lost."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        tone="destructive"
+        onConfirm={() => {
+          const to = discarding;
+          setDiscarding(null);
+          if (to) leave(to);
+        }}
+        onCancel={() => setDiscarding(null)}
+      />
 
       <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
         <p className="text-xs text-muted-foreground">{data?.decidable ? "Decisions move the task through its workflow; feedback goes to the agent's thread." : "Answers go straight to the agent's thread."}</p>
@@ -294,6 +340,7 @@ function QuestionForm({ q, sending, onSend }: { q: Extract<OpenQuestion, { kind:
   const empty = (): Draft => Object.fromEntries(q.questions.map((x) => [x.id, { selected: [], freeText: "" }]));
   const [draft, setDraft] = useState<Draft>(empty);
   const missing = useMemo(() => q.questions.filter((x) => x.required && !draft[x.id]?.selected.length && !draft[x.id]?.freeText.trim()), [q, draft]);
+  useReportDraft(Object.values(draft).some((d) => d.selected.length > 0 || d.freeText.trim() !== ""));
   const update = (id: string, next: Partial<Draft[string]>) => setDraft((d) => ({ ...d, [id]: { ...d[id], ...next } }));
   const submit = async () => {
     const answers = Object.fromEntries(
@@ -396,6 +443,7 @@ const DECISION_COPY: Record<string, { title: string; approve: string; back: stri
 function Decision({ data, sending, onSend }: { data: DecisionData; sending: boolean; onSend: Send }) {
   const copy = DECISION_COPY[data.waitingKind ?? ""] ?? DECISION_COPY.escalation!;
   const [feedback, setFeedback] = useState("");
+  useReportDraft(feedback.trim() !== "");
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-border p-3">
       <SectionTitle icon={data.waitingKind === "approval" ? "ClipboardCheck" : "Hand"} text={data.stepName ? `${data.stepName}: ${copy.title}` : copy.title} />
@@ -439,6 +487,7 @@ function Collapsible({ icon, title, markdown }: { icon: string; title: string; m
 
 function ReplyBox({ label, placeholder, sending, onSend }: { label: string; placeholder: string; sending: boolean; onSend: (text: string) => Promise<boolean> }) {
   const [text, setText] = useState("");
+  useReportDraft(text.trim() !== "");
   const submit = async () => {
     if (sending || !text.trim()) return;
     if (await onSend(text.trim())) setText("");

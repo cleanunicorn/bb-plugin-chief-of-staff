@@ -172,3 +172,20 @@ it("closes the question sheet and opens the thread", async () => {
   expect(dialog()).toBeNull();
   expect(mocks.navigate.toThread).toHaveBeenCalledWith("thread-1");
 });
+
+it("asks before closing the question sheet over a draft, then returns focus to the question button", async () => {
+  const opener = button("Open the question", container);
+  await click(opener);
+  const reply = dialog()!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(reply, "Half a th");
+    reply.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await press("Escape");
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+  await click(button("Discard", document));
+  await settle();
+  expect(dialog()).toBeNull();
+  expect(document.activeElement).toBe(opener);
+  expect(document.body.style.pointerEvents).not.toBe("none");
+});
