@@ -12,9 +12,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The bb CLI that builds the plugin (npm package bb-app, bin bb).
+  BB_APP_VERSION: 0.49.0
+
 jobs:
   check:
-    name: Typecheck and test
+    name: Lint, typecheck and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -24,8 +28,25 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+  build:
+    name: Build plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: bb plugin build
+        run: npx --yes --package="bb-app@${BB_APP_VERSION}" bb plugin build
+      - name: Check the bundles exist
+        run: test -s dist/server.js && test -s dist/app.js && test -s dist/host.js
 
   audit:
     name: Dependency audit
