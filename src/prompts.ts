@@ -5,7 +5,7 @@
 // agent says explicitly when the step is finished.
 import type { NodeState, Nodes } from "./machine";
 import type { WorkItem } from "./state";
-import { depths, predecessors, stepById, topoOrder, type AgentStep, type AgentWork, type Workflow } from "./workflow";
+import { depths, isAuthoredAgent, isWriter, predecessors, stepById, topoOrder, type AgentStep, type AgentWork, type Workflow } from "./workflow";
 
 export const REPORT_TOOL = "cos_report";
 const CONTEXT_MAX = 8_000;
@@ -137,7 +137,7 @@ export function splitTitle(summary: string): { title: string | null; body: strin
 /** The step a builder-thread turn belongs to: the code-writing step that is running. */
 export function runningWriter(item: WorkItem): AgentStep | null {
   for (const s of item.workflow.steps) {
-    if (s.type === "agent" && s.writes && ["running", "waiting"].includes(item.nodes[s.id]?.status ?? "")) return s;
+    if (isAuthoredAgent(s) && isWriter(s) && ["running", "waiting"].includes(item.nodes[s.id]?.status ?? "")) return s;
   }
   return null;
 }

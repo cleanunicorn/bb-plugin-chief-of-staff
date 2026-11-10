@@ -150,6 +150,21 @@ export function agentWork(step: Step | undefined | null): AgentWork | null {
   };
 }
 
+/**
+ * A step the user authored as an Agent step, as opposed to the agent work an
+ * automatic Model step also runs (`agentWork`). Use it only where the agent's
+ * own content matters (legacy stage mapping, PR text), never to decide whether
+ * a step runs an agent.
+ */
+export function isAuthoredAgent(step: Step | undefined | null): step is AgentStep {
+  return step?.type === "agent";
+}
+
+/** Whether a step's agent changes code (runs in the task's builder thread). */
+export function isWriter(step: Step | undefined | null): boolean {
+  return Boolean(agentWork(step)?.writes);
+}
+
 /** The provider, model and reasoning level a step's agents run with; unset fields fall back to the repository's, then the global default. */
 export interface AgentSettings {
   providerId?: string;
