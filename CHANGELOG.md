@@ -39,6 +39,17 @@
   through with the arrow keys. Status wording in the workflow sheet now matches
   the canvas (“needs approval” instead of “waiting”).
 
+- **Removal confirmations stay with their item.** Confirming "Remove?" on a
+  repository or model choice no longer leaves the next one armed (a double
+  click removed two), and selecting another step on the canvas no longer
+  carries the confirmation over to it.
+
+- **Deleting a workflow moves its repositories to the default.** The
+  confirmation names the repositories that will use the default workflow, and
+  their choice is cleared, so a later workflow with the same name no longer
+  picks them up silently. A repository already pointing at a deleted workflow
+  shows it as "Missing" in its workflow selector.
+
 - **Dashboard works on phones.** Dashboard tabs stay on one line; the
   Repositories panel no longer scrolls sideways; pull request titles wrap
   instead of being cut short; the activity feed stacks each entry and expands
