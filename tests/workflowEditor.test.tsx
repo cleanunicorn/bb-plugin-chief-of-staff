@@ -237,3 +237,14 @@ it("deletes an unused workflow without a notice", async () => {
   await click(button("Delete Hotfix"));
   expect(container.textContent).not.toContain("will use the default workflow");
 });
+
+it("does not carry an armed Delete from one workflow to the next", async () => {
+  const third = { ...SECOND, id: "canary", name: "Canary" };
+  await mount(<Stateful initial={{ default: "default", workflows: [DEFAULT_WORKFLOW, SECOND, third] }} />);
+  await click(button("Hotfix"));
+  await click(button("Delete Hotfix"));
+  expect(container.textContent).toContain("Remove?");
+  await click(button("Canary"));
+  expect(container.textContent).not.toContain("Remove?");
+  expect(button("Delete Canary")).toBeTruthy();
+});

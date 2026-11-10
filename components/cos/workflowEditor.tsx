@@ -143,6 +143,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete }: { doc: Work
         ) : null}
         {doc.workflows.length > 1 && wf.id !== doc.default ? (
           <ConfirmRemove
+            key={wf.id}
             label={`Delete ${wf.name}`}
             notice={usedBy[wf.id]?.length ? `${usedBy[wf.id]!.join(", ")} will use the default workflow.` : undefined}
             onConfirm={() => {
