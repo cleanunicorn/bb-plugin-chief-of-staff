@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import { GitHubError } from "./github";
-import { deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
+import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
@@ -97,7 +97,11 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     await recordEngineError(cos, item, event, error, actor);
     throw error;
   }
-  const patch = { ...applyTransition(item, t.nodes, t.patch), queuedEvent: null };
+  // The engine handled the kind of event it failed on: that error is history.
+  // (Only the same kind: another event succeeding says nothing about it, and
+  // clearing it would re-notify on the next failed attempt.)
+  const recovered = item.lastError?.startsWith(`${ENGINE_ERROR_PREFIX}${event.type}:`) && !("lastError" in t.patch) ? { lastError: null } : {};
+  const patch = { ...applyTransition(item, t.nodes, t.patch), ...recovered, queuedEvent: null };
   const proposed = { ...item, ...patch };
   // No await between counting and storing the reservation: dispatches for other
   // items observe it before running their own admission check.
@@ -134,7 +138,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
         cos.bb.log.warn(`post-delivery bookkeeping failed for ${item.id}/${effect.type === "agent" ? effect.step : ""}: ${message}`);
         continue;
       }
-      cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}`, actor });
+      cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}${await stackOf(cos, error)}`, actor });
       if (effect.type !== "notify") await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message, uncertain: delivery?.id !== beforeDelivery && (delivery?.state === "sending" || delivery?.state === "uncertain") }, actor);
     }
   }
@@ -150,13 +154,18 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
  */
 async function recordEngineError(cos: Cos, item: WorkItem, event: MachineEvent, error: unknown, actor: string): Promise<void> {
   const message = await cos.safe(error instanceof Error ? error.message : String(error));
-  const lastError = `Chief of Staff could not handle ${event.type}: ${message}`.slice(0, 1000);
+  const lastError = `${ENGINE_ERROR_PREFIX}${event.type}: ${message}`.slice(0, 1000);
   if (item.lastError === lastError) return;
   cos.store.updateWorkItem(item.id, { lastError });
-  cos.store.log({ level: "error", kind: "engine", repo: item.repo, workItemId: item.id, message: lastError, actor });
+  cos.store.log({ level: "error", kind: "engine", repo: item.repo, workItemId: item.id, message: lastError + (await stackOf(cos, error)), actor });
   cos.invalidate();
   const label = item.issueNumber ? `${item.repo}#${item.issueNumber}` : item.repo;
   await cos.notify(`Chief of Staff needs help: ${label}`, `${lastError}\nIt retries every minute; the agent's report is kept.`, item.threadId ?? undefined).catch(() => undefined);
+}
+
+/** An error's stack trace for the activity log (on its own lines, redacted), or "". */
+async function stackOf(cos: Cos, error: unknown): Promise<string> {
+  return error instanceof Error && error.stack ? `\n${(await cos.safe(error.stack)).slice(0, 4000)}` : "";
 }
 
 /** Replay events received during a pause in their original order. */

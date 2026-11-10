@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
@@ -631,6 +631,66 @@ describe("authored agent steps versus a model-choosing agent", () => {
     const item = itemFor(flow);
     item.nodes.choose!.reports = [{ ...report("done", "Title: Use Opus\n\nIt is a risky change."), pick: { providerId: "claude-code", model: "opus" } }];
     expect(leadReport(item, "ship")).toBeNull();
+  });
+});
+
+describe("stale errors (#24)", () => {
+  const send = (agent: number): Effect => ({ type: "agent", step: "review", agent, kind: "start" });
+
+  it("clears an effect error once the prompt is delivered and keeps it while a sibling still retries", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    for (const agent of [0, 1]) [item] = run(item, { type: "effect_error", step: "review", effect: send(agent), message: "Cannot read properties of undefined (reading 'length')" });
+    expect(item.lastError).toContain("reading 'length'");
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    expect(item.lastError).toContain("reading 'length'");
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 1, round: 1 });
+    expect([item.status, item.lastError]).toEqual(["agent", null]);
+  });
+
+  it("clears an effect error when the operator retries the step", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
+      { id: "test", name: "Tests", type: "check", command: "npm test" },
+    ]);
+    let item = itemFor(w);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    for (let n = 0; n <= DEFAULT_POLICY.maxInfraRetries; n++) [item] = run(item, { type: "effect_error", step: "test", effect: { type: "check", step: "test" }, message: "deadline exceeded" });
+    expect([item.waitingKind, item.lastError]).toEqual(["cos_error", "deadline exceeded"]);
+    [item] = run(item, { type: "retry" });
+    expect(item.lastError).toBeNull();
+  });
+
+  it("clears an error left on a running step whose retry was already resolved (cards stuck before the fix)", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    item = { ...item, lastError: "Cannot read properties of undefined (reading 'length')" };
+    expect(item.nodes.review).toMatchObject({ status: "running", retry: null });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    expect([item.status, item.lastError]).toEqual(["agent", null]);
+  });
+
+  it("keeps a merge wait reason, an engine error and the error of a failed item", () => {
+    const ship = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "merge" },
+    ]);
+    let item = itemFor(ship, { prNumber: 7 });
+    item = { ...item, nodes: { build: { ...item.nodes.build!, status: "done", round: 1 }, ship: { ...item.nodes.ship!, status: "running", round: 1, phase: "ci" } } };
+    [item] = run(item, { type: "ci_passing" });
+    [item] = run(item, { type: "merge_waiting", reason: "Waiting for an approving review" });
+    [item] = run(item, { type: "delivery_ack", step: "build", agent: 0, round: 1 });
+    expect([item.nodes.ship!.phase, item.lastError]).toEqual(["ready", "Waiting for an approving review"]);
+
+    let review = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [review] = run(review, { type: "start" });
+    const engine = `${ENGINE_ERROR_PREFIX}turn_ended: boom`;
+    expect(run({ ...review, lastError: engine }, { type: "delivery_ack", step: "review", agent: 0, round: 1 })[0].lastError).toBe(engine);
+
+    [review] = run(review, { type: "thread_failed", step: null, agent: 0, error: "provider crashed" });
+    [review] = run(review, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    expect([review.status, review.lastError]).toEqual(["failed", "provider crashed"]);
   });
 });
 

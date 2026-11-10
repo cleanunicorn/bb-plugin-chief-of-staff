@@ -631,7 +631,27 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     effects.push(shipped ? { type: "notify", title: `Shipped: ${label(item)}`, body: (patch.prUrl ?? item.prUrl) ? `Done: ${patch.prUrl ?? item.prUrl}` : "Workflow finished." } : { type: "notify", title: `Finished: ${label(item)}`, body: "Every step of the workflow is done." });
   }
 
+  // ---- recovered? ----
+  // On a running item lastError holds an effect error, a merge wait reason or
+  // an engine error. An effect error stays while its retry is pending; once no
+  // step holds one (a delivery went through, a report arrived, the operator
+  // retried, or it was resolved before this rule existed) the error is
+  // history and must not stay on the card next to "agent working".
+  const finishing = item.status === "done" || patch.status === "done";
+  const mergeWait = wf.steps.some((s) => s.type === "ship" && (node(s.id)?.phase === "ready" || node(s.id)?.phase === "merging"));
+  if (!failed && !finishing && !mergeWait && item.lastError && !item.lastError.startsWith(ENGINE_ERROR_PREFIX) && !("lastError" in patch) && !Object.values(nodes).some(holdsRetry)) {
+    patch.lastError = null;
+  }
+
   return { nodes, patch, effects };
+}
+
+/** How an error thrown by `transition` itself starts in lastError (see delivery). */
+export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";
+
+/** The step still has an effect error to retry or to show the operator. */
+function holdsRetry(n: NodeState | undefined): boolean {
+  return !!n && (!!n.retry || Object.keys(n.agentRetries ?? {}).length > 0 || n.waiting?.kind === "cos_error");
 }
 
 export const EFFECT_LABEL: Record<Effect["type"], string> = {
