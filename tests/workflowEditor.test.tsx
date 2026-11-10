@@ -142,3 +142,17 @@ it("adds a model step that picks automatically, and switches it to fixed values"
   expect(editor.changed().workflows[0]!.steps.at(-1)).toMatchObject({ type: "model", mode: "fixed" });
   editor.expectInputUntouched();
 });
+
+it("keeps a model step saved before modes existed fixed while its last value is cleared", async () => {
+  const legacy: WorkflowsDocument = { default: "w", workflows: [{ id: "w", name: "W", steps: [
+    { id: "pin", name: "Pin", type: "model", instructions: "", next: ["build"], providerId: "claude-code" } as Step,
+    { ...step(DEFAULT_DOCUMENT, "build"), next: [] },
+  ] }] };
+  const editor = await open(legacy);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[0]!);
+  await setValue(fields("Agent (provider)")[0]!, "");
+  const pin = step(editor.changed(), "pin");
+  expect(pin).toMatchObject({ type: "model", mode: "fixed", providerId: undefined });
+  editor.expectInputUntouched();
+});

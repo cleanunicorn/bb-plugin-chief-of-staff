@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
-import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, fromStages, modelMode, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
+import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
 import { pipelineLine, stepPrompt } from "../src/prompts";
 
@@ -395,6 +395,18 @@ describe("model steps", () => {
   it("requires something to set when fixed", () => {
     const empty = wf([{ id: "m", name: "Nothing", type: "model", mode: "fixed", next: ["a"] }, { id: "a", name: "A", type: "agent" }]);
     expect(validateWorkflow(empty)).toEqual(["Nothing: set a provider, a model or a reasoning level"]);
+  });
+
+  it("writes down the inferred mode of steps saved before modes existed when parsed", () => {
+    const doc = { workflows: [{ id: "w", name: "W", steps: [
+      { id: "fixed", name: "Fixed", type: "model", providerId: "claude-code", next: ["auto"] },
+      { id: "auto", name: "Auto", type: "model", next: ["a"] },
+      { id: "a", name: "A", type: "agent" },
+    ] }], default: "w" };
+    const parsed = parseWorkflows(JSON.stringify(doc));
+    expect(parsed.ok && parsed.value.workflows[0]!.steps.map((s) => (s.type === "model" ? s.mode : null))).toEqual(["fixed", "auto", null]);
+    const stored = normalizeWorkflow(doc.workflows[0] as unknown as Workflow);
+    expect(stored.steps.map((s) => (s.type === "model" ? s.mode : null))).toEqual(["fixed", "auto", null]);
   });
 
   it("is fixed when it sets something and has no mode (saved before modes existed), automatic otherwise", () => {

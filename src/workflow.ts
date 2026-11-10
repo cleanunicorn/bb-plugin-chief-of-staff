@@ -481,7 +481,7 @@ export function parseWorkflows(raw: string): ParsedWorkflows {
   if (!parsed.success) return { ok: false, error: issues(parsed.error) };
   const problems = validateDocument(parsed.data);
   if (problems.length) return { ok: false, error: problems.join("; ") };
-  return { ok: true, value: parsed.data, legacy: null, warnings: [] };
+  return { ok: true, value: { ...parsed.data, workflows: parsed.data.workflows.map(withModelModes) }, legacy: null, warnings: [] };
 }
 
 /**
@@ -492,10 +492,20 @@ export function parseWorkflows(raw: string): ParsedWorkflows {
  */
 export function normalizeWorkflow(raw: Workflow): Workflow {
   if (!raw || !Array.isArray(raw.steps)) return raw;
-  return { ...raw, steps: raw.steps.map((s) => {
+  return withModelModes({ ...raw, steps: raw.steps.map((s) => {
     const parsed = stepSchema.safeParse(s);
     return parsed.success ? parsed.data : s;
-  }) };
+  }) });
+}
+
+/**
+ * Write down the mode of model steps saved before modes existed (inferred by
+ * `modelMode`), so editing their fields can no longer change what they are:
+ * clearing the last value of a fixed step must not make it automatic.
+ */
+export function withModelModes(wf: Workflow): Workflow {
+  if (!wf.steps.some((s) => s.type === "model" && !s.mode)) return wf;
+  return { ...wf, steps: wf.steps.map((s) => (s.type === "model" && !s.mode ? { ...s, mode: modelMode(s) } : s)) };
 }
 
 export function serializeWorkflows(doc: WorkflowsDocument): string {

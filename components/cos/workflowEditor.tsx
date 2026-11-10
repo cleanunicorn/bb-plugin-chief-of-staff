@@ -316,9 +316,9 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
           {step.type === "model" && !autoModel ? (
             <div className="flex flex-col gap-2">
               <div className={two}>
-                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code.">{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined })} placeholder="keep current" mono />}</Field>
-                <Field label="Model">{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined })} placeholder="keep current" mono />}</Field>
-                <Field label="Reasoning level">{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined })} placeholder="keep current" mono />}</Field>
+                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code.">{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
+                <Field label="Model">{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
+                <Field label="Reasoning level">{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
               </div>
             </div>
           ) : null}
