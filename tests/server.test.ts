@@ -295,6 +295,20 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject(outcome === "done" ? { detail: "done" } : { waitingKind: "question" });
   });
 
+  it("logs the stack of a failed send and clears the error once the agent reports (#24)", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    host.harness.inspection.sdk.stub("threads.send", async () => { throw new TypeError("Cannot read properties of undefined (reading 'length')"); });
+    await idle();
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0];
+    const effectLog = store.listLog({ workItemId: item.id }).find((e) => e.kind === "effect");
+    expect(effectLog?.message).toMatch(/^agent failed: .*reading 'length'\)\nTypeError[\s\S]*\n\s+at /);
+    expect((await roster()).lastError).toContain("reading 'length'");
+    const token = store.getWorkItem(item.id)!.nodes.build.deliveries![0].id;
+    await idle(`## Step report\nstep: build\ndelivery: ${token}\noutcome: done\nsummary: implemented`);
+    expect(await roster()).toMatchObject({ detail: "done", lastError: null });
+  });
+
   it("recovers a lost spawn response using exact plugin metadata and its report token", async () => {
     let metadata: Record<string, unknown> = {};
     host.harness.inspection.sdk.stub("threads.spawn", async (args) => {
@@ -1019,6 +1033,25 @@ describe("chief-of-staff server", () => {
       expect(await roster()).toMatchObject({ detail: "done", lastError: null });
     });
 
+    it("runs items whose stored steps no longer pass validation", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      const db = host.bb.storage.database();
+      const row = db.prepare("SELECT id, workflow_json FROM work_items").get() as { id: string; workflow_json: string };
+      const wf = JSON.parse(row.workflow_json) as { steps: Record<string, unknown>[] };
+      for (const step of wf.steps) {
+        delete step.chooses;
+        step.instructions = "x".repeat(20_001); // over today's limit
+      }
+      db.prepare("UPDATE work_items SET workflow_json = ? WHERE id = ?").run(JSON.stringify(wf), row.id);
+
+      const loaded = new StateStore(db).getWorkItem(row.id)!;
+      expect(loaded.workflow.steps.find((s) => s.type === "agent")).toMatchObject({ chooses: [], next: expect.any(Array) });
+      await report("build");
+      await idle();
+      expect(ranChecks()).toBe(1);
+      expect(await roster()).toMatchObject({ detail: "done", lastError: null });
+    });
+
     it("keeps the agent's report when handling its turn end fails, says so, and moves on at the next sweep", async () => {
       await host.harness.behavior.callRpc("cos_intake_now", {});
       await report("build");
@@ -1032,10 +1065,14 @@ describe("chief-of-staff server", () => {
       const alerts = () => JSON.stringify(host.harness.inspection.sdk.callsTo("plugins.callRpc")).split("Chief of Staff needs help").length - 1;
       expect(alerts()).toBe(1);
 
+      const engineLog = new StateStore(host.bb.storage.database()).listLog({ workItemId: stuck.id }).find((e) => e.kind === "engine");
+      expect(engineLog?.message).toMatch(/reading 'length'\)\n.*TypeError[\s\S]*\n\s+at /);
+
       await sweep();
       expect(ranChecks()).toBe(1);
       expect(sentTexts()).toHaveLength(0); // the report was kept: no nudge
-      expect(await roster()).toMatchObject({ detail: "done" });
+      // Handled now: the error must not stay on the card.
+      expect(await roster()).toMatchObject({ detail: "done", lastError: null });
     });
 
     it("reads a turn end again when it was marked handled but the step never moved", async () => {
