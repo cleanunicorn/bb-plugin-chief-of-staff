@@ -36,7 +36,8 @@ export function ConfirmDialog({ open, title, description, confirmLabel, cancelLa
       <Dialog open={open} onOpenChange={(next) => !next && answer(false)}>
         <DialogContent
           hideCloseButton
-          className="max-w-md"
+          // Inset from the screen edges on phones, like the sheets.
+          className="w-[calc(100%-2rem)] max-w-md rounded-lg"
           onOpenAutoFocus={(event) => {
             answered.current = false;
             event.preventDefault();
@@ -66,13 +67,16 @@ export function ConfirmDialog({ open, title, description, confirmLabel, cancelLa
  * Returns a focus function for a ConfirmDialog's `restoreFocus`: it focuses `ref`
  * now, or once `disabled` turns false. A confirmed action usually disables the
  * button that asked while its call runs, and a disabled button cannot take focus.
+ * The deferred focus is skipped when focus has moved somewhere else in the meantime.
  */
 export function useFocusWhenEnabled(ref: RefObject<HTMLButtonElement | null>, disabled: boolean): () => void {
   const pending = useRef(false);
   useEffect(() => {
     if (disabled || !pending.current) return;
     pending.current = false;
-    ref.current?.focus();
+    // Only if focus is still lost: the user may have moved on while the action ran.
+    const active = document.activeElement;
+    if (!active || active === document.body) ref.current?.focus();
   }, [disabled, ref]);
   return useCallback(() => {
     if (ref.current?.disabled) pending.current = true;

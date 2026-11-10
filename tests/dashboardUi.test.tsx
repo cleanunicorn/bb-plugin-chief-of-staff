@@ -173,6 +173,7 @@ it("asks before marking a task done, and sends it once on confirm", async () => 
   expect(document.body.querySelector('[role="menu"]')).toBeNull();
   expect(actionCalls()).toHaveLength(0);
   expect(confirmDialog()?.textContent).toContain("Mark ‘Fix login’ done?");
+  expect(confirmDialog()!.contains(document.activeElement)).toBe(true);
   await act(async () => bodyButton("Mark done").click());
   await tick(5);
   expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "mark_done" }]]);
@@ -244,4 +245,20 @@ it("keeps a task's buttons disabled while its own action runs, whatever finishes
 
   await act(async () => pending.get("two")!());
   expect([approve(1).disabled, more(1).disabled]).toEqual([false, false]);
+});
+
+it("does not pull focus back to More actions if it moved on while the action ran", async () => {
+  mocks.entries = [entry()];
+  let finish!: () => void;
+  mocks.call.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Mark failed").click());
+  await tick();
+  await act(async () => bodyButton("Mark failed").click());
+  await tick(5);
+  const elsewhere = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "New task")!;
+  elsewhere.focus();
+  await act(async () => finish());
+  expect(document.activeElement).toBe(elsewhere);
 });
