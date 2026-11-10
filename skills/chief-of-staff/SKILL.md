@@ -22,8 +22,8 @@ call the `cos_report` tool with that `step` id, an `outcome` (`done`;
 pass the `choice` id you pick (a text report uses a `choice:` line). If your
 step chooses the model, find what is available with `bb provider list --json`
 and `bb provider models <providerId> --json`, and pass the `providerId`,
-`model` and `reasoningLevel` you pick (`provider:`, `model:`, `reasoning:`
-lines in a text report). Then end
+`model` and `reasoningLevel` you pick (`providerId:`, `model:` and
+`reasoningLevel:` lines before `summary:` in a text report). Then end
 your turn. When the prompt includes a delivery id, pass it as `delivery` (or
 put `delivery:` before `summary:` in the text report). This associates the
 report with the current prompt, including recovery after a lost send response.

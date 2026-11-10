@@ -63,7 +63,7 @@ function contract(step: AgentWork): string[] {
     `step: ${step.id}`,
     `outcome: done`,
     ...(picks ? [`choice: <id of the model you pick>`] : []),
-    ...(auto ? [`provider: <provider id>`, `model: <model id>`, `reasoning: <one of the model's reasoning levels; leave this line out if it lists none>`] : []),
+    ...(auto ? [`providerId: <provider id>`, `model: <model id>`, `reasoningLevel: <one of the model's reasoning levels; leave this line out if it lists none>`] : []),
     `summary: <your result>`,
     "```",
   ];

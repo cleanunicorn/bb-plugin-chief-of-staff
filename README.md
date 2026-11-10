@@ -231,8 +231,8 @@ exists, so a reviewer sees exactly what was built.
 **Automatic model steps.** A new Model step picks automatically: a read-only agent gets the task, the
 reports of the steps before it and the step's instructions (by default “choose the best model for the job”),
 lists what is available with `bb provider list` and `bb provider models <provider>`, and reports the provider,
-model and reasoning level it picks (`providerId`, `model`, `reasoningLevel` in `cos_report`; `provider:`, `model:`,
-`reasoning:` lines in a text report). Its reasoning goes into the step report, and the task's workflow view shows
+model and reasoning level it picks (`providerId`, `model`, `reasoningLevel` in `cos_report`; `providerId:`, `model:`,
+`reasoningLevel:` lines before `summary:` in a text report). Its reasoning goes into the step report, and the task's workflow view shows
 the pick. Before any code exists it runs in the project's own checkout, so it creates no worktree. If it picks
 nothing, the step waits for you: approve to continue with the current model, or send it
 instructions. The choosing agent itself runs with the settings in effect before the step, so put a fixed Model step

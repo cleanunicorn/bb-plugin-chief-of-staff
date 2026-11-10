@@ -575,6 +575,7 @@ describe("an automatic model step", () => {
     expect(prompt).toContain("leave `reasoningLevel` out entirely");
     expect(prompt).not.toContain("or none if it lists none");
     expect(prompt).toContain("Report the provider's `id` as `providerId`");
+    expect(prompt).toContain("providerId: <provider id>");
     expect(prompt).toContain("This step is read-only");
   });
 
@@ -587,6 +588,12 @@ describe("an automatic model step", () => {
     const r = parseTextReport("## Step report\nstep: pick\noutcome: done\nprovider: codex\nmodel: gpt-5\nreasoning: high\nsummary: big", NOW.toISOString());
     expect(r?.pick).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: "high" });
     expect(parseTextReport("## Step report\nstep: x\noutcome: done\nsummary: y", NOW.toISOString())?.pick).toBeUndefined();
+    // The tool's parameter names work too.
+    const named = parseTextReport("## Step report\nstep: pick\noutcome: done\nproviderId: codex\nmodel: gpt-5\nreasoningLevel: high\nsummary: big", NOW.toISOString());
+    expect(named?.pick).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: "high" });
+    // Lines in the summary are prose, not a pick.
+    const prose = parseTextReport("## Step report\nstep: pick\noutcome: done\nproviderId: codex\nsummary: Compared options.\n- **Model**: sonnet was considered\n- reasoning: high is overkill", NOW.toISOString());
+    expect(prose?.pick).toEqual({ providerId: "codex", model: null, reasoningLevel: null });
   });
 });
 
