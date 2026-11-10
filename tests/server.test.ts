@@ -815,6 +815,43 @@ describe("chief-of-staff server", () => {
     expect(spawns().at(-1)).toMatchObject({ title: expect.stringMatching(/^Review:/), providerId: "codex", model: "sonnet", reasoningLevel: "high" });
   });
 
+  it("runs an automatic model step as an agent and spawns later steps with its pick", async () => {
+    const flow = {
+      workflows: [
+        {
+          id: "auto",
+          name: "Auto",
+          steps: [
+            { id: "pick", name: "Pick model", type: "model", mode: "auto", instructions: "This is the task. Choose the best model for the job.", next: ["build"] },
+            { id: "build", name: "Build", type: "agent", writes: true, instructions: "Build it." },
+          ],
+        },
+      ],
+      default: "auto",
+    };
+    const repos = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, workflow: "auto" }] });
+    await host.harness.behavior.setSettings({ workflow: JSON.stringify(flow), repos, defaultModel: "default-model" });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    type Spawn = { title: string; prompt: string; providerId?: string; model?: string; reasoningLevel?: string };
+    const spawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").map((c) => c[0] as Spawn);
+
+    expect(spawns()).toHaveLength(1);
+    expect(spawns()[0]).toMatchObject({ title: "Pick model: cos/issue-12-fix-login", model: "default-model" });
+    expect(spawns()[0]!.prompt).toContain("Choose the best model for the job.");
+    expect(spawns()[0]!.prompt).toContain("bb provider list --json");
+
+    // The pick is required.
+    const refused = await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "x" }, { threadId: "thr_pick-model" });
+    expect(JSON.stringify(refused)).toContain("This step chooses the model");
+    await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "Touches auth: strongest model.", providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" }, { threadId: "thr_pick-model" });
+    await idle("ok", "thr_pick-model");
+
+    expect(spawns().at(-1)).toMatchObject({ title: "cos/issue-12-fix-login", providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" });
+    const id = (await roster()).id as string;
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id }) as { live: Record<string, { picked?: string | null }> };
+    expect(view.live.pick?.picked).toBe("claude-code · claude-opus-5-5 · high");
+  });
+
   describe("archiving threads when the workflow is done", () => {
     const buildThenReview = {
       workflows: [

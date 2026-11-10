@@ -3,7 +3,7 @@
 // document and leaves the one it was given untouched. The canvas is replaced by
 // a button that selects a step; its own handlers are not covered here.
 import { afterEach, expect, it, vi } from "vitest";
-import { DEFAULT_DOCUMENT, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
+import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
 import { button, click, container, fields, mount, setValue, unmount } from "./dom";
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ data: { skills: [] }, error: null, refetch: vi.fn() }) }));
@@ -122,5 +122,23 @@ it("makes another workflow the default, and deletes one after confirmation", asy
   expect(editor.onChange).toHaveBeenCalledTimes(1);
   await click(button("Remove"));
   expect(editor.changed()).toEqual({ default: "default", workflows: [DEFAULT_WORKFLOW] });
+  editor.expectInputUntouched();
+});
+
+it("adds a model step that picks automatically, and switches it to fixed values", async () => {
+  const editor = await open();
+  await click(button("List"));
+  await click(button("Model step at the end"));
+  const doc = editor.changed();
+  expect(doc.workflows[0]!.steps.at(-1)).toMatchObject({ id: "new-model", type: "model", mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS });
+
+  // Re-render with the new document (the parent owns it) and open the step's panel.
+  await mount(<WorkflowsEditor doc={doc} onChange={editor.onChange} usedBy={{}} />);
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]")).at(-1)!);
+  expect(container.textContent).toContain("An agent reads the task and your instructions");
+  expect(fields("Model")).toEqual([]);
+
+  await setValue(fields("How the model is chosen")[0]!, "fixed");
+  expect(editor.changed().workflows[0]!.steps.at(-1)).toMatchObject({ type: "model", mode: "fixed" });
   editor.expectInputUntouched();
 });

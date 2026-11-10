@@ -12,7 +12,7 @@ import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
-import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
+import { agentWork, settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
 import { itemParent, archiveOrder } from "./threadGroups";
 
 const OUTPUT_TAIL = 12_000;
@@ -257,8 +257,8 @@ async function runEffect(cos: Cos, itemId: string, effect: Effect, actor: string
   if (effect.type !== "agent") return;
   const repo = await cos.repo(item.repo);
   if (!repo) throw new Error(`repo ${item.repo} is no longer configured`);
-  const step = stepById(item.workflow, effect.step);
-  if (!step || step.type !== "agent") throw new Error(`step ${effect.step} is not an agent step`);
+  const step = agentWork(stepById(item.workflow, effect.step));
+  if (!step) throw new Error(`step ${effect.step} is not an agent step`);
   await promptAgent(cos, item, repo, step, effect, actor);
 }
 

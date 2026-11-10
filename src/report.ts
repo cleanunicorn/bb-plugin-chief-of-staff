@@ -35,7 +35,8 @@ export function parseTextReport(text: string | null | undefined, at: string): (S
   const summary = summaryStart ? block.slice(summaryStart.index + summaryStart[0].length).trim() : "";
   const question = field("question");
   const choice = field("choice");
+  const pick = { providerId: field("provider"), model: field("model"), reasoningLevel: field("reasoning") };
   // Fall back to the message before the block when the summary is empty.
   const body = summary || text.slice(0, last.index).trim().slice(-8000);
-  return { ...(field("delivery") ? { delivery: field("delivery")! } : {}), step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), at, via: "text" };
+  return { ...(field("delivery") ? { delivery: field("delivery")! } : {}), step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), ...(pick.providerId || pick.model || pick.reasoningLevel ? { pick } : {}), at, via: "text" };
 }

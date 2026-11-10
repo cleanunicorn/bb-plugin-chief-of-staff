@@ -5,7 +5,7 @@
 // agent says explicitly when the step is finished.
 import type { NodeState, Nodes } from "./machine";
 import type { WorkItem } from "./state";
-import { depths, predecessors, stepById, topoOrder, type AgentStep, type Workflow } from "./workflow";
+import { depths, predecessors, stepById, topoOrder, type AgentStep, type AgentWork, type Workflow } from "./workflow";
 
 export const REPORT_TOOL = "cos_report";
 const CONTEXT_MAX = 8_000;
@@ -47,13 +47,15 @@ export function inputReports(wf: Workflow, nodes: Nodes, stepId: string): string
   return out;
 }
 
-function contract(step: AgentStep): string[] {
+function contract(step: AgentWork): string[] {
   const outcomes = step.verdict ? '`"done"` if it passes, or `"failed"` with the findings that must change' : '`"done"`';
   const picks = step.chooses.length > 0;
+  const auto = Boolean(step.picksModel);
+  const fields = picks ? "`choice` (the model you pick, below), " : auto ? "`providerId`, `model` and `reasoningLevel` (what you pick), " : "";
   return [
     ``,
     `### When you finish this step`,
-    `Call the \`${REPORT_TOOL}\` tool with \`step: "${step.id}"\`, \`outcome\`: ${outcomes}, ${picks ? "`choice` (the model you pick, below), " : ""}and a Markdown \`summary\` of your result (the next steps read it${picks ? "; say which model you picked and why" : ""}).`,
+    `Call the \`${REPORT_TOOL}\` tool with \`step: "${step.id}"\`, \`outcome\`: ${outcomes}, ${fields}and a Markdown \`summary\` of your result (the next steps read it${picks || auto ? "; say which model you picked and why" : ""}).`,
     `If you need a decision from a person, ask it with your question tool, or call \`${REPORT_TOOL}\` with \`outcome: "needs_input"\` and the \`question\`. Do not stop without doing one of these: Chief of Staff waits for the report before moving on.`,
     `If the \`${REPORT_TOOL}\` tool is unavailable, end your final message with:`,
     "```",
@@ -61,13 +63,14 @@ function contract(step: AgentStep): string[] {
     `step: ${step.id}`,
     `outcome: done`,
     ...(picks ? [`choice: <id of the model you pick>`] : []),
+    ...(auto ? [`provider: <provider id>`, `model: <model id>`, `reasoning: <reasoning level, or leave out>`] : []),
     `summary: <your result>`,
     "```",
   ];
 }
 
 /** The prompt that starts (or restarts) an agent on a step. */
-export function stepPrompt(item: WorkItem, step: AgentStep, agent: number, ctx: { defaultBranch?: string } = {}): string {
+export function stepPrompt(item: WorkItem, step: AgentWork, agent: number, ctx: { defaultBranch?: string } = {}): string {
   const wf = item.workflow;
   const node: NodeState | undefined = item.nodes[step.id];
   const lines: string[] = [`**[Chief of Staff · ${wf.name} · ${step.name}]**  ${pipelineLine(wf, step.id)}`, ``];
@@ -79,6 +82,17 @@ export function stepPrompt(item: WorkItem, step: AgentStep, agent: number, ctx: 
   if (step.agents > 1) lines.push(`${step.agents} agents work on this step independently; you are agent ${agent + 1}. Do your own work; Chief of Staff combines the reports.`);
   if (step.approval) lines.push(`A person approves your report before the workflow moves on.`);
   if (step.instructions.trim()) lines.push(``, `### Instructions`, step.instructions.trim());
+  if (step.picksModel) {
+    lines.push(
+      ``,
+      `### Choose the model for the steps after this one`,
+      `You do not work on the task itself: read it (and the code, if that helps you judge its size and risk) and pick the provider, model and reasoning level the agent steps after this one run with.`,
+      `Pick only from what is available here:`,
+      `- \`bb provider list --json\`: the providers (agents); use only those with \`"available": true\`.`,
+      `- \`bb provider models <providerId> --json\`: a provider's models, each with its \`supportedReasoningEfforts\`.`,
+      `Report the provider's \`id\`, the model's \`id\`, and a \`reasoningEffort\` the model lists (or none if it lists none).`,
+    );
+  }
   if (step.chooses.length) {
     lines.push(
       ``,
