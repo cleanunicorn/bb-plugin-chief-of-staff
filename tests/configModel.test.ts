@@ -120,18 +120,15 @@ describe("detachWorkflow", () => {
   it("clears only repositories set to the deleted workflow", () => {
     const legacy = { review: { enabled: false } } as RepoConfig["workflow"];
     const repos = [repo("a", "gone"), repo("b", "other"), repo("c"), repo("d", legacy)];
-    const { repos: next, detached } = detachWorkflow(repos, "gone");
+    const next = detachWorkflow(repos, "gone");
     expect(next[0]!.workflow).toBeUndefined();
     expect(next.slice(1)).toEqual(repos.slice(1));
     expect(next[1]).toBe(repos[1]);
-    expect(detached.map((r) => r.owner)).toEqual(["a"]);
     expect(JSON.parse(serializeRepos(next)).repos[0]).not.toHaveProperty("workflow");
   });
 
   it("returns the same array when no repository uses it", () => {
     const repos = [repo("a", "other"), repo("b")];
-    const result = detachWorkflow(repos, "gone");
-    expect(result.repos).toBe(repos);
-    expect(result.detached).toEqual([]);
+    expect(detachWorkflow(repos, "gone")).toBe(repos);
   });
 });

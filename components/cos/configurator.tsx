@@ -350,14 +350,17 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
+  // Parsed per JSON text, not per query result: a refetch that returns the same text keeps the same row objects, and so the rows' keys.
+  const reposJson = config.data?.repos;
+  const workflowJson = config.data?.workflow;
+  const loadedRepos = useMemo(() => (reposJson === undefined ? null : loadRepos(reposJson)), [reposJson]);
   const loadedGeneral = settings.data?.values ?? null;
-  const loadedWorkflow = useMemo(() => (config.data ? parseWorkflows(config.data.workflow) : null), [config.data]);
+  const loadedWorkflow = useMemo(() => (workflowJson === undefined ? null : parseWorkflows(workflowJson)), [workflowJson]);
   const workflowDraft: WorkflowsDocument = workflow ?? (loadedWorkflow?.ok ? loadedWorkflow.value : DEFAULT_DOCUMENT);
 
   const projects = useMemo(() => settings.data?.projects ?? [], [settings.data]);
   // Entries saved without owner/repo show the repository inferred from their project.
-  const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
+  const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => repoKeys.carry(r, inferIdentity(r, projects))) : []), [repos, loadedRepos, projects, repoKeys]);
   const generalDraft = general ?? loadedGeneral;
   const generalChanges = loadedGeneral && general ? generalDiff(loadedGeneral, general) : {};
   const dirty = { repos: repos !== null, general: Object.keys(generalChanges).length > 0, workflow: workflow !== null };
@@ -396,7 +399,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
 
   /** A deleted workflow's repositories go back to the default, instead of keeping an id a new workflow could reuse. */
   const detachRepos = (id: string) => {
-    const next = detachWorkflow(repoDraft, id).repos;
+    const next = detachWorkflow(repoDraft, id);
     // Unchanged when no repository used it; also keeps an unloadable repositories JSON from being replaced by [].
     if (next !== repoDraft) setRepos(next.map((r, i) => repoKeys.carry(repoDraft[i]!, r)));
   };

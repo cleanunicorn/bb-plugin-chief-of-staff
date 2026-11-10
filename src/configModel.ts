@@ -116,10 +116,9 @@ export function cleanRepo(repo: RepoConfig): RepoConfig {
  * Point repositories that chose workflow `id` back at the default, for when
  * that workflow is deleted. Returns the same array when none chose it.
  */
-export function detachWorkflow(repos: RepoConfig[], id: string): { repos: RepoConfig[]; detached: RepoConfig[] } {
-  const detached = repos.filter((r) => r.workflow === id);
-  if (!detached.length) return { repos, detached };
-  return { repos: repos.map((r) => (r.workflow === id ? { ...r, workflow: undefined } : r)), detached };
+export function detachWorkflow(repos: RepoConfig[], id: string): RepoConfig[] {
+  if (!repos.some((r) => r.workflow === id)) return repos;
+  return repos.map((r) => (r.workflow === id ? { ...r, workflow: undefined } : r));
 }
 
 export function serializeRepos(repos: RepoConfig[]): string {

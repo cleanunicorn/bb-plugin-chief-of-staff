@@ -188,6 +188,24 @@ describe("removing items and workflows (#66)", () => {
     expect(text().match(/Remove\?/g)).toHaveLength(1);
   });
 
+  it("keeps a repository card mounted while it is edited and across a refetch of the same config", async () => {
+    load([repo("a"), repo("b")]);
+    await mount(<Configurator initialSection="repos" />);
+    await click(container.querySelector("article button[aria-expanded]")!);
+    const model = field("Model");
+    await setValue(field("GitHub repository"), "acme/renamed");
+    await setValue(model, "opus");
+    expect(field("Model")).toBe(model);
+    await click(button("Discard"));
+
+    // A refetch hands over a new result object with the same JSON: the rows are the same rows.
+    await click(button("Remove acme/b"));
+    mocks.config = { ...mocks.config };
+    await mount(<Configurator initialSection="repos" />);
+    expect(text().match(/Remove\?/g)).toHaveLength(1);
+    expect(() => button("Remove acme/b")).toThrow();
+  });
+
   it("points repositories back at the default when their workflow is deleted, and saves both", async () => {
     load([repo("a", "fast"), repo("b")]);
     await mount(<Configurator initialSection="workflow" />);
