@@ -129,6 +129,50 @@ const answerInput = z.discriminatedUnion("kind", [
 ]);
 export type AnswerPayload = z.input<typeof answerInput>;
 
+const taskDetail = z.object({
+  repo: z.string(),
+  issueNumber: z.number().nullable(),
+  issueUrl: z.string().nullable(),
+  body: z.string().nullable(),
+  status: z.string(),
+  branch: z.string().nullable(),
+  prNumber: z.number().nullable(),
+  prUrl: z.string().nullable(),
+  threadId: z.string().nullable(),
+  waitingReason: z.string().nullable(),
+  lastError: z.string().nullable(),
+  createdAt: z.string(),
+  lastActivityAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+});
+
+const stepDetail = z.object({
+  startedAt: z.string().nullable(),
+  finishedAt: z.string().nullable(),
+  /** Why the step runs again: failure output, review findings or operator feedback. */
+  feedback: z.string().nullable(),
+  /** Check output or CI log of the latest run. */
+  output: z.string().nullable(),
+  waitingReason: z.string().nullable(),
+  reports: z.array(z.object({ agent: z.number(), outcome: z.string(), summary: z.string(), at: z.string() })),
+  threads: z.array(z.object({ threadId: z.string(), agent: z.number() })),
+});
+
+const journalRecord = z.object({
+  id: z.number(),
+  at: z.string(),
+  step: z.string(),
+  round: z.number(),
+  kind: z.enum(["started", "reported", "passed", "failed", "waiting", "revised", "rerun", "interrupted", "stopped"]),
+  agent: z.number().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  /** A preview when `truncated`: fetch the whole text with cos_journal_detail. */
+  detail: z.string().nullable(),
+  truncated: z.boolean().optional(),
+  actor: z.string(),
+});
+
 export const rpcContract = defineRpcContract({
   cos_overview: {
     input: z.null(),
@@ -157,8 +201,15 @@ export const rpcContract = defineRpcContract({
       /** The workflow the task runs (a Workflow document). */
       workflow: z.any(),
       live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number(), picked: z.string().nullable().optional() })),
+      /** The task itself. */
+      task: taskDetail.optional(),
+      /** Each step's current round: what it received, what it produced, who works on it. */
+      steps: z.record(z.string(), stepDetail).optional(),
+      /** What happened to each step, oldest first, kept across re-runs. Empty for tasks started before it was recorded. */
+      journal: z.array(journalRecord).optional(),
     }),
   },
+  cos_journal_detail: { input: z.object({ itemId: z.string(), id: z.number().int() }), output: z.object({ detail: z.string().nullable() }) },
   cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().max(200).optional(), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },
   cos_question: { input: z.object({ id: z.string() }), output: questionView },
   cos_answer: { input: z.object({ id: z.string(), answer: answerInput }), output: z.object({ status: z.string() }) },

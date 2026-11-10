@@ -11,7 +11,9 @@ import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, StatusPi
 import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
-import { modelMode, topoOrder, type Workflow } from "./src/workflow";
+import { topoOrder, type Workflow } from "./src/workflow";
+import { edgeCounts, loopBacks } from "@/components/cos/runModel";
+import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import type { StageKey } from "@/components/cos/stages";
@@ -126,7 +128,7 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
   return <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{entry.activity}</p>;
 }
 
-/** One task's workflow, coloured live, as a canvas or a list of steps, with "run again from here". */
+/** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
@@ -138,8 +140,12 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
   const [error, setError] = useState<string | null>(null);
   const data = view.data;
   const wf = data?.workflow as Workflow | undefined;
-  const live = (data?.live ?? {}) as Record<string, LiveStatus>;
+  const live = useMemo(() => (data?.live ?? {}) as Record<string, LiveStatus>, [data?.live]);
   const step = wf?.steps.find((s) => s.id === selected);
+  const journal = useMemo(() => data?.journal ?? [], [data?.journal]);
+  const loops = useMemo(() => (wf ? loopBacks(wf, journal, live) : { total: 0, loops: [], approximate: true }), [wf, journal, live]);
+  const counts = useMemo(() => (wf ? edgeCounts(wf, journal, loops) : {}), [wf, journal, loops]);
+  const now = useNow();
   const statusLabel = (stepId: string) => liveTone(live[stepId])?.label ?? "pending";
   const rerun = async () => {
     if (!selected) return;
@@ -173,7 +179,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           setSelected(null);
         }
       }}
-      className={cn("gap-3 p-4", expanded ? "h-dvh max-w-none rounded-none sm:rounded-none" : "h-[85dvh] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-6xl rounded-xl sm:rounded-xl")}
+      className={cn("gap-3 p-4", expanded ? "h-dvh max-w-none rounded-none sm:rounded-none" : "h-[90dvh] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[96rem] rounded-xl sm:rounded-xl")}
     >
       <header className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -206,10 +212,11 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           </DialogClose>
         </div>
       </header>
+      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} /> : null}
       <ErrorLine error={view.error ?? error} />
       {wf && data ? <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
         {mode === "canvas" ? (
-          <WorkflowCanvas workflow={wf} live={live} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className="min-h-0 flex-1" />
+          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className="h-auto min-h-[16rem] flex-1" />
         ) : (
           <ol aria-label="Workflow steps" className="flex min-h-0 min-w-0 flex-1 flex-col gap-1.5 overflow-y-auto p-px">
             {topoOrder(wf).map((stepId) => {
@@ -238,19 +245,13 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
             })}
           </ol>
         )}
-        {step ? <aside aria-label="Step details" className="max-h-[35%] overflow-y-auto rounded-lg border border-border p-3 text-sm md:max-h-none md:w-72 md:shrink-0">
-          <h3 className="font-semibold">{step.name}</h3>
-          <p className="mt-1 text-xs text-muted-foreground">{step.type} · {statusLabel(step.id)}</p>
-          {step.instructions ? <p className="mt-3 whitespace-pre-wrap break-words">{step.instructions}</p> : null}
-          {step.type === "check" ? <p className="mt-3 break-all"><b>Command:</b> {step.command}</p> : null}
-          {step.type === "ship" ? <p className="mt-3"><b>Action:</b> {step.action}</p> : null}
-          {step.type === "model" ? (
-            modelMode(step) === "auto"
-              ? <p className="mt-3"><b>Picked:</b> {live[step.id]?.picked ?? (live[step.id]?.status === "done" ? "nothing (kept the current model)" : "not yet: an agent picks the best model for the task")}</p>
-              : <p className="mt-3"><b>Sets:</b> {[step.providerId, step.model, step.reasoningLevel].filter(Boolean).join(" · ") || "nothing"}</p>
-          ) : null}
-          {step.type === "agent" ? <p className="mt-3">{step.writes ? "Writes code" : "Read-only"} · {step.agents} {step.agents === 1 ? "agent" : "agents"}{step.approval ? " · Approval required" : ""}{step.verdict ? " · Pass/fail" : ""}</p> : null}
-        </aside> : null}
+        <aside aria-label={step ? "Step details" : "Task overview"} className="max-h-[45%] min-h-0 overflow-y-auto rounded-lg border border-border p-3 text-sm md:max-h-none md:w-[26rem] md:shrink-0">
+          {step ? (
+            <StepPanel itemId={id} workflow={wf} step={step} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
+          ) : (
+            <TaskOverview itemId={id} title={data.title} workflow={wf} task={data.task} loops={loops} journal={journal} now={now} />
+          )}
+        </aside>
       </div> : null}
       <footer className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {step ? (

@@ -120,10 +120,36 @@ export interface MachinePolicy {
 
 export const DEFAULT_POLICY: MachinePolicy = { maxNudges: 2, maxInfraRetries: 3 };
 
+export type JournalKind = "started" | "reported" | "passed" | "failed" | "waiting" | "revised" | "rerun" | "interrupted" | "stopped";
+
+/** One thing that happened to a step, kept after the step's state is reset (see the step_journal table). */
+export interface JournalEntry {
+  kind: JournalKind;
+  step: string;
+  round: number;
+  /** "reported": which agent. */
+  agent?: number;
+  /** The step that sent work back ("failed", "revised"), or whose loop-back cut this run short ("interrupted"). */
+  from?: string;
+  /** Where the work goes back to ("failed" within budget, "revised", "rerun"). */
+  to?: string;
+  /** Feedback, report summary, output or reason, clipped. */
+  detail: string | null;
+}
+
+export const JOURNAL_DETAIL_MAX = 4_000;
+/** Failures and check output keep their end (where the error is); the rest keeps its start. */
+const clipDetail = (text: string | null | undefined, keepEnd: boolean) => {
+  if (!text || text.length <= JOURNAL_DETAIL_MAX) return text || null;
+  return keepEnd ? `…${text.slice(-JOURNAL_DETAIL_MAX)}` : `${text.slice(0, JOURNAL_DETAIL_MAX)}…`;
+};
+
 export interface Transition {
   nodes: Nodes;
   patch: Partial<WorkItem>;
   effects: Effect[];
+  /** What happened, for the task's history. */
+  journal: JournalEntry[];
 }
 
 /** Backoff before infrastructure retry n (1-based): 1, 4, 9 minutes. */
@@ -157,10 +183,13 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
   const nodes: Nodes = Object.fromEntries(Object.entries(item.nodes).map(([k, v]) => [k, { ...v, reports: [...v.reports], nudges: [...v.nudges] }]));
   for (const s of wf.steps) if (!nodes[s.id]) nodes[s.id] = freshNode();
   const effects: Effect[] = [];
+  const journal: JournalEntry[] = [];
   const patch: Partial<WorkItem> = {};
   const iso = now.toISOString();
   const step = (id: string) => stepById(wf, id);
   const node = (id: string) => nodes[id];
+  const note = (kind: JournalKind, id: string, detail: string | null | undefined, extra: Partial<Pick<JournalEntry, "agent" | "from" | "to">> = {}) =>
+    journal.push({ kind, step: id, round: node(id)?.round ?? 0, ...extra, detail: clipDetail(detail, kind === "failed" || kind === "passed") });
 
   // ---- primitives ----
 
@@ -170,10 +199,12 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     if (!s || !n) return;
     const count = agentsOf(s);
     Object.assign(n, { agentRetries: {}, deliveries: {}, status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
+    note("started", id, n.feedback);
     if (agentWork(s)) for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
     else if (s.type === "model") {
       // Fixed: nothing to run; agent steps after it read its settings when they spawn.
       Object.assign(n, { status: "done", finishedAt: iso });
+      note("passed", id, null);
     } else if (s.type === "check") {
       patch.jobStartedAt = iso;
       effects.push({ type: "check", step: id });
@@ -184,9 +215,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
   };
 
-  const complete = (id: string) => {
+  const complete = (id: string, how: string | null = null) => {
     const n = node(id);
     if (!n) return;
+    note("passed", id, how ?? (step(id)?.type === "check" ? n.output : null));
     Object.assign(n, { status: "done", waiting: null, feedback: null, phase: null, retry: null, agentRetries: {}, finishedAt: iso });
   };
 
@@ -195,14 +227,18 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     if (!n) return;
     n.status = "waiting";
     n.waiting = { kind, reason: reason.slice(0, 600), ...(agent !== undefined ? { agent } : {}) };
+    note("waiting", id, reason);
     effects.push({ type: "notify", title: `${WAIT_TITLE[kind]}: ${label(item)}`, body: `${step(id)?.name ?? id}: ${reason}`.slice(0, 500) });
   };
 
   /** Reset `target` and everything after it; `target` re-runs with `feedback`. */
-  const resetFrom = (target: string, feedback: string | null) => {
+  /** `by`: the step whose failure or revision caused the reset; null when you re-ran it. */
+  const resetFrom = (target: string, feedback: string | null, by: string | null) => {
     for (const d of descendants(wf, target)) {
       const n = node(d);
       if (!n) continue;
+      // Work in progress downstream is thrown away: say so. The target re-runs and the step that caused the reset has its own entry.
+      if ((n.status === "running" || n.status === "waiting") && d !== by && d !== target) note("interrupted", d, null, { ...(by ? { from: by } : {}), to: target });
       Object.assign(n, { ...freshNode(), round: n.round, attempts: n.attempts, output: n.output });
     }
     const t = node(target);
@@ -216,8 +252,10 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     if (!s || !n) return;
     n.attempts += 1;
     n.output = detail.slice(-12_000);
-    if (s.onFail && n.attempts <= limitOf(s)) {
-      resetFrom(s.onFail, `${s.name} failed:\n\n${detail}`.slice(-12_000));
+    const loops = Boolean(s.onFail && n.attempts <= limitOf(s));
+    note("failed", id, detail, loops ? { from: id, to: s.onFail } : {});
+    if (s.onFail && loops) {
+      resetFrom(s.onFail, `${s.name} failed:\n\n${detail}`.slice(-12_000), id);
       return;
     }
     const why = s.onFail ? `failed ${n.attempts} time(s), past its limit of ${limitOf(s)}` : "failed";
@@ -289,6 +327,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       }
       if (report) {
         n.reports[event.agent] = report;
+        note("reported", event.step, report.summary, { agent: event.agent });
         if (n.agentRetries && Object.keys(n.agentRetries).length) {
           n.agentRetries = { ...n.agentRetries };
           delete n.agentRetries[event.agent];
@@ -322,11 +361,13 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "thread_failed": {
       if (event.step === null) {
+        const writer = wf.steps.find((s) => agentWork(s)?.writes && (node(s.id)?.status === "running" || node(s.id)?.status === "waiting"));
+        if (writer) note("stopped", writer.id, `The builder thread failed: ${event.error}`);
         patch.status = "failed";
         patch.lastError = event.error;
         patch.finishedAt = iso;
         effects.push({ type: "notify", title: `Agent failed: ${label(item)}`, body: event.error.slice(0, 500) });
-        return { nodes, patch, effects };
+        return { nodes, patch, effects, journal };
       }
       const n = node(event.step);
       if (!n || n.status === "done" || n.status === "pending") break;
@@ -349,7 +390,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     case "pushed": {
       if (node(event.step)?.status !== "running") break;
       patch.jobStartedAt = null;
-      complete(event.step);
+      complete(event.step, "Branch pushed");
       break;
     }
 
@@ -361,7 +402,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       patch.jobStartedAt = null;
       n.retry = null;
       const s = step(event.step);
-      if (s?.type === "ship" && s.action === "pr") complete(event.step);
+      if (s?.type === "ship" && s.action === "pr") complete(event.step, `Opened pull request #${event.prNumber}`);
       else n.phase = "ci";
       break;
     }
@@ -412,18 +453,20 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!ship) break;
       patch.jobStartedAt = null;
       for (const s of wf.steps) {
-        if (node(s.id)?.status !== "done" && (s.id === ship || descendants(wf, s.id).has(ship))) complete(s.id);
+        if (node(s.id)?.status !== "done" && (s.id === ship || descendants(wf, s.id).has(ship))) complete(s.id, s.id === ship ? "Pull request merged" : "Completed by the merge");
       }
       break;
     }
 
     case "pr_closed": {
       if (item.status === "done" || item.status === "failed") break;
+      const ship = shipNode() ?? topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
+      if (ship) note("stopped", ship, `Pull request${item.prNumber ? ` #${item.prNumber}` : ""} was closed without merging`);
       patch.lastError = "PR closed without merge";
       patch.jobStartedAt = null;
       patch.status = "failed";
       patch.finishedAt = iso;
-      return { nodes, patch, effects };
+      return { nodes, patch, effects, journal };
     }
 
     case "delivery_ack": {
@@ -535,7 +578,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         n.phase = "ready";
         break;
       }
-      complete(id);
+      complete(id, n.waiting.kind === "approval" ? "Approved" : "Approved to continue");
       break;
     }
 
@@ -546,13 +589,11 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       const feedback = event.feedback.trim();
       if (!id || !n || !s || n.status !== "waiting" || !n.waiting || !feedback) break;
       if (n.waiting.kind === "question" || n.waiting.kind === "cos_error") break;
-      const note = `Feedback from the operator:\n\n${feedback}`;
-      if (n.waiting.kind === "escalation") {
-        n.attempts = 0;
-        resetFrom(s.onFail ?? id, note);
-      } else {
-        resetFrom(id, note);
-      }
+      const message = `Feedback from the operator:\n\n${feedback}`;
+      const to = n.waiting.kind === "escalation" ? (s.onFail ?? id) : id;
+      note("revised", id, feedback, { from: id, to });
+      if (n.waiting.kind === "escalation") n.attempts = 0;
+      resetFrom(to, message, id);
       break;
     }
 
@@ -587,7 +628,8 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         if (effect.type !== "agent" && effect.type !== "notify") patch.jobStartedAt = iso;
         effects.push(effect);
       } else if (n.status !== "pending") {
-        resetFrom(id, n.feedback);
+        note("rerun", id, null, { to: id });
+        resetFrom(id, n.feedback, null);
       }
       break;
     }
@@ -602,7 +644,8 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "rerun": {
       if (!node(event.step)) break;
-      resetFrom(event.step, event.feedback?.trim() ? `Feedback from the operator:\n\n${event.feedback.trim()}` : null);
+      note("rerun", event.step, event.feedback?.trim() || null, { to: event.step });
+      resetFrom(event.step, event.feedback?.trim() ? `Feedback from the operator:\n\n${event.feedback.trim()}` : null, null);
       if (item.status === "failed") {
         patch.status = undefined;
         patch.lastError = null;
@@ -631,7 +674,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     effects.push(shipped ? { type: "notify", title: `Shipped: ${label(item)}`, body: (patch.prUrl ?? item.prUrl) ? `Done: ${patch.prUrl ?? item.prUrl}` : "Workflow finished." } : { type: "notify", title: `Finished: ${label(item)}`, body: "Every step of the workflow is done." });
   }
 
-  return { nodes, patch, effects };
+  return { nodes, patch, effects, journal };
 }
 
 export const EFFECT_LABEL: Record<Effect["type"], string> = {

@@ -146,6 +146,59 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
   return entries;
 }
 
+const OUTPUT_MAX = 6_000;
+const tail = (text: string | null | undefined, max = OUTPUT_MAX) => (text ? (text.length > max ? `…${text.slice(-max)}` : text) : null);
+
+/** Journal details longer than this go to the workflow view as previews; the rest loads when you expand an entry. */
+export const JOURNAL_PREVIEW = 600;
+
+function previewEntry<E extends { kind: string; detail: string | null }>(e: E): E & { truncated?: boolean } {
+  if (!e.detail || e.detail.length <= JOURNAL_PREVIEW) return e;
+  // Failures and check output end with the error; the rest starts with the point.
+  const keepEnd = e.kind === "failed" || e.kind === "passed";
+  return { ...e, detail: keepEnd ? `…${e.detail.slice(-JOURNAL_PREVIEW)}` : `${e.detail.slice(0, JOURNAL_PREVIEW)}…`, truncated: true };
+}
+
+/** The task, each step's current inputs and outputs, and its journal, for the task's workflow view. */
+export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
+  const threads = cos.store.listThreads(item.id);
+  const steps = Object.fromEntries(item.workflow.steps.map((s) => {
+    const n = item.nodes[s.id] ?? freshNode();
+    const own = threads.filter((t) => t.role === "step" ? t.stepId === s.id : agentWork(s)?.writes).map((t) => ({ threadId: t.threadId, agent: t.role === "step" ? t.agent : 0 }));
+    // The builder thread may predate item_threads rows.
+    if (agentWork(s)?.writes && item.threadId && !own.some((t) => t.threadId === item.threadId)) own.unshift({ threadId: item.threadId, agent: 0 });
+    return [s.id, {
+      startedAt: n.startedAt,
+      finishedAt: n.finishedAt,
+      feedback: tail(n.feedback),
+      output: tail(n.output),
+      waitingReason: n.waiting?.reason ?? null,
+      reports: n.reports.flatMap((r, agent) => (r ? [{ agent, outcome: r.outcome, summary: tail(r.summary)!, at: r.at }] : [])),
+      threads: own,
+    }];
+  }));
+  return {
+    task: {
+      repo: item.repo,
+      issueNumber: item.issueNumber,
+      issueUrl: item.issueNumber ? `https://github.com/${item.repo}/issues/${item.issueNumber}` : null,
+      body: tail(item.taskBody),
+      status: item.status,
+      branch: item.branch,
+      prNumber: item.prNumber,
+      prUrl: item.prUrl,
+      threadId: item.threadId,
+      waitingReason: item.waitingReason,
+      lastError: item.lastError,
+      createdAt: item.createdAt,
+      lastActivityAt: item.lastActivityAt,
+      finishedAt: item.finishedAt,
+    },
+    steps,
+    journal: cos.store.listJournal(item.id).map(previewEntry),
+  };
+}
+
 /** One line on what is happening right now, for the roster. */
 export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSteps(item)): string {
   switch (item.status) {
