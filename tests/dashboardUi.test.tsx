@@ -223,3 +223,25 @@ it("keeps Approve and Resume on the card to one click", async () => {
     ["cos_item_action", { id: "two", action: "retry" }],
   ]);
 });
+
+it("keeps a task's buttons disabled while its own action runs, whatever finishes first", async () => {
+  mocks.entries = [
+    entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Review the plan" }),
+    entry({ id: "two", issueTitle: "Repair deploy", detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Review the plan" }),
+  ];
+  const pending = new Map<string, () => void>();
+  mocks.call.mockImplementation((_method: string, input: { id: string }) => new Promise<void>((resolve) => pending.set(input.id, resolve)));
+  await mount();
+  const approve = (index: number) => Array.from(container.querySelectorAll("article")[index]!.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Approve")!;
+  const more = (index: number) => container.querySelectorAll("article")[index]!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  await act(async () => approve(0).click());
+  await act(async () => approve(1).click());
+  expect([approve(0).disabled, approve(1).disabled]).toEqual([true, true]);
+
+  await act(async () => pending.get("one")!());
+  expect([approve(0).disabled, more(0).disabled]).toEqual([false, false]);
+  expect([approve(1).disabled, more(1).disabled]).toEqual([true, true]);
+
+  await act(async () => pending.get("two")!());
+  expect([approve(1).disabled, more(1).disabled]).toEqual([false, false]);
+});

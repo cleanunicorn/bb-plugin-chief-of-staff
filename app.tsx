@@ -465,7 +465,8 @@ export function PipelineTab() {
   }, [roster, stats, overview]);
   useLiveRefresh(refetchAll);
   const [pausing, setPausing] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
+  // Every task with an action in flight: one finishing must not re-enable another's buttons.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null);
@@ -474,7 +475,7 @@ export function PipelineTab() {
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const act = useCallback(
     async (id: string, action: ItemAction) => {
-      setBusy(id);
+      setBusy((ids) => new Set(ids).add(id));
       setActionError(null);
       try {
         await rpc.call("cos_item_action", { id, action });
@@ -482,7 +483,11 @@ export function PipelineTab() {
       } catch (error) {
         setActionError(errorText(error));
       } finally {
-        setBusy(null);
+        setBusy((ids) => {
+          const next = new Set(ids);
+          next.delete(id);
+          return next;
+        });
       }
     },
     [rpc, refetchAll],
@@ -591,7 +596,7 @@ export function PipelineTab() {
         ) : null}
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+            <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
           ))}
         </div>
       </Panel>
