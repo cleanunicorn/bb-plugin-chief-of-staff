@@ -27,7 +27,7 @@ import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
 import { ConfirmRemove, Field, NumberInput, Problems, Select, TextInput, ToggleRow } from "./fields";
-import { STEP_TYPE_META, WorkflowCanvas } from "./workflowCanvas";
+import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas } from "./workflowCanvas";
 import { STATUS, StatusPill } from "./viz";
 
 const textareaClass = "min-h-24 w-full rounded-md border border-input bg-transparent p-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -157,17 +157,33 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
       <Problems items={[...problems, ...docProblems]} />
 
       {view === "canvas" ? (
-        <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "fixed inset-0 z-50 grid-rows-[minmax(0,1fr)_auto] bg-background p-3 md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
-          <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
-          <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
-            {selected && wf.steps.some((s) => s.id === selected) ? (
-              <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
-            ) : (
-              <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
-                <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
-                Select a step to edit it. Drag from a step's right edge to another step to run it after. Select an arrow and press Backspace to remove it, or change the links under Runs next.
-              </div>
-            )}
+        <div className={cn(expanded && "fixed inset-0 z-50 flex flex-col gap-3 bg-background p-3")}>
+          {/* Full screen gets its own bar so the way out is labelled and never sits where the step panel's Remove button is. */}
+          {expanded ? (
+            <div className="flex shrink-0 items-center gap-3 rounded-lg border border-border bg-card px-3 py-2">
+              <span className="min-w-0 truncate text-sm text-foreground">
+                <span className="text-muted-foreground">Editing workflow</span> <span className="font-semibold">{wf.name}</span>
+              </span>
+              <span className="ml-auto hidden text-[11px] text-muted-foreground sm:inline">
+                Press <kbd className="rounded border border-border px-1 font-mono">Esc</kbd> or
+              </span>
+              <Button size="sm" variant="outline" className="ml-auto h-8 gap-1.5 sm:ml-0" onClick={() => setExpanded(false)}>
+                <ShrinkGlyph /> Exit full screen
+              </Button>
+            </div>
+          ) : null}
+          <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
+            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
+            <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
+              {selected && wf.steps.some((s) => s.id === selected) ? (
+                <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
+              ) : (
+                <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+                  <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
+                  Select a step to edit it. Drag from a step's right edge to another step to run it after. Select an arrow and press Backspace to remove it, or change the links under Runs next.
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ) : (
