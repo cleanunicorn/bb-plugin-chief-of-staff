@@ -208,6 +208,22 @@ describe("removing items and workflows (#66)", () => {
     expect((JSON.parse(input.workflow) as { workflows: { id: string }[] }).workflows.map((w) => w.id)).toEqual([DEFAULT_DOCUMENT.default]);
   });
 
+  it("restores the workflow and the repository's choice of it on Discard", async () => {
+    load([repo("a", "fast")]);
+    await mount(<Configurator initialSection="workflow" />);
+    await click(button("Fast"));
+    await click(button("Delete Fast"));
+    await click(button("Remove"));
+    await click(button("Discard"));
+    expect(unsavedSections()).toEqual([]);
+    expect(button("Fast")).toBeTruthy();
+
+    await click(button("Repositories1"));
+    await click(container.querySelector("article button[aria-expanded]")!);
+    expect(repoWorkflow().value).toBe("fast");
+    expect(mocks.call).not.toHaveBeenCalled();
+  });
+
   it("leaves the repositories alone when their JSON could not be loaded", async () => {
     load("{not json");
     await mount(<Configurator initialSection="workflow" />);
