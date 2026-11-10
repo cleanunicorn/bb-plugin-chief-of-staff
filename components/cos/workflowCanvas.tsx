@@ -3,7 +3,7 @@
 // arrow and press Backspace to remove it, add steps from the toolbar. Fail
 // arrows (“on fail, go back to…”) are drawn dashed and edited in the step
 // panel. Read-only mode colours each step by its live status for one task.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -71,7 +71,14 @@ function subtitle(s: Step): string {
 
 type StepNodeData = { step: Step; live?: LiveStatus; selected: boolean };
 
-function liveTone(live: LiveStatus | undefined): { color: string; label: string } | null {
+/** The step a React Flow selection points at: one step, none (`null`), or `undefined` to leave the current one (an arrow or several steps are selected). */
+export function selectionTarget(selection: { nodes: readonly { id: string }[]; edges: readonly { id: string }[] }): string | null | undefined {
+  if (selection.nodes.length === 1) return selection.nodes[0]!.id;
+  return selection.nodes.length === 0 && selection.edges.length === 0 ? null : undefined;
+}
+
+/** Colour and wording for a step's live status; the canvas and the step list share it. */
+export function liveTone(live: LiveStatus | undefined): { color: string; label: string } | null {
   if (!live) return null;
   if (live.status === "done") return { color: STATUS.good, label: "done" };
   if (live.status === "waiting") return { color: live.waitingKind === "cos_error" ? STATUS.serious : STATUS.warning, label: live.waitingKind === "approval" ? "needs approval" : live.waitingKind === "question" ? "question" : "needs you" };
@@ -139,7 +146,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
     (): Node<StepNodeData>[] =>
-      workflow.steps.map((s) => ({ id: s.id, type: "step", position: positions.get(s.id) ?? { x: 0, y: 0 }, data: { step: s, live: live?.[s.id], selected: s.id === selected }, draggable: editable, selected: s.id === selected })),
+      workflow.steps.map((s) => ({ id: s.id, type: "step", position: positions.get(s.id) ?? { x: 0, y: 0 }, data: { step: s, live: live?.[s.id], selected: s.id === selected }, draggable: editable, selected: s.id === selected, ariaLabel: [s.name, `${STEP_TYPE_META[s.type].label} step`, liveTone(live?.[s.id])?.label].filter(Boolean).join(", ") })),
     [workflow, positions, live, selected, editable],
   );
   const [nodes, setNodes] = useState<Node<StepNodeData>[]>(build);
@@ -177,6 +184,23 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   useEffect(() => setEdges(computedEdges), [computedEdges]);
 
   const update = useCallback((next: Workflow) => onChange?.(next), [onChange]);
+
+  // Selection comes from React Flow, so the keyboard (Enter, Space, Escape on a
+  // focused step) selects like a click does. React Flow calls this again when
+  // the handler changes and once on mount, and `selected` reaches `nodes` one
+  // render late, so the handler is stable and only reports a selection React
+  // Flow itself changed; otherwise it would undo a step the parent selected.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const reported = useRef<string | null>(null);
+  const onSelectionChange = useCallback((selection: { nodes: Node[]; edges: Edge[] }) => {
+    const id = selectionTarget(selection);
+    if (id === undefined || id === reported.current) return;
+    reported.current = id;
+    if (id !== selectedRef.current) onSelectRef.current?.(id);
+  }, []);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<Node<StepNodeData>>[]) => {
@@ -261,9 +285,10 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          onNodeClick={(_, n) => onSelect?.(n.id)}
-          onPaneClick={() => onSelect?.(null)}
+          onSelectionChange={onSelectionChange}
           nodesConnectable={editable}
+          // Arrows can only be removed, so they are tab stops in the editor only.
+          edgesFocusable={editable}
           elementsSelectable
           deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
           colorMode="system"

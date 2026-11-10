@@ -137,7 +137,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
             }}
           />
         ) : null}
-        <div className="ml-auto flex rounded-md border border-border p-0.5">
+        <div role="group" aria-label="View" className="ml-auto flex rounded-md border border-border p-0.5">
           {(["canvas", "list"] as const).map((v) => (
             <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", view === v ? "bg-state-active text-foreground" : "text-muted-foreground")}>
               <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />

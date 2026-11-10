@@ -3,14 +3,16 @@
 // message, failing checks), then answers through cos_answer or opens the thread.
 // Workflow gates (a step waiting for approval, a step out of attempts) get a decision
 // block: approve and move on, or send it back to the agent with feedback.
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { useMemo, useRef, useState } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Markdown, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { AnswerPayload, OpenQuestion } from "../../rpcContract";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
+import { Sheet } from "./sheet";
+import { DialogClose, DialogTitle } from "../ui/dialog";
 import { STATUS } from "./viz";
 
 type Contract = typeof rpcContract;
@@ -88,7 +90,7 @@ function useResizableSize() {
 
 const DECISION_LABEL = { allow_once: "Allow once", allow_for_session: "Allow for session", deny: "Deny" } as const;
 
-export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string; onClose: () => void; onAnswered: () => void }) {
+export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { itemId: string; onClose: () => void; onAnswered: () => void; restoreFocus?: () => void }) {
   const rpc = useRpc<Contract>();
   const navigate = useBbNavigate();
   const view = experimental_useRpcQuery<Contract, "cos_question">({ contract: rpcContract, method: "cos_question", input: { id: itemId } });
@@ -102,17 +104,6 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
     : resize.size
       ? { width: resize.size.w, height: resize.size.h, maxWidth: "none", maxHeight: "none" }
       : undefined;
-
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeRef.current();
-    };
-    window.addEventListener("keydown", onKey);
-    panelRef.current?.focus();
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   const send = async (answer: AnswerPayload, label: string) => {
     setSending(true);
@@ -137,100 +128,99 @@ export function QuestionSheet({ itemId, onClose, onAnswered }: { itemId: string;
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-6" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cos-question-title"
-        style={panelStyle}
-        className="relative flex h-[90dvh] max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-t-xl border border-border bg-background shadow-lg outline-none sm:h-[85vh] sm:rounded-xl"
-      >
-        <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-muted-foreground">
-              {data ? `${data.repo}${data.issueNumber ? ` #${data.issueNumber}` : ""}` : "Loading…"}
-            </p>
-            <h2 id="cos-question-title" className="line-clamp-2 text-base font-semibold text-foreground">
-              {data?.issueTitle || "Agent question"}
-            </h2>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="hidden h-7 w-7 p-0 sm:inline-flex"
-              aria-label={resize.maximized ? "Restore size" : "Maximize"}
-              onClick={() => resize.setMaximized(!resize.maximized)}
-            >
-              <Icon name={resize.maximized ? "Minimize2" : "Maximize2"} fallback="Square" aria-hidden />
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="Close" onClick={onClose}>
+    <Sheet
+      ref={panelRef}
+      onClose={onClose}
+      restoreFocus={restoreFocus}
+      style={panelStyle}
+      // A bottom sheet on phones, centred from `sm` up.
+      className="top-auto bottom-0 h-[90dvh] max-h-[90dvh] max-w-5xl translate-y-0 gap-0 rounded-t-xl p-0 sm:top-[50%] sm:bottom-auto sm:h-[85vh] sm:w-[calc(100%-3rem)] sm:translate-y-[-50%] sm:rounded-xl"
+    >
+      <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-muted-foreground">
+            {data ? `${data.repo}${data.issueNumber ? ` #${data.issueNumber}` : ""}` : "Loading…"}
+          </p>
+          <DialogTitle className="line-clamp-2 leading-normal tracking-normal text-foreground">
+            {data?.issueTitle || "Agent question"}
+          </DialogTitle>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="hidden h-7 w-7 p-0 sm:inline-flex"
+            aria-label={resize.maximized ? "Restore size" : "Maximize"}
+            onClick={() => resize.setMaximized(!resize.maximized)}
+          >
+            <Icon name={resize.maximized ? "Minimize2" : "Maximize2"} fallback="Square" aria-hidden />
+          </Button>
+          <DialogClose asChild>
+            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="Close">
               <Icon name="X" fallback="Circle" aria-hidden />
             </Button>
-          </div>
-        </header>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
-          {view.error ? <Notice tone="critical" text={view.error.message} /> : null}
-          {!data && !view.error ? <p className="text-sm text-muted-foreground">Reading the thread…</p> : null}
-          {sent ? <Notice tone="good" text={`Sent: ${sent}. The agent picks it up from here.`} /> : null}
-          {error ? <Notice tone="critical" text={error} /> : null}
-
-          {data ? (
-            <>
-              {data.decidable && !sent ? <Decision data={data} sending={sending} onSend={send} /> : null}
-              {data.open.length === 0 && !sent && !data.decidable ? (
-                <p className="text-sm text-muted-foreground">
-                  {data.waitingReason
-                    ? "No open question on the thread right now. It may have been answered in BB, or the item is waiting for another reason (see the context below). You can still send the agent a message."
-                    : "The agent is not asking anything right now. You can still send it a message."}
-                </p>
-              ) : null}
-              {data.open.map((q, i) => (
-                <OpenQuestionView key={q.kind === "text" ? `text-${i}` : q.interactionId} q={q} sending={sending} onSend={send} />
-              ))}
-              {!data.decidable && (data.open.length === 0 || data.open.every((q) => q.kind === "request" && !q.answerable)) ? (
-                <ReplyBox label="Message the agent" placeholder="Tell the agent what to do next." sending={sending} onSend={(text) => send({ kind: "text", text }, "message")} />
-              ) : null}
-              {data.report && data.waitingKind === "escalation" ? <Collapsible icon="SearchCheck" title={`${data.stepName ?? "Step"} report`} markdown={data.report} /> : null}
-              <Context lastMessage={data.lastMessage} checkOutput={data.checkOutput} lastError={data.lastError} />
-            </>
-          ) : null}
+          </DialogClose>
         </div>
+      </header>
 
-        <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
-          <p className="text-xs text-muted-foreground">{data?.decidable ? "Decisions move the task through its workflow; feedback goes to the agent's thread." : "Answers go straight to the agent's thread."}</p>
-          {data?.threadId ? (
-            <Button size="sm" variant="outline" onClick={openThread}>
-              <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
-            </Button>
-          ) : null}
-        </footer>
-        <div
-          role="separator"
-          aria-label="Resize (drag, or arrow keys; double-click to reset)"
-          aria-orientation="horizontal"
-          tabIndex={0}
-          title="Drag to resize. Double-click to reset."
-          className="absolute right-0 bottom-0 hidden size-4 cursor-nwse-resize touch-none text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:block"
-          onPointerDown={(e) => resize.startDrag(e, panelRef.current)}
-          onDoubleClick={resize.reset}
-          onKeyDown={(e) => {
-            const step = e.shiftKey ? 80 : 20;
-            const delta = { ArrowRight: [step, 0], ArrowLeft: [-step, 0], ArrowDown: [0, step], ArrowUp: [0, -step] }[e.key];
-            if (!delta) return;
-            e.preventDefault();
-            resize.resizeBy(delta[0], delta[1], panelRef.current);
-          }}
-        >
-          <svg viewBox="0 0 16 16" className="size-4" aria-hidden>
-            <path d="M14 6 6 14M14 10l-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
-          </svg>
-        </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+        {view.error ? <Notice tone="critical" text={view.error.message} /> : null}
+        {!data && !view.error ? <p className="text-sm text-muted-foreground">Reading the thread…</p> : null}
+        {sent ? <Notice tone="good" text={`Sent: ${sent}. The agent picks it up from here.`} /> : null}
+        {error ? <Notice tone="critical" text={error} /> : null}
+
+        {data ? (
+          <>
+            {data.decidable && !sent ? <Decision data={data} sending={sending} onSend={send} /> : null}
+            {data.open.length === 0 && !sent && !data.decidable ? (
+              <p className="text-sm text-muted-foreground">
+                {data.waitingReason
+                  ? "No open question on the thread right now. It may have been answered in BB, or the item is waiting for another reason (see the context below). You can still send the agent a message."
+                  : "The agent is not asking anything right now. You can still send it a message."}
+              </p>
+            ) : null}
+            {data.open.map((q, i) => (
+              <OpenQuestionView key={q.kind === "text" ? `text-${i}` : q.interactionId} q={q} sending={sending} onSend={send} />
+            ))}
+            {!data.decidable && (data.open.length === 0 || data.open.every((q) => q.kind === "request" && !q.answerable)) ? (
+              <ReplyBox label="Message the agent" placeholder="Tell the agent what to do next." sending={sending} onSend={(text) => send({ kind: "text", text }, "message")} />
+            ) : null}
+            {data.report && data.waitingKind === "escalation" ? <Collapsible icon="SearchCheck" title={`${data.stepName ?? "Step"} report`} markdown={data.report} /> : null}
+            <Context lastMessage={data.lastMessage} checkOutput={data.checkOutput} lastError={data.lastError} />
+          </>
+        ) : null}
       </div>
-    </div>
+
+      <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
+        <p className="text-xs text-muted-foreground">{data?.decidable ? "Decisions move the task through its workflow; feedback goes to the agent's thread." : "Answers go straight to the agent's thread."}</p>
+        {data?.threadId ? (
+          <Button size="sm" variant="outline" onClick={openThread}>
+            <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+          </Button>
+        ) : null}
+      </footer>
+      <div
+        role="separator"
+        aria-label="Resize (drag, or arrow keys; double-click to reset)"
+        aria-orientation="horizontal"
+        tabIndex={0}
+        title="Drag to resize. Double-click to reset."
+        className="absolute right-0 bottom-0 hidden size-4 cursor-nwse-resize touch-none text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:block"
+        onPointerDown={(e) => resize.startDrag(e, panelRef.current)}
+        onDoubleClick={resize.reset}
+        onKeyDown={(e) => {
+          const step = e.shiftKey ? 80 : 20;
+          const delta = { ArrowRight: [step, 0], ArrowLeft: [-step, 0], ArrowDown: [0, step], ArrowUp: [0, -step] }[e.key];
+          if (!delta) return;
+          e.preventDefault();
+          resize.resizeBy(delta[0], delta[1], panelRef.current);
+        }}
+      >
+        <svg viewBox="0 0 16 16" className="size-4" aria-hidden>
+          <path d="M14 6 6 14M14 10l-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+        </svg>
+      </div>
+    </Sheet>
   );
 }
 
@@ -323,6 +313,19 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
     if (q.multiSelect) onChange({ selected: value.selected.includes(v) ? value.selected.filter((s) => s !== v) : [...value.selected, v] });
     else onChange({ selected: value.selected[0] === v ? [] : [v] });
   };
+  // A single-select group is one tab stop (the checked option, else the first); arrow keys, Home and End move through it and check.
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const checkedIndex = q.options.findIndex((o) => value.selected.includes(o.value));
+  const tabStop = Math.max(checkedIndex, 0);
+  const onRadioKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    const last = q.options.length - 1;
+    const target: Record<string, number> = { ArrowDown: index === last ? 0 : index + 1, ArrowRight: index === last ? 0 : index + 1, ArrowUp: index === 0 ? last : index - 1, ArrowLeft: index === 0 ? last : index - 1, Home: 0, End: last };
+    const next = target[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    onChange({ selected: [q.options[next]!.value] });
+    optionRefs.current[next]?.focus();
+  };
   return (
     <fieldset className="flex flex-col gap-2" disabled={disabled}>
       <legend className="sr-only">{q.shortLabel ?? q.prompt}</legend>
@@ -331,8 +334,8 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
         {q.multiSelect ? <span className="text-xs text-muted-foreground">(pick any)</span> : null}
       </div>
       {q.options.length ? (
-        <div className="flex flex-col gap-1.5" role={q.multiSelect ? "group" : "radiogroup"}>
-          {q.options.map((o) => {
+        <div className="flex flex-col gap-1.5" role={q.multiSelect ? "group" : "radiogroup"} aria-label={q.shortLabel ?? q.prompt}>
+          {q.options.map((o, i) => {
             const on = value.selected.includes(o.value);
             return (
               <button
@@ -340,8 +343,13 @@ function QuestionField({ q, value, onChange, disabled }: { q: QuestionItem; valu
                 type="button"
                 role={q.multiSelect ? "checkbox" : "radio"}
                 aria-checked={on}
+                ref={(el) => {
+                  optionRefs.current[i] = el;
+                }}
+                tabIndex={q.multiSelect || i === tabStop ? 0 : -1}
+                onKeyDown={q.multiSelect ? undefined : (event) => onRadioKeyDown(event, i)}
                 onClick={() => toggle(o.value)}
-                className={cn("flex items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors hover:bg-state-hover", on ? "border-[color:var(--ring)] bg-muted" : "border-border")}
+                className={cn("flex items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", on ? "border-[color:var(--ring)] bg-muted" : "border-border")}
               >
                 <Icon name={on ? (q.multiSelect ? "SquareCheck" : "CircleDot") : q.multiSelect ? "Square" : "Circle"} fallback="Circle" className="mt-0.5 size-4 shrink-0 text-foreground" aria-hidden />
                 <span className="min-w-0">

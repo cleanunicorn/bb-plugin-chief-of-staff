@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Sheets and the workflow view work from the keyboard.** The task workflow
+  sheet and the question sheet now take focus when they open, keep Tab inside,
+  close on Escape, and return focus to the button that opened them. Steps on
+  the workflow canvas can be selected with Enter or Space and are announced
+  with their type and status; in the workflow sheet Escape leaves full screen
+  first, then clears a focused step, then closes. The workflow sheet has a new
+  List view with the same “Run again from here” action, so the canvas is no
+  longer required. Single-select answers in a question are one tab stop moved
+  through with the arrow keys. Status wording in the workflow sheet now matches
+  the canvas (“needs approval” instead of “waiting”).
+
 - **Dashboard works on phones.** Dashboard tabs stay on one line; the
   Repositories panel no longer scrolls sideways; pull request titles wrap
   instead of being cut short; the activity feed stacks each entry and expands
