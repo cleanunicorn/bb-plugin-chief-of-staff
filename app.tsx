@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, StatusPill, ViewToggle, compact, duration, relative, toneColor, usePalette } from "@/components/cos/viz";
 import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
-import { STEP_TYPE_META, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
+import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { topoOrder, type Workflow } from "./src/workflow";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
@@ -187,6 +187,11 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {expanded ? (
+            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2" onClick={() => setExpanded(false)}>
+              <ShrinkGlyph /> Exit full screen
+            </Button>
+          ) : null}
           <div role="group" aria-label="View" className="flex rounded-md border border-border p-0.5">
             {(["canvas", "list"] as const).map((v) => (
               <button

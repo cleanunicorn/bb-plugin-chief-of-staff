@@ -141,7 +141,9 @@ export interface WorkflowCanvasProps {
   /** Read-only live view: status per step id. */
   live?: Record<string, LiveStatus>;
   className?: string;
+  /** Full screen is on. The parent shows the way out (a labelled bar), away from the step panel's Remove button. */
   expanded?: boolean;
+  /** Shows a labelled "Full screen" button at the canvas's top right while not expanded. */
   onToggleExpanded?: () => void;
   /** Read-only: how often each arrow was taken, by edge id (`next:a:b`, `fail:a:b`); shown from 1 for fail arrows, from 2 otherwise. */
   edgeCounts?: Record<string, number>;
@@ -149,6 +151,7 @@ export interface WorkflowCanvasProps {
 
 function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
+  const { fitView } = useReactFlow();
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
     (): Node<StepNodeData>[] =>
@@ -269,7 +272,6 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   };
 
   // The live view keeps the whole workflow in view as the sheet resizes (full screen, side panel, window).
-  const { fitView } = useReactFlow();
   const frame = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = frame.current;
@@ -306,7 +308,12 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           </Button>
         </div>
       ) : null}
-      <div ref={frame} className="min-h-0 flex-1">
+      <div ref={frame} className="relative min-h-0 flex-1">
+        {onToggleExpanded && !expanded ? (
+          <Button size="sm" variant="outline" className="absolute top-2 right-2 z-10 h-7 gap-1.5 bg-card px-2 shadow-sm" onClick={onToggleExpanded}>
+            <ExpandGlyph /> Full screen
+          </Button>
+        ) : null}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -326,12 +333,48 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={16} size={1} />
-          <Controls showInteractive={false}>
-            {onToggleExpanded ? <ControlButton onClick={onToggleExpanded} title={expanded ? "Exit full screen" : "Full screen"} aria-label={expanded ? "Exit full screen" : "Full screen"}><Icon name={expanded ? "Minimize" : "Maximize"} fallback="Square" aria-hidden /></ControlButton> : null}
+          {/* React Flow's own fit-view glyph is the corner frame people read as "full screen"; use a crosshair instead. */}
+          <Controls showInteractive={false} showFitView={false}>
+            <ControlButton onClick={() => void fitView({ padding: 0.2, duration: 200 })} title="Fit all steps in view" aria-label="Fit all steps in view">
+              <FitGlyph />
+            </ControlButton>
           </Controls>
         </ReactFlow>
       </div>
     </div>
+  );
+}
+
+// Inline stroke icons: React Flow's control CSS fills every svg with currentColor, which turns stroke-only
+// host icons into solid squares, so these turn the fill off themselves.
+const glyph = { width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", style: { fill: "none", maxWidth: 14, maxHeight: 14 }, "aria-hidden": true } as const;
+
+/** Crosshair: centre the whole graph. */
+function FitGlyph() {
+  return (
+    <svg {...glyph}>
+      <circle cx="12" cy="12" r="7" />
+      <circle cx="12" cy="12" r="2" />
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+    </svg>
+  );
+}
+
+/** Arrows pointing out to the corners: full screen. */
+export function ExpandGlyph() {
+  return (
+    <svg {...glyph}>
+      <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+    </svg>
+  );
+}
+
+/** Arrows pointing in from the corners: leave full screen. */
+export function ShrinkGlyph() {
+  return (
+    <svg {...glyph}>
+      <path d="M14 10h6M14 10V4M14 10l7-7M10 14H4M10 14v6M10 14l-7 7" />
+    </svg>
   );
 }
 

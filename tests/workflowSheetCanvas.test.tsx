@@ -68,6 +68,24 @@ it("closes on Escape from an unselected step instead of selecting it", async () 
   expect(dialog()).toBeNull();
 });
 
+it("keeps step details when leaving full screen by button or Escape", async () => {
+  const button = (label: string) => Array.from(dialog()!.querySelectorAll("button")).find((b) => b.textContent?.trim() === label)!;
+  node("build").focus();
+  await press("Enter");
+  await act(async () => { button("Full screen").click(); });
+  expect(button("Exit full screen")).toBeDefined();
+  expect(details()).toBe("Build");
+  await act(async () => { button("Exit full screen").click(); });
+  expect(button("Full screen")).toBeDefined();
+  expect(details()).toBe("Build");
+  await act(async () => { button("Full screen").click(); });
+  node("build").focus();
+  await press("Escape");
+  expect(dialog()).not.toBeNull();
+  expect(button("Full screen")).toBeDefined();
+  expect(details()).toBe("Build");
+});
+
 it("shows the task, its loop-backs and history, and what a selected step received and produced", async () => {
   const at = new Date().toISOString();
   const step = (over: object = {}) => ({ startedAt: at, finishedAt: null, feedback: null, output: null, waitingReason: null, reports: [], threads: [], ...over });
