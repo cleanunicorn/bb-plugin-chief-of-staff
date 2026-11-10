@@ -4,7 +4,7 @@
 // a button that selects a step; its own handlers are not covered here.
 import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import { DEFAULT_DOCUMENT, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
+import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
 import { button, click, container, fields, mount, setValue, unmount } from "./dom";
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ data: { skills: [] }, error: null, refetch: vi.fn() }) }));
@@ -185,4 +185,67 @@ it("deletes an unused workflow without a notice", async () => {
   await click(button("Hotfix"));
   await click(button("Delete Hotfix"));
   expect(container.textContent).not.toContain("will use the default workflow");
+
+it("adds a model step that picks automatically, and switches it to fixed values", async () => {
+  const editor = await open();
+  await click(button("List"));
+  await click(button("Model step at the end"));
+  const doc = editor.changed();
+  expect(doc.workflows[0]!.steps.at(-1)).toMatchObject({ id: "new-model", type: "model", mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS });
+
+  // Re-render with the new document (the parent owns it) and open the step's panel.
+  await mount(<WorkflowsEditor doc={doc} onChange={editor.onChange} usedBy={{}} />);
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]")).at(-1)!);
+  expect(container.textContent).toContain("An agent reads the task and your instructions");
+  expect(fields("Model")).toEqual([]);
+
+  await setValue(fields("How the model is chosen")[0]!, "fixed");
+  // The default choosing text goes: a fixed step chooses nothing.
+  expect(editor.changed().workflows[0]!.steps.at(-1)).toMatchObject({ type: "model", mode: "fixed", instructions: "" });
+  editor.expectInputUntouched();
+  // Re-rendered fixed (its panel stays open), its text is notes that no agent sees.
+  await mount(<WorkflowsEditor doc={editor.changed()} onChange={editor.onChange} usedBy={{}} />);
+  expect(container.textContent).toContain("No agent sees them.");
+  expect(fields("Model")).toHaveLength(1);
+});
+
+it("keeps edited choosing instructions when an automatic model step is switched to fixed", async () => {
+  const doc: WorkflowsDocument = { default: "w", workflows: [{ id: "w", name: "W", steps: [
+    { id: "pick", name: "Pick", type: "model", mode: "auto", instructions: "Prefer Claude for UI work.", next: ["build"] } as Step,
+    { ...step(DEFAULT_DOCUMENT, "build"), next: [] },
+  ] }] };
+  const editor = await open(doc);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[0]!);
+  await setValue(fields("How the model is chosen")[0]!, "fixed");
+  expect(step(editor.changed(), "pick")).toMatchObject({ mode: "fixed", instructions: "Prefer Claude for UI work." });
+  editor.expectInputUntouched();
+});
+
+it("drops the default choosing text when an automatic model step becomes another type", async () => {
+  const doc: WorkflowsDocument = { default: "w", workflows: [{ id: "w", name: "W", steps: [
+    { id: "pick", name: "Pick", type: "model", mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS, next: ["build"] } as Step,
+    { ...step(DEFAULT_DOCUMENT, "build"), next: [] },
+  ] }] };
+  const editor = await open(doc);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[0]!);
+  await setValue(fields("Type")[0]!, "agent");
+  expect(step(editor.changed(), "pick")).toMatchObject({ type: "agent", instructions: "" });
+  editor.expectInputUntouched();
+});
+
+it("keeps a model step saved before modes existed fixed while its last value is cleared", async () => {
+  const legacy: WorkflowsDocument = { default: "w", workflows: [{ id: "w", name: "W", steps: [
+    { id: "pin", name: "Pin", type: "model", instructions: "", next: ["build"], providerId: "claude-code" } as Step,
+    { ...step(DEFAULT_DOCUMENT, "build"), next: [] },
+  ] }] };
+  const editor = await open(legacy);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[0]!);
+  await setValue(fields("Agent (provider)")[0]!, "");
+  const pin = step(editor.changed(), "pin");
+  expect(pin).toMatchObject({ type: "model", mode: "fixed", providerId: undefined });
+  editor.expectInputUntouched();
+
 });

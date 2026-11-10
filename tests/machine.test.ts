@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
-import { DEFAULT_WORKFLOW, fromStages, parseWorkflows, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type Workflow } from "../src/workflow";
+import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
 import { pipelineLine, stepPrompt } from "../src/prompts";
+import { stepForStage } from "../src/roster";
+import { leadReport } from "../src/delivery";
 
 const NOW = new Date("2026-11-07T10:00:00.000Z");
 
@@ -392,9 +394,27 @@ describe("model steps", () => {
     expect(validateWorkflow(flow)).toEqual([]);
   });
 
-  it("requires something to set", () => {
-    const empty = wf([{ id: "m", name: "Nothing", type: "model", next: ["a"] }, { id: "a", name: "A", type: "agent" }]);
+  it("requires something to set when fixed", () => {
+    const empty = wf([{ id: "m", name: "Nothing", type: "model", mode: "fixed", next: ["a"] }, { id: "a", name: "A", type: "agent" }]);
     expect(validateWorkflow(empty)).toEqual(["Nothing: set a provider, a model or a reasoning level"]);
+  });
+
+  it("writes down the inferred mode of steps saved before modes existed when parsed", () => {
+    const doc = { workflows: [{ id: "w", name: "W", steps: [
+      { id: "fixed", name: "Fixed", type: "model", providerId: "claude-code", next: ["auto"] },
+      { id: "auto", name: "Auto", type: "model", next: ["a"] },
+      { id: "a", name: "A", type: "agent" },
+    ] }], default: "w" };
+    const parsed = parseWorkflows(JSON.stringify(doc));
+    expect(parsed.ok && parsed.value.workflows[0]!.steps.map((s) => (s.type === "model" ? s.mode : null))).toEqual(["fixed", "auto", null]);
+    const stored = normalizeWorkflow(doc.workflows[0] as unknown as Workflow);
+    expect(stored.steps.map((s) => (s.type === "model" ? s.mode : null))).toEqual(["fixed", "auto", null]);
+  });
+
+  it("is fixed when it sets something and has no mode (saved before modes existed), automatic otherwise", () => {
+    expect(modelMode(flow.steps[0] as ModelStep)).toBe("fixed");
+    expect(modelMode(wf([{ id: "m", name: "M", type: "model" }]).steps[0] as ModelStep)).toBe("auto");
+    expect(modelMode(wf([{ id: "m", name: "M", type: "model", mode: "auto", model: "opus" }]).steps[0] as ModelStep)).toBe("auto");
   });
 
   it("keeps the settings for every later step until another model step changes a field", () => {
@@ -483,6 +503,196 @@ describe("an agent step that chooses the model", () => {
   });
 });
 
+describe("an automatic model step", () => {
+  const flow = wf([
+    { id: "pick", name: "Pick model", type: "model", mode: "auto", instructions: "Choose the best model for the job.", next: ["build"] },
+    { id: "build", name: "Build", type: "agent", writes: true, next: ["pin"] },
+    { id: "pin", name: "Pin", type: "model", model: "sonnet", next: ["review"] },
+    { id: "review", name: "Review", type: "agent" },
+  ]);
+  const picked = (pick: StepReport["pick"]): StepReport => ({ ...report("done", "Opus: risky change"), pick });
+
+  it("is valid with nothing set and is the default for a new model step", () => {
+    expect(validateWorkflow(flow)).toEqual([]);
+    expect(blankStep("model", "m", "Model")).toMatchObject({ mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS });
+  });
+
+  it("runs one read-only agent instead of completing instantly", () => {
+    const [started, fx] = run(itemFor(flow), { type: "start" });
+    expect(st(started)).toMatchObject({ pick: "running", build: "pending" });
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "pick", agent: 0, kind: "start" }]);
+    expect(agentWork(flow.steps[0])).toMatchObject({ writes: false, agents: 1, picksModel: true });
+    expect(agentWork(flow.steps[2])).toBeNull();
+  });
+
+  it("applies the agent's pick to later steps until a model step changes it", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const [after, fx] = run(started, ended("pick", picked({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" }), started));
+    expect(st(after)).toMatchObject({ pick: "done", build: "running" });
+    expect(agentFx(fx).map((e) => (e as { step: string }).step)).toEqual(["build"]);
+    expect(settingsFor(flow, "build", after.nodes)).toEqual({ providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high", complete: true });
+    expect(settingsFor(flow, "review", after.nodes)).toEqual({ providerId: "claude-code", model: "sonnet", reasoningLevel: "high", complete: true });
+  });
+
+  it("replaces everything set before it as a whole: no reasoning level leaks from an earlier step", () => {
+    const cheap = wf([
+      { id: "cheap", name: "Cheap chooser", type: "model", providerId: "claude-code", model: "haiku", reasoningLevel: "low", next: ["pick"] },
+      { id: "pick", name: "Pick", type: "model", mode: "auto", next: ["build"] },
+      { id: "build", name: "Build", type: "agent", writes: true },
+    ]);
+    const [started] = run(itemFor(cheap), { type: "start" });
+    expect(settingsFor(cheap, "pick", started.nodes)).toEqual({ providerId: "claude-code", model: "haiku", reasoningLevel: "low" });
+    const [after] = run(started, ended("pick", picked({ providerId: "codex", model: "gpt-5" }), started));
+    expect(settingsFor(cheap, "build", after.nodes)).toEqual({ providerId: "codex", model: "gpt-5", complete: true });
+  });
+
+  it("resolves a complete pick without the repository's or global values", () => {
+    const repo = { providerId: "claude-code", model: "sonnet", reasoningLevel: "low" };
+    const defaults = { providerId: "acp-cursor", model: "default-model" };
+    expect(resolveAgent({ providerId: "codex", model: "gpt-5", complete: true }, repo, defaults)).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: undefined });
+    expect(resolveAgent({ model: "opus" }, repo, defaults)).toEqual({ providerId: "claude-code", model: "opus", reasoningLevel: "low" });
+    expect(resolveAgent(undefined, {}, defaults)).toEqual({ providerId: "acp-cursor", model: "default-model", reasoningLevel: undefined });
+  });
+
+  it.each([
+    ["nothing", null],
+    ["only a reasoning level", { reasoningLevel: "high" }],
+    ["only a provider", { providerId: "codex" }],
+    ["only a model", { model: "gpt-5" }],
+  ])("asks a person when the agent picks %s", (_, pick) => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const [after] = run(started, ended("pick", picked(pick), started));
+    expect(after.nodes.pick!.status).toBe("waiting");
+    expect(after.nodes.pick!.waiting?.kind).toBe("escalation");
+    expect(settingsFor(flow, "build", after.nodes)).toEqual({});
+  });
+
+  it("tells the agent how to find the available models and how to report its pick", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const prompt = stepPrompt(started, agentWork(flow.steps[0])!, 0);
+    expect(prompt).toContain("Choose the best model for the job.");
+    expect(prompt).toContain("bb provider list --json");
+    expect(prompt).toContain("bb provider models <providerId> --json");
+    expect(prompt).toContain("`providerId`, `model` and `reasoningLevel`");
+    expect(prompt).toContain("leave `reasoningLevel` out entirely");
+    expect(prompt).not.toContain("or none if it lists none");
+    expect(prompt).toContain("Report the provider's `id` as `providerId`");
+    expect(prompt).toContain("providerId: <provider id>");
+    expect(prompt).toContain("This step is read-only");
+  });
+
+  it("uses the default instructions when the step has none", () => {
+    const bare = wf([{ id: "m", name: "M", type: "model", mode: "auto" }]);
+    expect(agentWork(bare.steps[0])?.instructions).toBe(DEFAULT_MODEL_INSTRUCTIONS);
+  });
+
+  it("reads the pick from a text report", () => {
+    const r = parseTextReport("## Step report\nstep: pick\noutcome: done\nprovider: codex\nmodel: gpt-5\nreasoning: high\nsummary: big", NOW.toISOString());
+    expect(r?.pick).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: "high" });
+    expect(parseTextReport("## Step report\nstep: x\noutcome: done\nsummary: y", NOW.toISOString())?.pick).toBeUndefined();
+    // The tool's parameter names work too.
+    const named = parseTextReport("## Step report\nstep: pick\noutcome: done\nproviderId: codex\nmodel: gpt-5\nreasoningLevel: high\nsummary: big", NOW.toISOString());
+    expect(named?.pick).toEqual({ providerId: "codex", model: "gpt-5", reasoningLevel: "high" });
+    // Lines in the summary are prose, not a pick.
+    const prose = parseTextReport("## Step report\nstep: pick\noutcome: done\nproviderId: codex\nsummary: Compared options.\n- **Model**: sonnet was considered\n- reasoning: high is overkill", NOW.toISOString());
+    expect(prose?.pick).toEqual({ providerId: "codex", model: null, reasoningLevel: null });
+  });
+});
+
+describe("authored agent steps versus a model-choosing agent", () => {
+  const flow = wf([
+    { id: "pick", name: "Pick model", type: "model", mode: "auto", next: ["review"] },
+    { id: "review", name: "Review", type: "agent", verdict: true, next: ["build"] },
+    { id: "build", name: "Build", type: "agent", writes: true, next: ["choose"] },
+    { id: "choose", name: "Choose again", type: "model", mode: "auto", next: ["ship"] },
+    { id: "ship", name: "Ship", type: "ship" },
+  ]);
+
+  it("tells them apart", () => {
+    expect(flow.steps.map((s) => [s.id, Boolean(agentWork(s)), isAuthoredAgent(s), isWriter(s)])).toEqual([
+      ["pick", true, false, false],
+      ["review", true, true, false],
+      ["build", true, true, true],
+      ["choose", true, false, false],
+      ["ship", false, false, false],
+    ]);
+  });
+
+  it("never maps an old stage onto the model-choosing agent", () => {
+    // "plan" was the first read-only agent; the chooser before it does not count.
+    const planned = wf([{ id: "pick", name: "Pick", type: "model", next: ["think"] }, { id: "think", name: "Think", type: "agent", next: ["build"] }, { id: "build", name: "Build", type: "agent", writes: true }]);
+    expect(stepForStage(planned, "plan")).toBe("think");
+    expect(stepForStage(flow, "plan")).toBe("review");
+    expect(stepForStage(flow, "review")).toBe("review");
+    expect(stepForStage(flow, "build")).toBe("build");
+  });
+
+  it("does not use a model-choosing agent's report as the PR text", () => {
+    const item = itemFor(flow);
+    item.nodes.choose!.reports = [{ ...report("done", "Title: Use Opus\n\nIt is a risky change."), pick: { providerId: "claude-code", model: "opus" } }];
+    expect(leadReport(item, "ship")).toBeNull();
+  });
+});
+
+describe("stale errors (#24)", () => {
+  const send = (agent: number): Effect => ({ type: "agent", step: "review", agent, kind: "start" });
+
+  it("clears an effect error once the prompt is delivered and keeps it while a sibling still retries", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    for (const agent of [0, 1]) [item] = run(item, { type: "effect_error", step: "review", effect: send(agent), message: "Cannot read properties of undefined (reading 'length')" });
+    expect(item.lastError).toContain("reading 'length'");
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    expect(item.lastError).toContain("reading 'length'");
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 1, round: 1 });
+    expect([item.status, item.lastError]).toEqual(["agent", null]);
+  });
+
+  it("clears an effect error when the operator retries the step", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
+      { id: "test", name: "Tests", type: "check", command: "npm test" },
+    ]);
+    let item = itemFor(w);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    for (let n = 0; n <= DEFAULT_POLICY.maxInfraRetries; n++) [item] = run(item, { type: "effect_error", step: "test", effect: { type: "check", step: "test" }, message: "deadline exceeded" });
+    expect([item.waitingKind, item.lastError]).toEqual(["cos_error", "deadline exceeded"]);
+    [item] = run(item, { type: "retry" });
+    expect(item.lastError).toBeNull();
+  });
+
+  it("clears an error left on a running step whose retry was already resolved (cards stuck before the fix)", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    item = { ...item, lastError: "Cannot read properties of undefined (reading 'length')" };
+    expect(item.nodes.review).toMatchObject({ status: "running", retry: null });
+    [item] = run(item, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    expect([item.status, item.lastError]).toEqual(["agent", null]);
+  });
+
+  it("keeps a merge wait reason, an engine error and the error of a failed item", () => {
+    const ship = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "merge" },
+    ]);
+    let item = itemFor(ship, { prNumber: 7 });
+    item = { ...item, nodes: { build: { ...item.nodes.build!, status: "done", round: 1 }, ship: { ...item.nodes.ship!, status: "running", round: 1, phase: "ci" } } };
+    [item] = run(item, { type: "ci_passing" });
+    [item] = run(item, { type: "merge_waiting", reason: "Waiting for an approving review" });
+    [item] = run(item, { type: "delivery_ack", step: "build", agent: 0, round: 1 });
+    expect([item.nodes.ship!.phase, item.lastError]).toEqual(["ready", "Waiting for an approving review"]);
+
+    let review = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [review] = run(review, { type: "start" });
+    const engine = `${ENGINE_ERROR_PREFIX}turn_ended: boom`;
+    expect(run({ ...review, lastError: engine }, { type: "delivery_ack", step: "review", agent: 0, round: 1 })[0].lastError).toBe(engine);
+
+    [review] = run(review, { type: "thread_failed", step: null, agent: 0, error: "provider crashed" });
+    [review] = run(review, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
+    expect([review.status, review.lastError]).toEqual(["failed", "provider crashed"]);
+  });
+});
 
 describe("per-agent delivery retries", () => {
   it.each([false, true])("preserves thread-failure precedence over a sibling's interrupted send (legacy=%s)", (legacy) => {

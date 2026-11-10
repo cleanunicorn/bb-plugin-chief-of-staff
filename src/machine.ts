@@ -9,7 +9,7 @@
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
 import type { WaitingKind, WorkItem } from "./state";
-import { chosenModel, descendants, finalSteps, predecessors, stepById, topoOrder, type Step, type Workflow } from "./workflow";
+import { agentWork, chosenModel, descendants, finalSteps, isWriter, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
 
 export type ReportOutcome = "done" | "failed" | "needs_input";
 
@@ -20,6 +20,8 @@ export interface StepReport {
   question?: string | null;
   /** On a step with model choices: the id of the one the agent picked. */
   choice?: string | null;
+  /** On an automatic model step: the provider, model and reasoning level the agent picked. */
+  pick?: ModelPick | null;
   at: string;
   via: "tool" | "text";
 }
@@ -137,8 +139,8 @@ export function initialNodes(wf: Workflow): Nodes {
   return Object.fromEntries(wf.steps.map((s) => [s.id, freshNode()]));
 }
 
-const agentsOf = (step: Step) => (step.type === "agent" ? step.agents : 1);
-const limitOf = (step: Step) => (step.type === "agent" ? step.maxRounds : step.type === "model" ? 0 : step.maxAttempts);
+const agentsOf = (step: Step) => agentWork(step)?.agents ?? 1;
+const limitOf = (step: Step) => agentWork(step)?.maxRounds ?? (step.type === "check" || step.type === "ship" ? step.maxAttempts : 0);
 const label = (item: WorkItem) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
 
 const WAIT_TITLE: Record<WaitingKind, string> = {
@@ -168,9 +170,9 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     if (!s || !n) return;
     const count = agentsOf(s);
     Object.assign(n, { agentRetries: {}, deliveries: {}, status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
-    if (s.type === "agent") for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
+    if (agentWork(s)) for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
     else if (s.type === "model") {
-      // Nothing to run: agent steps after it read its settings when they spawn.
+      // Fixed: nothing to run; agent steps after it read its settings when they spawn.
       Object.assign(n, { status: "done", finishedAt: iso });
     } else if (s.type === "check") {
       patch.jobStartedAt = iso;
@@ -224,14 +226,15 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
   /** Every agent on an agent step has reported: pass it on, gate it, or fail it. */
   const agentStepFinished = (id: string) => {
-    const s = step(id);
+    const s = agentWork(step(id));
     const n = node(id);
-    if (!s || s.type !== "agent" || !n) return;
+    if (!s || !n) return;
     const failed = n.reports.filter((r) => r?.outcome === "failed");
     if (failed.length) {
       if (s.verdict) return fail(id, failed.map((r) => r!.summary).join("\n\n---\n\n"));
       return wait(id, "escalation", `The agent reported it could not finish: ${failed[0]!.summary}`);
     }
+    if (s.picksModel && !pickedModel(n)) return wait(id, "escalation", "The agent did not pick a model. Approve to continue with the current model, or send it instructions.");
     if (s.chooses.length && !chosenModel(s, n)) return wait(id, "escalation", `The agent did not pick one of the model choices (${s.chooses.map((c) => c.id).join(", ")}). Approve to continue with the current model, or send it instructions.`);
     if (s.approval) return wait(id, "approval", `${s.name} is ready for your approval.`);
     complete(id);
@@ -275,9 +278,9 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
 
     case "turn_ended": {
-      const s = step(event.step);
+      const s = agentWork(step(event.step));
       const n = node(event.step);
-      if (!s || s.type !== "agent" || !n || (n.status !== "running" && !(event.report && n.status === "waiting" && n.waiting?.kind === "cos_error" && isPromptDeliveryRetry(n.retry))) || event.round !== n.round) break;
+      if (!s || !n || (n.status !== "running" && !(event.report && n.status === "waiting" && n.waiting?.kind === "cos_error" && isPromptDeliveryRetry(n.retry))) || event.round !== n.round) break;
       if (n.reports[event.agent]) break; // this agent already reported
       const report = event.report;
       if (report?.outcome === "needs_input") {
@@ -513,7 +516,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "stalled": {
       const n = node(event.step);
-      if (n?.status !== "running" || step(event.step)?.type !== "agent") break;
+      if (n?.status !== "running" || !agentWork(step(event.step))) break;
       wait(event.step, "stalled", event.reason ?? "No activity past the stall threshold.", event.agent);
       break;
     }
@@ -559,7 +562,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         patch.status = undefined;
         patch.lastError = null;
         patch.finishedAt = null;
-        const writer = wf.steps.find((s) => s.type === "agent" && s.writes && node(s.id)?.status !== "done" && node(s.id)?.status !== "pending");
+        const writer = wf.steps.find((s) => isWriter(s) && node(s.id)?.status !== "done" && node(s.id)?.status !== "pending");
         if (writer) {
           start(writer.id);
           for (const e of effects) if (e.type === "agent" && e.step === writer.id) e.fresh = true;
@@ -628,7 +631,27 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     effects.push(shipped ? { type: "notify", title: `Shipped: ${label(item)}`, body: (patch.prUrl ?? item.prUrl) ? `Done: ${patch.prUrl ?? item.prUrl}` : "Workflow finished." } : { type: "notify", title: `Finished: ${label(item)}`, body: "Every step of the workflow is done." });
   }
 
+  // ---- recovered? ----
+  // On a running item lastError holds an effect error, a merge wait reason or
+  // an engine error. An effect error stays while its retry is pending; once no
+  // step holds one (a delivery went through, a report arrived, the operator
+  // retried, or it was resolved before this rule existed) the error is
+  // history and must not stay on the card next to "agent working".
+  const finishing = item.status === "done" || patch.status === "done";
+  const mergeWait = wf.steps.some((s) => s.type === "ship" && (node(s.id)?.phase === "ready" || node(s.id)?.phase === "merging"));
+  if (!failed && !finishing && !mergeWait && item.lastError && !item.lastError.startsWith(ENGINE_ERROR_PREFIX) && !("lastError" in patch) && !Object.values(nodes).some(holdsRetry)) {
+    patch.lastError = null;
+  }
+
   return { nodes, patch, effects };
+}
+
+/** How an error thrown by `transition` itself starts in lastError (see delivery). */
+export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";
+
+/** The step still has an effect error to retry or to show the operator. */
+function holdsRetry(n: NodeState | undefined): boolean {
+  return !!n && (!!n.retry || Object.keys(n.agentRetries ?? {}).length > 0 || n.waiting?.kind === "cos_error");
 }
 
 export const EFFECT_LABEL: Record<Effect["type"], string> = {
@@ -657,7 +680,7 @@ export function deriveStatus(item: Pick<WorkItem, "status" | "workflow">, nodes:
   }
   const running = order.map((id) => ({ s: stepById(wf, id)!, n: nodes[id] })).filter((x) => x.n?.status === "running");
   const active = running.filter((x) => !x.n!.retry?.at);
-  if (active.some((x) => x.s.type === "agent")) return { status: "agent", waitingKind: null, waitingReason: null };
+  if (active.some((x) => agentWork(x.s))) return { status: "agent", waitingKind: null, waitingReason: null };
   if (active.some((x) => x.s.type === "check" || x.n!.phase === "pushing" || x.n!.phase === "merging")) return { status: "cos", waitingKind: null, waitingReason: null };
   if (active.some((x) => x.n!.phase === "ci")) return { status: "ci", waitingKind: null, waitingReason: null };
   if (active.some((x) => x.n!.phase === "ready")) return { status: "ready", waitingKind: null, waitingReason: null };

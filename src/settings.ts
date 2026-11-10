@@ -34,7 +34,7 @@ export const settingDescriptors = {
   workflow: {
     type: "string",
     label: "Workflows (JSON)",
-    description: 'JSON: {"workflows":[{id, name, steps:[{id, name, type:"agent"|"check"|"ship", instructions, next:[ids], ...}]}], "default": "<id>"}. Repos pick one with "workflow": "<id>". Edit visually under Configure → Workflows.',
+    description: 'JSON: {"workflows":[{id, name, steps:[{id, name, type:"agent"|"check"|"ship"|"model", instructions, next:[ids], ...}]}], "default": "<id>"}. Repos pick one with "workflow": "<id>". Edit visually under Configure → Workflows.',
     experimental_multiline: true,
     experimental_schema: jsonSchema(parseWorkflows),
     default: serializeWorkflows(DEFAULT_DOCUMENT),

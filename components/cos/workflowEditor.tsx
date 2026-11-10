@@ -10,8 +10,10 @@ import type { KnownSkill } from "../../src/skills";
 import { SkillTextarea } from "./skillTextarea";
 import { useRowKeys } from "./rowKeys";
 import {
+  DEFAULT_MODEL_INSTRUCTIONS,
   DEFAULT_WORKFLOW,
   blankStep,
+  modelMode,
   descendants,
   newStepId,
   topoOrder,
@@ -46,10 +48,15 @@ function newChoiceId(taken: string[]): string {
 }
 
 /** Change a step's type, keeping what all types share. */
+/** The default choosing text is only for an automatic Model step: drop it (unless edited) where nothing chooses. */
+const withoutChooserDefault = (instructions: string) => (instructions.trim() === DEFAULT_MODEL_INSTRUCTIONS ? "" : instructions);
+
 function retype(step: Step, type: StepType): Step {
   if (step.type === type) return step;
   const fresh = blankStep(type, step.id, step.name);
-  return { ...fresh, instructions: step.instructions, next: step.next, position: step.position } as Step;
+  // A new automatic Model step starts with its default choosing text when there is nothing to carry over.
+  const instructions = type === "model" && !step.instructions.trim() ? fresh.instructions : withoutChooserDefault(step.instructions);
+  return { ...fresh, instructions, next: step.next, position: step.position } as Step;
 }
 
 /**
@@ -92,7 +99,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete }: { doc: Work
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
-        A workflow is the path every task takes. Steps run when every step pointing at them is done; steps side by side run in parallel. An <b>Agent</b> step runs agents on its instructions (read-only ones may run several at once), a <b>Check</b> runs a command, <b>Ship</b> pushes, opens or merges the PR. Pass/fail steps, checks and ship can send the work back to an earlier step.
+        A workflow is the path every task takes. Steps run when every step pointing at them is done; steps side by side run in parallel. An <b>Agent</b> step runs agents on its instructions (read-only ones may run several at once), a <b>Check</b> runs a command, <b>Ship</b> pushes, opens or merges the PR, and a <b>Model</b> step has an agent pick the best model for the steps after it (or sets one you choose). Pass/fail steps, checks and ship can send the work back to an earlier step.
       </p>
 
       {/* workflows */}
@@ -215,6 +222,8 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
   const others = workflow.steps.filter((s) => s.id !== step.id);
   // Fail arrows may only go back: to this step or a step it comes after.
   const before = others.filter((s) => descendants(workflow, s.id).has(step.id));
+  const autoModel = step.type === "model" && modelMode(step) === "auto";
+  const agentRuns = step.type === "agent" || autoModel;
   const canFail = step.type === "ship" ? step.action === "merge" : step.type === "model" ? false : step.type !== "agent" || step.verdict;
   return (
     <article className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3">
@@ -243,10 +252,28 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
               )}
             </Field>
           </Row>
-          <Field label={step.type === "agent" ? "Instructions for the agent" : "Notes"} hint={step.type === "agent" ? <>What this step should achieve. Type <code>/</code> to use an agent skill. The agent also gets the reports of the steps before it.</> : "Shown in prompts that follow; optional."}>
+          {step.type === "model" ? (
+            <Field label="How the model is chosen" hint={autoModel ? "An agent reads the task and your instructions, looks at the providers and models available, and picks the best one for the job." : "The agent steps after this one run with the values below."}>
+              {(id) => (
+                <Select
+                  id={id}
+                  value={modelMode(step)}
+                  onChange={(v) => set({ mode: v, instructions: v === "auto" ? step.instructions.trim() ? step.instructions : DEFAULT_MODEL_INSTRUCTIONS : withoutChooserDefault(step.instructions) })}
+                  options={[
+                    { value: "auto", label: "Automatically: an agent picks the best model" },
+                    { value: "fixed", label: "Fixed: use the model I set" },
+                  ]}
+                />
+              )}
+            </Field>
+          ) : null}
+          <Field
+            label={agentRuns ? "Instructions for the agent" : "Notes"}
+            hint={autoModel ? "How to choose, e.g. what matters for this kind of task. The agent also gets the task and the reports of the steps before it." : agentRuns ? <>What this step should achieve. Type <code>/</code> to use an agent skill. The agent also gets the reports of the steps before it.</> : "Your own notes about this step, optional. No agent sees them."}
+          >
             {(id) =>
-              step.type === "agent" ? (
-                <SkillTextarea id={id} className={textareaClass} value={step.instructions} onChange={(v) => set({ instructions: v })} placeholder="e.g. Investigate the codebase and write a plan… (type / for skills)" skills={skills} />
+              agentRuns ? (
+                <SkillTextarea id={id} className={textareaClass} value={step.instructions} onChange={(v) => set({ instructions: v })} placeholder={autoModel ? DEFAULT_MODEL_INSTRUCTIONS : "e.g. Investigate the codebase and write a plan… (type / for skills)"} skills={skills} />
               ) : (
                 <textarea id={id} className={textareaClass} value={step.instructions} onChange={(e) => set({ instructions: e.target.value })} />
               )
@@ -295,11 +322,17 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
           ) : null}
           {step.type === "model" ? (
             <div className="flex flex-col gap-2">
-              <p className="text-xs text-muted-foreground">Applies to the agent steps after this one, and keeps applying until another Model step changes it. Empty fields keep the current setting. Agents already started (such as the code-writing thread of an earlier step) are not changed.</p>
+              <p className="text-xs text-muted-foreground">
+                {autoModel ? "The pick applies to the agent steps after this one" : "Applies to the agent steps after this one"}, and keeps applying until another Model step changes it.{autoModel ? "" : " Empty fields keep the current setting."} Agents already started (such as the code-writing thread of an earlier step) are not changed.
+              </p>
+            </div>
+          ) : null}
+          {step.type === "model" && !autoModel ? (
+            <div className="flex flex-col gap-2">
               <div className={two}>
-                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code.">{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined })} placeholder="keep current" mono />}</Field>
-                <Field label="Model">{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined })} placeholder="keep current" mono />}</Field>
-                <Field label="Reasoning level">{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined })} placeholder="keep current" mono />}</Field>
+                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code.">{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
+                <Field label="Model">{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
+                <Field label="Reasoning level">{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
               </div>
             </div>
           ) : null}

@@ -15,7 +15,7 @@ import { runningWriter } from "./prompts";
 import { parseTextReport } from "./report";
 import type { ItemThread, WorkItem } from "./state";
 import { lastAssistantText, pendingInteractions, plainTextQuestion } from "./threads";
-import { stepById, type AgentStep } from "./workflow";
+import { agentWork, stepById, type AgentWork } from "./workflow";
 
 /** Runtime statuses that mean a turn is in progress (or about to be). */
 const BUSY = new Set(["active", "starting", "pending", "provisioning", "waiting-for-host", "stopping"]);
@@ -65,7 +65,7 @@ export function snapshotOf(thread: { id: string; status: string; updatedAt?: unk
 export interface ThreadContext {
   row: ItemThread | null;
   role: "builder" | "step";
-  step: AgentStep | null;
+  step: AgentWork | null;
   agent: number;
 }
 
@@ -74,7 +74,7 @@ export function threadContext(cos: Cos, item: WorkItem, threadId: string): Threa
   const row = cos.store.getThread(threadId);
   if (row?.itemId === item.id && row.role === "step" && row.stepId) {
     const s = stepById(item.workflow, row.stepId);
-    return { row, role: "step", step: s?.type === "agent" ? s : null, agent: row.agent };
+    return { row, role: "step", step: agentWork(s), agent: row.agent };
   }
   if ((row?.itemId === item.id && row.role === "builder") || item.threadId === threadId) return { row, role: "builder", step: runningWriter(item), agent: 0 };
   return null;
@@ -127,7 +127,7 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
     const question = report ? null : plainTextQuestion(text);
     if (row) cos.store.updateThread(threadId, { idleSeenAt: updatedAt || row.idleSeenAt, pendingReport: null });
     try {
-      await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, at: report.at, via: report.via } : null, question }, actor);
+      await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, ...(report.pick ? { pick: report.pick } : {}), at: report.at, via: report.via } : null, question }, actor);
     } catch (error) {
       // The engine did not take the turn end: keep the report and the idle
       // unhandled so the next sweep tries again instead of losing them.

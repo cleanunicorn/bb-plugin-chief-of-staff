@@ -9,7 +9,7 @@ import { dispatch } from "./delivery";
 import { observeActive, snapshotOf, syncThread } from "./sync";
 import { lastAssistantText, plainTextQuestion, sendToThread, threadUrl } from "./threads";
 import type { NodeState } from "./machine";
-import { stepById, topoOrder, type Step } from "./workflow";
+import { agentWork, stepById, topoOrder, type Step } from "./workflow";
 
 const CONTEXT_MAX = 6000;
 const DETAIL_MAX = 4000;
@@ -139,8 +139,9 @@ function waitingStep(cos: Cos, item: WorkItem): { step: Step; node: NodeState; t
     const node = item.nodes[id];
     const step = stepById(item.workflow, id);
     if (!step || node?.status !== "waiting") continue;
-    if (step.type !== "agent") return { step, node, threadId: null };
-    const threadId = step.writes ? item.threadId : (cos.store.stepThread(item.id, step.id, node.waiting?.agent ?? 0)?.threadId ?? null);
+    const work = agentWork(step);
+    if (!work) return { step, node, threadId: null };
+    const threadId = work.writes ? item.threadId : (cos.store.stepThread(item.id, step.id, node.waiting?.agent ?? 0)?.threadId ?? null);
     return { step, node, threadId };
   }
   return null;

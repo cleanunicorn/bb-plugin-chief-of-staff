@@ -7,8 +7,10 @@
 //          parallel, gated by a human approval or by its own pass/fail verdict)
 //   check: Chief of Staff runs a command in the worktree
 //   ship:  push, open a pull request, or merge it when CI is green
-//   model: no work of its own; sets the provider, model and reasoning level
-//          for the agent steps after it, until another model step changes them
+//   model: sets the provider, model and reasoning level for the agent steps
+//          after it, until another model step changes them. "auto" (the
+//          default) runs a read-only agent that reads the task and picks the
+//          best model from the ones available; "fixed" sets them as written
 // `next` edges form a DAG; `onFail` points back to an earlier step to re-run
 // from when a verdict, check or CI fails.
 import { z } from "zod";
@@ -82,14 +84,22 @@ export const shipStepSchema = z.object({
   maxAttempts: attempts.default(2),
 });
 
+export const MODEL_MODES = ["auto", "fixed"] as const;
+export type ModelMode = (typeof MODEL_MODES)[number];
+
 /**
- * Sets how agents run from here on. Empty fields leave the setting as it was
- * (an earlier model step, else the repository's, else the global default).
+ * Sets how agents run from here on. "auto": an agent reads the task and the
+ * step's instructions and picks the provider, model and reasoning level from
+ * the ones available. "fixed": the fields below; empty ones leave the setting
+ * as it was (an earlier model step, else the repository's, else the global
+ * default). Without a mode (steps saved before it existed) a step that sets a
+ * field is fixed, otherwise automatic: see `modelMode`.
  */
 export const modelStepSchema = z.object({
   ...base,
   type: z.literal("model"),
-  /** The agent: a BB provider id such as "claude-code". */
+  mode: z.enum(MODEL_MODES).optional(),
+  /** Fixed mode: the agent, a BB provider id such as "claude-code". */
   providerId: z.string().max(200).optional(),
   model: z.string().max(200).optional(),
   reasoningLevel: z.string().max(50).optional(),
@@ -104,11 +114,78 @@ export type CheckStep = z.output<typeof checkStepSchema>;
 export type ShipStep = z.output<typeof shipStepSchema>;
 export type ModelStep = z.output<typeof modelStepSchema>;
 
+/** Instructions an automatic model step starts with. */
+export const DEFAULT_MODEL_INSTRUCTIONS = "Read the task and choose the best model for the job from the ones available: strong enough to do it well, no more expensive than it needs.";
+
+/** Whether a model step picks automatically or sets fixed values. */
+export function modelMode(step: ModelStep): ModelMode {
+  if (step.mode) return step.mode;
+  return step.providerId?.trim() || step.model?.trim() || step.reasoningLevel?.trim() ? "fixed" : "auto";
+}
+
+/**
+ * The agent work a step runs, as an agent step: agent steps themselves, and
+ * automatic model steps, which run one read-only agent that picks the model
+ * (`picksModel`). Null for steps without an agent (checks, ship, fixed model steps).
+ */
+export type AgentWork = AgentStep & { picksModel?: true };
+export function agentWork(step: Step | undefined | null): AgentWork | null {
+  if (!step) return null;
+  if (step.type === "agent") return step;
+  if (step.type !== "model" || modelMode(step) !== "auto") return null;
+  return {
+    id: step.id,
+    name: step.name,
+    type: "agent",
+    instructions: step.instructions.trim() || DEFAULT_MODEL_INSTRUCTIONS,
+    next: step.next,
+    ...(step.position ? { position: step.position } : {}),
+    writes: false,
+    agents: 1,
+    approval: false,
+    verdict: false,
+    maxRounds: 0,
+    chooses: [],
+    picksModel: true,
+  };
+}
+
+/**
+ * A step the user authored as an Agent step, as opposed to the agent work an
+ * automatic Model step also runs (`agentWork`). Use it only where the agent's
+ * own content matters (legacy stage mapping, PR text), never to decide whether
+ * a step runs an agent.
+ */
+export function isAuthoredAgent(step: Step | undefined | null): step is AgentStep {
+  return step?.type === "agent";
+}
+
+/** Whether a step's agent changes code (runs in the task's builder thread). */
+export function isWriter(step: Step | undefined | null): boolean {
+  return Boolean(agentWork(step)?.writes);
+}
+
 /** The provider, model and reasoning level a step's agents run with; unset fields fall back to the repository's, then the global default. */
 export interface AgentSettings {
   providerId?: string;
   model?: string;
   reasoningLevel?: string;
+  /**
+   * Set by an automatic model step's pick: the three fields go together, so an
+   * unset one (usually the reasoning level) means the provider's own default,
+   * never an earlier step's, the repository's or the global value.
+   */
+  complete?: true;
+}
+
+/** The provider, model and reasoning level an agent spawns with: `settings` over the repository's, over the global defaults. */
+export function resolveAgent(settings: AgentSettings | undefined, repo: AgentSettings, defaults: { providerId?: string; model?: string }): AgentSettings {
+  if (settings?.complete) return { providerId: settings.providerId, model: settings.model, reasoningLevel: settings.reasoningLevel };
+  return {
+    providerId: settings?.providerId || repo.providerId || defaults.providerId || undefined,
+    model: settings?.model || repo.model || defaults.model || undefined,
+    reasoningLevel: settings?.reasoningLevel || repo.reasoningLevel || undefined,
+  };
 }
 
 export const workflowSchema = z.object({ id: stepId, name: z.string().min(1).max(80), steps: z.array(stepSchema).min(1) });
@@ -209,13 +286,40 @@ export function topoOrder(wf: Workflow): string[] {
   return out;
 }
 
+/** A report's pick on an automatic model step: what the agent chose. */
+export interface ModelPick {
+  providerId?: string | null;
+  model?: string | null;
+  reasoningLevel?: string | null;
+}
+type ReportLike = { choice?: string | null; pick?: ModelPick | null } | null;
+
+/**
+ * The pick an automatic model step's report named. A pick needs a provider and
+ * a model (a reasoning level is optional); anything less is no pick.
+ */
+export function pickedModel(node: { reports: ReportLike[] } | undefined): AgentSettings | undefined {
+  for (const r of node?.reports ?? []) {
+    const providerId = r?.pick?.providerId?.trim();
+    const model = r?.pick?.model?.trim();
+    const reasoningLevel = r?.pick?.reasoningLevel?.trim();
+    if (providerId && model) return { providerId, model, ...(reasoningLevel ? { reasoningLevel } : {}) };
+  }
+  return undefined;
+}
+
+/** "claude-code · claude-opus-5-5 · high", or null for nothing set. */
+export function describePick(settings: AgentSettings | undefined): string | null {
+  return [settings?.providerId, settings?.model, settings?.reasoningLevel].filter(Boolean).join(" · ") || null;
+}
+
 /** Steps that use the task's worktree exclusively: code-writing agents, checks, ship. */
 export function isExclusive(step: Step): boolean {
   return step.type === "agent" ? step.writes : step.type !== "model";
 }
 
 /** The choice an agent step's report named, when it has choices and one of its reports names a valid one. */
-export function chosenModel(step: AgentStep, node: { reports: ({ choice?: string | null } | null)[] } | undefined): ModelChoice | undefined {
+export function chosenModel(step: AgentStep, node: { reports: ReportLike[] } | undefined): ModelChoice | undefined {
   if (!step.chooses.length || !node) return undefined;
   for (const r of node.reports) {
     const found = r?.choice ? step.chooses.find((c) => c.id === r.choice!.trim()) : undefined;
@@ -225,16 +329,24 @@ export function chosenModel(step: AgentStep, node: { reports: ({ choice?: string
 }
 
 /**
- * The settings set by the model steps (and model choices of agent steps) before `id`. Model steps apply to
+ * The settings set by the model steps (fixed, or picked by an automatic one's agent) and model choices of agent steps before `id`. Model steps apply to
  * everything after them until a later one overrides a field, so the last one
  * before `id` (in topological order, among its ancestors) wins, field by field.
+ * An automatic step's pick is the exception: it replaces all three fields and
+ * marks the result `complete`, so nothing from before it leaks in.
  */
-export function settingsFor(wf: Workflow, id: string, nodes?: Record<string, { reports: ({ choice?: string | null } | null)[] }>): AgentSettings {
+export function settingsFor(wf: Workflow, id: string, nodes?: Record<string, { reports: ReportLike[] }>): AgentSettings {
   const before = new Set(wf.steps.filter((s) => reachable(wf, s.id, id)).map((s) => s.id));
-  const out: AgentSettings = {};
+  let out: AgentSettings = {};
   for (const sid of topoOrder(wf)) {
     const s = stepById(wf, sid);
     if (!s || !before.has(sid)) continue;
+    if (s.type === "model" && modelMode(s) === "auto") {
+      // A pick replaces everything set before it, as a whole.
+      const pick = pickedModel(nodes?.[sid]);
+      if (pick) out = { ...pick, complete: true };
+      continue;
+    }
     const source = s.type === "model" ? s : s.type === "agent" ? chosenModel(s, nodes?.[sid]) : undefined;
     if (!source) continue;
     for (const key of ["providerId", "model", "reasoningLevel"] as const) {
@@ -278,7 +390,7 @@ export function validateWorkflow(wf: Workflow): string[] {
         if (!c.providerId?.trim() && !c.model?.trim() && !c.reasoningLevel?.trim()) problems.push(`${s.name}: model choice "${c.id}" sets nothing`);
       }
     }
-    if (s.type === "model" && !s.providerId?.trim() && !s.model?.trim() && !s.reasoningLevel?.trim()) problems.push(`${s.name}: set a provider, a model or a reasoning level`);
+    if (s.type === "model" && modelMode(s) === "fixed" && !s.providerId?.trim() && !s.model?.trim() && !s.reasoningLevel?.trim()) problems.push(`${s.name}: set a provider, a model or a reasoning level`);
     if (s.type !== "agent" && s.type !== "model") {
       const writerBefore = wf.steps.some((w) => w.type === "agent" && w.writes && reachable(wf, w.id, s.id));
       if (!writerBefore) problems.push(`${s.name}: needs a step that writes code before it`);
@@ -384,21 +496,83 @@ export function parseWorkflows(raw: string): ParsedWorkflows {
   if (!parsed.success) return { ok: false, error: issues(parsed.error) };
   const problems = validateDocument(parsed.data);
   if (problems.length) return { ok: false, error: problems.join("; ") };
-  return { ok: true, value: parsed.data, legacy: null, warnings: [] };
+  return { ok: true, value: { ...parsed.data, workflows: parsed.data.workflows.map(withModelModes) }, legacy: null, warnings: [] };
 }
 
 /**
  * A work item's stored workflow snapshot, with the defaults of fields added
  * since it was taken (e.g. `chooses`). Items keep the workflow they started
  * with across plugin updates, so code must never meet a step missing a field
- * its schema defaults. A step that no longer parses is kept as stored.
+ * its schema defaults, even in a step that no longer parses.
  */
 export function normalizeWorkflow(raw: Workflow): Workflow {
   if (!raw || !Array.isArray(raw.steps)) return raw;
-  return { ...raw, steps: raw.steps.map((s) => {
-    const parsed = stepSchema.safeParse(s);
-    return parsed.success ? parsed.data : s;
-  }) };
+  return withModelModes({ ...raw, steps: raw.steps.map(normalizeStep) });
+}
+
+/**
+ * Write down the mode of model steps saved before modes existed (inferred by
+ * `modelMode`), so editing their fields can no longer change what they are:
+ * clearing the last value of a fixed step must not make it automatic.
+ */
+export function withModelModes(wf: Workflow): Workflow {
+  if (!wf.steps.some((s) => s && s.type === "model" && !s.mode)) return wf;
+  return { ...wf, steps: wf.steps.map((s) => (s && s.type === "model" && !s.mode ? { ...s, mode: modelMode(s) } : s)) };
+}
+
+const STEP_SCHEMAS: Record<string, z.ZodObject> = {
+  agent: agentStepSchema,
+  check: checkStepSchema,
+  ship: shipStepSchema,
+  model: modelStepSchema,
+};
+
+const jsType = (v: unknown) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
+
+/**
+ * A stored step, parsed by its schema; one that no longer parses (e.g. a limit
+ * changed since it was saved) is repaired field by field rather than kept as
+ * stored, so code never meets a missing or wrongly typed field. A field whose
+ * value is missing or of the wrong type gets its schema default, an invalid
+ * optional field is dropped, and array entries that no longer parse are
+ * dropped. Values of the right type that break a limit (a long instruction)
+ * are kept. Required fields without a default (id, name, command) are kept
+ * as stored. Never mutates the input.
+ */
+function normalizeStep(s: Workflow["steps"][number]): Workflow["steps"][number] {
+  if (!s || typeof s !== "object") return s;
+  const parsed = stepSchema.safeParse(s);
+  if (parsed.success) return parsed.data;
+  const out: Record<string, unknown> = { ...(s as Record<string, unknown>) };
+  const shape = STEP_SCHEMAS[String(out.type)]?.shape ?? { next: base.next };
+  for (const [key, field] of Object.entries(shape) as [string, z.ZodType][]) {
+    const own = field.safeParse(out[key]);
+    if (own.success) {
+      if (own.data !== undefined) out[key] = own.data;
+      continue;
+    }
+    const fallback = field.safeParse(undefined);
+    if (!fallback.success) continue; // required (id, name, command): kept as stored
+    const value = out[key];
+    if (fallback.data === undefined) {
+      delete out[key]; // optional (onFail, position, model, ...): an invalid value is dropped
+      continue;
+    }
+    if (Array.isArray(value) && Array.isArray(fallback.data)) {
+      const element = arrayElement(field);
+      out[key] = element ? value.filter((v) => element.safeParse(v).success) : fallback.data;
+    } else if (jsType(value) !== jsType(fallback.data)) {
+      out[key] = fallback.data;
+    }
+  }
+  const retry = stepSchema.safeParse(out);
+  return (retry.success ? retry.data : out) as Workflow["steps"][number];
+}
+
+/** The element schema of a (defaulted) array field. */
+function arrayElement(field: z.ZodType): z.ZodType | undefined {
+  const inner = field instanceof z.ZodDefault ? field.unwrap() : field;
+  return inner instanceof z.ZodArray ? (inner.element as z.ZodType) : undefined;
 }
 
 export function serializeWorkflows(doc: WorkflowsDocument): string {
@@ -427,6 +601,6 @@ export function blankStep(type: StepType, id: string, name: string): Step {
     case "ship":
       return shipStepSchema.parse({ id, name, type });
     case "model":
-      return modelStepSchema.parse({ id, name, type });
+      return modelStepSchema.parse({ id, name, type, mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS });
   }
 }

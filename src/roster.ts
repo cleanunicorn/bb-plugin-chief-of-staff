@@ -7,7 +7,7 @@ import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
-import { depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
+import { agentWork, describePick, isAuthoredAgent, isWriter, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
 
 export interface RosterStep {
   id: string;
@@ -26,6 +26,8 @@ export interface RosterStep {
   round: number;
   waitingKind: WaitingKind | null;
   retrying: boolean;
+  /** An automatic model step: what its agent picked ("provider · model · reasoning"), once it has. */
+  picked?: string | null;
 }
 
 export interface RosterEntry {
@@ -76,13 +78,14 @@ export function rosterSteps(item: WorkItem): RosterStep[] {
       depth: depth.get(id) ?? 0,
       status: n.status,
       phase: n.phase,
-      agents: s.type === "agent" ? s.agents : 1,
+      agents: agentWork(s)?.agents ?? 1,
       reported: n.reports.filter(Boolean).length,
       nudged: Math.max(0, ...n.nudges),
       attempts: n.attempts,
       round: n.round,
       waitingKind: n.waiting?.kind ?? null,
       retrying: Boolean(n.retry?.at),
+      picked: agentWork(s)?.picksModel ? describePick(pickedModel(n)) : null,
     };
   });
 }
@@ -212,27 +215,28 @@ export async function detectStalls(cos: Cos, actor: string): Promise<string[]> {
     stalled.push(item.id);
     cos.store.log({ level: "warn", kind: "stall", repo: item.repo, workItemId: item.id, message: `no activity for ${Math.round((now - last) / 60_000)} min${busy ? "" : " (agent idle)"}`, actor });
     for (const s of item.workflow.steps) {
-      if (s.type === "agent" && item.nodes[s.id]?.status === "running") await dispatch(cos, item.id, { type: "stalled", step: s.id, agent: 0, ...(reason ? { reason } : {}) }, actor);
+      if (agentWork(s) && item.nodes[s.id]?.status === "running") await dispatch(cos, item.id, { type: "stalled", step: s.id, agent: 0, ...(reason ? { reason } : {}) }, actor);
     }
   }
   return stalled;
 }
 
 /** Map a pre-workflow stage name onto a step of the item's workflow. */
-function stepForStage(wf: Workflow, stage: string): string | undefined {
+export function stepForStage(wf: Workflow, stage: string): string | undefined {
   if (stepById(wf, stage)) return stage;
   const find = (pred: (s: Workflow["steps"][number]) => boolean) => topoOrder(wf).map((id) => stepById(wf, id)!).find(pred)?.id;
   switch (stage) {
+    // Old "plan"/"review" stages were authored agent steps, never a model-choosing agent.
     case "plan":
-      return find((s) => s.type === "agent" && !s.writes);
+      return find((s) => isAuthoredAgent(s) && !s.writes);
     case "verify":
       return find((s) => s.type === "check");
     case "review":
-      return find((s) => s.type === "agent" && s.verdict);
+      return find((s) => isAuthoredAgent(s) && s.verdict);
     case "ship":
       return find((s) => s.type === "ship");
     default:
-      return find((s) => s.type === "agent" && s.writes);
+      return find(isWriter);
   }
 }
 

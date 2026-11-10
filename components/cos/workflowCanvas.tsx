@@ -23,19 +23,19 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { blankStep, depths, newStepId, topoOrder, type Step, type StepType, type Workflow } from "../../src/workflow";
+import { blankStep, depths, modelMode, newStepId, topoOrder, type Step, type StepType, type Workflow } from "../../src/workflow";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { STATUS } from "./viz";
 
-export type LiveStatus = { status: "pending" | "running" | "waiting" | "done"; phase: string | null; reported: number; agents: number; waitingKind: string | null; retrying: boolean; attempts: number; round: number };
+export type LiveStatus = { status: "pending" | "running" | "waiting" | "done"; phase: string | null; reported: number; agents: number; waitingKind: string | null; retrying: boolean; attempts: number; round: number; picked?: string | null };
 
 export const STEP_TYPE_META: Record<StepType, { label: string; icon: string; hint: string }> = {
   agent: { label: "Agent", icon: "Bot", hint: "An agent works on the instructions" },
   check: { label: "Check", icon: "FlaskConical", hint: "Chief of Staff runs a command" },
   ship: { label: "Ship", icon: "Rocket", hint: "Push, open a PR, or merge" },
-  model: { label: "Model", icon: "Settings", hint: "Sets the agent and model for the agent steps after it, until another Model step changes them" },
+  model: { label: "Model", icon: "Settings", hint: "Picks the agent and model for the agent steps after it (automatically, or as you set them), until another Model step changes them" },
 };
 
 const COL = 320;
@@ -63,7 +63,7 @@ function subtitle(s: Step): string {
     case "check":
       return s.command;
     case "model":
-      return [s.providerId, s.model, s.reasoningLevel].filter(Boolean).join(" · ") || "not set";
+      return modelMode(s) === "auto" ? "agent picks the best model" : [s.providerId, s.model, s.reasoningLevel].filter(Boolean).join(" · ") || "not set";
     case "ship":
       return s.action === "merge" ? "finish after merge" : s.action === "push" ? "push branch" : "finish when PR opens";
   }

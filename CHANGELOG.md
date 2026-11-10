@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **Fixed Model steps no longer keep the choosing text.** Switching a Model
+  step from Automatically to Fixed, or to another step type, drops the default
+  "choose the best model" instructions (text you wrote stays). The Notes field
+  of Check, Ship and fixed Model steps now says what it is: your own notes,
+  which no agent sees.
+
+- **Stale errors and old task snapshots.** A task's card no longer keeps
+  showing an error such as `Cannot read properties of undefined (reading
+  'length')` once its step recovered: on a running task the error is cleared
+  as soon as no step is still retrying or waiting on Chief of Staff, including
+  cards left stuck by earlier versions (cleared at their next event). Merge
+  wait reasons and errors of failed tasks are kept; an engine error is cleared
+  once the same kind of event is handled. A stored workflow step that no
+  longer passes validation is repaired field by field instead of kept as
+  stored: missing or wrongly typed fields get their defaults, invalid optional
+  fields and invalid entries in lists such as `chooses` are dropped. Failed
+  effects and engine errors now log their stack trace in the activity log.
+
+- **Model steps pick the model automatically.** A Model step no longer has to
+  name a model: by default it runs a read-only agent that reads the task and
+  the step's instructions (“choose the best model for the job”), looks at the
+  providers and models available in BB, and picks the provider, model and
+  reasoning level the later agent steps run with. The task's workflow view
+  shows the pick. Choose **Fixed** to set the values yourself; existing Model
+  steps that set values keep working as fixed.
+
 - **Sheets and the workflow view work from the keyboard.** The task workflow
   sheet and the question sheet now take focus when they open, keep Tab inside,
   close on Escape, and return focus to the button that opened them. Steps on

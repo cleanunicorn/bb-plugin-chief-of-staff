@@ -6,13 +6,13 @@ import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import { GitHubError } from "./github";
-import { deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
+import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
-import { settingsFor, stepById, topoOrder, type AgentStep, type CheckStep, type ShipStep } from "./workflow";
+import { agentWork, isAuthoredAgent, settingsFor, stepById, topoOrder, type AgentWork, type CheckStep, type ShipStep } from "./workflow";
 import { itemParent, archiveOrder } from "./threadGroups";
 
 const OUTPUT_TAIL = 12_000;
@@ -97,7 +97,11 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     await recordEngineError(cos, item, event, error, actor);
     throw error;
   }
-  const patch = { ...applyTransition(item, t.nodes, t.patch), queuedEvent: null };
+  // The engine handled the kind of event it failed on: that error is history.
+  // (Only the same kind: another event succeeding says nothing about it, and
+  // clearing it would re-notify on the next failed attempt.)
+  const recovered = item.lastError?.startsWith(`${ENGINE_ERROR_PREFIX}${event.type}:`) && !("lastError" in t.patch) ? { lastError: null } : {};
+  const patch = { ...applyTransition(item, t.nodes, t.patch), ...recovered, queuedEvent: null };
   const proposed = { ...item, ...patch };
   // No await between counting and storing the reservation: dispatches for other
   // items observe it before running their own admission check.
@@ -134,7 +138,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
         cos.bb.log.warn(`post-delivery bookkeeping failed for ${item.id}/${effect.type === "agent" ? effect.step : ""}: ${message}`);
         continue;
       }
-      cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}`, actor });
+      cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}${await stackOf(cos, error)}`, actor });
       if (effect.type !== "notify") await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message, uncertain: delivery?.id !== beforeDelivery && (delivery?.state === "sending" || delivery?.state === "uncertain") }, actor);
     }
   }
@@ -150,13 +154,18 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
  */
 async function recordEngineError(cos: Cos, item: WorkItem, event: MachineEvent, error: unknown, actor: string): Promise<void> {
   const message = await cos.safe(error instanceof Error ? error.message : String(error));
-  const lastError = `Chief of Staff could not handle ${event.type}: ${message}`.slice(0, 1000);
+  const lastError = `${ENGINE_ERROR_PREFIX}${event.type}: ${message}`.slice(0, 1000);
   if (item.lastError === lastError) return;
   cos.store.updateWorkItem(item.id, { lastError });
-  cos.store.log({ level: "error", kind: "engine", repo: item.repo, workItemId: item.id, message: lastError, actor });
+  cos.store.log({ level: "error", kind: "engine", repo: item.repo, workItemId: item.id, message: lastError + (await stackOf(cos, error)), actor });
   cos.invalidate();
   const label = item.issueNumber ? `${item.repo}#${item.issueNumber}` : item.repo;
   await cos.notify(`Chief of Staff needs help: ${label}`, `${lastError}\nIt retries every minute; the agent's report is kept.`, item.threadId ?? undefined).catch(() => undefined);
+}
+
+/** An error's stack trace for the activity log (on its own lines, redacted), or "". */
+async function stackOf(cos: Cos, error: unknown): Promise<string> {
+  return error instanceof Error && error.stack ? `\n${(await cos.safe(error.stack)).slice(0, 4000)}` : "";
 }
 
 /** Replay events received during a pause in their original order. */
@@ -257,8 +266,8 @@ async function runEffect(cos: Cos, itemId: string, effect: Effect, actor: string
   if (effect.type !== "agent") return;
   const repo = await cos.repo(item.repo);
   if (!repo) throw new Error(`repo ${item.repo} is no longer configured`);
-  const step = stepById(item.workflow, effect.step);
-  if (!step || step.type !== "agent") throw new Error(`step ${effect.step} is not an agent step`);
+  const step = agentWork(stepById(item.workflow, effect.step));
+  if (!step) throw new Error(`step ${effect.step} is not an agent step`);
   await promptAgent(cos, item, repo, step, effect, actor);
 }
 
@@ -270,7 +279,7 @@ async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undef
   }
 }
 
-async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentStep, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
+async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentWork, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
   const round = item.nodes[step.id]?.round ?? 0;
   const deliveryId = randomUUID();
   const body = (effect.kind === "nudge" ? nudgePrompt(step) : stepPrompt(item, step, effect.agent, { defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined })) + `\n\nFor this prompt, include delivery: "${deliveryId}" in cos_report (or delivery: ${deliveryId} in the Step report block).`;
@@ -323,6 +332,8 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
     repo, environmentId: item.environmentId, parentThreadId,
     title: `${step.name}${step.agents > 1 ? ` ${effect.agent + 1}` : ""}: ${item.branch ?? item.issueTitle}`,
     prompt, mentions: mentionsIn(prompt), settings, delivery, pluginMetadata: metadata,
+    // Choosing a model only reads: no worktree for it before the builder's exists.
+    inCheckout: Boolean(step.picksModel),
   });
   if (step.writes) cos.store.updateWorkItem(item.id, { providerId: spawned.providerId, model: spawned.model });
   cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name} ${spawned.thread.id}`, actor });
@@ -484,9 +495,10 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, step: ShipStep, 
 }
 
 /** The report of the step right before `shipId`, when one agent wrote it (a "Title: …" line makes it the PR text). */
-function leadReport(item: WorkItem, shipId: string): string | null {
+export function leadReport(item: WorkItem, shipId: string): string | null {
   for (const s of item.workflow.steps) {
-    if (!s.next.includes(shipId) || s.type !== "agent") continue;
+    // An authored step only: a model-choosing agent's rationale is not PR text.
+    if (!s.next.includes(shipId) || !isAuthoredAgent(s)) continue;
     const r = item.nodes[s.id]?.reports.find(Boolean);
     if (r && /^\s*Title:/im.test(r.summary)) return r.summary;
   }
@@ -542,7 +554,7 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
     const reports = n.reports.filter(Boolean);
     if (!reports.length) continue;
     const body = reports.map((r, i) => (reports.length > 1 ? `**Agent ${i + 1}:** ${r!.summary}` : r!.summary)).join("\n\n");
-    sections.push(`### ${s.name}${s.type === "agent" && s.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
+    sections.push(`### ${s.name}${agentWork(s)?.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
   }
   const fallback = !sections.length && item.threadId ? await lastAssistantText(cos, item.threadId) : null;
   const lines = [
