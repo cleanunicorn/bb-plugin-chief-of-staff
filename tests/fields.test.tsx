@@ -136,3 +136,20 @@ it("ConfirmRemove removes only after the second click, and Keep backs out", asyn
   await click(button("Remove"));
   expect(onConfirm).toHaveBeenCalledTimes(1);
 });
+
+it("ConfirmRemove disarms after confirming, so an instance that stays mounted for the next item is not armed", async () => {
+  const onConfirm = vi.fn();
+  await mount(<ConfirmRemove label="Remove acme/app" onConfirm={onConfirm} />);
+  await click(button("Remove acme/app"));
+  await click(button("Remove"));
+  expect(onConfirm).toHaveBeenCalledTimes(1);
+  expect(container.textContent).not.toContain("Remove?");
+  expect(button("Remove acme/app")).toBeTruthy();
+});
+
+it("ConfirmRemove shows its notice only while asking", async () => {
+  await mount(<ConfirmRemove label="Delete Fast" onConfirm={() => {}} notice="acme/app will use the default workflow." />);
+  expect(container.textContent).not.toContain("acme/app");
+  await click(button("Delete Fast"));
+  expect(container.textContent).toContain("acme/app will use the default workflow.");
+});
