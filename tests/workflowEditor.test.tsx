@@ -2,6 +2,7 @@
 // The workflow editor's change handlers: each edit calls onChange with a new
 // document and leaves the one it was given untouched. The canvas is replaced by
 // a button that selects a step; its own handlers are not covered here.
+import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
 import { button, click, container, fields, mount, setValue, unmount } from "./dom";
@@ -10,8 +11,9 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ da
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({
   ...(await original<typeof import("../components/cos/workflowCanvas")>()),
-  WorkflowCanvas: ({ onSelect }: { onSelect: (id: string) => void }) => (
+  WorkflowCanvas: ({ onSelect, onToggleExpanded }: { onSelect: (id: string) => void; onToggleExpanded: () => void }) => (
     <>
+      <button onClick={onToggleExpanded}>Full screen</button>
       <button onClick={() => onSelect("build")}>select build</button>
       <button onClick={() => onSelect("review")}>select review</button>
     </>
@@ -185,5 +187,23 @@ it("keeps a model step saved before modes existed fixed while its last value is 
   await setValue(fields("Agent (provider)")[0]!, "");
   const pin = step(editor.changed(), "pin");
   expect(pin).toMatchObject({ type: "model", mode: "fixed", providerId: undefined });
+  editor.expectInputUntouched();
+});
+
+
+it("leaves full screen by button or Escape without editing the selected step", async () => {
+  const editor = await open();
+  await click(button("select build"));
+  await click(button("Full screen"));
+  expect(container.textContent).toContain("Editing workflow");
+  await click(button("Exit full screen"));
+  expect(container.textContent).not.toContain("Editing workflow");
+  expect(button("Remove Build")).toBeDefined();
+
+  await click(button("Full screen"));
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(container.textContent).not.toContain("Editing workflow");
+  expect(button("Remove Build")).toBeDefined();
+  expect(editor.onChange).not.toHaveBeenCalled();
   editor.expectInputUntouched();
 });
