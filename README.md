@@ -233,7 +233,8 @@ reports of the steps before it and the step's instructions (by default “choose
 lists what is available with `bb provider list` and `bb provider models <provider>`, and reports the provider,
 model and reasoning level it picks (`providerId`, `model`, `reasoningLevel` in `cos_report`; `provider:`, `model:`,
 `reasoning:` lines in a text report). Its reasoning goes into the step report, and the task's workflow view shows
-the pick. If it picks nothing, the step waits for you: approve to continue with the current model, or send it
+the pick. Before any code exists it runs in the project's own checkout, so it creates no worktree. If it picks
+nothing, the step waits for you: approve to continue with the current model, or send it
 instructions. The choosing agent itself runs with the settings in effect before the step, so put a fixed Model step
 before it to choose with a cheaper model. Switch a Model step to **Fixed** to set the values yourself; a saved Model
 step that already sets values (from before the choice existed) stays fixed.

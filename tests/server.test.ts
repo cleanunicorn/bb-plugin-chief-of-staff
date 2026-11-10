@@ -847,6 +847,18 @@ describe("chief-of-staff server", () => {
     }, { threadId: "thr_lost" }))).toContain("Recorded");
   });
 
+  it("runs an automatic model step in the project's checkout, not a new worktree, when no code exists yet", async () => {
+    await useAutoFlow();
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    type Env = { environment: { type: string; hostId?: string; workspace?: { type: string; path?: string | null } } };
+    const spawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").map((c) => c[0] as Env);
+    expect(spawns()[0]!.environment).toMatchObject({ type: "host", workspace: { type: "unmanaged", path: null } });
+    await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "Opus", providerId: "claude-code", model: "claude-opus-5-5" }, { threadId: "thr_pick-model" });
+    await idle("ok", "thr_pick-model");
+    // The builder still gets its own worktree.
+    expect(spawns().at(-1)!.environment).toMatchObject({ type: "host", workspace: { type: "managed-worktree" } });
+  });
+
   it("spawns the writer with exactly the pick: no reasoning level from the repository", async () => {
     await useAutoFlow({ reasoningLevel: "low", providerId: "claude-code", model: "sonnet" });
     await host.harness.behavior.callRpc("cos_intake_now", {});
