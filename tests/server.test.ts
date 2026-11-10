@@ -57,6 +57,8 @@ describe("chief-of-staff server", () => {
   let openPulls: unknown[] = [];
   let currentPull: typeof pull = { ...pull };
   let checkExit = 0;
+  /** Appended to a failing check's output. */
+  let checkLeak = "";
   let checkHangs = false;
   let threadUpdatedAt = 0;
   let threadStatus: "idle" | "active" = "idle";
@@ -81,6 +83,7 @@ describe("chief-of-staff server", () => {
     openPulls = [];
     currentPull = { ...pull };
     checkExit = 0;
+    checkLeak = "";
     threadStatus = "idle";
     pending = [];
     resolved = [];
@@ -126,7 +129,7 @@ describe("chief-of-staff server", () => {
         if (input.command === "git" && input.args?.[0] === "rev-list") return { ...ok, stdout: "2\n" };
         if (input.command === "npm test" && checkHangs) throw new Error("host plugin call 42b1 exceeded its deadline");
         if (input.command === "npm test" && checkBlocks) await checkBlocks;
-        if (input.command === "npm test") return { ...ok, exitCode: checkExit, stdout: checkExit ? "1 failing" : "all green" };
+        if (input.command === "npm test") return { ...ok, exitCode: checkExit, stdout: checkExit ? `1 failing${checkLeak}` : "all green" };
         return ok;
       },
       sdk: {
@@ -593,6 +596,14 @@ describe("chief-of-staff server", () => {
     expect(body.body).toContain("all green");
     expect(await roster()).toMatchObject({ status: "done", detail: "done", prNumber: 7 });
     expect(archivedIds).toEqual(["thr_1"]);
+    // The workflow view carries the task, what each step produced and the run's history.
+    type View = { task: { branch: string; prNumber: number; issueUrl: string }; steps: Record<string, { reports: { summary: string }[]; threads: { threadId: string }[] }>; journal: { kind: string; step: string; detail: string | null; actor: string }[] };
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id: (await roster()).id as string }) as View;
+    expect(view.task).toMatchObject({ branch: "cos/issue-12-fix-login", prNumber: 7, issueUrl: "https://github.com/acme/app/issues/12" });
+    expect(view.steps.build).toMatchObject({ reports: [{ summary: "Fixed the login bug.\n\nnpm test → 12 passing" }], threads: [{ threadId: "thr_1" }] });
+    expect(view.journal.find((e) => e.kind === "reported")).toMatchObject({ step: "build", detail: "Fixed the login bug.\n\nnpm test → 12 passing" });
+    expect(view.journal.filter((e) => e.kind === "passed").map((e) => e.step)).toContain("build");
+    expect(view.journal[0]).toMatchObject({ kind: "started", step: "build" });
     await sweep();
     expect(ghCalls.some((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toBe(false);
 
@@ -1144,6 +1155,28 @@ describe("chief-of-staff server", () => {
     expect(ranChecks()).toBe(1);
     const pr = ghCalls.find((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")!.body as { body: string };
     expect(pr.body).toContain("Fixed login via text report");
+  });
+
+  it("redacts the token from check output, and serves long history details in full on request", async () => {
+    checkExit = 1;
+    checkLeak = `\nAuthorization: token ghp_secret_token\n${"x".repeat(1_000)}\nlast line`;
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await report("build");
+    await idle();
+    expect(sentTexts()[0]).not.toContain("ghp_secret_token");
+    expect(sentTexts()[0]).toContain("<redacted>");
+    type View = { journal: { id: number; kind: string; detail: string | null; truncated?: boolean }[] };
+    const { id } = await roster();
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id }) as View;
+    expect(JSON.stringify(view)).not.toContain("ghp_secret_token");
+    const failed = view.journal.find((e) => e.kind === "failed")!;
+    expect(failed).toMatchObject({ truncated: true });
+    expect(failed.detail!.length).toBeLessThan(700);
+    expect(failed.detail!.trimEnd().endsWith("last line")).toBe(true);
+    const full = await host.harness.behavior.callRpc("cos_journal_detail", { itemId: id, id: failed.id }) as { detail: string };
+    expect(full.detail).toContain("1 failing");
+    expect(full.detail).toContain("<redacted>");
+    expect(await host.harness.behavior.callRpc("cos_journal_detail", { itemId: "another", id: failed.id })).toEqual({ detail: null });
   });
 
   it("feeds a failing verify back to the agent on budget, then waits on a human", async () => {

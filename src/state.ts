@@ -1,11 +1,11 @@
 // Persistent state in the plugin's SQLite database (bb.storage.database()).
 // Tables: work_items (a task, its workflow snapshot and the state of each
-// step), item_threads (which agent thread works on which step) and
-// activity_log. Columns from the fixed-stage model and the removed routines
+// step), item_threads (which agent thread works on which step), step_journal
+// (what happened to each step, kept across re-runs) and activity_log. Columns from the fixed-stage model and the removed routines
 // feature are left in place and unused.
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
-import type { MachineEvent, Nodes, StepReport } from "./machine";
+import type { JournalEntry, JournalKind, MachineEvent, Nodes, StepReport } from "./machine";
 import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
@@ -82,6 +82,12 @@ export interface ItemThread {
   /** A report the agent filed during its turn, acted on when the turn ends. */
   pendingReport: (StepReport & { step: string; round: number }) | null;
 }
+
+/** Journal rows kept across all tasks (details are clipped to 4,000 characters). */
+export const JOURNAL_MAX_ROWS = 50_000;
+
+/** A stored journal entry. */
+export type JournalRecord = JournalEntry & { id: number; at: string; actor: string };
 
 export interface LogEntry {
   id: number;
@@ -200,6 +206,20 @@ export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS cos_control (id INTEGER PRIMARY KEY CHECK (id = 1), paused INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS deferred_events (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, event_json TEXT NOT NULL, actor TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS paused_repos (repo TEXT PRIMARY KEY)`,
+  `CREATE TABLE IF NOT EXISTS step_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    round INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL,
+    agent INTEGER,
+    from_step TEXT,
+    to_step TEXT,
+    detail TEXT,
+    actor TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS step_journal_item ON step_journal(item_id, id)`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -444,6 +464,39 @@ export class StateStore {
   stepThread(itemId: string, stepId: string, agent: number): ItemThread | null {
     const row = this.db.prepare(`SELECT * FROM item_threads WHERE item_id = ? AND role = 'step' AND step_id = ? AND agent = ? ORDER BY created_at DESC LIMIT 1`).get(itemId, stepId, agent) as Row | undefined;
     return row ? rowToThread(row) : null;
+  }
+
+  // ---- step journal ----
+  appendJournal(itemId: string, entries: readonly JournalEntry[], actor: string): void {
+    if (!entries.length) return;
+    const at = this.now().toISOString();
+    const insert = this.db.prepare(`INSERT INTO step_journal (item_id, at, step_id, round, kind, agent, from_step, to_step, detail, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const e of entries) insert.run(itemId, at, e.step, e.round, e.kind, e.agent ?? null, e.from ?? null, e.to ?? null, e.detail, actor);
+    // Keep the journal bounded, like the activity log: the oldest entries go first.
+    this.db.prepare(`DELETE FROM step_journal WHERE id <= (SELECT id FROM step_journal ORDER BY id DESC LIMIT 1 OFFSET ?)`).run(JOURNAL_MAX_ROWS);
+  }
+
+  /** The item's journal, oldest first; the most recent `limit` entries. */
+  listJournal(itemId: string, limit = 500): JournalRecord[] {
+    const rows = this.db.prepare(`SELECT * FROM (SELECT * FROM step_journal WHERE item_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id`).all(itemId, limit) as Row[];
+    return rows.map((row) => ({
+      id: row.id as number,
+      at: row.at as string,
+      step: row.step_id as string,
+      round: (row.round as number) ?? 0,
+      kind: row.kind as JournalKind,
+      ...(row.agent === null || row.agent === undefined ? {} : { agent: row.agent as number }),
+      ...(row.from_step ? { from: row.from_step as string } : {}),
+      ...(row.to_step ? { to: row.to_step as string } : {}),
+      detail: (row.detail as string | null) ?? null,
+      actor: row.actor as string,
+    }));
+  }
+
+  /** One journal entry's full detail, or null when the entry is gone or belongs to another item. */
+  journalDetail(itemId: string, id: number): string | null {
+    const row = this.db.prepare(`SELECT detail FROM step_journal WHERE id = ? AND item_id = ?`).get(id, itemId) as { detail: string | null } | undefined;
+    return row?.detail ?? null;
   }
 
   // ---- activity log ----

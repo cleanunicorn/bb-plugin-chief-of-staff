@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Cos } from "./context";
 import { generalSettingsSchema, rpcContract } from "../rpcContract";
 import type { GeneralSettings } from "../rpcContract";
-import { buildRoster, rosterSteps, reconcile } from "./roster";
+import { buildRoster, itemRunDetail, rosterSteps, reconcile } from "./roster";
 import { pausedMessage, runIntake, startTask } from "./intake";
 import { parseWorkflows, stepById, topoOrder } from "./workflow";
 import { dispatch, replayDeferred } from "./delivery";
@@ -90,7 +90,10 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const item = cos.store.getWorkItem(input.id);
         if (!item) throw new Error(`work item ${input.id} not found`);
         const live = Object.fromEntries(rosterSteps(item).map((s) => [s.id, { status: s.status, phase: s.phase, reported: s.reported, agents: s.agents, waitingKind: s.waitingKind, retrying: s.retrying, attempts: s.attempts, round: s.round, picked: s.picked ?? null }]));
-        return { title: `${item.repo}${item.issueNumber ? `#${item.issueNumber}` : ""} ${item.issueTitle}`, workflow: item.workflow, live };
+        return { title: `${item.repo}${item.issueNumber ? `#${item.issueNumber}` : ""} ${item.issueTitle}`, workflow: item.workflow, live, ...itemRunDetail(cos, item) };
+      },
+      async cos_journal_detail(input) {
+        return { detail: cos.store.journalDetail(input.itemId, input.id) };
       },
       async cos_start_task(input, ctx) {
         const item = await startTask(cos, { repo: input.repo, title: input.title, body: input.body }, callerActor(ctx));

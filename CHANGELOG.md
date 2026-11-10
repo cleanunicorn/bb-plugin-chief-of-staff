@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **See what happened in a task's run.** The task workflow view now fills the
+  sheet: the canvas takes the full height and refits when the sheet resizes.
+  A summary strip shows the task's status, how long it has run, the steps done,
+  the loop-backs, the PR and the branch. The side panel shows the task's
+  description and links, every loop-back (for example `Review → Build ×2`, with
+  the latest reason), and a history of the run. Select a step to see what it
+  received from the steps before it, the feedback that sent it back, its report
+  or check output, its runs and its threads. Fail arrows show how many times
+  they were taken. The history also notes runs that were cut short when
+  another step sent work back, and why a task stopped (a closed pull request,
+  a lost builder thread). Long entries load in full when you expand them.
+  Chief of Staff records each step's history in a new table (the most recent
+  50,000 entries are kept), so this history starts with tasks that run after
+  the update.
+
+- **The GitHub token is redacted from check and CI output** before it is
+  stored, shown in the dashboard or sent to an agent as feedback.
+
 - **Clearer workflow canvas controls.** Fit view uses a crosshair, and a
   labeled Full screen button uses outward arrows. The expanded workflow editor
   has its own Exit full screen bar with an Escape hint, separated from step

@@ -117,6 +117,7 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
           <span aria-hidden className="size-1.5 rounded-full" style={{ background: tone.color }} />
           {tone.label}
           {live && live.attempts ? <span className="text-muted-foreground"> · {live.attempts} failed</span> : null}
+          {live && live.round > 1 && live.status !== "running" ? <span className="text-muted-foreground"> · {live.round} runs</span> : null}
         </p>
       ) : null}
       <Handle type="source" position={Position.Bottom} className="!size-2.5 !border-border !bg-background" />
@@ -128,6 +129,8 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
 }
 
 const nodeTypes = { step: StepNode };
+/** Read-only fit: small workflows are not blown up past their natural size. */
+const FIT = { padding: 0.15, maxZoom: 1.1 };
 
 export interface WorkflowCanvasProps {
   workflow: Workflow;
@@ -142,9 +145,11 @@ export interface WorkflowCanvasProps {
   expanded?: boolean;
   /** Shows a labelled "Full screen" button at the canvas's top right while not expanded. */
   onToggleExpanded?: () => void;
+  /** Read-only: how often each arrow was taken, by edge id (`next:a:b`, `fail:a:b`); shown from 1 for fail arrows, from 2 otherwise. */
+  edgeCounts?: Record<string, number>;
 }
 
-function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded }: WorkflowCanvasProps) {
+function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
   const { fitView } = useReactFlow();
   const positions = useMemo(() => layout(workflow), [workflow]);
@@ -162,27 +167,32 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     const failers = workflow.steps.filter((s) => s.onFail).map((s) => s.id);
     const wf_index = (id: string) => failers.indexOf(id);
     for (const s of workflow.steps) {
-      for (const n of s.next) out.push({ id: `next:${s.id}:${n}`, source: s.id, target: n, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 1.5 }, deletable: editable });
+      for (const n of s.next) {
+        const times = edgeCounts?.[`next:${s.id}:${n}`] ?? 0;
+        out.push({ id: `next:${s.id}:${n}`, source: s.id, target: n, markerEnd: { type: MarkerType.ArrowClosed }, style: { strokeWidth: 1.5 }, deletable: editable, ...(times > 1 ? { label: `×${times}`, labelStyle: { fontSize: 10 } } : {}) });
+      }
       if (s.onFail) {
+        const taken = edgeCounts?.[`fail:${s.id}:${s.onFail}`] ?? 0;
+        const base = s.type === "ship" ? "CI red" : "on fail";
         out.push({
           id: `fail:${s.id}:${s.onFail}`,
           source: s.id,
           target: s.onFail,
           sourceHandle: "fail-out",
           targetHandle: "fail-in",
-          label: s.type === "ship" ? "CI red" : "on fail",
+          label: taken ? `${base} ×${taken}` : base,
           type: "smoothstep",
           pathOptions: { offset: 24 + 14 * Math.max(0, wf_index(s.id)) },
           animated: true,
-          style: { strokeDasharray: "6 4", stroke: STATUS.serious, strokeWidth: 1.5 },
-          labelStyle: { fill: STATUS.serious, fontSize: 10 },
+          style: { strokeDasharray: "6 4", stroke: STATUS.serious, strokeWidth: taken ? 2.5 : 1.5 },
+          labelStyle: { fill: STATUS.serious, fontSize: 10, fontWeight: taken ? 600 : 400 },
           markerEnd: { type: MarkerType.ArrowClosed, color: STATUS.serious },
           deletable: editable,
         } as Edge);
       }
     }
     return out;
-  }, [workflow, editable]);
+  }, [workflow, editable, edgeCounts]);
   // Local copy so React Flow can mark an arrow selected (Backspace deletes the selected one).
   const [edges, setEdges] = useState<Edge[]>(computedEdges);
   useEffect(() => setEdges(computedEdges), [computedEdges]);
@@ -261,6 +271,23 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     onSelect?.(id);
   };
 
+  // The live view keeps the whole workflow in view as the sheet resizes (full screen, side panel, window).
+  const frame = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = frame.current;
+    if (editable || !el || typeof ResizeObserver === "undefined") return;
+    let raf = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => void fitView(FIT));
+    });
+    observer.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
+  }, [editable, fitView]);
+
   const relayout = () => {
     const fresh = layout(workflow, true);
     update({ ...workflow, steps: workflow.steps.map((s) => ({ ...s, position: fresh.get(s.id) }) as Step) });
@@ -281,7 +308,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           </Button>
         </div>
       ) : null}
-      <div className="relative min-h-0 flex-1">
+      <div ref={frame} className="relative min-h-0 flex-1">
         {onToggleExpanded && !expanded ? (
           <Button size="sm" variant="outline" className="absolute top-2 right-2 z-10 h-7 gap-1.5 bg-card px-2 shadow-sm" onClick={onToggleExpanded}>
             <ExpandGlyph /> Full screen
@@ -302,7 +329,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
           colorMode="system"
           fitView
-          fitViewOptions={{ padding: 0.2 }}
+          fitViewOptions={editable ? { padding: 0.2 } : FIT}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={16} size={1} />

@@ -98,12 +98,24 @@ Every task has one status, derived from its steps:
 ### See a task on its workflow
 
 **Workflow** on a task card shows the task live on the canvas: green steps are
-done, blue ones are running, and dashed arrows are the “on fail” paths. Select
-a step to run it, and everything after it, again.
+done, blue ones are running, and dashed arrows are the “on fail” paths. Once
+work has been sent back along an arrow, the arrow shows how many times (for
+example `on fail ×2`).
+
+A strip above the canvas sums up the task: its status, how long it has run,
+the steps done, the loop-backs, the PR and the branch. The side panel shows the
+task's description and links, each loop-back with its latest reason (for
+example `Review → Build ×2`), and a history of what happened. Select a step to
+see what it received from the steps before it, the feedback that sent it back,
+what it produced (report or check output), its runs and its threads. From
+there you can run the step, and everything after it, again.
+
+Chief of Staff records this history from this version on. For older tasks the
+loop-back counts come from failure counts and are marked approximate.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/task-workflow-dark.png">
-  <img src="docs/images/task-workflow-light.png" alt="A task on its workflow canvas: Plan, Build and Tests are done, Review and Docs are running in parallel, Ship is pending." width="560">
+  <img src="docs/images/task-workflow-light.png" alt="A task's workflow view: a summary strip (CI running, 1.6h, 5 of 6 steps done, 2 loop-backs, PR #231), the canvas with Build run 3 times and both fail arrows marked ×1, and a side panel with the task, its loop-backs (Tests → Build, Review → Build) and history." width="800">
 </picture>
 
 ### Approve or send back

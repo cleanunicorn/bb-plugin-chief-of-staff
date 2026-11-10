@@ -119,7 +119,11 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
       return queued;
     }
   }
-  const updated = cos.store.updateWorkItem(item.id, patch);
+  const updated = cos.store.transaction(() => {
+    const stored = cos.store.updateWorkItem(item.id, patch);
+    if (stored) cos.store.appendJournal(item.id, t.journal, actor);
+    return stored;
+  });
   if (!updated) return null;
   if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
@@ -438,7 +442,8 @@ async function runCheck(cos: Cos, item: WorkItem, step: CheckStep, report: (even
   const ws = await workspaceFor(cos, item);
   await commitLeftovers(cos, ws, item);
   const result = await cos.hostExec(ws.hostId, { command, shell: true, cwd: ws.path, timeoutMs: step.timeoutMinutes * 60_000 });
-  const output = `$ ${command}\n${result.stdout}\n${result.stderr}`.slice(-OUTPUT_TAIL);
+  // Redacted: check output is stored, shown in the dashboard and sent to agents as feedback.
+  const output = (await cos.safe(`$ ${command}\n${result.stdout}\n${result.stderr}`)).slice(-OUTPUT_TAIL);
   if (result.exitCode !== 0) {
     cos.store.log({ level: "warn", kind: "check", repo: item.repo, workItemId: item.id, message: result.timedOut ? `${step.name} timed out after ${step.timeoutMinutes} min` : `${step.name} failed (exit ${result.exitCode ?? "signal"})`, actor });
     await report({ type: "check_result", step: step.id, ok: false, output: result.timedOut ? `${output}\n(timed out after ${step.timeoutMinutes} min)` : output });
@@ -631,7 +636,7 @@ export async function watchCi(cos: Cos, actor: string): Promise<void> {
         let log = ci.failed.map((f) => `- ${f.name}: ${f.url}`).join("\n");
         const runId = ci.failed.find((f) => f.runId)?.runId;
         if (runId) log += `\n\n${await github.getJobLogsForRun(repo.owner, repo.repo, runId).catch(() => "(log download failed)")}`;
-        await dispatch(cos, item.id, { type: "ci_failing", log }, actor);
+        await dispatch(cos, item.id, { type: "ci_failing", log: await cos.safe(log) }, actor);
       } else if (ci.state === "passing" || ci.state === "no_checks") {
         if (item.nodes[ship.id]?.phase === "ci" || ship.action === "merge") await dispatch(cos, item.id, { type: "ci_passing" }, actor);
       }
