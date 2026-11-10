@@ -151,9 +151,9 @@ describe("workflow engine", () => {
     [item, fx] = run(item, ended("plan", report("done", "plan A"), item, 1));
     expect([st(item).plan, fx]).toEqual(["running", []]);
     // The same agent reporting twice counts once.
-    [item, fx] = run(item, ended("plan", report("done", "again"), item, 1));
+    [item] = run(item, ended("plan", report("done", "again"), item, 1));
     expect(item.nodes.plan!.reports.filter(Boolean)).toHaveLength(1);
-    [item, fx] = run(item, ended("plan", report("done", "plan B"), item, 0));
+    [item] = run(item, ended("plan", report("done", "plan B"), item, 0));
     expect(st(item)).toEqual({ plan: "done", build: "running" });
   });
 
@@ -173,7 +173,7 @@ describe("workflow engine", () => {
     expect(agentFx(fx).map((e) => (e as { step: string }).step)).toEqual(["review", "docs"]);
     [item, fx] = run(item, ended("review", report(), item));
     expect([st(item).ship, fx]).toEqual(["pending", []]);
-    [item, fx] = run(item, ended("docs", report(), item));
+    [, fx] = run(item, ended("docs", report(), item));
     expect(fx).toEqual([{ type: "ship", step: "ship" }]);
   });
 
@@ -196,7 +196,7 @@ describe("workflow engine", () => {
     [item] = run(item, ended("review", report("failed", "still broken"), item));
     expect([item.status, item.waitingKind, item.nodes.review!.attempts]).toEqual(["waiting_on_human", "escalation", 2]);
     // Send it back with instructions: budget resets, re-run from build with the feedback.
-    [item, fx] = run(item, { type: "revise", feedback: "use the session store" });
+    [item] = run(item, { type: "revise", feedback: "use the session store" });
     expect([st(item).build, item.nodes.review!.attempts]).toEqual(["running", 0]);
     expect(item.nodes.build!.feedback).toContain("use the session store");
   });

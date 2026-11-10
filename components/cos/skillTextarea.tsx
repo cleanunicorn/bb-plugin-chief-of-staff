@@ -50,7 +50,7 @@ export function SkillTextarea({ id, value, onChange, placeholder, className, ski
           placeholder={placeholder}
           role="combobox"
           aria-expanded={open}
-          aria-controls={listId}
+          aria-controls={open ? listId : undefined}
           aria-autocomplete="list"
           aria-activedescendant={open ? `${listId}-${active}` : undefined}
           onChange={(e) => {

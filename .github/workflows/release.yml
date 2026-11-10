@@ -5,11 +5,11 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Publish GitHub release
+  verify:
+    name: Lint, typecheck, test and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -19,8 +19,27 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      # The bb CLI version is pinned in the build:ci script in package.json.
+      - run: npm run build:ci
+      - name: Check the bundles exist
+        run: test -s dist/server.js && test -s dist/app.js && test -s dist/host.js
+
+  release:
+    name: Publish GitHub release
+    # Installs and runs nothing from npm: this is the only job that can write.
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
       - name: Verify tag, package version and changelog agree
         run: node scripts/release-notes.mjs "${GITHUB_REF_NAME}" > release-notes.md
       - name: Create release

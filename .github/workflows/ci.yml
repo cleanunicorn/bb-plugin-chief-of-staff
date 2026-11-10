@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   check:
-    name: Typecheck and test
+    name: Lint, typecheck and test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -24,8 +24,25 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+  build:
+    name: Build plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # The bb CLI version is pinned in the build:ci script in package.json.
+      - run: npm run build:ci
+      - name: Check the bundles exist
+        run: test -s dist/server.js && test -s dist/app.js && test -s dist/host.js
 
   audit:
     name: Dependency audit

@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
+import { entry } from "./helpers/roster";
 
 const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -20,12 +21,9 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
 vi.mock("../components/cos/question", () => ({ QuestionSheet: () => null }));
-vi.mock("../components/cos/workflowCanvas", () => ({ WorkflowCanvas: () => null }));
+vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
 import { PipelineTab, ActivityFeed } from "../app";
 
-export function entry(extra: Partial<RosterEntry> = {}): RosterEntry {
-  return { id: "one", detail: "agent", status: "running", actor: "agent", occupiesCapacity: true, workflowName: "Delivery", steps: [], current: ["Build"], activity: "Build: agent working", waitingKind: null, repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadStatus: "working", threadTitle: "Build", branch: null, prNumber: null, prUrl: null, startedAt: new Date().toISOString(), lastActivityAt: null, stalled: false, fixAttempts: 0, retryCount: 0, lastError: null, waitingReason: null, providerId: null, model: null, source: "task", usage: null, ...extra };
-}
 const container = document.createElement("div");
 let root: ReturnType<typeof createRoot>;
 async function mount(content: ReactNode = <PipelineTab />) {
