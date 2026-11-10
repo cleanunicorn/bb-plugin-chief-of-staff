@@ -8,6 +8,7 @@ import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { KnownSkill } from "../../src/skills";
 import { SkillTextarea } from "./skillTextarea";
+import { useRowKeys } from "./rowKeys";
 import {
   DEFAULT_WORKFLOW,
   blankStep,
@@ -16,6 +17,7 @@ import {
   topoOrder,
   validateDocument,
   validateWorkflow,
+  type ModelChoice,
   type Step,
   type StepType,
   type Workflow,
@@ -50,7 +52,11 @@ function retype(step: Step, type: StepType): Step {
   return { ...fresh, instructions: step.instructions, next: step.next, position: step.position } as Step;
 }
 
-export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]> }) {
+/**
+ * `usedBy` lists the repositories running each workflow; `onDelete` runs after
+ * a workflow is removed from the document, so the caller can detach them.
+ */
+export function WorkflowsEditor({ doc, onChange, usedBy, onDelete }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]>; onDelete?: (id: string) => void }) {
   const [current, setCurrent] = useState(doc.default);
   const [view, setView] = useState<"canvas" | "list">("canvas");
   const [selected, setSelected] = useState<string | null>(null);
@@ -130,9 +136,11 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
         ) : null}
         {doc.workflows.length > 1 && wf.id !== doc.default ? (
           <ConfirmRemove
-            label={`Delete ${wf.name}${usedBy[wf.id]?.length ? ` (repos using it fall back to the default)` : ""}`}
+            label={`Delete ${wf.name}`}
+            notice={usedBy[wf.id]?.length ? `${usedBy[wf.id]!.join(", ")} will use the default workflow.` : undefined}
             onConfirm={() => {
               onChange({ ...doc, workflows: doc.workflows.filter((w) => w.id !== wf.id) });
+              onDelete?.(wf.id);
               setCurrent(doc.default);
             }}
           />
@@ -154,7 +162,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
           <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
           <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
             {selected && wf.steps.some((s) => s.id === selected) ? (
-              <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
+              <StepPanel key={selected} workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
             ) : (
               <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                 <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
@@ -201,6 +209,7 @@ function Row({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
 export function StepPanel({ workflow, step, onChange, onRemove, skills = null, collapsible = false, narrow = false }: { workflow: Workflow; step: Step; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean }) {
   const two = narrow ? "grid grid-cols-1 gap-2" : "grid grid-cols-1 gap-2 sm:grid-cols-2";
   const [open, setOpen] = useState(!collapsible);
+  const choiceKeys = useRowKeys<ModelChoice>();
   const set = (patch: Record<string, unknown>) => onChange({ ...step, ...patch } as Step);
   const meta = STEP_TYPE_META[step.type];
   const others = workflow.steps.filter((s) => s.id !== step.id);
@@ -263,9 +272,9 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                 Add choices and this agent analyses the task and picks one in its report. The agent steps after this one then run with it, until a Model step or another choosing step changes it. Leave empty to not choose.
               </p>
               {step.chooses.map((c, i) => {
-                const setChoice = (patch: Record<string, unknown>) => set({ chooses: step.chooses.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+                const setChoice = (patch: Record<string, unknown>) => set({ chooses: step.chooses.map((x, j) => (j === i ? choiceKeys.carry(x, { ...x, ...patch }) : x)) });
                 return (
-                  <div key={i} className="flex flex-col gap-2 rounded-md border border-border p-2">
+                  <div key={choiceKeys.key(c)} className="flex flex-col gap-2 rounded-md border border-border p-2">
                     <div className={two}>
                       <Field label="Choice id" hint="What the agent reports.">{(id) => <TextInput id={id} value={c.id} onChange={(v) => setChoice({ id: v.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40) })} mono />}</Field>
                       <Field label="Use when">{(id) => <TextInput id={id} value={c.when} onChange={(v) => setChoice({ when: v })} placeholder="e.g. small, well-understood change" />}</Field>

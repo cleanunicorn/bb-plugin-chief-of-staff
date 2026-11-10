@@ -8,10 +8,11 @@ import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { blankRepo, detachWorkflow, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
 import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, validateDocument } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
+import { useRowKeys } from "./rowKeys";
 import { Button } from "../ui/button";
 import { Field, TextInput, NumberInput, ListInput, Select, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
 import { Icon } from "../ui/icon";
@@ -190,6 +191,8 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
                   options={[
                     { value: "", label: `Default (${workflows.workflows.find((w) => w.id === workflows.default)?.name ?? workflows.default})` },
                     ...workflows.workflows.map((w) => ({ value: w.id, label: w.name })),
+                    // A workflow deleted before repositories were detached on delete: show it rather than pass for "Default".
+                    ...(typeof repo.workflow === "string" && !workflows.workflows.some((w) => w.id === repo.workflow) ? [{ value: repo.workflow, label: `Missing: ${repo.workflow} (runs the default)` }] : []),
                     ...(repo.workflow && typeof repo.workflow !== "string" ? [{ value: "__legacy", label: "Converted from the old stage settings" }] : []),
                   ]}
                 />
@@ -343,6 +346,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
   const [general, setGeneral] = useState<GeneralSettings | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowsDocument | null>(null);
   const [openRepo, setOpenRepo] = useState<number | null>(null);
+  const repoKeys = useRowKeys<RepoConfig>();
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -389,6 +393,13 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
   useRealtime("cos-changed", () => {
     if (!anyDirty) void refetchAll();
   });
+
+  /** A deleted workflow's repositories go back to the default, instead of keeping an id a new workflow could reuse. */
+  const detachRepos = (id: string) => {
+    const next = detachWorkflow(repoDraft, id).repos;
+    // Unchanged when no repository used it; also keeps an unloadable repositories JSON from being replaced by [].
+    if (next !== repoDraft) setRepos(next.map((r, i) => repoKeys.carry(repoDraft[i]!, r)));
+  };
 
   const discard = () => {
     setRepos(null);
@@ -460,7 +471,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
         {loadError && section !== "advanced" ? (
           <Problems items={[`${loadError}. Fix it in Advanced JSON; the visual editor shows the last valid parts only.`]} />
         ) : null}
-        {section === "workflow" ? <WorkflowsEditor doc={workflowDraft} onChange={setWorkflow} usedBy={usedBy} /> : null}
+        {section === "workflow" ? <WorkflowsEditor doc={workflowDraft} onChange={setWorkflow} usedBy={usedBy} onDelete={detachRepos} /> : null}
         {section === "repos" ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -479,13 +490,13 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
             {repoDraft.length ? (
               repoDraft.map((repo, i) => (
                 <RepoEditor
-                  key={i}
+                  key={repoKeys.key(repo)}
                   repo={repo}
                   index={i}
                   problems={repoIssues[i] ?? []}
                   open={openRepo === i}
                   onToggle={() => setOpenRepo(openRepo === i ? null : i)}
-                  onChange={(r) => setRepos(repoDraft.map((x, j) => (j === i ? r : x)))}
+                  onChange={(r) => setRepos(repoDraft.map((x, j) => (j === i ? repoKeys.carry(x, r) : x)))}
                   onRemove={() => {
                     setRepos(repoDraft.filter((_, j) => j !== i));
                     setOpenRepo(null);
