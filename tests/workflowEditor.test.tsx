@@ -2,6 +2,7 @@
 // The workflow editor's change handlers: each edit calls onChange with a new
 // document and leaves the one it was given untouched. The canvas is replaced by
 // a button that selects a step; its own handlers are not covered here.
+import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
 import { button, click, container, fields, mount, setValue, unmount } from "./dom";
@@ -186,4 +187,53 @@ it("keeps a model step saved before modes existed fixed while its last value is 
   const pin = step(editor.changed(), "pin");
   expect(pin).toMatchObject({ type: "model", mode: "fixed", providerId: undefined });
   editor.expectInputUntouched();
+});
+
+/** An editor that applies its own changes, as the configurator does. */
+function Stateful({ initial, usedBy = {}, onDelete }: { initial: WorkflowsDocument; usedBy?: Record<string, string[]>; onDelete?: (id: string) => void }) {
+  const [doc, setDoc] = useState(initial);
+  return <WorkflowsEditor doc={doc} onChange={setDoc} usedBy={usedBy} onDelete={onDelete} />;
+}
+
+it("does not carry an armed Remove? from one selected step to the next", async () => {
+  await mount(<Stateful initial={DEFAULT_DOCUMENT} />);
+  await click(button("select build"));
+  await click(button("Remove Build"));
+  expect(container.textContent).toContain("Remove?");
+  await click(button("select review"));
+  expect(container.textContent).not.toContain("Remove?");
+  expect(button("Remove Review")).toBeTruthy();
+});
+
+it("keeps each model choice's confirmation with that choice when another is removed", async () => {
+  const doc = structuredClone(DEFAULT_DOCUMENT);
+  const build = step(doc, "build") as Extract<Step, { type: "agent" }>;
+  build.chooses = [{ id: "small", when: "small change" }, { id: "large", when: "large change" }];
+  await mount(<Stateful initial={doc} />);
+  await click(button("select build"));
+  // Arm "large", then remove "small": "large" moves up and must still be the armed one.
+  await click(button("Remove choice large"));
+  await click(button("Remove choice small"));
+  await click(button("Remove"));
+  expect(() => button("Remove choice small")).toThrow();
+  expect(() => button("Remove choice large")).toThrow();
+  expect(container.textContent).toContain("Remove?");
+});
+
+it("names the repositories that fall back to the default before deleting a workflow, then reports the deletion", async () => {
+  const onDelete = vi.fn();
+  await mount(<Stateful initial={{ default: "default", workflows: [DEFAULT_WORKFLOW, SECOND] }} usedBy={{ hotfix: ["acme/app", "acme/api"] }} onDelete={onDelete} />);
+  await click(button("Hotfix"));
+  expect(container.textContent).not.toContain("will use the default workflow");
+  await click(button("Delete Hotfix"));
+  expect(container.textContent).toContain("acme/app, acme/api will use the default workflow.");
+  await click(button("Remove"));
+  expect(onDelete).toHaveBeenCalledExactlyOnceWith("hotfix");
+});
+
+it("deletes an unused workflow without a notice", async () => {
+  await mount(<Stateful initial={{ default: "default", workflows: [DEFAULT_WORKFLOW, SECOND] }} />);
+  await click(button("Hotfix"));
+  await click(button("Delete Hotfix"));
+  expect(container.textContent).not.toContain("will use the default workflow");
 });

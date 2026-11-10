@@ -2,7 +2,7 @@
 // The configurator's save path: dirty tracking, Save, Discard and the realtime
 // refetch. Load failures, range validation and partial saves are left out on
 // purpose; they are changed by other open issues.
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
 import { button, click, container, field, mount, setValue, unmount } from "./dom";
 
@@ -165,4 +165,63 @@ it("refetches on cos-changed when clean, and leaves an unsaved draft alone", asy
   expect(mocks.refetchConfig).toHaveBeenCalledTimes(1);
   expect(mocks.refetchSettings).toHaveBeenCalledTimes(1);
   expect(number(MAX_TASKS)).toBe("5");
+});
+
+describe("removing items and workflows (#66)", () => {
+  const repo = (name: string, workflow?: string) => ({ owner: "acme", repo: name, projectId: `proj_${name}`, ...(workflow ? { workflow } : {}) });
+  const fast = { ...DEFAULT_DOCUMENT.workflows[0]!, id: "fast", name: "Fast" };
+  const load = (repos: string | object[], workflows = [DEFAULT_DOCUMENT.workflows[0]!, fast]) => {
+    mocks.config = { repos: typeof repos === "string" ? repos : JSON.stringify({ repos }), workflow: serializeWorkflows({ workflows, default: DEFAULT_DOCUMENT.default }) };
+  };
+  const repoWorkflow = () => field("Workflow for this repository") as HTMLSelectElement;
+
+  it("keeps a repository's armed confirmation with that repository when one above it is removed", async () => {
+    load([repo("a"), repo("b"), repo("c")]);
+    await mount(<Configurator initialSection="repos" />);
+    await click(button("Remove acme/b"));
+    await click(button("Remove acme/a"));
+    await click(button("Remove"));
+    // acme/b moved up but is still the armed one; acme/c is not armed.
+    expect(() => button("Remove acme/a")).toThrow();
+    expect(() => button("Remove acme/b")).toThrow();
+    expect(button("Remove acme/c")).toBeTruthy();
+    expect(text().match(/Remove\?/g)).toHaveLength(1);
+  });
+
+  it("points repositories back at the default when their workflow is deleted, and saves both", async () => {
+    load([repo("a", "fast"), repo("b")]);
+    await mount(<Configurator initialSection="workflow" />);
+    await click(button("Fast"));
+    await click(button("Delete Fast"));
+    expect(text()).toContain("acme/a will use the default workflow.");
+    await click(button("Remove"));
+    expect(unsavedSections()).toEqual(["Workflows", "Repositories2"]);
+
+    await click(button("Repositories2"));
+    await click(container.querySelector("article button[aria-expanded]")!);
+    expect(repoWorkflow().value).toBe("");
+    expect(repoWorkflow().textContent).not.toContain("Missing");
+
+    await click(button("Save changes"));
+    const [, input] = mocks.call.mock.calls[0] as [string, { repos: string; workflow: string }];
+    expect((JSON.parse(input.repos) as { repos: Record<string, unknown>[] }).repos.map((r) => r.workflow)).toEqual([undefined, undefined]);
+    expect((JSON.parse(input.workflow) as { workflows: { id: string }[] }).workflows.map((w) => w.id)).toEqual([DEFAULT_DOCUMENT.default]);
+  });
+
+  it("leaves the repositories alone when their JSON could not be loaded", async () => {
+    load("{not json");
+    await mount(<Configurator initialSection="workflow" />);
+    await click(button("Fast"));
+    await click(button("Delete Fast"));
+    await click(button("Remove"));
+    expect(unsavedSections()).toEqual(["Workflows"]);
+  });
+
+  it("shows a repository's deleted workflow as missing instead of as the default", async () => {
+    load([repo("a", "gone")]);
+    await mount(<Configurator initialSection="repos" />);
+    await click(container.querySelector("article button[aria-expanded]")!);
+    expect(repoWorkflow().value).toBe("gone");
+    expect(repoWorkflow().selectedOptions[0]!.textContent).toBe("Missing: gone (runs the default)");
+  });
 });
