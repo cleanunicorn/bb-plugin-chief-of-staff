@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Saved configuration drafts survive a failed reload.** After a partial save,
+  workflow and repository drafts stay until a successful read confirms their
+  saved values. Retry reloads without repeating writes, and keeps any newer
+  edits, including across dashboard tab switches.
+
 - **The dashboard and task admission stay fast as history grows.** Counting
   task slots, the overview and the stats no longer read every task's full
   workflow state, a stored workflow is checked once rather than on every
@@ -61,7 +66,7 @@
   Number boxes keep what you type within range. A save no longer writes the
   repositories and workflows and then fails on the general settings; if the
   general settings still fail to send, the status says what was saved and only
-  General stays unsaved.
+  General stays unsaved once the saved documents are successfully reloaded.
 
 - **Backspace and Delete no longer remove a workflow step.** In the workflow
   editor the keys deleted the selected step and its instructions at once, even

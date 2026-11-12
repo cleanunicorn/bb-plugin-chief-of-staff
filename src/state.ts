@@ -243,6 +243,8 @@ export const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS work_items_status ON work_items(status)`,
   `CREATE INDEX IF NOT EXISTS work_items_created ON work_items(created_at)`,
   `UPDATE work_items SET occupies_capacity = 0 WHERE status IN ('done', 'failed')`,
+  // Keep every branch of statsRows' OR filter indexed as finished history grows.
+  `CREATE INDEX IF NOT EXISTS work_items_finished ON work_items(COALESCE(finished_at, updated_at))`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.

@@ -11,6 +11,12 @@ import type { WorkflowsDocument } from "../../src/workflow";
 
 export type SaveStatus = { ok: boolean; text: string } | null;
 
+/** Written documents whose drafts stay until a successful query returns their saved text. */
+type PendingConfig = {
+  repos?: { draft: RepoConfig[]; json: string };
+  workflow?: { draft: WorkflowsDocument; json: string };
+};
+
 export function useConfigDrafts() {
   const [repos, setRepos] = useState<RepoConfig[] | null>(null);
   /** Only the general settings that differ from the loaded ones. */
@@ -21,6 +27,7 @@ export function useConfigDrafts() {
   const [advancedWorkflow, setAdvancedWorkflow] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<SaveStatus>(null);
+  const [pendingConfig, setPendingConfig] = useState<PendingConfig | null>(null);
   /** Set synchronously on save, so a second click before the next render is a no-op. */
   const savingRef = useRef(false);
 
@@ -30,6 +37,7 @@ export function useConfigDrafts() {
     setWorkflow(null);
     setAdvancedRepos(null);
     setAdvancedWorkflow(null);
+    setPendingConfig(null);
   }, []);
   const dirty = repos !== null || general !== null || workflow !== null || advancedRepos !== null || advancedWorkflow !== null;
 
@@ -45,7 +53,7 @@ export function useConfigDrafts() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  return { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, savingRef, clear, dirty };
+  return { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, pendingConfig, setPendingConfig, savingRef, clear, dirty };
 }
 
 export type ConfigDrafts = ReturnType<typeof useConfigDrafts>;

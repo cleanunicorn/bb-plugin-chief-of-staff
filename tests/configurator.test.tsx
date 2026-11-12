@@ -39,6 +39,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
 import { Configurator } from "../components/cos/configurator";
+import { useConfigDrafts } from "../components/cos/configDrafts";
 
 const MAX_TASKS = "Max tasks across all repos";
 const SAVED = "Saved. Changes apply on the next intake and sweep.";
@@ -52,6 +53,11 @@ beforeEach(() => {
   mocks.settings.values = { ...VALUES };
   mocks.config = { repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }), workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
   mocks.call.mockResolvedValue({ ok: true, warnings: [], changed: [] });
+  mocks.refetchConfig.mockImplementation(async () => {
+    for (const [method, input] of mocks.call.mock.calls) {
+      if (method === "cos_set_config") mocks.config = { ...mocks.config, ...input };
+    }
+  });
 });
 afterEach(async () => {
   await unmount();
@@ -538,6 +544,114 @@ it("keeps the sent drafts unsaved after a half save when the saved data cannot b
   expect(text()).toContain("Workflows saved (check the token); general settings were not: host unavailable");
   expect(unsavedSections()).toEqual(["Workflows", "General"]);
   await click(button("Workflows"));
+  expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
+});
+
+it.each(["workflow", "repos", "both"] as const)("keeps saved %s drafts after a resolving failed refresh, then confirms them on Retry", async (documents) => {
+  let stored = { ...mocks.config };
+  mocks.call.mockImplementation(async (method: string, input: Partial<typeof stored>) => {
+    if (method === "cos_set_settings") throw new Error("host unavailable");
+    stored = { ...stored, ...input };
+    return { ok: true, warnings: [] };
+  });
+  // The SDK retains old data and resolves the promise when a refresh fails.
+  mocks.refetchConfig.mockImplementation(async () => { mocks.failed.config = "offline"; });
+  await mount(<Configurator initialSection="workflow" />);
+  if (documents !== "repos") await setValue(field("Name"), "Delivery");
+  if (documents !== "workflow") {
+    await click(navButton("Repositories"));
+    await click(container.querySelector("article button[aria-expanded]")!);
+    await setValue(field("Model"), "opus");
+  }
+  await click(navButton("General"));
+  await setValue(field(MAX_TASKS), "5");
+  await click(button("Save changes"));
+
+  const documentSections = [
+    ...(documents !== "repos" ? ["Workflows"] : []),
+    ...(documents !== "workflow" ? ["Repositories1"] : []),
+  ];
+  expect(unsavedSections()).toEqual([...documentSections, "General"]);
+  expect(text()).toContain("offline");
+  expect(text()).toContain("drafts are kept");
+  if (documents !== "repos") {
+    await click(navButton("Workflows"));
+    expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
+  }
+
+  mocks.refetchConfig.mockImplementation(async () => {
+    mocks.config = stored;
+    mocks.failed.config = null;
+  });
+  await click(button("Retry"));
+  expect(unsavedSections()).toEqual(["General"]);
+  expect(text()).not.toContain("drafts are kept");
+  expect(mocks.call).toHaveBeenCalledTimes(2); // Retry reads; it never repeats a write.
+  await click(navButton("General"));
+  expect(number(MAX_TASKS)).toBe("5");
+});
+
+it("keeps a saved draft when a successful read does not contain the saved values", async () => {
+  mocks.refetchConfig.mockResolvedValue(undefined); // Resolves, but still exposes the old workflow.
+  await halfSave();
+  expect(unsavedSections()).toEqual(["Workflows", "General"]);
+  expect(text()).toContain("drafts are kept");
+  expect(button("Retry")).toBeDefined();
+});
+
+it("confirms the saved documents even when the General settings refresh rejects", async () => {
+  mocks.refetchSettings.mockRejectedValue(new Error("settings offline"));
+  await halfSave();
+  expect(unsavedSections()).toEqual(["General"]);
+  await click(navButton("Workflows"));
+  expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
+});
+
+it("does not clear a newer edit when Retry confirms an earlier saved draft", async () => {
+  mocks.refetchConfig.mockImplementation(async () => { mocks.failed.config = "offline"; });
+  await halfSave();
+  await click(navButton("Workflows"));
+  await setValue(field("Name"), "Newer edit");
+  const [, saved] = mocks.call.mock.calls.find(([method]) => method === "cos_set_config")!;
+  mocks.refetchConfig.mockImplementation(async () => {
+    mocks.config = { ...mocks.config, ...saved };
+    mocks.failed.config = null;
+  });
+  await click(button("Retry"));
+  expect(unsavedSections()).toEqual(["Workflows", "General"]);
+  expect((field("Name") as HTMLInputElement).value).toBe("Newer edit");
+  expect(text()).not.toContain("drafts are kept");
+});
+
+function PersistentConfigurator({ visible }: { visible: boolean }) {
+  const drafts = useConfigDrafts();
+  return visible ? <Configurator drafts={drafts} /> : null;
+}
+
+it("keeps partial-save confirmation state across a dashboard tab switch", async () => {
+  mocks.call.mockImplementation(async (method: string) => {
+    if (method === "cos_set_settings") throw new Error("host unavailable");
+    return { ok: true, warnings: [] };
+  });
+  mocks.refetchConfig.mockImplementation(async () => { mocks.failed.config = "offline"; });
+  await mount(<PersistentConfigurator visible />);
+  await setValue(field("Name"), "Delivery");
+  await click(navButton("General"));
+  await setValue(field(MAX_TASKS), "5");
+  await click(button("Save changes"));
+  await mount(<PersistentConfigurator visible={false} />);
+  await mount(<PersistentConfigurator visible />);
+  expect(unsavedSections()).toEqual(["Workflows", "General"]);
+  expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
+  expect(text()).toContain("drafts are kept");
+
+  const [, saved] = mocks.call.mock.calls.find(([method]) => method === "cos_set_config")!;
+  mocks.refetchConfig.mockImplementation(async () => {
+    mocks.config = { ...mocks.config, ...saved };
+    mocks.failed.config = null;
+  });
+  await click(button("Retry"));
+  expect(unsavedSections()).toEqual(["General"]);
   expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
 });
 

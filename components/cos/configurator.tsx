@@ -361,7 +361,7 @@ function LoadFailure({ messages, retrying, onRetry }: { messages: string[]; retr
 export function Configurator({ initialSection = "workflow", compact = false, drafts }: { initialSection?: Section; compact?: boolean; drafts?: ConfigDrafts }) {
   const rpc = useRpc<Contract>();
   const own = useConfigDrafts();
-  const { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, savingRef, clear } = drafts ?? own;
+  const { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, pendingConfig, setPendingConfig, savingRef, clear } = drafts ?? own;
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
   const settings = experimental_useRpcQuery<Contract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
   const [section, setSection] = useState<Section>(initialSection);
@@ -370,6 +370,24 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   useEffect(() => () => setStatus(null), [setStatus]);
   const [retrying, setRetrying] = useState(false);
   const repoKeys = useRowKeys<RepoConfig>();
+
+  // refetch() resolves on failure, so only returned data can confirm a saved document.
+  // Compare the draft identity too: edits made while reloading must remain unsaved.
+  useEffect(() => {
+    if (!pendingConfig || !config.data || config.error || config.isFetching) return;
+    const savedRepos = pendingConfig.repos;
+    const savedWorkflow = pendingConfig.workflow;
+    const reposConfirmed = savedRepos && config.data.repos === savedRepos.json;
+    const workflowConfirmed = savedWorkflow && config.data.workflow === savedWorkflow.json;
+    if (!reposConfirmed && !workflowConfirmed) return;
+    if (reposConfirmed) setRepos((current) => current === savedRepos.draft ? null : current);
+    if (workflowConfirmed) setWorkflow((current) => current === savedWorkflow.draft ? null : current);
+    const remaining = {
+      ...(!reposConfirmed && savedRepos ? { repos: savedRepos } : {}),
+      ...(!workflowConfirmed && savedWorkflow ? { workflow: savedWorkflow } : {}),
+    };
+    setPendingConfig(Object.keys(remaining).length ? remaining : null);
+  }, [config.data, config.error, config.isFetching, pendingConfig, setPendingConfig, setRepos, setWorkflow]);
 
   // Parsed per JSON text, not per query result: a refetch that returns the same text keeps the same row objects, and so the rows' keys.
   const reposJson = config.data?.repos;
@@ -505,28 +523,27 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         });
         warnings.push(...result.warnings);
         configSaved = true;
+        setPendingConfig({
+          ...(dirty.repos ? { repos: { draft: repoDraft, json: serializeRepos(repoDraft) } } : {}),
+          ...(dirty.workflow ? { workflow: { draft: workflowDraft, json: serializeWorkflows(workflowDraft) } } : {}),
+        });
       }
       if (dirty.general) {
         try {
           await rpc.call("cos_set_settings", generalChanges);
         } catch (error) {
           if (!configSaved) throw error;
-          // Half saved (a transport or host error): say what was written. Its drafts are
-          // cleared only once the saved data is reloaded; otherwise the editor would show
-          // the old data as clean, and a later save would send it back.
-          const reloaded = await refetchAll().then(() => true, () => false);
-          if (reloaded) {
-            if (dirty.repos) setRepos(null);
-            if (dirty.workflow) setWorkflow(null);
-          }
+          // Confirm written documents independently of whether General can be read or saved.
+          await refetchAll().catch(() => {});
           const saved = dirty.repos && dirty.workflow ? "Repositories and workflows" : dirty.repos ? "Repositories" : "Workflows";
-          const note = reloaded ? "" : ". They could not be reloaded, so they stay marked unsaved; saving again is safe";
-          setStatus({ ok: false, text: `${saved} saved${warnings.length ? ` (${warnings.join("; ")})` : ""}; general settings were not: ${errorText(error)}${note}` });
+          setStatus({ ok: false, text: `${saved} saved${warnings.length ? ` (${warnings.join("; ")})` : ""}; general settings were not: ${errorText(error)}` });
           return;
         }
       }
       await refetchAll();
-      clear();
+      // Document drafts are cleared by query confirmation, including on a retry of
+      // a partial save. Never replace them with stale query data after a failed read.
+      setGeneral((current) => current === general ? null : current);
       setStatus({ ok: true, text: warnings.length ? `Saved. ${warnings.join("; ")}` : "Saved. Changes apply on the next intake and sweep." });
     } catch (error) {
       setStatus({ ok: false, text: errorText(error) });
@@ -603,14 +620,17 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         ))}
       </nav>
       <div className="flex min-w-0 flex-1 flex-col gap-3">
-        {failures.length ? <LoadFailure messages={failures.map((m) => `Could not refresh the configuration: ${m}. Showing the last loaded values.`)} retrying={retrying} onRetry={() => void retry()} /> : null}
+        {failures.length || pendingConfig ? <LoadFailure messages={[
+          ...failures.map((m) => `Could not refresh the configuration: ${m}. Showing the last loaded values.`),
+          ...(pendingConfig ? ["Saved configuration has not been confirmed by a successful reload. Your drafts are kept; retry to reload the saved values."] : []),
+        ]} retrying={retrying} onRetry={() => void retry()} /> : null}
         <Problems items={banner} />
         {advancedDirty && visualSection ? <Problems tone="warning" items={["You have unsaved Advanced JSON edits. Save or discard them before editing here."]} /> : null}
         {visualSection ? (
           // Inert, not unmounted, so the editors keep their place while the JSON draft is pending.
           <div className={cn("flex flex-col gap-3", advancedDirty && "opacity-50")} inert={advancedDirty}>
             {section === "workflow" && workflowBlocked ? <BlockedDocument title="Workflows" error={workflowError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
-            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} /> : null}
+            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} problems={workflowIssues} /> : null}
             {section === "repos" && reposBlocked ? <BlockedDocument title="Repositories" error={reposError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
             {section === "repos" && !reposBlocked ? (
               <>

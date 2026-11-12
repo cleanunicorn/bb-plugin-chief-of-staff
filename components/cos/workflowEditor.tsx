@@ -63,7 +63,7 @@ function retype(step: Step, type: StepType): Step {
  * `usedBy` lists the repositories running each workflow; `onDelete` runs after
  * a workflow is removed from the document, so the caller can detach them.
  */
-export function WorkflowsEditor({ doc, onChange, usedBy, onDelete }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]>; onDelete?: (id: string) => void }) {
+export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]>; onDelete?: (id: string) => void; problems?: WorkflowProblem[] }) {
   const [current, setCurrent] = useState(doc.default);
   const [view, setView] = useState<"canvas" | "list">("canvas");
   const [selected, setSelected] = useState<string | null>(null);
@@ -79,7 +79,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete }: { doc: Work
   const skills: KnownSkill[] | null = skillsQuery.data?.skills ?? null;
   const wf = doc.workflows.find((w) => w.id === current) ?? doc.workflows[0]!;
   // Everything the server would reject: this workflow's problems and the document's.
-  const allProblems = useMemo(() => workflowProblems(doc), [doc]);
+  const allProblems = useMemo(() => problems ?? workflowProblems(doc), [doc, problems]);
   const wfIndex = doc.workflows.indexOf(wf);
   const wfProblems = useMemo(() => allProblems.filter((p) => p.workflow === wfIndex), [allProblems, wfIndex]);
   const shownProblems = useMemo(() => [...new Set(allProblems.filter((p) => p.workflow === undefined || p.workflow === wfIndex).map((p) => p.text))], [allProblems, wfIndex]);
