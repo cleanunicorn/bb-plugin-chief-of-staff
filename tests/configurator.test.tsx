@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Configuration saves, validation, invalid-document protection and persistent drafts.
+// Configuration saves, validation, invalid-document protection, persistent drafts and failed reads.
 import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
@@ -17,13 +17,23 @@ const mocks = vi.hoisted(() => ({
   refetchConfig: vi.fn(),
   refetchSettings: vi.fn(),
   realtime: new Map<string, () => void>(),
+  /** A failed read. Like the SDK, an error after a first load keeps the data. */
+  failed: { config: null as string | null, settings: null as string | null },
+  /** Reads that never loaded, so they have an error and no data. */
+  neverLoaded: { config: false, settings: false },
 }));
+/** The SDK's query state: a refresh error keeps `data`; a failed first load has none. */
+const query = (key: "config" | "settings", data: unknown, refetch: () => unknown) => ({
+  data: mocks.neverLoaded[key] ? undefined : data,
+  error: mocks.failed[key] ? new Error(mocks.failed[key]) : null,
+  refetch,
+});
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   useRpc: () => ({ call: mocks.call }),
   useRealtime: (event: string, handler: () => void) => { mocks.realtime.set(event, handler); },
   experimental_useRpcQuery: ({ method }: { method: string }) =>
-    method === "cos_get_config" ? { data: mocks.config, error: null, refetch: mocks.refetchConfig }
-    : method === "cos_get_settings" ? { data: mocks.settings, error: null, refetch: mocks.refetchSettings }
+    method === "cos_get_config" ? query("config", mocks.config, mocks.refetchConfig)
+    : method === "cos_get_settings" ? query("settings", mocks.settings, mocks.refetchSettings)
     : { data: { skills: [] }, error: null, refetch: vi.fn() },
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
@@ -49,6 +59,8 @@ afterEach(async () => {
   mocks.refetchConfig.mockReset();
   mocks.refetchSettings.mockReset();
   mocks.realtime.clear();
+  mocks.failed = { config: null, settings: null };
+  mocks.neverLoaded = { config: false, settings: false };
 });
 
 it("shows no save bar and no unsaved dot on a clean load", async () => {
@@ -527,4 +539,105 @@ it("keeps the sent drafts unsaved after a half save when the saved data cannot b
   expect(unsavedSections()).toEqual(["Workflows", "General"]);
   await click(button("Workflows"));
   expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
+});
+
+const reload = () => mount(<Configurator initialSection="general" />);
+
+it("keeps the editor, the draft and the save bar when a refetch fails, and shows a banner with Retry", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  mocks.failed.config = "cos_get_config timed out";
+  await reload();
+
+  expect(text()).toContain("cos_get_config timed out");
+  expect(number(MAX_TASKS)).toBe("5");
+  expect(text()).toContain("Unsaved changes");
+  expect(button("Save changes").disabled).toBe(false);
+  expect(button("Retry").disabled).toBe(false);
+});
+
+it("Retry refetches both reads, clears the banner and leaves the draft alone", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  mocks.failed.settings = "settings unavailable";
+  await reload();
+  const clearError = () => { mocks.failed.settings = null; return Promise.resolve(); };
+  mocks.refetchSettings.mockImplementation(clearError);
+
+  await click(button("Retry"));
+
+  expect(mocks.refetchConfig).toHaveBeenCalledTimes(1);
+  expect(mocks.refetchSettings).toHaveBeenCalledTimes(1);
+  expect(text()).not.toContain("settings unavailable");
+  expect(container.textContent).not.toContain("Retry");
+  expect(number(MAX_TASKS)).toBe("5");
+  expect(text()).toContain("Unsaved changes");
+});
+
+it("holds Retry disabled while it is refetching, and keeps the banner if the read fails again", async () => {
+  await mount(<Configurator initialSection="general" />);
+  mocks.failed.config = "still down";
+  await reload();
+  let finish!: () => void;
+  mocks.refetchConfig.mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
+  mocks.refetchSettings.mockResolvedValue(undefined);
+
+  await click(button("Retry"));
+  expect(button("Retry").disabled).toBe(true);
+  await act(async () => { finish(); });
+
+  expect(button("Retry").disabled).toBe(false);
+  expect(text()).toContain("still down");
+  expect(number(MAX_TASKS)).toBe("8");
+});
+
+it("does not leak an unhandled rejection when Retry's refetch throws", async () => {
+  await mount(<Configurator initialSection="general" />);
+  mocks.failed.config = "still down";
+  await reload();
+  mocks.refetchConfig.mockRejectedValue(new Error("transport closed"));
+  mocks.refetchSettings.mockResolvedValue(undefined);
+
+  await click(button("Retry"));
+
+  expect(button("Retry").disabled).toBe(false);
+  expect(text()).toContain("still down");
+});
+
+it("shows only the error, with Retry, when nothing has loaded", async () => {
+  mocks.failed.config = "cos_get_config failed";
+  mocks.neverLoaded.config = true;
+  await mount(<Configurator initialSection="general" />);
+
+  expect(text()).toContain("cos_get_config failed");
+  expect(container.querySelector("nav")).toBeNull();
+  expect(text()).not.toContain("Save changes");
+  mocks.refetchConfig.mockImplementation(() => { mocks.failed.config = null; mocks.neverLoaded.config = false; return Promise.resolve(); });
+  await click(button("Retry"));
+  expect(number(MAX_TASKS)).toBe("8");
+  expect(text()).not.toContain("cos_get_config failed");
+});
+
+it("shows the full-page error when only one of the two reads ever loaded", async () => {
+  mocks.failed.settings = "settings unavailable";
+  mocks.neverLoaded.settings = true;
+  await mount(<Configurator initialSection="general" />);
+
+  expect(text()).toContain("settings unavailable");
+  expect(container.querySelector("nav")).toBeNull();
+  expect(button("Retry")).toBeDefined();
+});
+
+it("clears the draft after a save even if the reload then fails, and shows the banner", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  mocks.refetchConfig.mockImplementation(() => { mocks.failed.config = "reload failed"; return Promise.resolve(); });
+  mocks.refetchSettings.mockResolvedValue(undefined);
+  await click(button("Save changes"));
+
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_settings", { maxConcurrentTotal: 5 });
+  expect(text()).toContain(SAVED);
+  expect(text()).toContain("reload failed");
+  expect(text()).not.toContain("Unsaved changes");
+  expect(button("Retry")).toBeDefined();
 });

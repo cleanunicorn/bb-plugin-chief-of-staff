@@ -67,6 +67,18 @@ function ErrorLine({ error }: { error: { message: string } | string | null }) {
   );
 }
 
+type QueryError = { message: string } | string | null | undefined;
+
+/** One line per distinct message, so two queries failing the same way do not repeat it. */
+function QueryErrors({ errors }: { errors: readonly QueryError[] }) {
+  const messages = new Set<string>();
+  for (const e of errors) {
+    const message = typeof e === "string" ? e : e?.message;
+    if (message) messages.add(message);
+  }
+  return <>{Array.from(messages, (message) => <ErrorLine key={message} error={message} />)}</>;
+}
+
 function Empty({ icon, title, children, illustration = false }: { icon: string; title: string; children?: ReactNode; illustration?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-8 text-center">
@@ -485,7 +497,7 @@ export function PipelineTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      <ErrorLine error={roster.error ?? stats.error ?? actionError} />
+      <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
         <div className="flex flex-wrap items-center gap-2">
@@ -559,7 +571,7 @@ export function PipelineTab() {
         }
       >
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
-        {!roster.isLoading && !visible.length ? (
+        {!roster.isLoading && !visible.length && (!roster.error || roster.data) ? (
           <Empty icon="Bot" illustration={filter === "all"} title={filter === "all" ? "No active tasks" : "Nothing in this stage"}>
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
@@ -679,7 +691,7 @@ function IntakeSummary({ results, dryRun }: { results: IntakeResult[]; dryRun: b
   );
 }
 
-function ReposTab() {
+export function ReposTab() {
   const rpc = useRpc<Contract>();
   const now = useNow();
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
@@ -721,7 +733,7 @@ function ReposTab() {
   const authOk = data?.tokenSource !== "none";
   return (
     <div className="flex flex-col gap-4">
-      <ErrorLine error={overview.error ?? message} />
+      <QueryErrors errors={[overview.error, roster.error, message]} />
       {data?.errors.map((e) => <ErrorLine key={e} error={e} />)}
       {data?.warnings.length ? (
         <div className="flex flex-col gap-1 rounded-lg border border-border bg-card px-3 py-2">
@@ -812,7 +824,7 @@ function ReposTab() {
       ) : null}
       <Panel title="Pull requests" icon="GitPullRequest" dim={roster.isFetching && !roster.isLoading}>
         {!prs.length ? (
-          <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
+          roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
         ) : (
           <ul className="divide-y divide-border">
             {prs.map((e) => (

@@ -6,23 +6,28 @@ import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, call: vi.fn(), navigate: { toThread: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
-  experimental_useRpcQuery: ({ method }: { method: string }) => ({
-    data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 } },
-    error: null, refetch: vi.fn(),
-  }),
+  experimental_useRpcQuery: ({ method }: { method: string }) => {
+    const failure = mocks.failing[method];
+    // Like the SDK, a failed first load has an error and no data.
+    if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
+    return {
+      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      error: null, refetch: vi.fn(),
+    };
+  },
   ThreadTitle: () => null, UrlLink: () => null,
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
 vi.mock("../components/cos/question", () => ({ QuestionSheet: () => null }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
-import { PipelineTab, ActivityFeed } from "../app";
+import { PipelineTab, ReposTab, ActivityFeed } from "../app";
 
 const container = document.createElement("div");
 let root: ReturnType<typeof createRoot>;
@@ -32,7 +37,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); mocks.paused = false; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); mocks.paused = false; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -120,4 +125,46 @@ it("preserves global pause and resume alongside the redesigned task overview", a
   expect(container.textContent).toContain("Chief of Staff is paused");
   await act(async () => button("Resume everything").click());
   expect(mocks.call).toHaveBeenLastCalledWith("cos_set_paused", { paused: false });
+});
+
+
+const buttonLabelled = (label: string) => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === label)!;
+
+it("shows the overview error on the Pipeline tab, with Pause everything still disabled", async () => {
+  mocks.entries = [entry()];
+  mocks.failing = { cos_overview: "overview unavailable" };
+  await mount();
+  expect(container.textContent).toContain("overview unavailable");
+  expect(buttonLabelled("Pause everything").disabled).toBe(true);
+});
+
+it("shows the roster error on the Repos & PRs tab instead of an empty pull request list", async () => {
+  mocks.failing = { cos_roster: "roster unavailable" };
+  await mount(<ReposTab />);
+  expect(container.textContent).toContain("roster unavailable");
+  expect(container.textContent).not.toContain("No pull requests yet");
+});
+
+it("does not call a failed roster an empty pipeline", async () => {
+  mocks.failing = { cos_roster: "roster unavailable" };
+  await mount();
+  expect(container.textContent).toContain("roster unavailable");
+  expect(container.textContent).not.toContain("No active tasks");
+});
+
+it("shows every failing query once, even when they share a message", async () => {
+  mocks.entries = [entry()];
+  mocks.failing = { cos_roster: "roster unavailable", cos_stats: "stats unavailable", cos_overview: "overview unavailable" };
+  await mount();
+  for (const m of ["roster unavailable", "stats unavailable", "overview unavailable"]) expect(container.textContent).toContain(m);
+  await act(async () => { root.render(<ReposTab />); });
+  mocks.failing = { cos_roster: "backend down", cos_overview: "backend down" };
+  await act(async () => { root.render(<ReposTab key="again" />); });
+  expect(container.textContent!.split("backend down")).toHaveLength(2);
+});
+
+it("still shows the empty pull request state when nothing failed", async () => {
+  mocks.entries = [];
+  await mount(<ReposTab />);
+  expect(container.textContent).toContain("No pull requests yet");
 });

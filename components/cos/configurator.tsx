@@ -339,6 +339,19 @@ function generalDiff(a: GeneralSettings, b: GeneralSettings): Partial<GeneralSet
   return out;
 }
 
+/** A failed read with a Retry button. Shown over the editor when old data remains, or alone when none loaded. */
+function LoadFailure({ messages, retrying, onRetry }: { messages: string[]; retrying: boolean; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground">
+      <Icon name="CircleX" fallback="Circle" className="size-3.5 shrink-0" style={{ color: STATUS.critical }} aria-hidden />
+      <span className="min-w-0 flex-1">{messages.join(" ")}</span>
+      <Button size="sm" variant="outline" disabled={retrying} onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
 /**
  * Pass `drafts` to keep unsaved edits after the Configurator unmounts (the
  * dashboard does, so they survive tab switches); otherwise it keeps its own.
@@ -353,6 +366,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const [openRepo, setOpenRepo] = useState<number | null>(null);
   // A "Saved." or error line belongs to this visit; don't show it again after a tab switch.
   useEffect(() => () => setStatus(null), [setStatus]);
+  const [retrying, setRetrying] = useState(false);
 
   const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
   const loadedGeneral = settings.data?.values ?? null;
@@ -412,6 +426,17 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
 
   const refetchAll = async () => {
     await Promise.all([config.refetch(), settings.refetch()]);
+  };
+  /** Refetch never rejects, it sets `error` instead; the catch guards a transport failure. Drafts are not touched. */
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      await refetchAll();
+    } catch {
+      // The banner keeps showing the failed read.
+    } finally {
+      setRetrying(false);
+    }
   };
   useRealtime("cos-changed", () => {
     if (!anyDirty) void refetchAll();
@@ -535,7 +560,9 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   // problems (which point into sections that are inert right now) don't block it.
   const blocking = advancedDirty ? [] : problems;
 
-  if (config.error || settings.error) return <Problems items={[errorText(config.error ?? settings.error)]} />;
+  // A failed refresh keeps the loaded data, so the editor and its drafts stay and the error becomes a banner.
+  const failures = Array.from(new Set([config.error, settings.error].filter((e) => e !== null && e !== undefined).map(errorText)));
+  if (failures.length && (!config.data || !settings.data)) return <LoadFailure messages={failures} retrying={retrying} onRetry={() => void retry()} />;
   if (!config.data || !settings.data || !generalDraft) return <p className="text-sm text-muted-foreground">Loading configuration…</p>;
 
   return (
@@ -563,6 +590,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         ))}
       </nav>
       <div className="flex min-w-0 flex-1 flex-col gap-3">
+        {failures.length ? <LoadFailure messages={failures.map((m) => `Could not refresh the configuration: ${m}. Showing the last loaded values.`)} retrying={retrying} onRetry={() => void retry()} /> : null}
         <Problems items={banner} />
         {advancedDirty && visualSection ? <Problems tone="warning" items={["You have unsaved Advanced JSON edits. Save or discard them before editing here."]} /> : null}
         {visualSection ? (
