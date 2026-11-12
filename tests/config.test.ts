@@ -12,8 +12,18 @@ describe("config parsing", () => {
     const result = parseRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value[0]).toMatchObject({ intake: true, maxConcurrent: 2, mergeStrategy: "squash", reviewers: [], issueFilter: { labels: ["agent-ready"] } });
+    expect(result.value[0]).toMatchObject({ intake: true, issueComments: true, maxConcurrent: 2, mergeStrategy: "squash", reviewers: [], issueFilter: { labels: ["agent-ready"] } });
     expect(result.value[0].workflow).toBeUndefined();
+  });
+
+  it("keeps issue comments on unless a repository turns them off", () => {
+    const parse = (extra: object) => {
+      const result = parseRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", ...extra }] }));
+      if (!result.ok) throw new Error(result.error);
+      return result.value[0].issueComments;
+    };
+    expect(parse({})).toBe(true);
+    expect(parse({ issueComments: false })).toBe(false);
   });
 
   it("folds legacy keys into the current shape and drops the rest", () => {

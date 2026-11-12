@@ -341,7 +341,7 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   });
   if (step.writes) cos.store.updateWorkItem(item.id, { providerId: spawned.providerId, model: spawned.model });
   cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name} ${spawned.thread.id}`, actor });
-  if (step.writes && item.issueNumber && !item.threadId) {
+  if (step.writes && item.issueNumber && !item.threadId && repo.issueComments !== false) {
     const github = await cos.github();
     const link = publicThreadUrl(cos, spawned.thread.id);
     await github.createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).${link ? `\n\nBB thread: ${link}` : ""}`);
@@ -494,7 +494,7 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, step: ShipStep, 
   if (repo.reviewers.length) {
     await github.requestReviewers(repo.owner, repo.repo, pr.number, repo.reviewers, []).catch((error) => cos.bb.log.warn(`request reviewers failed: ${error instanceof Error ? error.message : String(error)}`));
   }
-  if (fresh.issueNumber) {
+  if (fresh.issueNumber && repo.issueComments !== false) {
     await github.createIssueComment(repo.owner, repo.repo, fresh.issueNumber, `🤖 Chief of Staff opened pull request #${pr.number}: ${pr.html_url}`).catch(() => undefined);
   }
   await report({ type: "pr_opened", step: step.id, prNumber: pr.number, prUrl: pr.html_url });

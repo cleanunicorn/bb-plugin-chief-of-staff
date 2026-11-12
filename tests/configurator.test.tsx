@@ -113,6 +113,18 @@ it("saves a repository edit as the repos document only, and shows the server's w
   expect(text()).not.toContain("Unsaved changes");
 });
 
+it("shows the issue comments switch on and saves it off", async () => {
+  await mount(<Configurator initialSection="repos" />);
+  await click(container.querySelector("article button[aria-expanded]")!);
+  expect(button("Comment on issues").getAttribute("aria-checked")).toBe("true");
+  await click(button("Comment on issues"));
+  await click(button("Save changes"));
+
+  const [method, input] = mocks.call.mock.calls[0] as [string, { repos: string }];
+  expect(method).toBe("cos_set_config");
+  expect((JSON.parse(input.repos) as { repos: Record<string, unknown>[] }).repos[0]).toMatchObject({ owner: "acme", repo: "app", issueComments: false });
+});
+
 it("saves a workflow edit as the workflow document only", async () => {
   await mount(<Configurator initialSection="workflow" />);
   await setValue(field("Name"), "Delivery");
