@@ -623,14 +623,21 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
   if (!items.length) return;
   const github = await cos.github();
   if (!github.hasToken) return;
-  for (const item of items) {
+  // Resume the previous pass, including after a reload, so a slow first PR
+  // cannot consume every poll's budget and permanently hide older PRs.
+  const cursorKey = "ci:nextItemId";
+  const nextId = await cos.bb.storage.kv.get<string>(cursorKey);
+  const start = Math.max(0, items.findIndex((item) => item.id === nextId));
+  for (let offset = 0; offset < items.length; offset++) {
+    const index = (start + offset) % items.length;
+    const item = items[index]!;
     if (opts.deadline !== undefined && cos.now().getTime() >= opts.deadline) {
       cos.bb.log.info("CI watch stopped at the sweep's GitHub time budget; the rest waits for the next CI poll");
       return;
     }
-    const repo = await cos.repo(item.repo);
-    if (!repo) continue;
     try {
+      const repo = await cos.repo(item.repo);
+      if (!repo) continue;
       const pr = await github.getPull(repo.owner, repo.repo, item.prNumber!);
       if (pr.merged) {
         await dispatch(cos, item.id, { type: "pr_merged" }, actor);
@@ -668,6 +675,10 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
         return;
       }
       cos.bb.log.warn(`CI watch for ${item.repo}#${item.prNumber} failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
+    } finally {
+      // Failed requests also use the budget. Give the next task its turn;
+      // this one is retried when polling comes around again.
+      await cos.bb.storage.kv.set(cursorKey, items[(index + 1) % items.length]!.id);
     }
   }
 }

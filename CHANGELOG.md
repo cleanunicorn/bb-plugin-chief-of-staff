@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **CI polling resumes where its last pass stopped.** Older pull requests
+  still get checked when slow requests exhaust the polling time budget,
+  including after a plugin reload.
+
 - **Shorter agent prompts.** Each step prompt is about 150–250 characters
   shorter: the delivery id now sits in the `cos_report` call and the
   `## Step report` block instead of a separate trailing sentence, and the
