@@ -173,6 +173,10 @@ export class GitHubClient {
     return this.request("POST", `/repos/${owner}/${repo}/issues/${number}/comments`, { body });
   }
 
+  updateIssueComment(owner: string, repo: string, commentId: number, body: string): Promise<GitHubComment> {
+    return this.request("PATCH", `/repos/${owner}/${repo}/issues/comments/${commentId}`, { body });
+  }
+
   listOpenPulls(owner: string, repo: string): Promise<GitHubPull[]> {
     return this.paginate(`/repos/${owner}/${repo}/pulls?state=open&sort=created&direction=asc`, 5);
   }

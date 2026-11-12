@@ -15,6 +15,18 @@
   model picks and thread links, so it still appears under finished tasks,
   counts in stats, and can be retried on the same models.
 
+- **One status comment per issue, and no more `bb://` links.** Chief of Staff
+  posts a single status comment when an agent starts on an issue and edits it
+  when the task restarts or the issue is picked up again, instead of adding a
+  new comment each time. The comment and the pull request description link the
+  agent's thread only when BB has a web URL; without one they no longer carry a
+  `bb://` link that GitHub cannot open. The first restart after the update
+  edits the newest of an issue's old "started an agent" comments, which removes
+  its `bb://` link; older duplicates on the same issue stay as they are. A new
+  per-repository `issueComments` setting (Repositories → Comment on issues,
+  default on) turns the status comment and the "opened pull request" comment
+  off. The pull request comment stays a separate comment.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,

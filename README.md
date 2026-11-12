@@ -389,6 +389,7 @@ The same settings, as stored:
     {
       "projectId": "proj_xxxxxxxxxx",
       "intake": true,
+      "issueComments": true,
       "issueFilter": { "labels": ["agent-ready"], "assignee": null },
       "maxConcurrent": 2,
       "providerId": "claude-code", "model": "claude-opus-5-5",
@@ -406,6 +407,14 @@ so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
 when they carry every label in `issueFilter.labels` and, if
 `issueFilter.assignee` is set, are assigned to that user. With neither set,
 no issue is picked up. Set `intake: false` to run only tasks you start.
+
+`issueComments` (default `true`) controls the comments Chief of Staff leaves on
+the issue. When an agent starts it posts one status comment and, on a restart
+or when the issue is picked up again, edits that comment instead of adding
+another. The comment links the agent's thread only when BB has a web URL; a
+`bb://` link means nothing to anyone but you, so it is left out. When a pull
+request opens, a second comment with its link is added. Set
+`issueComments: false` to post neither; pull requests are still opened.
 
 `workflow` names one of your workflows (empty: the default). Entries written
 for earlier versions keep working: per-stage overrides and `checkCommand` are

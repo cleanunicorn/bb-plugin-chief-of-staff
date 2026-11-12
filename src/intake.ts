@@ -8,6 +8,7 @@ import type { GitHubClient, GitHubIssue } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes } from "./machine";
+import { isStatusComment } from "./statusComment";
 
 export interface IntakeResult {
   repo: string;
@@ -42,7 +43,8 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   const lines: string[] = [];
   const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(() => null) : null;
   if (issue && github) {
-    const comments = await github.listIssueComments(repo.owner, repo.repo, issue.number).catch(() => []);
+    // Chief of Staff's own status comment tells the agent nothing it does not already know.
+    const comments = (await github.listIssueComments(repo.owner, repo.repo, issue.number).catch(() => [])).filter((c) => !isStatusComment(c.body));
     lines.push(`You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.title}`, issue.html_url, ``, (issue.body ?? "(no description)").slice(0, MAX_BODY));
     if (comments.length) {
       lines.push(``, `## Issue comments`);

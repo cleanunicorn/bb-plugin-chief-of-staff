@@ -204,6 +204,9 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
               )}
             </Field>
           </Group>
+          <Group title="Issue comments" icon="MessageSquare" cols={1}>
+            <ToggleRow label="Comment on issues" hint="Off: no status or pull request comments on GitHub issues." checked={repo.issueComments} onChange={(v) => set("issueComments", v)} />
+          </Group>
         </div>
       ) : null}
     </article>

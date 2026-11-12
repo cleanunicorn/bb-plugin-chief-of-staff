@@ -44,8 +44,16 @@ describe("configModel", () => {
     expect(out.providerId).toBe("codex");
   });
 
+  it("round-trips a repository that turns issue comments off", () => {
+    const repo = { ...blankRepo("proj_1"), owner: "acme", repo: "app", issueComments: false };
+    expect(JSON.parse(serializeRepos([repo])).repos[0].issueComments).toBe(false);
+    const loaded = loadRepos(serializeRepos([repo]));
+    if (!loaded.ok) throw new Error(loaded.error);
+    expect(loaded.items[0]!.issueComments).toBe(false);
+  });
+
   it("starts new repos with defaults and a blank identity", () => {
-    expect(blankRepo()).toMatchObject({ owner: "", repo: "", projectId: "", intake: true, maxConcurrent: 2 });
+    expect(blankRepo()).toMatchObject({ owner: "", repo: "", projectId: "", intake: true, issueComments: true, maxConcurrent: 2 });
   });
 
   it("does not let the seeded placeholder entry block saving", () => {
