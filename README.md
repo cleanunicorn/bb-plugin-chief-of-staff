@@ -480,6 +480,14 @@ flowchart TB
   with their own timeout. Their result is applied only if the item is still
   waiting on that job; a job lost to a restart is started again by the sweep.
   Errors are retried with backoff before they reach you.
+- GitHub: every request times out after 30 s, and intake plus CI polling
+  share a 2-minute budget per sweep (checked between items; the rest waits
+  for the next sweep). On a rate limit (a 429, or a 403 with `retry-after`,
+  `x-ratelimit-remaining: 0` or a secondary-limit message) all GitHub requests
+  pause until the reset, held in memory: intake and CI polling are skipped,
+  the overview shows a warning, and a step that needed GitHub runs again at
+  the reset without using up its retries (after 10 deferrals in a row they
+  count again, so a limit that never clears reaches you).
 - Answering from the dashboard: click the question on a waiting card to see
   the question, its options and the agent's last message, then answer in place
   or open the thread. Questions, approvals and requests are resolved with
