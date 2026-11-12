@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // The configurator's save path: dirty tracking, Save, Discard and the realtime
-// refetch. Load failures, range validation and partial saves are left out on
-// purpose; they are changed by other open issues.
+// refetch, and the rule that a stored document that fails to load is never
+// edited or saved from the visual editor. Range validation and partial saves
+// are left out on purpose; they are changed by other open issues.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
 import { button, click, container, field, mount, setValue, unmount } from "./dom";
@@ -165,4 +166,147 @@ it("refetches on cos-changed when clean, and leaves an unsaved draft alone", asy
   expect(mocks.refetchConfig).toHaveBeenCalledTimes(1);
   expect(mocks.refetchSettings).toHaveBeenCalledTimes(1);
   expect(number(MAX_TASKS)).toBe("5");
+});
+
+// ---------- a stored document that fails to load ----------
+
+const GOOD_REPOS = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", workflow: "custom" }] });
+/** Parses as JSON but fails validation: one on-fail points at a missing step. */
+const BAD_WORKFLOW = JSON.stringify({
+  workflows: [{ ...DEFAULT_DOCUMENT.workflows[0]!, id: "custom", steps: DEFAULT_DOCUMENT.workflows[0]!.steps.map((s) => (s.id === "review" ? { ...s, onFail: "nowhere" } : s)) }],
+  default: "custom",
+});
+const BAD_REPOS = '{"repos": [';
+const has = (selector: string) => container.querySelector(selector) !== null;
+const hasButton = (name: string) => Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.trim() === name);
+const navButton = (label: string) => Array.from(container.querySelectorAll("nav button")).find((b) => b.textContent?.includes(label))!;
+
+it("blocks the workflow editor while the stored workflow fails validation, and leaves repositories saveable on their own", async () => {
+  mocks.config = { repos: GOOD_REPOS, workflow: BAD_WORKFLOW };
+  await mount(<Configurator initialSection="workflow" />);
+
+  expect(text()).toContain("on fail goes to a missing step");
+  expect(text()).not.toContain("last valid parts only");
+  expect(hasButton("Open Advanced JSON")).toBe(true);
+  expect(has("label")).toBe(false); // no workflow editor, so nothing to edit
+  expect(hasButton("Save changes")).toBe(false);
+
+  await click(navButton("Repositories"));
+  await click(container.querySelector("article button[aria-expanded]")!);
+  // The workflow picker cannot offer the default document, so it is read-only and shows what is stored.
+  const picker = field("Workflow for this repository") as HTMLSelectElement;
+  expect(picker.disabled).toBe(true);
+  expect(picker.value).toBe("custom");
+  expect(text()).not.toContain("Default (Delivery)");
+  await setValue(field("Model"), "opus");
+  await click(button("Save changes"));
+
+  expect(mocks.call).toHaveBeenCalledTimes(1);
+  const [method, input] = mocks.call.mock.calls[0] as [string, Record<string, string>];
+  expect(method).toBe("cos_set_config");
+  expect(Object.keys(input)).toEqual(["repos"]);
+  expect(JSON.parse(input.repos!).repos[0]).toMatchObject({ workflow: "custom", model: "opus" });
+});
+
+it("blocks the repositories editor while the stored repos JSON is invalid, and leaves workflows saveable on their own", async () => {
+  mocks.config = { repos: BAD_REPOS, workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="repos" />);
+
+  expect(text()).toContain("Repositories JSON does not load");
+  expect(hasButton("Add repository")).toBe(false);
+  expect(text()).not.toContain("No repositories yet");
+  expect(navButton("Repositories").querySelector("span.tabular-nums")).toBeNull(); // no "0" count
+
+  await click(navButton("Workflows"));
+  await setValue(field("Name"), "Delivery");
+  await click(button("Save changes"));
+
+  expect(mocks.call).toHaveBeenCalledTimes(1);
+  const [, input] = mocks.call.mock.calls[0] as [string, Record<string, string>];
+  expect(Object.keys(input)).toEqual(["workflow"]);
+});
+
+it("blocks both sections when both documents fail, and the banner names the failure on other sections", async () => {
+  mocks.config = { repos: BAD_REPOS, workflow: BAD_WORKFLOW };
+  await mount(<Configurator initialSection="general" />);
+
+  expect(text()).toContain("Repositories JSON does not load");
+  expect(text()).toContain("Workflows JSON does not load");
+  expect(text()).toContain("Repair it in Advanced JSON");
+  expect(text()).not.toContain("last valid parts only");
+  await click(navButton("Repositories"));
+  expect(hasButton("Add repository")).toBe(false);
+  await click(navButton("Workflows"));
+  expect(has("label")).toBe(false);
+});
+
+it("sends the operator to Advanced JSON, where the broken document is editable", async () => {
+  mocks.config = { repos: BAD_REPOS, workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="repos" />);
+  await click(button("Open Advanced JSON"));
+
+  expect((field("Repositories") as HTMLTextAreaElement).value).toBe(BAD_REPOS);
+  expect((field("Repositories") as HTMLTextAreaElement).disabled).toBe(false);
+});
+
+it("keeps other documents editable when repos is empty or half-filled", async () => {
+  mocks.config = { repos: "", workflow: "" };
+  await mount(<Configurator initialSection="repos" />);
+  expect(hasButton("Add repository")).toBe(true);
+  expect(text()).toContain("No repositories yet");
+  await click(navButton("Workflows"));
+  expect(field("Name")).toBeTruthy();
+
+  mocks.config = { repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app" }] }), workflow: "" };
+  await mount(<Configurator initialSection="repos" />);
+  await click(navButton("Repositories"));
+  expect(hasButton("Add repository")).toBe(true);
+  expect(has("article")).toBe(true);
+});
+
+it("tells the operator to save or discard first when unsaved edits lock Advanced JSON", async () => {
+  mocks.config = { repos: BAD_REPOS, workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="workflow" />);
+  await setValue(field("Name"), "Delivery");
+  await click(navButton("Repositories"));
+
+  expect(text()).toContain("Save or discard your other changes first");
+  await click(button("Open Advanced JSON"));
+  expect((field("Repositories") as HTMLTextAreaElement).disabled).toBe(true);
+});
+
+it("drops a draft whose document stops loading, so repairing it does not bring the old draft back", async () => {
+  mocks.config = { repos: GOOD_REPOS, workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="repos" />);
+  await click(container.querySelector("article button[aria-expanded]")!);
+  await setValue(field("Model"), "opus");
+  expect(text()).toContain("Unsaved changes");
+
+  // A CLI edit breaks the document; the draft must neither count as dirty nor lock Advanced JSON.
+  mocks.config = { repos: BAD_REPOS, workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="repos" />);
+  expect(text()).not.toContain("Unsaved changes");
+  await click(button("Open Advanced JSON"));
+  expect((field("Repositories") as HTMLTextAreaElement).disabled).toBe(false);
+
+  // The operator repairs it; the refetch brings a valid document back, with no draft over it.
+  mocks.config = { repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", model: "fixed" }] }), workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="repos" />);
+  expect(text()).not.toContain("Unsaved changes");
+  expect(unsavedSections()).toEqual([]);
+  await click(navButton("Repositories")); // the repository was left expanded
+  expect((field("Model") as HTMLInputElement).value).toBe("fixed");
+});
+
+it("drops a workflow draft whose document stops loading as well", async () => {
+  mocks.config = { repos: GOOD_REPOS, workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="workflow" />);
+  await setValue(field("Name"), "Delivery");
+  mocks.config = { repos: GOOD_REPOS, workflow: BAD_WORKFLOW };
+  await mount(<Configurator initialSection="workflow" />);
+  expect(text()).not.toContain("Unsaved changes");
+  mocks.config = { repos: GOOD_REPOS, workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
+  await mount(<Configurator initialSection="workflow" />);
+  expect(text()).not.toContain("Unsaved changes");
+  expect((field("Name") as HTMLInputElement).value).not.toBe("Delivery");
 });
