@@ -304,7 +304,7 @@ export function StepPanel({ workflow, step, problems = [], onChange, onRemove, s
               <ToggleRow label="Pass / fail verdict" hint="The agent reports pass or fail; fail sends the work back." checked={step.verdict} onChange={(v) => set({ verdict: v, ...(v ? {} : { onFail: undefined }) })} />
               {!step.writes ? (
                 <Field label="Agents in parallel" hint="Each works independently; their reports are combined." error={error("agents")}>
-                  {(id) => <NumberInput id={id} value={step.agents} min={1} max={4} onChange={(v) => set({ agents: Math.min(4, Math.max(1, v)) })} />}
+                  {(id) => <NumberInput id={id} value={step.agents} min={1} max={4} onChange={(v) => set({ agents: v })} />}
                 </Field>
               ) : null}
             </div>
