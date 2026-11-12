@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
-import { StateStore } from "../src/state";
+import { REMOVED_SUMMARY, StateStore } from "../src/state";
 import { settleJobs } from "../src/delivery";
 import { SETTLED_IDLE_MS } from "../src/sync";
 
@@ -931,6 +931,41 @@ describe("chief-of-staff server", () => {
     const id = (await roster()).id as string;
     const view = await host.harness.behavior.callRpc("cos_item_workflow", { id }) as { live: Record<string, { picked?: string | null }> };
     expect(view.live.pick?.picked).toBe("claude-code · claude-opus-5-5 · high");
+  });
+
+  it("keeps a task's model pick, stats and views after its step details are removed", async () => {
+    await useAutoFlow();
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    await host.harness.behavior.callAgentTool("cos_report", { step: "pick", outcome: "done", summary: "Touches auth: strongest model.", providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" }, { threadId: "thr_pick-model" });
+    await idle("ok", "thr_pick-model");
+    type Spawn = { title: string; providerId?: string; model?: string; reasoningLevel?: string };
+    const spawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").map((c) => c[0] as Spawn);
+    const picked = { title: "cos/issue-12-fix-login", providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" };
+    expect(spawns().at(-1)).toMatchObject(picked);
+    const id = (await roster()).id as string;
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+
+    // Finished 91 days ago, then compacted by retention.
+    const db = host.bb.storage.database();
+    const longAgo = new Date(Date.now() - 91 * 86_400_000).toISOString();
+    db.prepare("UPDATE work_items SET finished_at = ?, updated_at = ? WHERE id = ?").run(longAgo, longAgo, id);
+    const stats = () => host.harness.behavior.callRpc("cos_stats", { windowDays: 90 });
+    const statsBefore = await stats();
+    expect(new StateStore(db).compactFinished(new Date(Date.now() - 90 * 86_400_000).toISOString())).toEqual([id]);
+    expect(await stats()).toEqual(statsBefore);
+    expect(await roster()).toMatchObject({ id, status: "failed" });
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id }) as { live: Record<string, { picked?: string | null }>; steps: Record<string, { reports: { summary: string }[]; threads: unknown[] }> };
+    expect(view.live.pick?.picked).toBe("claude-code · claude-opus-5-5 · high");
+    expect(view.steps.pick!.reports).toEqual([expect.objectContaining({ outcome: "done", summary: REMOVED_SUMMARY })]);
+    expect(view.steps.build!.threads).toEqual([expect.objectContaining({ threadId: "thr_1" })]);
+
+    // Retry restarts the writer on the model the step picked.
+    const before = spawns().length;
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "retry" });
+    await settleJobs();
+    expect(spawns().length).toBe(before + 1);
+    expect(spawns().at(-1)).toMatchObject(picked);
+    expect(db.prepare("SELECT detail_pruned_at FROM work_items WHERE id = ?").get(id)).toEqual({ detail_pruned_at: null });
   });
 
   describe("archiving threads when the workflow is done", () => {

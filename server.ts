@@ -12,6 +12,7 @@ import { observeActive, observeFailure, observeIdle, observeInteraction, snapsho
 import { describeInteraction } from "./src/threads";
 import { sweep } from "./src/sweep";
 import { dispatch, newJobGeneration, replayDeferred } from "./src/delivery";
+import { runRetention } from "./src/retention";
 
 export type { rpcContract } from "./rpcContract";
 
@@ -87,6 +88,11 @@ export default async function plugin(bb: BbPluginApi) {
         }
       } catch (error) {
         bb.log.warn(`reconcile failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
+      }
+      try {
+        if (!signal.aborted && !store.isPaused()) await runRetention(cos, "startup");
+      } catch (error) {
+        bb.log.warn(`retention failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
       }
     },
   });

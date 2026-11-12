@@ -5,7 +5,7 @@
 // feature are left in place and unused.
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
-import type { JournalEntry, JournalKind, MachineEvent, Nodes, StepReport } from "./machine";
+import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
 import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
@@ -254,6 +254,10 @@ export function migrationsForDatabase(db: Database): string[] {
 }
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
+/** SQL: `expr` (a column or parameter) is an active status. */
+const activeIn = (expr: string) => `${expr} IN (${ACTIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`;
+const ACTIVE_IN = activeIn("status");
+const FINISHED_IN = "status IN ('done', 'failed')";
 export function isActiveStatus(status: WorkStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
 }
@@ -351,7 +355,7 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity`;
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END`;
 
 function toRow(item: WorkItem): Record<string, unknown> {
   const { workflow, nodes, queuedEvent, ...rest } = item;
@@ -364,7 +368,32 @@ function toRow(item: WorkItem): Record<string, unknown> {
   };
 }
 
-const ACTIVE_IN = `status IN (${ACTIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`;
+
+/** Days after finishing that a task's step details are removed (the longest stats window). */
+export const FINISHED_DETAIL_DAYS = 90;
+/** Stands in for a report summary removed by retention. */
+export const REMOVED_SUMMARY = `(removed ${FINISHED_DETAIL_DAYS} days after the task finished)`;
+
+/**
+ * A finished item's steps without their bulky text: outputs, feedback, report
+ * summaries (replaced by REMOVED_SUMMARY) and questions. Statuses, rounds, report slots with their outcome,
+ * choice and pick, waits and retries stay, so retry, revive and rerun behave as before.
+ */
+export function compactNodes(nodes: Nodes): Nodes {
+  const out: Nodes = {};
+  for (const [id, node] of Object.entries(nodes)) {
+    if (!node || typeof node !== "object") {
+      out[id] = node;
+      continue;
+    }
+    const compact: NodeState = { ...node, feedback: null, output: null };
+    delete compact.deliveries;
+    delete compact.agentRetries;
+    if (Array.isArray(node.reports)) compact.reports = node.reports.map((r) => (r && typeof r === "object" ? { ...r, summary: REMOVED_SUMMARY, ...(r.question ? { question: null } : {}) } : r));
+    out[id] = compact;
+  }
+  return out;
+}
 
 export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
@@ -484,6 +513,32 @@ export class StateStore {
     const sql = `SELECT * FROM work_items ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`;
     params.push(opts.limit ?? 200);
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
+  }
+
+  /**
+   * Remove the step details of up to `batch` items that finished before
+   * `olderThanIso` (see compactNodes) and return their ids. Writes directly,
+   * leaving updated_at alone so stats do not move; marks each row with
+   * detail_pruned_at, even when its step state is unreadable, so repeated
+   * batches end. Thread rows stay (the run view links them); their pending
+   * reports go. Deferred events of these items go unless their project is paused.
+   */
+  compactFinished(olderThanIso: string, batch = 200): string[] {
+    return this.transaction(() => {
+      const rows = this.db.prepare(`SELECT id, nodes_json FROM work_items WHERE ${FINISHED_IN} AND detail_pruned_at IS NULL AND COALESCE(finished_at, updated_at) < ? LIMIT ?`)
+        .all(olderThanIso, batch) as { id: string; nodes_json: string | null }[];
+      const at = this.now().toISOString();
+      const update = this.db.prepare(`UPDATE work_items SET nodes_json = ?, check_output = NULL, pending_report_json = NULL, detail_pruned_at = ? WHERE id = ? AND ${FINISHED_IN}`);
+      const threads = this.db.prepare("UPDATE item_threads SET pending_report_json = NULL WHERE item_id = ?");
+      const events = this.db.prepare("DELETE FROM deferred_events WHERE item_id = @id AND NOT EXISTS (SELECT 1 FROM work_items w JOIN paused_repos p ON p.repo = w.repo WHERE w.id = @id)");
+      for (const row of rows) {
+        const nodes = parseJson<Nodes | null>(row.nodes_json, null);
+        update.run(nodes && typeof nodes === "object" ? JSON.stringify(compactNodes(nodes)) : row.nodes_json, at, row.id);
+        threads.run(row.id);
+        events.run({ id: row.id });
+      }
+      return rows.map((row) => row.id);
+    });
   }
 
   /** Scalar columns of every active item and every item started or finished since `sinceIso`, for computeStats. */
