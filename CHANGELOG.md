@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Intake asks GitHub for open PRs once per repository, and not at all when
+  the repository is full.** It used to list every open PR for each labelled
+  issue, even when the repository had no free slot. It now checks capacity
+  first, lists the open PRs once per run, and reads the newest 500 rather than
+  the oldest, so a recent PR still stops its issue from being picked up again.
+  `bb cos intake --dry-run` now counts the issues it would start against the
+  concurrency limits, so it reports what a real run would do.
+
 - **Saved configuration drafts survive a failed reload.** After a partial save,
   workflow and repository drafts stay until a successful read confirms their
   saved values. Retry reloads without repeating writes, and keeps any newer
