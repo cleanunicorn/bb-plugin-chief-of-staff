@@ -2,6 +2,7 @@
 // The configurator's save path: dirty tracking, Save, Discard and the realtime
 // refetch. Load failures, range validation and partial saves are left out on
 // purpose; they are changed by other open issues.
+import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
 import { button, click, container, field, mount, setValue, unmount } from "./dom";
@@ -219,4 +220,60 @@ it("leaves an Advanced JSON draft alone on cos-changed", async () => {
   mocks.realtime.get("cos-changed")!();
   expect(mocks.refetchConfig).not.toHaveBeenCalled();
   expect(textarea("Repositories").value).toBe(EDITED_REPOS);
+});
+
+it("sends Save JSON once on a double click, and disables both Save buttons while it runs", async () => {
+  mocks.call.mockReturnValue(new Promise(() => {}));
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Workflow"), "{}");
+  const saveJson = button("Save JSON");
+  await act(async () => {
+    saveJson.click();
+    saveJson.click();
+  });
+
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: "{}" });
+  expect(saveJson.disabled).toBe(true);
+  expect(saveJson.textContent).toBe("Saving…");
+  expect(button("Saving…").disabled).toBe(true);
+  expect(button("Discard").disabled).toBe(true);
+  expect(button("Revert").disabled).toBe(true);
+});
+
+it("keeps the Advanced JSON draft and shows the error when the save is rejected", async () => {
+  mocks.call.mockRejectedValue(new Error("Workflow JSON: Unexpected token"));
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Workflow"), "{");
+  await click(button("Save JSON"));
+
+  expect(text()).toContain("Workflow JSON: Unexpected token");
+  expect(textarea("Workflow").value).toBe("{");
+  expect(unsavedSections()).toEqual(["Advanced JSON"]);
+  expect(mocks.refetchConfig).not.toHaveBeenCalled();
+});
+
+it("clears the Advanced JSON draft and shows the warnings after a save", async () => {
+  mocks.call.mockResolvedValue({ ok: true, warnings: ["check the token"], changed: [] });
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Repositories"), EDITED_REPOS);
+  await click(button("Save JSON"));
+
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { repos: EDITED_REPOS });
+  expect(mocks.refetchConfig).toHaveBeenCalledTimes(1);
+  expect(textarea("Repositories").value).toBe(mocks.config.repos);
+  expect(unsavedSections()).toEqual([]);
+  expect(text()).toContain("Saved. check the token");
+  expect(text()).not.toContain("Unsaved changes");
+});
+
+it("saves an Advanced JSON draft from the save bar even when the loaded config fails visual validation", async () => {
+  // No BB project: the visual editor flags this entry.
+  mocks.config.repos = JSON.stringify({ repos: [{ owner: "acme", repo: "app" }] });
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Workflow"), "{}");
+
+  expect(text()).not.toContain("to fix");
+  expect(button("Save changes").disabled).toBe(false);
+  await click(button("Save changes"));
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: "{}" });
 });

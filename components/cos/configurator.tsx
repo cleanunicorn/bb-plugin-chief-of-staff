@@ -303,7 +303,7 @@ function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, 
       </div>
       <div className="flex items-center gap-2">
         <Button size="sm" disabled={locked || !dirty || saving} onClick={onSave}>
-          Save JSON
+          {saving ? "Saving…" : "Save JSON"}
         </Button>
         <Button size="sm" variant="outline" disabled={!dirty || saving} onClick={onRevert}>
           Revert
@@ -365,7 +365,6 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
     for (const text of workflowProblems) out.push({ section: "workflow", text });
     return out;
   }, [repoIssues, repoDraft, workflowProblems]);
-  const problemCount = problems.length;
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
   const usedBy = useMemo(() => {
     const out: Record<string, string[]> = {};
@@ -466,6 +465,9 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const counts: Record<Section, number | null> = { workflow: null, repos: repoDraft.length, general: null, access: null, advanced: null };
   const sectionDirty: Record<Section, boolean> = { workflow: dirty.workflow, repos: dirty.repos, general: dirty.general, access: false, advanced: advancedDirty };
   const visualSection = section === "workflow" || section === "repos" || section === "general";
+  // A JSON save sends only the JSON documents and the server validates them, so the visual
+  // problems (which point into sections that are inert right now) don't block it.
+  const blocking = advancedDirty ? [] : problems;
   const loadError =
     (loadedRepos && !loadedRepos.ok ? `Repositories JSON: ${loadedRepos.error}` : null) ??
     (loadedWorkflow && !loadedWorkflow.ok ? `Workflow JSON: ${loadedWorkflow.error}` : null);
@@ -575,19 +577,19 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                 <span className="flex items-center gap-1.5 text-sm text-foreground">
                   <span aria-hidden className="size-2 rounded-full" style={{ background: STATUS.warning }} />
                   Unsaved changes
-                  {problemCount ? <span className="text-xs" style={{ color: STATUS.critical }}>· {problemCount} to fix before saving</span> : null}
+                  {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
                 </span>
                 <span className="ml-auto flex gap-1.5">
                   <Button size="sm" variant="outline" disabled={saving} onClick={discard}>
                     Discard
                   </Button>
-                  <Button size="sm" disabled={saving || problemCount > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
+                  <Button size="sm" disabled={saving || blocking.length > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
                     <Icon name="Save" fallback="Circle" aria-hidden /> {saving ? "Saving…" : "Save changes"}
                   </Button>
                 </span>
-                {problemCount ? (
+                {blocking.length ? (
                   <ul className="flex basis-full flex-col gap-0.5">
-                    {problems.slice(0, 5).map((p, i) => (
+                    {blocking.slice(0, 5).map((p, i) => (
                       <li key={i}>
                         <button
                           type="button"
@@ -605,7 +607,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                         </button>
                       </li>
                     ))}
-                    {problemCount > 5 ? <li className="text-xs text-muted-foreground">and {problemCount - 5} more</li> : null}
+                    {blocking.length > 5 ? <li className="text-xs text-muted-foreground">and {blocking.length - 5} more</li> : null}
                   </ul>
                 ) : null}
               </>
