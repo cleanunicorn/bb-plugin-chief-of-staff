@@ -10,7 +10,8 @@ import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type Machin
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
-import { lastAssistantText, listSkills, sendToThread, spawnStepThread, publicThreadUrl, spawnWorktreeThread } from "./threads";
+import { lastAssistantText, listSkills, publicThreadUrl, sendToThread, spawnStepThread, spawnWorktreeThread } from "./threads";
+import { postStatusComment } from "./statusComment";
 import { referencedSkills, skillMentions } from "./skills";
 import { agentWork, isAuthoredAgent, settingsFor, stepById, topoOrder, type AgentWork, type CheckStep, type ShipStep } from "./workflow";
 import { itemParent, archiveOrder } from "./threadGroups";
@@ -341,11 +342,8 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   });
   if (step.writes) cos.store.updateWorkItem(item.id, { providerId: spawned.providerId, model: spawned.model });
   cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name} ${spawned.thread.id}`, actor });
-  if (step.writes && item.issueNumber && !item.threadId && repo.issueComments !== false) {
-    const github = await cos.github();
-    const link = publicThreadUrl(cos, spawned.thread.id);
-    await github.createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).${link ? `\n\nBB thread: ${link}` : ""}`);
-  }
+  // Every builder spawn, so a restart edits the one status comment instead of adding another.
+  if (step.writes) await postStatusComment(cos, repo, item, spawned.thread.id);
   if (step.writes) void recordEnvironmentBranch(cos, item.id, spawned.thread.id);
   cos.invalidate();
 }
