@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Existing issue status comments are recovered without duplicates.** If the
+  saved comment id is missing, recovery still finds older status comments
+  beyond the newest ten replies. Agent briefs keep their newest-comment view.
+
 - **CI polling resumes where its last pass stopped.** Older pull requests
   still get checked when slow requests exhaust the polling time budget,
   including after a plugin reload.

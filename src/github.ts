@@ -281,12 +281,14 @@ export class GitHubClient {
   }
 
   /**
-   * The newest `newest` comments, oldest first. The endpoint lists oldest
-   * first and cannot be reversed, so read page 1, then the last page (and
-   * the one before it when the last is short): at most 3 requests.
+   * Scan up to three pages, oldest first, for status-comment recovery.
+   * With `newest`, fetch only the latest comments for a task brief instead:
+   * page 1, the last page, and the one before it when the last is short.
+   * Both modes make at most three requests.
    */
   async listIssueComments(owner: string, repo: string, number: number, opts: { newest?: number } = {}): Promise<GitHubComment[]> {
-    const newest = Math.max(1, Math.min(100, opts.newest ?? 10));
+    if (opts.newest === undefined) return this.paginate(`/repos/${owner}/${repo}/issues/${number}/comments`, 3);
+    const newest = Math.max(1, Math.min(100, opts.newest));
     const first = await this.#send("GET", `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`);
     const pages = [JSON.parse(first.text) as GitHubComment[]];
     const last = linkUrl(first.headers, "last");

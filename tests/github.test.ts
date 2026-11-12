@@ -190,6 +190,13 @@ describe("newest issue comments and truncated lists", () => {
   };
   const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
+  it("keeps the default comment scan bounded to three pages for marker recovery", async () => {
+    const fetch = commentsFetch(350);
+    const comments = await new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch }).listIssueComments("acme", "app", 12);
+    expect(comments.map((c) => c.id)).toEqual(range(1, 300));
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("reads the last page of a long issue", async () => {
     expect(await newest(250)).toEqual({ ids: range(241, 250), pages: ["1", "3"] });
   });

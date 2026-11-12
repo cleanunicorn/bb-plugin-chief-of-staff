@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { dispatch, settleJobs } from "../src/delivery";
-import { GitHubError, type GitHubComment } from "../src/github";
+import { GitHubClient, GitHubError, type GitHubComment } from "../src/github";
 import { DEFAULT_POLICY, freshNode } from "../src/machine";
 import { migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
 import { taskBrief } from "../src/intake";
@@ -74,6 +74,34 @@ function setup(options: { appUrl?: string; repo?: Partial<RepoConfig>; seed?: Gi
 }
 
 describe("postStatusComment", () => {
+  it.each([12, 250])("recovers an old status marker among %i comments using the real GitHub client", async (total) => {
+    const { cos, repo, item } = setup();
+    const comments = Array.from({ length: total }, (_, n) => ({
+      id: n + 1, body: n === 0 ? `${STATUS_MARKER}\nExisting status` : `Human comment ${n}`,
+      user: null, created_at: "2026-11-12T00:00:00Z",
+    }));
+    const calls: string[] = [];
+    const github = new GitHubClient({ token: "test", fetch: async (input, init = {}) => {
+      const url = new URL(String(input));
+      const method = init.method ?? "GET";
+      calls.push(`${method} ${url.pathname}`);
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const next = page * 100 < total ? `<${url.origin}${url.pathname}?per_page=100&page=${page + 1}>; rel="next"` : "";
+      return new Response(JSON.stringify(method === "GET" ? comments.slice((page - 1) * 100, page * 100) : { id: 1 }), {
+        status: 200, headers: { "content-type": "application/json", ...(next ? { link: next } : {}) },
+      });
+    } });
+    cos.github = async () => github;
+
+    await postStatusComment(cos, repo, item("recover"), "thr_1");
+
+    expect(calls).toEqual([
+      ...Array.from({ length: Math.ceil(total / 100) }, () => "GET /repos/a/b/issues/7/comments"),
+      "PATCH /repos/a/b/issues/comments/1",
+    ]);
+    expect(await cos.bb.storage.kv.get(statusKey("a/b", 7))).toBe(1);
+  });
+
   it("creates one comment on the first start and edits it when a fresh builder restarts the task", async () => {
     const { cos, repo, gh, item } = setup();
     const it1 = item("one");
