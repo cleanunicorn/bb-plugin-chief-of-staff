@@ -78,6 +78,18 @@ export interface GitHubClientOptions {
   fetch?: typeof fetch;
   baseUrl?: string;
   userAgent?: string;
+  /** Per-request deadline, headers and body included. */
+  timeoutMs?: number;
+}
+
+/** Default per-request deadline. */
+export const GITHUB_TIMEOUT_MS = 30_000;
+
+/** One response, body already read (inside the request's deadline). */
+interface Sent {
+  status: number;
+  headers: Headers;
+  text: string;
 }
 
 export class GitHubClient {
@@ -85,43 +97,72 @@ export class GitHubClient {
   readonly #fetch: typeof fetch;
   readonly #baseUrl: string;
   readonly #userAgent: string;
+  readonly #timeoutMs: number;
 
   constructor(options: GitHubClientOptions) {
     this.#token = options.token;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#baseUrl = (options.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
     this.#userAgent = options.userAgent ?? "bb-plugin-chief-of-staff";
+    this.#timeoutMs = options.timeoutMs ?? GITHUB_TIMEOUT_MS;
   }
 
   get hasToken(): boolean {
     return Boolean(this.#token);
   }
 
-  async request<T>(method: string, path: string, body?: unknown, opts: { accept?: string; raw?: boolean } = {}): Promise<T> {
-    const url = path.startsWith("http") ? path : `${this.#baseUrl}${path}`;
+  /** The path to name in errors: relative to the API base when it is under it. */
+  #display(pathOrUrl: string): string {
+    return pathOrUrl.startsWith(this.#baseUrl) ? pathOrUrl.slice(this.#baseUrl.length) || "/" : pathOrUrl;
+  }
+
+  /**
+   * The one way a request reaches GitHub: headers, a deadline covering the
+   * body read, and one error format (status, redacted body detail).
+   */
+  async #send(method: string, pathOrUrl: string, opts: { body?: unknown; accept?: string } = {}): Promise<Sent> {
+    const url = pathOrUrl.startsWith("http") ? pathOrUrl : `${this.#baseUrl}${pathOrUrl}`;
+    const path = this.#display(pathOrUrl);
     const headers: Record<string, string> = {
       accept: opts.accept ?? "application/vnd.github+json",
       "user-agent": this.#userAgent,
       "x-github-api-version": "2022-11-28",
     };
     if (this.#token) headers.authorization = `Bearer ${this.#token}`;
-    if (body !== undefined) headers["content-type"] = "application/json";
-    const response = await this.#fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "follow" });
-    if (!response.ok) {
-      let detail = "";
+    if (opts.body !== undefined) headers["content-type"] = "application/json";
+    let sent: Sent;
+    try {
+      const response = await this.#fetch(url, {
+        method,
+        headers,
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        redirect: "follow",
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+      let text = "";
       try {
-        const text = await response.text();
-        detail = text.slice(0, 500);
-      } catch {
-        /* ignore */
+        text = await response.text();
+      } catch (error) {
+        // A failed body read of an error response only loses its detail.
+        if (response.ok || isAbort(error)) throw error;
       }
-      // Strip the token defensively should GitHub ever echo headers back.
-      const safeDetail = this.#token ? detail.split(this.#token).join("<redacted>") : detail;
-      throw new GitHubError(`GitHub ${method} ${path} failed with ${response.status}: ${safeDetail}`, response.status, path);
+      sent = { status: response.status, headers: response.headers, text };
+    } catch (error) {
+      if (isAbort(error)) throw new GitHubError(`GitHub ${method} ${path} timed out after ${this.#timeoutMs >= 1000 ? `${Math.round(this.#timeoutMs / 1000)}s` : `${this.#timeoutMs}ms`}`, 0, path);
+      throw new GitHubError(redact(`GitHub ${method} ${path} failed: ${error instanceof Error ? error.message : String(error)}`, this.#token), 0, path);
     }
-    if (response.status === 204 || response.status === 202) return undefined as T;
-    if (opts.raw) return (await response.text()) as T;
-    return (await response.json()) as T;
+    if (sent.status < 200 || sent.status >= 300) {
+      // Strip the token defensively should GitHub ever echo headers back.
+      throw new GitHubError(`GitHub ${method} ${path} failed with ${sent.status}: ${redact(sent.text.slice(0, 500), this.#token)}`, sent.status, path);
+    }
+    return sent;
+  }
+
+  async request<T>(method: string, path: string, body?: unknown, opts: { accept?: string; raw?: boolean } = {}): Promise<T> {
+    const sent = await this.#send(method, path, { body, accept: opts.accept });
+    if (sent.status === 204 || sent.status === 202) return undefined as T;
+    if (opts.raw) return sent.text as T;
+    return JSON.parse(sent.text) as T;
   }
 
   async paginate<T>(path: string, maxPages = 10): Promise<T[]> {
@@ -129,15 +170,9 @@ export class GitHubClient {
     let url: string | null = `${path}${path.includes("?") ? "&" : "?"}per_page=100`;
     let pages = 0;
     while (url && pages < maxPages) {
-      const full: string = url.startsWith("http") ? url : `${this.#baseUrl}${url}`;
-      const headers: Record<string, string> = { accept: "application/vnd.github+json", "user-agent": this.#userAgent, "x-github-api-version": "2022-11-28" };
-      if (this.#token) headers.authorization = `Bearer ${this.#token}`;
-      const response = await this.#fetch(full, { headers });
-      if (!response.ok) throw new GitHubError(`GitHub GET ${url} failed with ${response.status}`, response.status, url);
-      results.push(...((await response.json()) as T[]));
-      const link = response.headers.get("link") ?? "";
-      const next = /<([^>]+)>;\s*rel="next"/.exec(link);
-      url = next ? next[1] : null;
+      const sent = await this.#send("GET", url);
+      results.push(...(JSON.parse(sent.text) as T[]));
+      url = linkUrl(sent.headers, "next");
       pages += 1;
     }
     return results;
@@ -258,6 +293,17 @@ export class GitHubClient {
       throw error;
     }
   }
+}
+
+/** A URL from a Link header (`rel="next"`, `rel="last"`), or null. */
+function linkUrl(headers: Headers, rel: string): string | null {
+  const match = new RegExp(`<([^>]+)>;\\s*rel="${rel}"`).exec(headers.get("link") ?? "");
+  return match ? match[1]! : null;
+}
+
+/** The fetch was cut by its deadline (or aborted). */
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
 function runIdFromUrl(url: string): number | null {
