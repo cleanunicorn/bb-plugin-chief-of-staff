@@ -10,7 +10,7 @@ import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type Machin
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
-import { lastAssistantText, listSkills, sendToThread, spawnStepThread, spawnWorktreeThread, threadUrl } from "./threads";
+import { lastAssistantText, listSkills, sendToThread, spawnStepThread, publicThreadUrl, spawnWorktreeThread } from "./threads";
 import { referencedSkills, skillMentions } from "./skills";
 import { agentWork, isAuthoredAgent, settingsFor, stepById, topoOrder, type AgentWork, type CheckStep, type ShipStep } from "./workflow";
 import { itemParent, archiveOrder } from "./threadGroups";
@@ -343,7 +343,8 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name} ${spawned.thread.id}`, actor });
   if (step.writes && item.issueNumber && !item.threadId) {
     const github = await cos.github();
-    await github.createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).\n\nBB thread: ${threadUrl(cos, spawned.thread.id)}`);
+    const link = publicThreadUrl(cos, spawned.thread.id);
+    await github.createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).${link ? `\n\nBB thread: ${link}` : ""}`);
   }
   if (step.writes) void recordEnvironmentBranch(cos, item.id, spawned.thread.id);
   cos.invalidate();
@@ -561,6 +562,7 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
     const body = reports.map((r, i) => (reports.length > 1 ? `**Agent ${i + 1}:** ${r!.summary}` : r!.summary)).join("\n\n");
     sections.push(`### ${s.name}${agentWork(s)?.approval ? " (approved)" : ""}\n${body.slice(0, 6000)}`);
   }
+  const threadLink = item.threadId ? publicThreadUrl(cos, item.threadId) : null;
   const fallback = !sections.length && item.threadId ? await lastAssistantText(cos, item.threadId) : null;
   const lines = [
     written ?? `## Summary\n${item.issueTitle}`,
@@ -571,7 +573,7 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
     ...(sections.length ? sections : [fallback ? fallback.slice(0, 4000) : "(no step reports)"]),
     ``,
     `## Delivery`,
-    `- Agent: ${item.providerId ?? "default"}${item.model ? ` / ${item.model}` : ""}${item.threadId ? ` ([thread](${threadUrl(cos, item.threadId)}))` : ""}`,
+    `- Agent: ${item.providerId ?? "default"}${item.model ? ` / ${item.model}` : ""}${threadLink ? ` ([thread](${threadLink}))` : ""}`,
     `- Fix cycles: ${item.fixAttempts}`,
     ``,
     `🤖 Shipped by the BB Chief of Staff plugin`,
