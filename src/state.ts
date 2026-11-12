@@ -3,9 +3,12 @@
 // step), item_threads (which agent thread works on which step), step_journal
 // (what happened to each step, kept across re-runs) and activity_log. Columns from the fixed-stage model and the removed routines
 // feature are left in place and unused.
+// work_items also stores occupies_capacity (occupiesCapacity of the row, kept
+// by every write and counted in SQL) and detail_pruned_at (when retention
+// removed a finished item's step details; cleared when the item is active again).
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
-import type { JournalEntry, JournalKind, MachineEvent, Nodes, StepReport } from "./machine";
+import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
 import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
@@ -85,6 +88,19 @@ export interface ItemThread {
 
 /** Journal rows kept across all tasks (details are clipped to 4,000 characters). */
 export const JOURNAL_MAX_ROWS = 50_000;
+/** Activity log rows kept. */
+export const LOG_MAX_ROWS = 5_000;
+/**
+ * The log and the journal are pruned on the first write after start and then
+ * once every this many rows, so they can briefly exceed their caps by about this much.
+ */
+export const PRUNE_EVERY = 100;
+
+export interface StoreOptions {
+  logMaxRows?: number;
+  journalMaxRows?: number;
+  pruneEvery?: number;
+}
 
 /** A stored journal entry. */
 export type JournalRecord = JournalEntry & { id: number; at: string; actor: string };
@@ -220,6 +236,13 @@ export const MIGRATIONS = [
     actor TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS step_journal_item ON step_journal(item_id, id)`,
+  // Whether the item holds a task slot (see occupiesCapacity); NULL until first computed.
+  `ALTER TABLE work_items ADD COLUMN occupies_capacity INTEGER`,
+  // When retention removed the finished item's step details.
+  `ALTER TABLE work_items ADD COLUMN detail_pruned_at TEXT`,
+  `CREATE INDEX IF NOT EXISTS work_items_status ON work_items(status)`,
+  `CREATE INDEX IF NOT EXISTS work_items_created ON work_items(created_at)`,
+  `UPDATE work_items SET occupies_capacity = 0 WHERE status IN ('done', 'failed')`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -234,6 +257,10 @@ export function migrationsForDatabase(db: Database): string[] {
 }
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
+/** SQL: `expr` (a column or parameter) is an active status. */
+const activeIn = (expr: string) => `${expr} IN (${ACTIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`;
+const ACTIVE_IN = activeIn("status");
+const FINISHED_IN = "status IN ('done', 'failed')";
 export function isActiveStatus(status: WorkStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
 }
@@ -264,6 +291,26 @@ function parseJson<T>(value: unknown, fallback: T): T {
 /** Placeholder for rows written before workflows were stored per item (adopted at startup). */
 export const NO_WORKFLOW: Workflow = { id: "none", name: "None", steps: [] };
 
+/** Normalized snapshots, kept as JSON text so every read gets its own objects. */
+const NORMALIZED_CACHE_SIZE = 256;
+const normalizedCache = new Map<string, string>();
+
+/**
+ * Normalize a stored workflow snapshot, once per distinct text per process.
+ * Not done on write: a snapshot picks up defaults added by later plugin
+ * versions, and this cache is empty again after each restart.
+ */
+function readWorkflow(raw: unknown): Workflow {
+  if (typeof raw !== "string" || !raw) return normalizeWorkflow(NO_WORKFLOW);
+  let normalized = normalizedCache.get(raw);
+  if (normalized === undefined) {
+    normalized = JSON.stringify(normalizeWorkflow(parseJson<Workflow>(raw, NO_WORKFLOW)));
+    if (normalizedCache.size >= NORMALIZED_CACHE_SIZE) normalizedCache.delete(normalizedCache.keys().next().value!);
+    normalizedCache.set(raw, normalized);
+  }
+  return JSON.parse(normalized) as Workflow;
+}
+
 function rowToWorkItem(row: Row): WorkItem {
   return {
     id: row.id as string,
@@ -290,7 +337,7 @@ function rowToWorkItem(row: Row): WorkItem {
     waitingKind: (row.waiting_kind as WaitingKind | null) ?? null,
     jobStartedAt: (row.job_started_at as string | null) ?? null,
     taskBody: (row.task_body as string | null) ?? null,
-    workflow: normalizeWorkflow(parseJson<Workflow>(row.workflow_json, NO_WORKFLOW)),
+    workflow: readWorkflow(row.workflow_json),
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
   };
@@ -311,18 +358,65 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson`;
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END`;
 
 function toRow(item: WorkItem): Record<string, unknown> {
   const { workflow, nodes, queuedEvent, ...rest } = item;
-  return { ...rest, queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null, workflowJson: workflow.steps.length ? JSON.stringify(workflow) : null, nodesJson: JSON.stringify(nodes) };
+  return {
+    ...rest,
+    queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null,
+    workflowJson: workflow.steps.length ? JSON.stringify(workflow) : null,
+    nodesJson: JSON.stringify(nodes),
+    occupiesCapacity: occupiesCapacity(item) ? 1 : 0,
+  };
+}
+
+
+/** Days after finishing that a task's step details are removed (the longest stats window). */
+export const FINISHED_DETAIL_DAYS = 90;
+/** Stands in for a report summary removed by retention. */
+export const REMOVED_SUMMARY = `(removed ${FINISHED_DETAIL_DAYS} days after the task finished)`;
+
+/**
+ * A finished item's steps without their bulky text: outputs, feedback, report
+ * summaries (replaced by REMOVED_SUMMARY) and questions. Statuses, rounds, report slots with their outcome,
+ * choice and pick, waits and retries stay, so retry, revive and rerun behave as before.
+ */
+export function compactNodes(nodes: Nodes): Nodes {
+  const out: Nodes = {};
+  for (const [id, node] of Object.entries(nodes)) {
+    if (!node || typeof node !== "object") {
+      out[id] = node;
+      continue;
+    }
+    const compact: NodeState = { ...node, feedback: null, output: null };
+    delete compact.deliveries;
+    delete compact.agentRetries;
+    if (Array.isArray(node.reports)) compact.reports = node.reports.map((r) => (r && typeof r === "object" ? { ...r, summary: REMOVED_SUMMARY, ...(r.question ? { question: null } : {}) } : r));
+    out[id] = compact;
+  }
+  return out;
 }
 
 export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
 
 export class StateStore {
-  constructor(private readonly db: Database, private readonly now: () => Date = () => new Date()) {}
+  private readonly caps: Required<StoreOptions>;
+  /** Rows written since each table was last pruned; Infinity until the first prune of this process. */
+  private readonly sincePrune = { activity_log: Infinity, step_journal: Infinity };
+
+  constructor(private readonly db: Database, private readonly now: () => Date = () => new Date(), options: StoreOptions = {}) {
+    this.caps = { logMaxRows: LOG_MAX_ROWS, journalMaxRows: JOURNAL_MAX_ROWS, pruneEvery: PRUNE_EVERY, ...options };
+  }
+
+  /** Keep a table to its newest `max` rows (ids are AUTOINCREMENT), every `pruneEvery` rows written. */
+  private prune(table: "activity_log" | "step_journal", written: number, max: number): void {
+    this.sincePrune[table] += written;
+    if (this.sincePrune[table] < this.caps.pruneEvery) return;
+    this.sincePrune[table] = 0;
+    this.db.prepare(`DELETE FROM ${table} WHERE id <= (SELECT MAX(id) FROM ${table}) - ?`).run(max);
+  }
 
   /** Commit related synchronous writes together, or roll them all back. */
   transaction<T>(write: () => T): T {
@@ -424,11 +518,63 @@ export class StateStore {
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
   }
 
-  /** Count reservations without the roster's display limit. */
+  /**
+   * Remove the step details of up to `batch` items that finished before
+   * `olderThanIso` (see compactNodes) and return their ids. Writes directly,
+   * leaving updated_at alone so stats do not move; marks each row with
+   * detail_pruned_at, even when its step state is unreadable, so repeated
+   * batches end. Thread rows stay (the run view links them); their pending
+   * reports go. Deferred events of these items go unless their project is paused.
+   */
+  compactFinished(olderThanIso: string, batch = 200): string[] {
+    return this.transaction(() => {
+      const rows = this.db.prepare(`SELECT id, nodes_json FROM work_items WHERE ${FINISHED_IN} AND detail_pruned_at IS NULL AND COALESCE(finished_at, updated_at) < ? LIMIT ?`)
+        .all(olderThanIso, batch) as { id: string; nodes_json: string | null }[];
+      const at = this.now().toISOString();
+      const update = this.db.prepare(`UPDATE work_items SET nodes_json = ?, check_output = NULL, pending_report_json = NULL, detail_pruned_at = ? WHERE id = ? AND ${FINISHED_IN}`);
+      const threads = this.db.prepare("UPDATE item_threads SET pending_report_json = NULL WHERE item_id = ?");
+      const events = this.db.prepare("DELETE FROM deferred_events WHERE item_id = @id AND NOT EXISTS (SELECT 1 FROM work_items w JOIN paused_repos p ON p.repo = w.repo WHERE w.id = @id)");
+      for (const row of rows) {
+        const nodes = parseJson<Nodes | null>(row.nodes_json, null);
+        update.run(nodes && typeof nodes === "object" ? JSON.stringify(compactNodes(nodes)) : row.nodes_json, at, row.id);
+        threads.run(row.id);
+        events.run({ id: row.id });
+      }
+      return rows.map((row) => row.id);
+    });
+  }
+
+  /** Scalar columns of every active item and every item started or finished since `sinceIso`, for computeStats. */
+  statsRows(sinceIso: string): Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt">[] {
+    return (this.db.prepare(`SELECT status, created_at, finished_at, updated_at FROM work_items WHERE ${ACTIVE_IN} OR created_at >= @since OR COALESCE(finished_at, updated_at) >= @since`)
+      .all({ since: sinceIso }) as Row[])
+      .map((row) => ({ status: row.status as WorkStatus, createdAt: row.created_at as string, finishedAt: (row.finished_at as string | null) ?? null, updatedAt: row.updated_at as string }));
+  }
+
+  countWorkItems(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM work_items").get() as { n: number }).n;
+  }
+
+  /** Count reservations without the roster's display limit, from the stored occupies_capacity column. */
   countOccupied(repo?: string, excludeId?: string): number {
-    const rows = this.db.prepare(`SELECT * FROM work_items WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})${repo ? " AND repo = ?" : ""}`)
-      .all(...ACTIVE_STATUSES, ...(repo ? [repo] : [])) as Row[];
-    return rows.reduce((n, row) => n + (row.id !== excludeId && occupiesCapacity(rowToWorkItem(row)) ? 1 : 0), 0);
+    this.healReservations();
+    const where = [ACTIVE_IN, "occupies_capacity = 1"];
+    const params: string[] = [];
+    if (repo !== undefined) { where.push("repo = ?"); params.push(repo); }
+    if (excludeId !== undefined) { where.push("id <> ?"); params.push(excludeId); }
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM work_items WHERE ${where.join(" AND ")}`).get(...params) as { n: number }).n;
+  }
+
+  /**
+   * Compute occupies_capacity for active rows that predate the column (or
+   * were written by raw SQL). Synchronous, so a count is never taken with
+   * in-flight items unaccounted for; free once every row is healed.
+   */
+  private healReservations(): void {
+    if (!this.db.prepare(`SELECT 1 FROM work_items WHERE ${ACTIVE_IN} AND occupies_capacity IS NULL LIMIT 1`).get()) return;
+    const rows = this.db.prepare(`SELECT * FROM work_items WHERE ${ACTIVE_IN} AND occupies_capacity IS NULL`).all() as Row[];
+    const write = this.db.prepare("UPDATE work_items SET occupies_capacity = ? WHERE id = ?");
+    this.transaction(() => { for (const row of rows) write.run(occupiesCapacity(rowToWorkItem(row)) ? 1 : 0, row.id); });
   }
 
   // ---- item threads ----
@@ -473,7 +619,7 @@ export class StateStore {
     const insert = this.db.prepare(`INSERT INTO step_journal (item_id, at, step_id, round, kind, agent, from_step, to_step, detail, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const e of entries) insert.run(itemId, at, e.step, e.round, e.kind, e.agent ?? null, e.from ?? null, e.to ?? null, e.detail, actor);
     // Keep the journal bounded, like the activity log: the oldest entries go first.
-    this.db.prepare(`DELETE FROM step_journal WHERE id <= (SELECT id FROM step_journal ORDER BY id DESC LIMIT 1 OFFSET ?)`).run(JOURNAL_MAX_ROWS);
+    this.prune("step_journal", entries.length, this.caps.journalMaxRows);
   }
 
   /** The item's journal, oldest first; the most recent `limit` entries. */
@@ -504,8 +650,7 @@ export class StateStore {
     this.db
       .prepare(`INSERT INTO activity_log (at, level, kind, repo, work_item_id, message, actor) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(this.now().toISOString(), entry.level, entry.kind, entry.repo ?? null, entry.workItemId ?? null, entry.message, entry.actor);
-    // Keep the log bounded.
-    this.db.prepare(`DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 5000)`).run();
+    this.prune("activity_log", 1, this.caps.logMaxRows);
   }
 
   listLog(opts: { limit?: number; workItemId?: string } = {}): LogEntry[] {

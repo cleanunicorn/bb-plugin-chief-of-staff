@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { itemParent, archiveOrder, groupExistingThreads } from "../src/threadGroups";
 import { MIGRATIONS, StateStore, type WorkItem } from "../src/state";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 import type { Cos } from "../src/context";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
@@ -56,5 +57,48 @@ describe("parent thread grouping", () => {
     cos.store.setPaused(true);
     await groupExistingThreads(cos);
     expect(host.harness.inspection.sdk.callsTo("threads.update")).toHaveLength(0);
+  });
+
+  describe("sweeping only items whose threads changed", () => {
+    function active(cos: Cos) {
+      cos.store.insertWorkItem({ id: "item", repo: "a/b", status: "agent", issueTitle: "t", issueNumber: null, branch: null, threadId: "build", environmentId: null, prNumber: null, prUrl: null, providerId: null, model: null, lastError: null, source: "task", lastActivityAt: null, finishedAt: null, workflow: DEFAULT_WORKFLOW, nodes: {} });
+    }
+    const calls = (host: ReturnType<typeof setup>["host"]) => ({ get: host.harness.inspection.sdk.callsTo("threads.get").length, update: host.harness.inspection.sdk.callsTo("threads.update").length });
+
+    it("makes no thread calls when the thread set is unchanged", async () => {
+      const { cos, host, threads } = setup();
+      active(cos);
+      await groupExistingThreads(cos);
+      expect(threads.get("build")!.parentThreadId).toBe("plan");
+      expect(threads.get("review")!.parentThreadId).toBe("plan");
+      const before = calls(host);
+      await groupExistingThreads(cos);
+      expect(calls(host)).toEqual(before);
+    });
+
+    it("groups again once a thread is added", async () => {
+      const { cos, host, threads } = setup();
+      active(cos);
+      await groupExistingThreads(cos);
+      threads.set("fix", makeThreadResponse({ id: "fix" }));
+      cos.store.upsertThread({ threadId: "fix", itemId: "item", role: "step", stepId: "fix", agent: 0, environmentId: null, round: 0, promptSentAt: null });
+      const before = calls(host);
+      await groupExistingThreads(cos);
+      expect(calls(host).update).toBe(before.update + 1);
+      expect(threads.get("fix")!.parentThreadId).toBe("plan");
+    });
+
+    it("retries on the next sweep when an update failed", async () => {
+      const { cos, host, threads } = setup();
+      active(cos);
+      const update = async ({ threadId, ...patch }: { threadId: string }) => { const t = { ...threads.get(threadId)!, ...patch }; threads.set(threadId, t); return t; };
+      host.harness.inspection.sdk.stub("threads.update", async () => { throw new Error("transient"); });
+      await groupExistingThreads(cos);
+      expect(await cos.bb.storage.kv.get("thread-group:item")).toBeUndefined();
+      host.harness.inspection.sdk.stub("threads.update", update as never);
+      await groupExistingThreads(cos);
+      expect(threads.get("build")!.parentThreadId).toBe("plan");
+      expect(await cos.bb.storage.kv.get("thread-group:item")).toBeDefined();
+    });
   });
 });
