@@ -287,7 +287,7 @@ async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undef
 async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentWork, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
   const round = item.nodes[step.id]?.round ?? 0;
   const deliveryId = randomUUID();
-  const body = (effect.kind === "nudge" ? nudgePrompt(step) : stepPrompt(item, step, effect.agent, { defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined })) + `\n\nFor this prompt, include delivery: "${deliveryId}" in cos_report (or delivery: ${deliveryId} in the Step report block).`;
+  const body = effect.kind === "nudge" ? nudgePrompt(step, deliveryId) : stepPrompt(item, step, effect.agent, { delivery: deliveryId, defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined });
   // `/skill` references in the instructions become skill mentions (only skills the workspace has).
   const usesSkills = effect.kind !== "nudge" && referencedSkills(step.instructions).length > 0;
   const skills = usesSkills ? await listSkills(cos, repo.projectId, item.environmentId) : [];

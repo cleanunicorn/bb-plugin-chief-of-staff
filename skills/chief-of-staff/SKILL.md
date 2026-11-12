@@ -14,23 +14,13 @@ sends failures back to an earlier step on a budget. Every command lives under
 
 ## If you are a workflow agent
 
-Your prompt names the step you are on and its id. When the step is finished,
-call the `cos_report` tool with that `step` id, an `outcome` (`done`;
-`failed` on a pass/fail step that does not pass, or when you cannot finish;
-`needs_input` with a `question` when a person must decide) and a Markdown
-`summary` (the next steps read it). If your prompt lists model choices, also
-pass the `choice` id you pick (a text report uses a `choice:` line). If your
-step chooses the model, find what is available with `bb provider list --json`
-and `bb provider models <providerId> --json`, and pass the `providerId`,
-`model` and `reasoningLevel` you pick (`providerId:`, `model:` and
-`reasoningLevel:` lines before `summary:` in a text report). Then end
-your turn. When the prompt includes a delivery id, pass it as `delivery` (or
-put `delivery:` before `summary:` in the text report). This associates the
-report with the current prompt, including recovery after a lost send response.
-If the tool is
-unavailable, end your message with a `## Step report` block (`step:`,
-`outcome:`, `summary:` lines). On a read-only step, do not change files. Never
-push or open pull requests; Chief of Staff does that.
+Follow the "When you finish this step" section of your prompt: it gives the
+exact `cos_report` call (step id, delivery id, outcomes, any model-choice
+fields) and the `## Step report` text block to use when the tool is
+unavailable. Report, then end your turn; Chief of Staff waits for the report.
+Use `outcome: "failed"` when you cannot finish, and `outcome: "needs_input"`
+with a `question` when a person must decide. On a read-only step, do not change
+files. Never push or open pull requests; Chief of Staff does that.
 
 ## Commands
 
@@ -55,11 +45,10 @@ push or open pull requests; Chief of Staff does that.
   again.
 - `bb cos log [--limit n] [--item id]` — activity log with who/what triggered each step.
 
-A prompt delivery marked uncertain is not automatically resent, including after
-restart. A report with the matching delivery id can recover it. If no agent
-received the prompt, inspect the thread before explicitly retrying; the SDK does
-not guarantee that a thrown send/spawn call delivered nothing. Activity alone
-does not prove delivery. Preparation failures still retry with bounded backoff.
+An uncertain prompt delivery is never resent automatically, even after a
+restart: a report carrying its delivery id recovers it. Otherwise inspect the
+thread before an explicit `retry` (a failed send may still have delivered;
+activity alone does not prove it). Preparation failures retry with backoff.
 
 Agents also have the `chief_of_staff_status` tool, which returns the same roster.
 
@@ -83,13 +72,12 @@ when GitHub confirms a merge. PR-only delivery stops watching and repairing CI
 when finished. Use merge mode when the assignment includes merging, and preserve
 `requireApproval` unless the user configured otherwise.
 
-Shipping waits for CI, review or a human decision do not reserve task capacity.
-The item remains visible and tracked. Repairs, reruns and agent steps after
-shipping queue until repo and global capacity is available, then resume
-without keeping an agent turn alive. Limits count tasks, not parallel threads;
-non-shipping gates keep their existing reservations. `cos_overview` reports
-`occupiedCapacity` globally and reserved counts in each repo's `active` field;
-roster entries expose `occupiesCapacity`.
+While shipping waits on CI, review or a person, the task holds no capacity
+slot (it stays tracked); repairs, reruns and later agent steps queue for a
+free repo and global slot, then resume without an agent turn held open.
+Limits count tasks, not threads; other gates keep their slot.
+`cos_overview` reports `occupiedCapacity` and each repo's reserved `active`
+count; roster entries expose `occupiesCapacity`.
 
 ## Configuration
 
@@ -116,10 +104,14 @@ then `bb settings experiment pluginUpdates true` for automatic updates.
 
 ### Workflow thread grouping
 
-Chief of Staff uses BB’s native parent-thread tree to group each workflow in project view. The first live workflow thread becomes its parent; planning agents, the builder, reviewers, and replacement threads are grouped beneath it across worktrees. The parent identity is stored separately from the builder and survives restarts. No extra coordinator agent or custom sidebar is created.
-
-Child-result notifications are disabled (`parentNotifications: "off"`); Chief of Staff still handles step reports and progression. Workspace choices and configured provider, model, reasoning, and permissions remain explicit. Unset execution options can inherit BB’s parent defaults.
-
-The regular sweep groups existing active workflows and preserves threads attached to parents outside the workflow. BB can send an assignment notice to the parent when existing threads are attached, even with child-result notifications disabled. A missing or archived parent is replaced with a live workflow thread when available. Failed grouping is logged for a later retry.
-
-On completion, Chief of Staff archives children before their parent when automatic archiving is enabled. Manually archiving the parent detaches live children; deleting a parent also deletes its descendants. BB limits nesting to four levels. This implementation creates no native sections and does not change sidebar preferences.
+Each workflow's threads (planners, builder, reviewers, replacements) are
+grouped under its first live thread using BB's native parent-thread tree,
+across worktrees; the parent is stored apart from the builder and survives
+restarts. No coordinator agent or custom sidebar is created. Child result
+notifications are off (`parentNotifications: "off"`); step reports still drive
+progression. Unset provider, model, reasoning and permission options may
+inherit the parent's BB defaults. The sweep regroups active workflows, keeps
+threads already attached to outside parents, and replaces a missing or
+archived parent; failures are logged and retried. With automatic archiving, children
+are archived before their parent. Archiving the parent manually detaches live
+children; deleting it deletes them. BB nests at most four levels.

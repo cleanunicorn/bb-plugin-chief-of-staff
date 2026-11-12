@@ -47,21 +47,22 @@ export function inputReports(wf: Workflow, nodes: Nodes, stepId: string): string
   return out;
 }
 
-function contract(step: AgentWork): string[] {
+function contract(step: AgentWork, delivery?: string): string[] {
   const outcomes = step.verdict ? '`"done"` if it passes, or `"failed"` with the findings that must change' : '`"done"`';
   const picks = step.chooses.length > 0;
   const auto = Boolean(step.picksModel);
-  const fields = picks ? "`choice` (the model you pick, below), " : auto ? "`providerId`, `model` and `reasoningLevel` (what you pick), " : "";
+  const fields = picks ? "`choice` (your pick, below), " : auto ? "`providerId`, `model` and `reasoningLevel` (your pick), " : "";
   return [
     ``,
     `### When you finish this step`,
-    `Call the \`${REPORT_TOOL}\` tool with \`step: "${step.id}"\`, \`outcome\`: ${outcomes}, ${fields}and a Markdown \`summary\` of your result (the next steps read it${picks || auto ? "; say which model you picked and why" : ""}).`,
-    `If you need a decision from a person, ask it with your question tool, or call \`${REPORT_TOOL}\` with \`outcome: "needs_input"\` and the \`question\`. Do not stop without doing one of these: Chief of Staff waits for the report before moving on.`,
-    `If the \`${REPORT_TOOL}\` tool is unavailable, end your final message with:`,
+    `Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\`, ${delivery ? `\`delivery: "${delivery}"\`, ` : ""}\`outcome\`: ${outcomes}, ${fields}and a Markdown \`summary\` (later steps read it${picks || auto ? "; say which model you picked and why" : ""}).`,
+    `Cannot finish? Report \`outcome: "failed"\` and why. Need a person to decide? Ask with your question tool, or report \`outcome: "needs_input"\` with the \`question\`. Never end your turn without one of these: Chief of Staff waits for the report.`,
+    `No \`${REPORT_TOOL}\` tool? End your final message with:`,
     "```",
     `## Step report`,
     `step: ${step.id}`,
-    `outcome: done`,
+    ...(delivery ? [`delivery: ${delivery}`] : []),
+    `outcome: ${step.verdict ? "<done or failed>" : "done"}`,
     ...(picks ? [`choice: <id of the model you pick>`] : []),
     ...(auto ? [`providerId: <provider id>`, `model: <model id>`, `reasoningLevel: <one of the model's reasoning levels; leave this line out if it lists none>`] : []),
     `summary: <your result>`,
@@ -69,49 +70,55 @@ function contract(step: AgentWork): string[] {
   ];
 }
 
-/** The prompt that starts (or restarts) an agent on a step. */
-export function stepPrompt(item: WorkItem, step: AgentWork, agent: number, ctx: { defaultBranch?: string } = {}): string {
+/** The prompt that starts (or restarts) an agent on a step. `delivery` ties the agent's report to this prompt. */
+export function stepPrompt(item: WorkItem, step: AgentWork, agent: number, ctx: { defaultBranch?: string; delivery?: string } = {}): string {
   const wf = item.workflow;
   const node: NodeState | undefined = item.nodes[step.id];
   const lines: string[] = [`**[Chief of Staff · ${wf.name} · ${step.name}]**  ${pipelineLine(wf, step.id)}`, ``];
   if (step.writes) {
-    lines.push(`You may change code in this step. Commit your work on the current branch. Do not push and do not open a pull request; Chief of Staff does that.`);
+    lines.push(`You may change code in this step. Commit on the current branch; do not push or open a pull request (Chief of Staff does).`);
   } else {
     lines.push(`This step is read-only: do not change, commit or delete files.${ctx.defaultBranch ? ` The work so far is \`git diff origin/${ctx.defaultBranch}...HEAD\`.` : ""}`);
   }
-  if (step.agents > 1) lines.push(`${step.agents} agents work on this step independently; you are agent ${agent + 1}. Do your own work; Chief of Staff combines the reports.`);
+  if (step.agents > 1) lines.push(`${step.agents} agents work on this step independently; you are agent ${agent + 1}. Chief of Staff combines the reports.`);
   if (step.approval) lines.push(`A person approves your report before the workflow moves on.`);
   if (step.instructions.trim()) lines.push(``, `### Instructions`, step.instructions.trim());
   if (step.picksModel) {
     lines.push(
       ``,
       `### Choose the model for the steps after this one`,
-      `You do not work on the task itself: read it (and the code, if that helps you judge its size and risk) and pick the provider, model and reasoning level the agent steps after this one run with.`,
-      `Pick only from what is available here:`,
-      `- \`bb provider list --json\`: the providers (agents); use only those with \`"available": true\`.`,
-      `- \`bb provider models <providerId> --json\`: a provider's models, each with its \`supportedReasoningEfforts\`.`,
-      `Report the provider's \`id\` as \`providerId\` and the model's \`id\` as \`model\`. For \`reasoningLevel\`, pass one of the \`reasoningEffort\` values the model lists in \`supportedReasoningEfforts\`; if it lists none, or you have no preference, leave \`reasoningLevel\` out entirely (do not pass "none" or an empty value).`,
+      `Do not work on the task itself. Read it (and the code, if that helps judge its size and risk), then pick the provider, model and reasoning level for the agent steps after this one, only from what is available:`,
+      `- \`bb provider list --json\`: providers; use only those with \`"available": true\`.`,
+      `- \`bb provider models <providerId> --json\`: a provider's models and their \`supportedReasoningEfforts\`.`,
+      `Report the provider's \`id\` as \`providerId\` and the model's \`id\` as \`model\`. Set \`reasoningLevel\` to one of the model's \`supportedReasoningEfforts\`; if it lists none, or you have no preference, leave \`reasoningLevel\` out entirely (not "none" or empty).`,
     );
   }
   if (step.chooses.length) {
     lines.push(
       ``,
       `### Choose the model for the steps after this one`,
-      `Analyse the task and pick the model that fits it. The steps after this one run with your pick. Options (report the id as \`choice\`):`,
+      `Analyse the task and pick the option that fits; the steps after this one run with it. Report its id as \`choice\`:`,
       ...step.chooses.map((c) => `- \`${c.id}\`: ${c.when.trim()}`),
     );
   }
   const inputs = inputReports(wf, item.nodes, step.id);
   if (inputs.length) lines.push(``, `### Input from earlier steps`, ...inputs);
   if (node?.feedback) lines.push(``, `### Why this step runs again`, clip(node.feedback, FEEDBACK_MAX));
-  lines.push(...contract(step));
+  lines.push(...contract(step, ctx.delivery));
   return lines.join("\n");
 }
 
-export function nudgePrompt(step: AgentStep): string {
+/** The reminder sent when an agent ends its turn without reporting its step. */
+export function nudgePrompt(step: AgentWork, delivery?: string): string {
+  const id = delivery ? `, \`delivery: "${delivery}"\`` : "";
+  const pick = step.chooses.length
+    ? ` and \`choice\` (one of ${step.chooses.map((c) => `\`${c.id}\``).join(", ")})`
+    : step.picksModel
+      ? " and the `providerId` and `model` you pick (plus `reasoningLevel` if the model lists levels)"
+      : "";
   return [
     `You ended your turn without reporting the step **${step.name}**.`,
-    `- Finished? Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\` now.`,
+    `- Finished? Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\`${id}${pick} (or end with the Step report block${delivery ? `, \`delivery: ${delivery}\` included` : ""}).`,
     `- Need a decision? Ask it, or report \`outcome: "needs_input"\` with the question.`,
     `- Not finished? Keep working, then report.`,
   ].join("\n");

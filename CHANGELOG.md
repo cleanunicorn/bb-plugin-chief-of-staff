@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Shorter agent prompts.** Each step prompt is about 150–250 characters
+  shorter: the delivery id now sits in the `cos_report` call and the
+  `## Step report` block instead of a separate trailing sentence, and the
+  reporting, model-pick and nudge wording is tighter. The Chief of Staff skill
+  is about 20% smaller; its agent section points to the prompt's reporting
+  instructions instead of repeating them.
+
+- **Text reports on pass/fail steps no longer default to a pass.** The
+  `## Step report` template on a pass/fail step shows `outcome: <done or
+  failed>` instead of `outcome: done`, so an agent copying it verbatim cannot
+  pass the work by accident. The reminder sent to an agent that stops without
+  reporting now names the model-choice ids or pick fields its step requires.
+
 - **Saved configuration drafts survive a failed reload.** After a partial save,
   workflow and repository drafts stay until a successful read confirms their
   saved values. Retry reloads without repeating writes, and keeps any newer
