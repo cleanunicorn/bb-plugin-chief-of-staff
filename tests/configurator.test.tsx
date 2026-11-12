@@ -234,8 +234,10 @@ it("sends Save JSON once on a double click, and disables both Save buttons while
 
   expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: "{}" });
   expect(saveJson.disabled).toBe(true);
-  expect(saveJson.textContent).toBe("Saving…");
-  expect(button("Saving…").disabled).toBe(true);
+  // "Save JSON" and the save bar's Save.
+  const busy = Array.from(container.querySelectorAll("button")).filter((b) => b.textContent?.trim() === "Saving…");
+  expect(busy).toHaveLength(2);
+  expect(busy.every((b) => b.disabled)).toBe(true);
   expect(button("Discard").disabled).toBe(true);
   expect(button("Revert").disabled).toBe(true);
 });
