@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The plugin is now licensed under Apache 2.0.** The full text is in
+  `LICENSE`, and `package.json` declares it.
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,
