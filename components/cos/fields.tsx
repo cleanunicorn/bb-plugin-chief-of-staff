@@ -156,7 +156,11 @@ export function Problems({ items, tone = "critical" }: { items: string[]; tone?:
   );
 }
 
-export function ConfirmRemove({ onConfirm, label }: { onConfirm: () => void; label: string }) {
+/**
+ * A trash button that asks before removing. `notice` is shown while asking,
+ * for consequences worth reading before confirming.
+ */
+export function ConfirmRemove({ onConfirm, label, notice }: { onConfirm: () => void; label: string; notice?: ReactNode }) {
   const [asking, setAsking] = useState(false);
   if (!asking)
     return (
@@ -165,9 +169,19 @@ export function ConfirmRemove({ onConfirm, label }: { onConfirm: () => void; lab
       </Button>
     );
   return (
-    <span className="flex items-center gap-1 text-xs text-foreground">
+    <span className="flex flex-wrap items-center gap-1 text-xs text-foreground">
+      {notice ? <span className="basis-full text-muted-foreground">{notice}</span> : null}
       Remove?
-      <Button size="sm" variant="destructive" className="h-7 px-2" onClick={onConfirm}>
+      <Button
+        size="sm"
+        variant="destructive"
+        className="h-7 px-2"
+        onClick={() => {
+          // Disarm first: when the caller removes this item, the instance may stay mounted for the next one.
+          setAsking(false);
+          onConfirm();
+        }}
+      >
         Remove
       </Button>
       <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAsking(false)}>

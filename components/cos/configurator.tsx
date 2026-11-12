@@ -8,12 +8,13 @@ import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
 import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
 import { useConfigDrafts } from "./configDrafts";
 import type { ConfigDrafts } from "./configDrafts";
+import { useRowKeys } from "./rowKeys";
 import { Button } from "../ui/button";
 import { Field, TextInput, NumberInput, ListInput, Select, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
 import { Icon } from "../ui/icon";
@@ -138,6 +139,7 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
     ? [
         { value: "", label: `Default (${workflows.workflows.find((w) => w.id === workflows.default)?.name ?? workflows.default})` },
         ...workflows.workflows.map((w) => ({ value: w.id, label: w.name })),
+        ...(typeof repo.workflow === "string" && !workflows.workflows.some((w) => w.id === repo.workflow) ? [{ value: repo.workflow, label: `Missing: ${repo.workflow} (runs the default)` }] : []),
         ...legacyOption,
       ]
     : [{ value: "", label: "Default" }, ...(typeof repo.workflow === "string" && repo.workflow ? [{ value: repo.workflow, label: repo.workflow }] : []), ...legacyOption];
@@ -367,6 +369,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   // A "Saved." or error line belongs to this visit; don't show it again after a tab switch.
   useEffect(() => () => setStatus(null), [setStatus]);
   const [retrying, setRetrying] = useState(false);
+  const repoKeys = useRowKeys<RepoConfig>();
 
   const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
   const loadedGeneral = settings.data?.values ?? null;
@@ -468,6 +471,13 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
     setAdvancedRepos(null);
     setAdvancedWorkflow(null);
     setStatus(null);
+  };
+
+  /** A deleted workflow's repositories go back to the default, instead of keeping an id a new workflow could reuse. */
+  const detachRepos = (id: string) => {
+    const next = detachWorkflow(repoDraft, id).repos;
+    // Unchanged when no repository used it; also keeps an unloadable repositories JSON from being replaced by [].
+    if (next !== repoDraft) setRepos(next.map((r, i) => repoKeys.carry(repoDraft[i]!, r)));
   };
 
   const discard = () => {
@@ -597,7 +607,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
           // Inert, not unmounted, so the editors keep their place while the JSON draft is pending.
           <div className={cn("flex flex-col gap-3", advancedDirty && "opacity-50")} inert={advancedDirty}>
             {section === "workflow" && workflowBlocked ? <BlockedDocument title="Workflows" error={workflowError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
-            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} /> : null}
+            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} /> : null}
             {section === "repos" && reposBlocked ? <BlockedDocument title="Repositories" error={reposError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
             {section === "repos" && !reposBlocked ? (
               <>
@@ -617,13 +627,13 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                 {repoDraft.length ? (
                   repoDraft.map((repo, i) => (
                     <RepoEditor
-                      key={i}
+                      key={repoKeys.key(repo)}
                       repo={repo}
                       index={i}
                       problems={repoIssues[i] ?? []}
                       open={openRepo === i}
                       onToggle={() => setOpenRepo(openRepo === i ? null : i)}
-                      onChange={(r) => editRepos(repoDraft.map((x, j) => (j === i ? r : x)))}
+                      onChange={(r) => editRepos(repoDraft.map((x, j) => (j === i ? repoKeys.carry(x, r) : x)))}
                       onRemove={() => {
                         editRepos(repoDraft.filter((_, j) => j !== i));
                         setOpenRepo(null);
