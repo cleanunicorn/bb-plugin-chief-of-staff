@@ -6,7 +6,7 @@
   shorter: the delivery id now sits in the `cos_report` call and the
   `## Step report` block instead of a separate trailing sentence, and the
   reporting, model-pick and nudge wording is tighter. The Chief of Staff skill
-  is 20% smaller; its agent section points to the prompt's reporting
+  is about 20% smaller; its agent section points to the prompt's reporting
   instructions instead of repeating them.
 
 - **Saved configuration drafts survive a failed reload.** After a partial save,
