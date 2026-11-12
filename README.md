@@ -190,7 +190,8 @@ A workflow is the path every task takes: **steps** connected by arrows. Steps
 side by side run in parallel, and a step with several arrows into it waits for
 all of them. Edit workflows under **Configure → Workflows**: drag steps on the
 canvas, connect a step's bottom edge to another step, select an arrow and press
-Backspace to remove it, or use the list view.
+Backspace to remove it, or use the list view. To remove a step, use the Remove
+button in its side panel; Backspace never removes a step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/workflow-editor-dark.png">
