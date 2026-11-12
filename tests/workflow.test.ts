@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeWorkflow, type Workflow } from "../src/workflow";
+import { DEFAULT_DOCUMENT, normalizeWorkflow, parseWorkflows, serializeWorkflows, validateDocument, workflowProblems, workflowSchema, type Workflow, type WorkflowsDocument } from "../src/workflow";
 
 type Raw = Record<string, unknown>;
 const wf = (steps: unknown[]) => ({ id: "w", name: "w", steps }) as unknown as Workflow;
@@ -55,5 +55,118 @@ describe("normalizeWorkflow", () => {
 
   it("returns non-object steps unchanged", () => {
     expect(normalizeWorkflow(wf([null, "x"])).steps).toEqual([null, "x"]);
+  });
+});
+
+// ---------- workflowProblems: every reason the server would reject a draft ----------
+
+type Draft = WorkflowsDocument & { workflows: (Workflow & { steps: Raw[] })[] };
+const BASE = {
+  default: "default",
+  workflows: [
+    workflowSchema.parse({
+      id: "default",
+      name: "Delivery",
+      steps: [
+        { id: "plan", name: "Plan", type: "agent", next: ["build"], chooses: [{ id: "fast", when: "small tasks", model: "haiku" }] },
+        { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
+        { id: "test", name: "Test", type: "check", command: "npm test", onFail: "build", next: ["ship"] },
+        { id: "ship", name: "Ship", type: "ship" },
+      ],
+    }),
+  ],
+} as WorkflowsDocument;
+/** A copy of BASE with `edit` applied to it. */
+const draft = (edit: (d: Draft) => void): WorkflowsDocument => {
+  const d = structuredClone(BASE) as Draft;
+  edit(d);
+  return d;
+};
+const plan = (d: Draft) => d.workflows[0]!.steps[0]!;
+const choice = (d: Draft) => (plan(d).chooses as Raw[])[0]!;
+const choices = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `c${i}`, when: "x", model: "m" }));
+
+const CASES: [string, (d: Draft) => void, Record<string, unknown>][] = [
+  ["an empty workflow name", (d) => (d.workflows[0]!.name = ""), { workflow: 0, field: "name", message: "Name must not be empty", text: "Workflow 1: name must not be empty" }],
+  ["a workflow name over 80 characters", (d) => (d.workflows[0]!.name = "x".repeat(81)), { workflow: 0, field: "name", message: "Name must be at most 80 characters" }],
+  ["an empty step name", (d) => (d.workflows[0]!.steps[1]!.name = ""), { workflow: 0, step: 1, field: "name", message: "Name must not be empty", text: 'Workflow "Delivery" › step 2 (build): name must not be empty' }],
+  ["a step name over 80 characters", (d) => (plan(d).name = "Plan (copy)".repeat(8)), { workflow: 0, step: 0, field: "name", message: "Name must be at most 80 characters" }],
+  ["an empty “Use when”", (d) => (choice(d).when = ""), { workflow: 0, step: 0, choice: 0, field: "when", message: "“Use when” must not be empty", text: 'Workflow "Delivery" › step "Plan" › model choice 1: “Use when” must not be empty' }],
+  ["a “Use when” over 1000 characters", (d) => (choice(d).when = "x".repeat(1001)), { step: 0, choice: 0, field: "when", message: "“Use when” must be at most 1,000 characters" }],
+  ["an empty choice id", (d) => (choice(d).id = ""), { step: 0, choice: 0, field: "id", message: "Choice id must not be empty" }],
+  ["a choice id starting with -", (d) => (choice(d).id = "-fast"), { step: 0, choice: 0, field: "id", message: "Choice id must start with a lowercase letter or digit, and use only lowercase letters, digits, - and _ (at most 40)" }],
+  ["more than 12 model choices", (d) => (plan(d).chooses = choices(13)), { step: 0, field: "chooses", message: "Must have at most 12 model choices", text: 'Workflow "Delivery" › step "Plan": must have at most 12 model choices' }],
+  ["an empty check command", (d) => (d.workflows[0]!.steps[2]!.command = ""), { step: 2, field: "command", message: "Command must not be empty" }],
+  ["instructions over 20,000 characters", (d) => (plan(d).instructions = "x".repeat(20_001)), { step: 0, field: "instructions", message: "Instructions must be at most 20,000 characters" }],
+  ["a choice model over 200 characters", (d) => (choice(d).model = "m".repeat(201)), { step: 0, choice: 0, field: "model", message: "Model must be at most 200 characters" }],
+  ["a choice reasoning level over 50 characters", (d) => (choice(d).reasoningLevel = "r".repeat(51)), { step: 0, choice: 0, field: "reasoningLevel", message: "Reasoning level must be at most 50 characters" }],
+  ["too many agents", (d) => (plan(d).agents = 5), { step: 0, field: "agents", message: "Agents in parallel must be at most 4" }],
+  ["no agents", (d) => (plan(d).agents = 0), { step: 0, field: "agents", message: "Agents in parallel must be at least 1" }],
+  ["agents that are not a number", (d) => (plan(d).agents = NaN), { step: 0, field: "agents", message: "Agents in parallel must be a number" }],
+  ["a timeout over 240 minutes", (d) => (d.workflows[0]!.steps[2]!.timeoutMinutes = 300), { step: 2, field: "timeoutMinutes", message: "Timeout (minutes) must be at most 240" }],
+  ["fractional rounds", (d) => (plan(d).maxRounds = 1.5), { step: 0, field: "maxRounds", message: "Rounds must be a whole number" }],
+  ["too many attempts", (d) => (d.workflows[0]!.steps[2]!.maxAttempts = 11), { step: 2, field: "maxAttempts", message: "Attempts must be at most 10" }],
+];
+
+describe("workflowProblems", () => {
+  it("finds nothing in the default document or a valid one", () => {
+    expect(workflowProblems(DEFAULT_DOCUMENT)).toEqual([]);
+    expect(workflowProblems(BASE)).toEqual([]);
+  });
+
+  it.each(CASES)("locates %s in readable words", (_, edit, expected) => {
+    const problems = workflowProblems(draft(edit));
+    expect(problems).toContainEqual(expect.objectContaining(expected));
+    for (const p of problems) expect(p.text).not.toMatch(/workflows\.\d/);
+  });
+
+  it("names a step without a name by its number in the graph checks too", () => {
+    const problems = workflowProblems(draft((d) => Object.assign(d.workflows[0]!.steps[2]!, { name: "", onFail: "ship" })));
+    expect(problems).toContainEqual({ workflow: 0, message: "step 3 (test): on fail must go back to a step before it (Ship is not)", text: 'Workflow "Delivery": step 3 (test): on fail must go back to a step before it (Ship is not)' });
+  });
+
+  it("reports graph and document problems with the workflow they belong to", () => {
+    const second = { ...structuredClone(BASE.workflows[0]!), name: "Copy" };
+    const problems = workflowProblems({ default: "nope", workflows: [BASE.workflows[0]!, second] });
+    expect(problems).toEqual([
+      { message: 'Two workflows have the id "default"', text: 'Two workflows have the id "default"' },
+      { message: 'The default workflow "nope" does not exist', text: 'The default workflow "nope" does not exist' },
+    ]);
+    const loop = draft((d) => (d.workflows[0]!.steps[3]!.next = ["build"]));
+    expect(workflowProblems(loop)).toContainEqual(expect.objectContaining({ workflow: 0, text: expect.stringMatching(/^Workflow "Delivery": the arrows form a loop/) }));
+  });
+
+  it("keeps any issue it has no words for, with its path", () => {
+    const problems = workflowProblems(draft((d) => (d.workflows[0]!.steps[3]!.action = "fly")));
+    expect(problems).toContainEqual(expect.objectContaining({ workflow: 0, step: 3, field: "action", text: expect.stringMatching(/^Workflow "Delivery" › step "Ship": action: Invalid option/) }));
+  });
+
+  it("never throws, even on a document that is not one", () => {
+    expect(workflowProblems({ workflows: "x", default: 1 } as unknown as WorkflowsDocument).length).toBeGreaterThan(0);
+  });
+
+  it("is empty exactly when the server accepts the document", () => {
+    const fixtures: WorkflowsDocument[] = [
+      DEFAULT_DOCUMENT,
+      BASE,
+      ...CASES.map(([, edit]) => draft(edit)),
+      draft((d) => (d.workflows[0]!.steps[3]!.next = ["build"])),
+      draft((d) => (d.default = "nope")),
+      { default: "default", workflows: [BASE.workflows[0]!, { ...BASE.workflows[0]!, name: "Copy" }] },
+      draft((d) => (choice(d).model = undefined)),
+    ];
+    for (const doc of fixtures) expect(workflowProblems(doc).length === 0).toBe(parseWorkflows(serializeWorkflows(doc)).ok);
+  });
+});
+
+describe("validateDocument", () => {
+  it("lists each duplicate id before that workflow's problems and the missing default last", () => {
+    const loop = { ...structuredClone(BASE.workflows[0]!), name: "Loop" };
+    (loop.steps[3] as Raw).next = ["build"];
+    expect(validateDocument({ default: "nope", workflows: [BASE.workflows[0]!, loop] })).toEqual([
+      'two workflows have the id "default"',
+      "Loop: the arrows form a loop; use “on fail” to go back to an earlier step",
+      'the default workflow "nope" does not exist',
+    ]);
   });
 });

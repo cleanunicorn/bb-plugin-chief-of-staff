@@ -359,41 +359,49 @@ export function settingsFor(wf: Workflow, id: string, nodes?: Record<string, { r
 
 /** Problems that make a workflow unrunnable, as human-readable messages. */
 export function validateWorkflow(wf: Workflow): string[] {
+  return graphProblems(wf, (s) => s.name);
+}
+
+/** The graph checks behind `validateWorkflow`, naming steps with `label`. */
+function graphProblems(wf: Workflow, label: (s: Step) => string): string[] {
   const problems: string[] = [];
   const ids = new Set<string>();
   for (const s of wf.steps) {
     if (ids.has(s.id)) problems.push(`two steps have the id "${s.id}"`);
     ids.add(s.id);
   }
-  const name = (id: string) => stepById(wf, id)?.name ?? id;
+  const name = (id: string) => {
+    const s = stepById(wf, id);
+    return s ? label(s) : id;
+  };
   for (const s of wf.steps) {
     for (const n of s.next) {
-      if (n === s.id) problems.push(`${s.name} points at itself`);
-      else if (!ids.has(n)) problems.push(`${s.name} points at a missing step "${n}"`);
+      if (n === s.id) problems.push(`${label(s)} points at itself`);
+      else if (!ids.has(n)) problems.push(`${label(s)} points at a missing step "${n}"`);
     }
   }
   if (topoOrder(wf).some((id, i, order) => predecessors(wf, id).some((p) => order.indexOf(p) > i))) {
     problems.push("the arrows form a loop; use “on fail” to go back to an earlier step");
   }
   for (const s of wf.steps) {
-    if (s.type === "agent" && s.writes && s.agents > 1) problems.push(`${s.name}: only read-only steps can run several agents`);
-    if (s.type === "agent" && s.onFail && !s.verdict) problems.push(`${s.name}: “on fail” needs the pass/fail verdict switched on`);
+    if (s.type === "agent" && s.writes && s.agents > 1) problems.push(`${label(s)}: only read-only steps can run several agents`);
+    if (s.type === "agent" && s.onFail && !s.verdict) problems.push(`${label(s)}: “on fail” needs the pass/fail verdict switched on`);
     if (s.onFail) {
-      if (!ids.has(s.onFail)) problems.push(`${s.name}: on fail goes to a missing step "${s.onFail}"`);
-      else if (s.onFail !== s.id && !reachable(wf, s.onFail, s.id)) problems.push(`${s.name}: on fail must go back to a step before it (${name(s.onFail)} is not)`);
+      if (!ids.has(s.onFail)) problems.push(`${label(s)}: on fail goes to a missing step "${s.onFail}"`);
+      else if (s.onFail !== s.id && !reachable(wf, s.onFail, s.id)) problems.push(`${label(s)}: on fail must go back to a step before it (${name(s.onFail)} is not)`);
     }
     if (s.type === "agent" && s.chooses.length) {
       const seen = new Set<string>();
       for (const c of s.chooses) {
-        if (seen.has(c.id)) problems.push(`${s.name}: two model choices have the id "${c.id}"`);
+        if (seen.has(c.id)) problems.push(`${label(s)}: two model choices have the id "${c.id}"`);
         seen.add(c.id);
-        if (!c.providerId?.trim() && !c.model?.trim() && !c.reasoningLevel?.trim()) problems.push(`${s.name}: model choice "${c.id}" sets nothing`);
+        if (!c.providerId?.trim() && !c.model?.trim() && !c.reasoningLevel?.trim()) problems.push(`${label(s)}: model choice "${c.id}" sets nothing`);
       }
     }
-    if (s.type === "model" && modelMode(s) === "fixed" && !s.providerId?.trim() && !s.model?.trim() && !s.reasoningLevel?.trim()) problems.push(`${s.name}: set a provider, a model or a reasoning level`);
+    if (s.type === "model" && modelMode(s) === "fixed" && !s.providerId?.trim() && !s.model?.trim() && !s.reasoningLevel?.trim()) problems.push(`${label(s)}: set a provider, a model or a reasoning level`);
     if (s.type !== "agent" && s.type !== "model") {
       const writerBefore = wf.steps.some((w) => w.type === "agent" && w.writes && reachable(wf, w.id, s.id));
-      if (!writerBefore) problems.push(`${s.name}: needs a step that writes code before it`);
+      if (!writerBefore) problems.push(`${label(s)}: needs a step that writes code before it`);
     }
   }
   // Steps sharing the worktree exclusively must run one after the other.
@@ -402,23 +410,181 @@ export function validateWorkflow(wf: Workflow): string[] {
     for (let j = i + 1; j < exclusive.length; j++) {
       const a = exclusive[i]!;
       const b = exclusive[j]!;
-      if (!reachable(wf, a.id, b.id) && !reachable(wf, b.id, a.id)) problems.push(`${a.name} and ${b.name} could run at the same time, but both change the worktree; connect one after the other`);
+      if (!reachable(wf, a.id, b.id) && !reachable(wf, b.id, a.id)) problems.push(`${label(a)} and ${label(b)} could run at the same time, but both change the worktree; connect one after the other`);
     }
   }
   return [...new Set(problems)];
 }
 
+/** Document check: workflow `i` reuses the id of an earlier one. */
+function duplicateWorkflowId(doc: WorkflowsDocument, i: number): string | null {
+  const id = doc.workflows[i]!.id;
+  return doc.workflows.slice(0, i).some((w) => w.id === id) ? `two workflows have the id "${id}"` : null;
+}
+
+/** Document check: the default names no workflow. */
+function missingDefault(doc: WorkflowsDocument): string | null {
+  return doc.workflows.some((w) => w.id === doc.default) ? null : `the default workflow "${doc.default}" does not exist`;
+}
+
 /** Problems with the whole document (unique workflow ids, a valid default). */
 export function validateDocument(doc: WorkflowsDocument): string[] {
   const problems: string[] = [];
-  const seen = new Set<string>();
-  for (const wf of doc.workflows) {
-    if (seen.has(wf.id)) problems.push(`two workflows have the id "${wf.id}"`);
-    seen.add(wf.id);
+  doc.workflows.forEach((wf, i) => {
+    const duplicate = duplicateWorkflowId(doc, i);
+    if (duplicate) problems.push(duplicate);
     for (const p of validateWorkflow(wf)) problems.push(`${wf.name}: ${p}`);
-  }
-  if (!seen.has(doc.default)) problems.push(`the default workflow "${doc.default}" does not exist`);
+  });
+  const missing = missingDefault(doc);
+  if (missing) problems.push(missing);
   return problems;
+}
+
+// ---------- problems for the editor ----------
+
+/**
+ * A reason the server would reject a workflows document, located by index
+ * (ids can be duplicated or invalid). `workflow` is undefined for problems
+ * with the whole document; `field` is the key the problem is about.
+ * `text` reads on its own (with where the problem is); `message` is the same
+ * without the location, for showing under the field itself.
+ */
+export type WorkflowProblem = { workflow?: number; step?: number; choice?: number; field?: string; text: string; message: string };
+
+const FIELD_LABELS: Record<string, string> = {
+  name: "Name",
+  instructions: "Instructions",
+  command: "Command",
+  when: "“Use when”",
+  providerId: "Provider",
+  model: "Model",
+  reasoningLevel: "Reasoning level",
+  agents: "Agents in parallel",
+  timeoutMinutes: "Timeout (minutes)",
+  maxRounds: "Rounds",
+  maxAttempts: "Attempts",
+  default: "Default workflow",
+};
+const LIST_NOUNS: Record<string, [string, string]> = { workflows: ["workflow", "workflows"], steps: ["step", "steps"], chooses: ["model choice", "model choices"] };
+
+const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const named = (v: unknown): v is { name: string } => typeof (v as { name?: unknown } | null)?.name === "string" && (v as { name: string }).name.trim() !== "";
+
+function workflowLabel(wf: unknown, i: number): string {
+  return named(wf) ? `Workflow "${wf.name}"` : `Workflow ${i + 1}`;
+}
+
+/** A step by its name, or by number (and id) when the name is empty. */
+function stepLabel(s: unknown, i: number, quote: boolean): string {
+  if (named(s)) return quote ? `step "${s.name}"` : s.name;
+  const id = (s as { id?: unknown } | null)?.id;
+  return `step ${i + 1}${typeof id === "string" && id ? ` (${id})` : ""}`;
+}
+
+function valueAt(json: unknown, path: readonly PropertyKey[]): unknown {
+  let v = json;
+  for (const k of path) v = v && typeof v === "object" ? (v as Record<PropertyKey, unknown>)[k] : undefined;
+  return v;
+}
+
+type LooseIssue = { code: string; path: PropertyKey[]; message: string; origin?: string; minimum?: number | bigint; maximum?: number | bigint; expected?: string };
+
+/** Our own words for a schema issue on one field, or null when there are none. */
+function describeIssue(field: string, at: "workflow" | "step" | "choice", issue: LooseIssue, value: unknown): string | null {
+  const label = field === "id" ? (at === "choice" ? "Choice id" : at === "step" ? "Step id" : "Id") : FIELD_LABELS[field];
+  const noun = LIST_NOUNS[field];
+  const n = (v: number | bigint | undefined) => Number(v).toLocaleString("en-US");
+  if (issue.origin === "array" && noun) {
+    if (issue.code === "too_small") return `Must have at least ${n(issue.minimum)} ${noun[Number(issue.minimum) === 1 ? 0 : 1]}`;
+    if (issue.code === "too_big") return `Must have at most ${n(issue.maximum)} ${noun[1]}`;
+  }
+  if (!label) return null;
+  switch (issue.code) {
+    case "too_small":
+      if (issue.origin === "string") return Number(issue.minimum) === 1 ? `${label} must not be empty` : `${label} must be at least ${n(issue.minimum)} characters`;
+      if (issue.origin === "number") return `${label} must be at least ${n(issue.minimum)}`;
+      return null;
+    case "too_big":
+      if (issue.origin === "string") return `${label} must be at most ${n(issue.maximum)} characters`;
+      if (issue.origin === "number") return `${label} must be at most ${n(issue.maximum)}`;
+      return null;
+    case "invalid_format":
+      // Every id shares one pattern (stepId).
+      return value === "" ? `${label} must not be empty` : `${label} must start with a lowercase letter or digit, and use only lowercase letters, digits, - and _ (at most 40)`;
+    case "invalid_type":
+      if (issue.expected === "int") return `${label} must be a whole number`;
+      if (issue.expected === "number") return `${label} must be a number`;
+      return null;
+    default:
+      return null;
+  }
+}
+
+/** A schema issue as a located problem; issues we have no words for keep zod's, with their path. */
+function schemaProblem(json: unknown, issue: LooseIssue): WorkflowProblem {
+  const loc: Pick<WorkflowProblem, "workflow" | "step" | "choice"> = {};
+  const where: string[] = [];
+  let rest = issue.path;
+  let at: "workflow" | "step" | "choice" | null = null;
+  if (rest[0] === "workflows" && typeof rest[1] === "number") {
+    loc.workflow = rest[1];
+    at = "workflow";
+    const wf = valueAt(json, rest.slice(0, 2));
+    where.push(workflowLabel(wf, rest[1]));
+    rest = rest.slice(2);
+    if (rest[0] === "steps" && typeof rest[1] === "number") {
+      loc.step = rest[1];
+      at = "step";
+      where.push(stepLabel(valueAt(wf, rest.slice(0, 2)), rest[1], true));
+      rest = rest.slice(2);
+      if (rest[0] === "chooses" && typeof rest[1] === "number") {
+        loc.choice = rest[1];
+        at = "choice";
+        where.push(`model choice ${rest[1] + 1}`);
+        rest = rest.slice(2);
+      }
+    }
+  }
+  const field = typeof rest[0] === "string" ? rest[0] : undefined;
+  const words = field && rest.length === 1 ? describeIssue(field, at ?? "workflow", issue, valueAt(json, issue.path)) : null;
+  const message = words ?? `${(where.length ? rest : issue.path).map(String).join(".") || "<root>"}: ${issue.message}`;
+  const text = where.length ? `${where.join(" › ")}: ${words ? lowerFirst(words) : message}` : upperFirst(message);
+  return { ...loc, ...(field ? { field } : {}), text, message };
+}
+
+/**
+ * Every reason `parseWorkflows` would reject this document, located for the
+ * editor: the schema (on exactly the JSON that would be sent) and the graph and
+ * document checks. Empty exactly when the server accepts it. Never throws.
+ */
+export function workflowProblems(doc: WorkflowsDocument): WorkflowProblem[] {
+  let json: unknown;
+  try {
+    json = JSON.parse(serializeWorkflows(doc));
+  } catch (error) {
+    const message = `the workflows cannot be saved: ${error instanceof Error ? error.message : String(error)}`;
+    return [{ text: upperFirst(message), message }];
+  }
+  const parsed = workflowsDocumentSchema.safeParse(json);
+  const out = parsed.success ? [] : parsed.error.issues.map((i) => schemaProblem(json, i as LooseIssue));
+  // The server runs these checks on the parsed document; a draft that fails the
+  // schema gets them too, so every problem shows at once.
+  const checked = parsed.success ? parsed.data : doc;
+  try {
+    checked.workflows.forEach((wf, i) => {
+      const duplicate = duplicateWorkflowId(checked, i);
+      if (duplicate) out.push({ text: upperFirst(duplicate), message: upperFirst(duplicate) });
+      const where = workflowLabel(wf, i);
+      for (const p of graphProblems(wf, (s) => stepLabel(s, wf.steps.indexOf(s), false))) out.push({ workflow: i, text: `${where}: ${p}`, message: p });
+    });
+    const missing = missingDefault(checked);
+    if (missing) out.push({ text: upperFirst(missing), message: upperFirst(missing) });
+  } catch {
+    // Too malformed for the graph checks; the schema problems above already block saving.
+    if (!out.length) out.push({ text: "The workflows document is malformed", message: "The workflows document is malformed" });
+  }
+  return out;
 }
 
 // ---------- the stage config from before custom workflows ----------

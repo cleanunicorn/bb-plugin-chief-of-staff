@@ -54,6 +54,15 @@
   can no longer be sent twice by a double click, and a JSON edit can be saved
   even when the loaded configuration has problems the visual editor flags.
 
+- **Save stays off until the configuration is valid.** The configurator now
+  lists every reason the server would reject a save: empty names, choice ids,
+  "Use when" and check commands, out-of-range numbers and over-long text in
+  workflows and general settings. Each problem also shows next to its field.
+  Number boxes keep what you type within range. A save no longer writes the
+  repositories and workflows and then fails on the general settings; if the
+  general settings still fail to send, the status says what was saved and only
+  General stays unsaved.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,

@@ -1,8 +1,12 @@
-// Editing model for the visual configurator. Pure functions only (zod + the
-// config schemas) so the frontend bundle can use it and tests can cover it.
+// Editing model for the visual configurator. Pure functions only (zod, the
+// config schemas and the RPC contract's schemas) so the frontend bundle can use
+// it and tests can cover it.
 // The stored format stays the same JSON documents the server parses.
 import { isPlaceholderRepo, migrateLegacyRepo, parseGitHubRemote, repoConfigSchema, repoKey, reposDocumentSchema } from "./config";
 import type { RepoConfig } from "./config";
+import { z } from "zod";
+import { generalSettingsSchema } from "../rpcContract";
+import type { GeneralSettings } from "../rpcContract";
 
 export type LoadResult<T> = { ok: true; items: T[] } | { ok: false; error: string };
 
@@ -141,4 +145,45 @@ export function validateRepos(repos: RepoConfig[]): Issues {
     if (unique.length) issues[i] = unique;
   });
   return issues;
+}
+
+// ---------- general settings ----------
+
+const GENERAL_LABELS: Record<keyof GeneralSettings, string> = {
+  maxConcurrentTotal: "Max tasks across all repos",
+  stallThresholdMinutes: "Stalled after (minutes)",
+  intakeIntervalMinutes: "Intake every (minutes)",
+  defaultProviderId: "Default provider",
+  defaultModel: "Default model",
+  notifyPush: "BB push notifications",
+  archiveThreadsOnDone: "Archive threads when a task is done",
+};
+
+/**
+ * Why cos_set_settings would reject these changes, one line per setting.
+ * Checks what is sent, not the whole draft: the read side has no ranges, so a
+ * value set elsewhere must not block saving an unrelated change.
+ */
+export function generalSettingsProblems(changes: Partial<GeneralSettings>): { key: keyof GeneralSettings; text: string }[] {
+  const parsed = generalSettingsSchema.partial().safeParse(changes);
+  if (parsed.success) return [];
+  const out: { key: keyof GeneralSettings; text: string }[] = [];
+  for (const issue of parsed.error.issues) {
+    const key = issue.path[0] as keyof GeneralSettings;
+    if (out.some((p) => p.key === key)) continue;
+    const label = GENERAL_LABELS[key] ?? String(key);
+    const field = generalSettingsSchema.shape[key] as z.ZodType | undefined;
+    let text = `${label}: ${issue.message}`;
+    if (field instanceof z.ZodNumber) {
+      if (issue.code === "invalid_type" && issue.expected === "int") text = `${label} must be a whole number`;
+      else if (issue.code === "too_small" || issue.code === "too_big") {
+        const { minValue: lo, maxValue: hi } = field;
+        text = lo !== null && hi !== null ? `${label} must be between ${lo} and ${hi}` : lo !== null ? `${label} must be at least ${lo}` : `${label} must be at most ${hi}`;
+      }
+    } else if (field instanceof z.ZodString && issue.code === "too_big") {
+      text = `${label} is longer than ${field.maxLength} characters`;
+    }
+    out.push({ key, text });
+  }
+  return out;
 }

@@ -2,7 +2,7 @@
 // The workflow editor's change handlers: each edit calls onChange with a new
 // document and leaves the one it was given untouched. The canvas is replaced by
 // a button that selects a step; its own handlers are not covered here.
-import { act } from "react";
+import { act, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
 import { button, click, container, fields, mount, setValue, unmount } from "./dom";
@@ -206,4 +206,60 @@ it("leaves full screen by button or Escape without editing the selected step", a
   expect(button("Remove Build")).toBeDefined();
   expect(editor.onChange).not.toHaveBeenCalled();
   editor.expectInputUntouched();
+});
+
+// ---------- problems: what the server would reject, shown where it is ----------
+
+/** The editor with its document in state, as the configurator holds it. */
+function Stateful({ initial }: { initial: WorkflowsDocument }) {
+  const [doc, setDoc] = useState(initial);
+  return <WorkflowsEditor doc={doc} onChange={setDoc} usedBy={{}} />;
+}
+/** The text of a field's box: its label, the control and any error under it. */
+const fieldText = (control: Element) => control.parentElement!.textContent ?? "";
+const problemList = () => Array.from(container.querySelectorAll("ul li")).map((li) => li.textContent);
+const dots = () => Array.from(container.querySelectorAll('[aria-label="has problems"]')).map((d) => d.closest("button")!.textContent);
+
+it("shows an empty “Use when” of a new model choice under the field, in the list and on the tab", async () => {
+  await mount(<Stateful initial={structuredClone(DEFAULT_DOCUMENT)} />);
+  expect(problemList()).toEqual([]);
+  expect(dots()).toEqual([]);
+  await click(button("select review"));
+  await click(button("Add a model choice"));
+  await setValue(fields("Model")[0]!, "haiku");
+
+  expect(fieldText(fields("Use when")[0]!)).toContain("“Use when” must not be empty");
+  expect(problemList()).toEqual(['Workflow "Plan, build, review, ship" › step "Review" › model choice 1: “Use when” must not be empty']);
+  expect(dots()).toEqual(["Plan, build, review, shipdefault"]);
+
+  await setValue(fields("Use when")[0]!, "small changes");
+  expect(fieldText(fields("Use when")[0]!)).not.toContain("must not be empty");
+  expect(problemList()).toEqual([]);
+  expect(dots()).toEqual([]);
+});
+
+it("shows an error under a cleared workflow or step name", async () => {
+  await mount(<Stateful initial={structuredClone(DEFAULT_DOCUMENT)} />);
+  await setValue(fields("Name")[0]!, "");
+  expect(fieldText(fields("Name")[0]!)).toContain("Name must not be empty");
+  expect(problemList()).toContain("Workflow 1: name must not be empty");
+
+  await click(button("select build"));
+  await setValue(fields("Name")[1]!, "");
+  expect(fieldText(fields("Name")[1]!)).toContain("Name must not be empty");
+  expect(problemList()).toContain("Workflow 1 › step 2 (build): name must not be empty");
+});
+
+it("shows out-of-range numbers under their fields and marks only the workflow they are in", async () => {
+  const check = { id: "test", name: "Test", type: "check", command: "", timeoutMinutes: 300, maxAttempts: 2, instructions: "", onFail: "build", next: [] } as Step;
+  const bad: WorkflowsDocument = { default: "default", workflows: [{ ...DEFAULT_WORKFLOW, steps: [...DEFAULT_WORKFLOW.steps.map((s) => (s.id === "ship" ? { ...s, next: ["test"] } : s)), check] }, SECOND] };
+  await mount(<Stateful initial={bad} />);
+  expect(dots()).toEqual(["Plan, build, review, shipdefault"]);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]")).at(-1)!);
+  expect(fieldText(fields("Timeout (minutes)")[0]!)).toContain("Timeout (minutes) must be at most 240");
+  expect(fieldText(fields("Command")[0]!)).toContain("Command must not be empty");
+
+  await click(button("Hotfix"));
+  expect(problemList()).toEqual([]);
 });

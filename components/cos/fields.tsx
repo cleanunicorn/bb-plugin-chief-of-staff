@@ -28,7 +28,13 @@ export function TextInput({ id, value, onChange, placeholder, mono, type = "text
   return <input id={id} type={type} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
 }
 
-/** Number field that tolerates an empty box while typing. */
+/**
+ * Number field that tolerates an empty box while typing and keeps what is
+ * typed within `min`..`max`. A value it is given out of range (set elsewhere)
+ * is shown as is and never reported back. Clamping to `min` while typing
+ * works because every `min` is 0 or 1; a field with a `min` of 2 or more
+ * would need it on blur instead, or the first digit could not be typed.
+ */
 export function NumberInput({ id, value, onChange, min, max }: { id?: string; value: number; onChange: (v: number) => void; min?: number; max?: number }) {
   const [text, setText] = useState(String(value));
   useEffect(() => setText(String(value)), [value]);
@@ -44,7 +50,13 @@ export function NumberInput({ id, value, onChange, min, max }: { id?: string; va
       onChange={(e) => {
         setText(e.target.value);
         const n = Number(e.target.value);
-        if (e.target.value.trim() !== "" && Number.isFinite(n)) onChange(Math.round(n));
+        if (e.target.value.trim() === "" || !Number.isFinite(n)) return;
+        let v = Math.round(n);
+        if (max !== undefined) v = Math.min(max, v);
+        if (min !== undefined) v = Math.max(min, v);
+        // Out of range: show the limit now, even when the value does not change.
+        if (v !== Math.round(n)) setText(String(v));
+        onChange(v);
       }}
       onBlur={() => setText(String(value))}
     />

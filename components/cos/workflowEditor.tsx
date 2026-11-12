@@ -16,11 +16,11 @@ import {
   descendants,
   newStepId,
   topoOrder,
-  validateDocument,
-  validateWorkflow,
+  workflowProblems,
   type Step,
   type StepType,
   type Workflow,
+  type WorkflowProblem,
   type WorkflowsDocument,
 } from "../../src/workflow";
 import { Button } from "../ui/button";
@@ -72,8 +72,16 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
   const skillsQuery = experimental_useRpcQuery<typeof rpcContract, "cos_skills">({ contract: rpcContract, method: "cos_skills", input: null });
   const skills: KnownSkill[] | null = skillsQuery.data?.skills ?? null;
   const wf = doc.workflows.find((w) => w.id === current) ?? doc.workflows[0]!;
-  const problems = useMemo(() => validateWorkflow(wf), [wf]);
-  const docProblems = useMemo(() => validateDocument(doc).filter((p) => !p.startsWith(`${wf.name}: `)), [doc, wf.name]);
+  // Everything the server would reject: this workflow's problems and the document's.
+  const allProblems = useMemo(() => workflowProblems(doc), [doc]);
+  const wfIndex = doc.workflows.indexOf(wf);
+  const wfProblems = useMemo(() => allProblems.filter((p) => p.workflow === wfIndex), [allProblems, wfIndex]);
+  const shownProblems = useMemo(() => [...new Set(allProblems.filter((p) => p.workflow === undefined || p.workflow === wfIndex).map((p) => p.text))], [allProblems, wfIndex]);
+  const selectedStep = wf.steps.find((s) => s.id === selected);
+  const stepProblems = (step: Step) => {
+    const index = wf.steps.indexOf(step);
+    return wfProblems.filter((p) => p.step === index);
+  };
 
   const setWf = (next: Workflow) => onChange({ ...doc, workflows: doc.workflows.map((w) => (w.id === wf.id ? next : w)) });
   const setStep = (id: string, next: Step) => setWf({ ...wf, steps: wf.steps.map((s) => (s.id === id ? next : s)) });
@@ -98,7 +106,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
 
       {/* workflows */}
       <div className="flex flex-wrap items-center gap-1.5">
-        {doc.workflows.map((w) => (
+        {doc.workflows.map((w, i) => (
           <button
             key={w.id}
             type="button"
@@ -111,7 +119,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
             <Icon name="Workflow" fallback="Circle" className="size-3.5" aria-hidden />
             {w.name}
             {w.id === doc.default ? <span className="rounded-sm bg-muted px-1 text-[10px] text-muted-foreground">default</span> : null}
-            {validateWorkflow(w).length ? <span aria-label="has problems" className="size-1.5 rounded-full" style={{ background: STATUS.critical }} /> : null}
+            {allProblems.some((p) => p.workflow === i) ? <span aria-label="has problems" className="size-1.5 rounded-full" style={{ background: STATUS.critical }} /> : null}
           </button>
         ))}
         <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => addWorkflow(DEFAULT_WORKFLOW)}>
@@ -123,7 +131,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
       </div>
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border p-3">
-        <Field label="Name" className="min-w-48 flex-1">
+        <Field label="Name" className="min-w-48 flex-1" error={wfProblems.find((p) => p.step === undefined && p.field === "name")?.message}>
           {(id) => <TextInput id={id} value={wf.name} onChange={(v) => setWf({ ...wf, name: v })} />}
         </Field>
         <span className="pb-1.5 text-[11px] text-muted-foreground">
@@ -154,7 +162,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
         </div>
       </div>
 
-      <Problems items={[...problems, ...docProblems]} />
+      <Problems items={shownProblems} />
 
       {view === "canvas" ? (
         <div className={cn(expanded && "fixed inset-0 z-50 flex flex-col gap-3 bg-background p-3")}>
@@ -175,8 +183,8 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
           <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
             <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
             <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
-              {selected && wf.steps.some((s) => s.id === selected) ? (
-                <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
+              {selectedStep ? (
+                <StepPanel workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow />
               ) : (
                 <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                   <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
@@ -190,7 +198,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
         <div className="flex flex-col gap-2">
           {topoOrder(wf).map((id) => {
             const step = wf.steps.find((s) => s.id === id)!;
-            return <StepPanel key={id} workflow={wf} step={step} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} skills={skills} collapsible />;
+            return <StepPanel key={id} workflow={wf} step={step} problems={stepProblems(step)} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} skills={skills} collapsible />;
           })}
           <div className="flex flex-wrap gap-1.5">
             {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
@@ -220,11 +228,13 @@ function Row({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
   return <div className={cn("grid grid-cols-1 gap-3", !narrow && "sm:grid-cols-2")}>{children}</div>;
 }
 
-/** Edit one step: the common fields, then its type's fields. */
-export function StepPanel({ workflow, step, onChange, onRemove, skills = null, collapsible = false, narrow = false }: { workflow: Workflow; step: Step; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean }) {
+/** Edit one step: the common fields, then its type's fields. `problems` are this step's, shown under their fields. */
+export function StepPanel({ workflow, step, problems = [], onChange, onRemove, skills = null, collapsible = false, narrow = false }: { workflow: Workflow; step: Step; problems?: WorkflowProblem[]; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean }) {
   const two = narrow ? "grid grid-cols-1 gap-2" : "grid grid-cols-1 gap-2 sm:grid-cols-2";
   const [open, setOpen] = useState(!collapsible);
   const set = (patch: Record<string, unknown>) => onChange({ ...step, ...patch } as Step);
+  /** The problem with one of this step's fields (or of one of its model choices). */
+  const error = (field: string, choice?: number) => problems.find((p) => p.field === field && p.choice === choice)?.message;
   const meta = STEP_TYPE_META[step.type];
   const others = workflow.steps.filter((s) => s.id !== step.id);
   // Fail arrows may only go back: to this step or a step it comes after.
@@ -247,7 +257,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
       {open ? (
         <>
           <Row narrow={narrow}>
-            <Field label="Name">{(id) => <TextInput id={id} value={step.name} onChange={(v) => set({ name: v })} />}</Field>
+            <Field label="Name" error={error("name")}>{(id) => <TextInput id={id} value={step.name} onChange={(v) => set({ name: v })} />}</Field>
             <Field label="Type" hint={meta.hint}>
               {(id) => (
                 <Select
@@ -276,6 +286,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
           ) : null}
           <Field
             label={agentRuns ? "Instructions for the agent" : "Notes"}
+            error={error("instructions")}
             hint={autoModel ? "How to choose, e.g. what matters for this kind of task. The agent also gets the task and the reports of the steps before it." : agentRuns ? <>What this step should achieve. Type <code>/</code> to use an agent skill. The agent also gets the reports of the steps before it.</> : "Your own notes about this step, optional. No agent sees them."}
           >
             {(id) =>
@@ -293,8 +304,8 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
               <ToggleRow label="Needs my approval" hint="You approve the report or send it back with feedback." checked={step.approval} onChange={(v) => set({ approval: v })} />
               <ToggleRow label="Pass / fail verdict" hint="The agent reports pass or fail; fail sends the work back." checked={step.verdict} onChange={(v) => set({ verdict: v, ...(v ? {} : { onFail: undefined }) })} />
               {!step.writes ? (
-                <Field label="Agents in parallel" hint="Each works independently; their reports are combined.">
-                  {(id) => <NumberInput id={id} value={step.agents} min={1} max={4} onChange={(v) => set({ agents: Math.min(4, Math.max(1, v)) })} />}
+                <Field label="Agents in parallel" hint="Each works independently; their reports are combined." error={error("agents")}>
+                  {(id) => <NumberInput id={id} value={step.agents} min={1} max={4} onChange={(v) => set({ agents: v })} />}
                 </Field>
               ) : null}
             </div>
@@ -310,11 +321,11 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                 return (
                   <div key={i} className="flex flex-col gap-2 rounded-md border border-border p-2">
                     <div className={two}>
-                      <Field label="Choice id" hint="What the agent reports.">{(id) => <TextInput id={id} value={c.id} onChange={(v) => setChoice({ id: v.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40) })} mono />}</Field>
-                      <Field label="Use when">{(id) => <TextInput id={id} value={c.when} onChange={(v) => setChoice({ when: v })} placeholder="e.g. small, well-understood change" />}</Field>
-                      <Field label="Agent (provider)">{(id) => <TextInput id={id} value={c.providerId ?? ""} onChange={(v) => setChoice({ providerId: v || undefined })} placeholder="keep current" mono />}</Field>
-                      <Field label="Model">{(id) => <TextInput id={id} value={c.model ?? ""} onChange={(v) => setChoice({ model: v || undefined })} placeholder="keep current" mono />}</Field>
-                      <Field label="Reasoning level">{(id) => <TextInput id={id} value={c.reasoningLevel ?? ""} onChange={(v) => setChoice({ reasoningLevel: v || undefined })} placeholder="keep current" mono />}</Field>
+                      <Field label="Choice id" hint="What the agent reports." error={error("id", i)}>{(id) => <TextInput id={id} value={c.id} onChange={(v) => setChoice({ id: v.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40) })} mono />}</Field>
+                      <Field label="Use when" error={error("when", i)}>{(id) => <TextInput id={id} value={c.when} onChange={(v) => setChoice({ when: v })} placeholder="e.g. small, well-understood change" />}</Field>
+                      <Field label="Agent (provider)" error={error("providerId", i)}>{(id) => <TextInput id={id} value={c.providerId ?? ""} onChange={(v) => setChoice({ providerId: v || undefined })} placeholder="keep current" mono />}</Field>
+                      <Field label="Model" error={error("model", i)}>{(id) => <TextInput id={id} value={c.model ?? ""} onChange={(v) => setChoice({ model: v || undefined })} placeholder="keep current" mono />}</Field>
+                      <Field label="Reasoning level" error={error("reasoningLevel", i)}>{(id) => <TextInput id={id} value={c.reasoningLevel ?? ""} onChange={(v) => setChoice({ reasoningLevel: v || undefined })} placeholder="keep current" mono />}</Field>
                     </div>
                     <ConfirmRemove label={`Remove choice ${c.id}`} onConfirm={() => set({ chooses: step.chooses.filter((_, j) => j !== i) })} />
                   </div>
@@ -324,6 +335,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                 <Button type="button" variant="outline" size="sm" onClick={() => set({ chooses: [...step.chooses, { id: newChoiceId(step.chooses.map((c) => c.id)), when: "" }] })}>
                   Add a model choice
                 </Button>
+                {error("chooses") ? <span className="ml-2 text-[11px]" style={{ color: STATUS.critical }}>{error("chooses")}</span> : null}
               </div>
             </div>
           ) : null}
@@ -337,16 +349,16 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
           {step.type === "model" && !autoModel ? (
             <div className="flex flex-col gap-2">
               <div className={two}>
-                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code.">{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
-                <Field label="Model">{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
-                <Field label="Reasoning level">{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
+                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code." error={error("providerId")}>{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
+                <Field label="Model" error={error("model")}>{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
+                <Field label="Reasoning level" error={error("reasoningLevel")}>{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
               </div>
             </div>
           ) : null}
           {step.type === "check" ? (
             <Row narrow={narrow}>
-              <Field label="Command" hint="Runs in the task's worktree; a non-zero exit fails the check.">{(id) => <TextInput id={id} value={step.command} onChange={(v) => set({ command: v })} placeholder="npm test" mono />}</Field>
-              <Field label="Timeout (minutes)">{(id) => <NumberInput id={id} value={step.timeoutMinutes} min={1} max={240} onChange={(v) => set({ timeoutMinutes: v })} />}</Field>
+              <Field label="Command" hint="Runs in the task's worktree; a non-zero exit fails the check." error={error("command")}>{(id) => <TextInput id={id} value={step.command} onChange={(v) => set({ command: v })} placeholder="npm test" mono />}</Field>
+              <Field label="Timeout (minutes)" error={error("timeoutMinutes")}>{(id) => <NumberInput id={id} value={step.timeoutMinutes} min={1} max={240} onChange={(v) => set({ timeoutMinutes: v })} />}</Field>
             </Row>
           ) : null}
           {step.type === "ship" ? (
@@ -407,7 +419,7 @@ export function StepPanel({ workflow, step, onChange, onRemove, skills = null, c
                     />
                   )}
                 </Field>
-                <Field label={step.type === "agent" ? "Rounds" : "Attempts"} hint="Before asking you.">
+                <Field label={step.type === "agent" ? "Rounds" : "Attempts"} hint="Before asking you." error={error(step.type === "agent" ? "maxRounds" : "maxAttempts")}>
                   {(id) => <NumberInput id={id} value={step.type === "agent" ? step.maxRounds : step.type === "model" ? 0 : step.maxAttempts} min={0} max={10} onChange={(v) => set(step.type === "agent" ? { maxRounds: v } : { maxAttempts: v })} />}
                 </Field>
               </div>

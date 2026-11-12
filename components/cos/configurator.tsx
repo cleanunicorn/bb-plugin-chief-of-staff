@@ -8,8 +8,8 @@ import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
-import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, validateDocument } from "../../src/workflow";
+import { blankRepo, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
 import { useConfigDrafts } from "./configDrafts";
@@ -216,18 +216,18 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
 
 // ---------- general + access ----------
 
-function GeneralEditor({ values, onChange, providers }: { values: GeneralSettings; onChange: (v: GeneralSettings) => void; providers: Provider[] }) {
+function GeneralEditor({ values, onChange, providers, errors = {} }: { values: GeneralSettings; onChange: (v: GeneralSettings) => void; providers: Provider[]; errors?: Partial<Record<keyof GeneralSettings, string>> }) {
   const set = <K extends keyof GeneralSettings>(key: K, value: GeneralSettings[K]) => onChange({ ...values, [key]: value });
   return (
     <div className="flex flex-col gap-5">
       <Group title="Capacity" icon="Gauge" cols={3}>
-        <Field label="Max tasks across all repos">{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
-        <Field label="Intake every (minutes)">{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
-        <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled.">{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
+        <Field label="Max tasks across all repos" error={errors.maxConcurrentTotal}>{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
+        <Field label="Intake every (minutes)" error={errors.intakeIntervalMinutes}>{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
+        <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled." error={errors.stallThresholdMinutes}>{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
       </Group>
       <Group title="Default agent" icon="Bot" cols={2}>
-        <Field label="Provider">{(id) => <ProviderPicker id={id} value={values.defaultProviderId} providers={providers} allowDefault="bb default" onChange={(v) => set("defaultProviderId", v)} />}</Field>
-        <Field label="Model" hint="Empty uses the provider's default.">{(id) => <TextInput id={id} value={values.defaultModel} onChange={(v) => set("defaultModel", v)} placeholder="default" />}</Field>
+        <Field label="Provider" error={errors.defaultProviderId}>{(id) => <ProviderPicker id={id} value={values.defaultProviderId} providers={providers} allowDefault="bb default" onChange={(v) => set("defaultProviderId", v)} />}</Field>
+        <Field label="Model" hint="Empty uses the provider's default." error={errors.defaultModel}>{(id) => <TextInput id={id} value={values.defaultModel} onChange={(v) => set("defaultModel", v)} placeholder="default" />}</Field>
       </Group>
       <Group title="Notifications" icon="Bell" cols={1}>
         <ToggleRow label="BB push notifications" hint="Questions, plans to approve, escalations and shipped work. Uses the push-notifications plugin when installed." checked={values.notifyPush} onChange={(v) => set("notifyPush", v)} />
@@ -369,7 +369,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   // Entries saved without owner/repo show the repository inferred from their project.
   const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
   const generalDraft = loadedGeneral ? { ...loadedGeneral, ...general } : null;
-  const generalChanges = general ?? {};
+  const generalChanges = useMemo(() => general ?? {}, [general]);
   const dirty = { repos: !reposBlocked && repos !== null, general: general !== null, workflow: !workflowBlocked && workflow !== null };
   const visualDirty = dirty.repos || dirty.general || dirty.workflow;
   const advancedDirty = advancedRepos !== null || advancedWorkflow !== null;
@@ -384,7 +384,10 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   }, [workflowBlocked, setWorkflow]);
 
   const repoIssues = useMemo(() => validateRepos(repoDraft), [repoDraft]);
-  const workflowProblems = useMemo(() => validateDocument(workflowDraft), [workflowDraft]);
+  const workflowIssues = useMemo(() => workflowProblems(workflowDraft), [workflowDraft]);
+  // Only what would be sent: a loaded value out of range must not block other edits.
+  const generalIssues = useMemo(() => generalSettingsProblems(generalChanges), [generalChanges]);
+  const generalErrors = useMemo(() => Object.fromEntries(generalIssues.map((p) => [p.key, p.text])) as Partial<Record<keyof GeneralSettings, string>>, [generalIssues]);
   /** Every blocking problem, with where it is, so the save bar can point at it. */
   const problems = useMemo(() => {
     const out: { section: Section; repo?: number; text: string }[] = [];
@@ -393,9 +396,10 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
       const name = r && r.owner && r.repo ? repoKey(r) : `Repository ${Number(i) + 1}`;
       for (const text of list) out.push({ section: "repos", repo: Number(i), text: `${name}: ${text}` });
     }
-    for (const text of workflowProblems) out.push({ section: "workflow", text });
+    for (const text of new Set(workflowIssues.map((p) => p.text))) out.push({ section: "workflow", text });
+    for (const p of generalIssues) out.push({ section: "general", text: p.text });
     return out;
-  }, [repoIssues, repoDraft, workflowProblems]);
+  }, [repoIssues, repoDraft, workflowIssues, generalIssues]);
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
   const usedBy = useMemo(() => {
     const out: Record<string, string[]> = {};
@@ -447,20 +451,42 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   };
 
   const save = async () => {
-    if (savingRef.current) return;
+    if (savingRef.current || problems.length) return;
     savingRef.current = true;
     setSaving(true);
     setStatus(null);
     try {
       const warnings: string[] = [];
+      // The documents go first: the server can still reject them (repos are checked
+      // against the project remotes), while validated general settings it cannot.
+      let configSaved = false;
       if (dirty.repos || dirty.workflow) {
         const result = await rpc.call("cos_set_config", {
           ...(dirty.repos ? { repos: serializeRepos(repoDraft) } : {}),
           ...(dirty.workflow ? { workflow: serializeWorkflows(workflowDraft) } : {}),
         });
         warnings.push(...result.warnings);
+        configSaved = true;
       }
-      if (dirty.general) await rpc.call("cos_set_settings", generalChanges);
+      if (dirty.general) {
+        try {
+          await rpc.call("cos_set_settings", generalChanges);
+        } catch (error) {
+          if (!configSaved) throw error;
+          // Half saved (a transport or host error): say what was written. Its drafts are
+          // cleared only once the saved data is reloaded; otherwise the editor would show
+          // the old data as clean, and a later save would send it back.
+          const reloaded = await refetchAll().then(() => true, () => false);
+          if (reloaded) {
+            if (dirty.repos) setRepos(null);
+            if (dirty.workflow) setWorkflow(null);
+          }
+          const saved = dirty.repos && dirty.workflow ? "Repositories and workflows" : dirty.repos ? "Repositories" : "Workflows";
+          const note = reloaded ? "" : ". They could not be reloaded, so they stay marked unsaved; saving again is safe";
+          setStatus({ ok: false, text: `${saved} saved${warnings.length ? ` (${warnings.join("; ")})` : ""}; general settings were not: ${errorText(error)}${note}` });
+          return;
+        }
+      }
       await refetchAll();
       clear();
       setStatus({ ok: true, text: warnings.length ? `Saved. ${warnings.join("; ")}` : "Saved. Changes apply on the next intake and sweep." });
@@ -589,7 +615,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                 )}
               </>
             ) : null}
-            {section === "general" ? <GeneralEditor values={generalDraft} onChange={editGeneral} providers={providers} /> : null}
+            {section === "general" ? <GeneralEditor values={generalDraft} onChange={editGeneral} providers={providers} errors={generalErrors} /> : null}
           </div>
         ) : null}
         {section === "access" ? <AccessEditor token={settings.data.token} onSaved={refetchAll} /> : null}
