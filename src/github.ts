@@ -147,16 +147,10 @@ export class GitHubClient {
     return this.request("GET", `/repos/${owner}/${repo}`);
   }
 
-  async listOpenIssues(owner: string, repo: string, filter: { labels?: string[]; milestone?: string; assignee?: string }): Promise<GitHubIssue[]> {
+  async listOpenIssues(owner: string, repo: string, filter: { labels?: string[]; assignee?: string }): Promise<GitHubIssue[]> {
     const params = new URLSearchParams({ state: "open" });
     if (filter.labels?.length) params.set("labels", filter.labels.join(","));
     if (filter.assignee) params.set("assignee", filter.assignee);
-    if (filter.milestone) {
-      const milestones = await this.paginate<{ number: number; title: string }>(`/repos/${owner}/${repo}/milestones?state=all`);
-      const match = milestones.find((m) => m.title === filter.milestone);
-      if (!match) return [];
-      params.set("milestone", String(match.number));
-    }
     const issues = await this.paginate<GitHubIssue>(`/repos/${owner}/${repo}/issues?${params.toString()}`);
     return issues.filter((issue) => !issue.pull_request);
   }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Accurate plugin descriptions.** The plugin description in BB no longer
+  mentions scheduled routines (removed earlier), and the issue intake overview
+  names only the filters that exist: labels and assignee.
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,

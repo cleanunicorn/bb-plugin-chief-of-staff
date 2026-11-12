@@ -1,5 +1,5 @@
 // Shared RPC contract between server.ts and host.ts.
-// The host entry runs shell commands (git, gh, check/deploy commands) on an
+// The host entry runs shell commands (git, gh, workflow check commands) on an
 // enrolled BB host, inside a workspace path the server names explicitly.
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
