@@ -697,6 +697,95 @@ describe("chief-of-staff server", () => {
     expect(sent).toHaveLength(sends);
   });
 
+  describe("intake capacity and PR lookup (#54)", () => {
+    const issueN = (n: number) => ({ ...issue, number: n, title: `Issue ${n}`, html_url: `https://github.com/acme/app/issues/${n}` });
+    type Intake = { results: { considered: number; started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
+    const intake = (dryRun = false) => host.harness.behavior.callRpc("cos_intake_now", dryRun ? { dryRun: true } : {}) as Promise<Intake>;
+    const configure = async (maxConcurrent: number, maxConcurrentTotal = 10) => {
+      await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, maxConcurrent, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }), maxConcurrentTotal });
+    };
+    /** Open-PR list requests (state=open, no head filter), told apart from the head lookups. */
+    let listCalls: string[] = [];
+    beforeEach(() => {
+      listCalls = [];
+      ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [issueN(13), issueN(14), issueN(15)] });
+      const original = ghRoutes["GET /repos/acme/app/pulls"]!;
+      ghRoutes["GET /repos/acme/app/pulls"] = (url, init) => {
+        if (!url.searchParams.get("head")) listCalls.push(url.search);
+        return original(url, init);
+      };
+      let serial = 0;
+      host.harness.inspection.sdk.stub("threads.spawn", async () => makeThreadResponse({ id: `task_${++serial}`, environmentId: "env_1" }));
+    });
+
+    it("lists the open PRs once for the whole run, newest first", async () => {
+      const result = await intake();
+      expect(result.results[0].started.map((s) => s.issue)).toEqual([13, 14]);
+      expect(listCalls).toHaveLength(1);
+      expect(listCalls[0]).toContain("direction=desc");
+    });
+
+    it("skips an issue whose open PR closes it, and one on its branch, and starts the rest", async () => {
+      openPulls = [
+        { ...pull, number: 30, body: "Closes #13", head: { ref: "feature/x", sha: "a" } },
+        { ...pull, number: 31, body: "", head: { ref: "cos/issue-14-issue-14", sha: "b" } },
+      ];
+      const result = await intake();
+      expect(result.results[0].skipped).toEqual([{ issue: 13, reason: "open PR #30" }, { issue: 14, reason: "open PR #31" }]);
+      expect(result.results[0].started.map((s) => s.issue)).toEqual([15]);
+      expect(listCalls).toHaveLength(1);
+    });
+
+    it("makes no PR request for a repository that is at capacity", async () => {
+      await configure(0);
+      const result = await intake();
+      expect(listCalls).toHaveLength(0);
+      expect(result.results[0]).toMatchObject({ considered: 3, started: [] });
+      expect(result.results[0].skipped).toEqual([13, 14, 15].map((n) => ({ issue: n, reason: "repo at max concurrency (0)" })));
+    });
+
+    it("makes no PR request once the repository fills up during the run, and skips the rest with the capacity reason", async () => {
+      await configure(1);
+      const result = await intake();
+      expect(result.results[0].started.map((s) => s.issue)).toEqual([13]);
+      expect(result.results[0].skipped).toEqual([{ issue: 14, reason: "repo at max concurrency (1)" }, { issue: 15, reason: "repo at max concurrency (1)" }]);
+      expect(listCalls).toHaveLength(1);
+      listCalls.length = 0;
+      await intake();
+      expect(listCalls).toHaveLength(0);
+    });
+
+    it("makes no PR request when every issue already has an active thread", async () => {
+      await intake();
+      listCalls.length = 0;
+      await intake();
+      expect(listCalls).toHaveLength(0);
+    });
+
+    it("counts a dry run's would-starts against the repository limit and creates no work", async () => {
+      await configure(2);
+      const result = await intake(true);
+      expect(result.results[0].started).toEqual([{ issue: 13, threadId: "(dry-run)" }, { issue: 14, threadId: "(dry-run)" }]);
+      expect(result.results[0].skipped).toEqual([{ issue: 15, reason: "repo at max concurrency (2)" }]);
+      expect(new StateStore(host.bb.storage.database()).listWorkItems()).toHaveLength(0);
+    });
+
+    it("counts a dry run's would-starts against the global limit", async () => {
+      await configure(5, 1);
+      const result = await intake(true);
+      expect(result.results[0].started.map((s) => s.issue)).toEqual([13]);
+      expect(result.results[0].skipped).toEqual([{ issue: 14, reason: "global max concurrency (1)" }, { issue: 15, reason: "global max concurrency (1)" }]);
+    });
+
+    it("starts in a real run exactly what the dry run reported", async () => {
+      await configure(2);
+      const dry = await intake(true);
+      const real = await intake();
+      expect(real.results[0].started.map((s) => s.issue)).toEqual(dry.results[0].started.map((s) => s.issue));
+      expect(real.results[0].skipped).toEqual(dry.results[0].skipped);
+    });
+  });
+
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
     const custom = {
       workflows: [
