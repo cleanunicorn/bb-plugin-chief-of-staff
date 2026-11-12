@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseRepos } from "../src/config";
-import { blankRepo, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
+import { blankRepo, generalSettingsProblems, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
 
 const reposJson = JSON.stringify({
   repos: [
@@ -110,5 +110,22 @@ describe("project-inferred repository", () => {
   it("keeps a repository the user typed by hand", () => {
     const manual = { ...blankRepo("proj_a"), owner: "acme", repo: "fork" };
     expect(selectProject(manual, "proj_b", projects)).toMatchObject({ projectId: "proj_b", owner: "acme", repo: "fork" });
+  });
+});
+
+describe("generalSettingsProblems", () => {
+  it("finds nothing in valid changes or none", () => {
+    expect(generalSettingsProblems({})).toEqual([]);
+    expect(generalSettingsProblems({ stallThresholdMinutes: 1440, maxConcurrentTotal: 0, defaultModel: "m".repeat(200), notifyPush: false })).toEqual([]);
+  });
+
+  it("words what cos_set_settings would reject, by setting", () => {
+    expect(generalSettingsProblems({ maxConcurrentTotal: -1, stallThresholdMinutes: 5000, intakeIntervalMinutes: 2.5, defaultProviderId: "p".repeat(201), defaultModel: "m".repeat(201) })).toEqual([
+      { key: "maxConcurrentTotal", text: "Max tasks across all repos must be between 0 and 100" },
+      { key: "stallThresholdMinutes", text: "Stalled after (minutes) must be between 1 and 1440" },
+      { key: "intakeIntervalMinutes", text: "Intake every (minutes) must be a whole number" },
+      { key: "defaultProviderId", text: "Default provider is longer than 200 characters" },
+      { key: "defaultModel", text: "Default model is longer than 200 characters" },
+    ]);
   });
 });

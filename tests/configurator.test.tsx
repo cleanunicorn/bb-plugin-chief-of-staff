@@ -38,7 +38,9 @@ const number = (label: string) => (field(label) as HTMLInputElement).value;
 /** The section buttons that carry the unsaved dot. */
 const unsavedSections = () => Array.from(container.querySelectorAll('nav [aria-label="unsaved"]')).map((dot) => dot.closest("button")!.textContent);
 
+const VALUES = { ...mocks.settings.values };
 beforeEach(() => {
+  mocks.settings.values = { ...VALUES };
   mocks.config = { repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }), workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
   mocks.call.mockResolvedValue({ ok: true, warnings: [], changed: [] });
 });
@@ -165,4 +167,86 @@ it("refetches on cos-changed when clean, and leaves an unsaved draft alone", asy
   expect(mocks.refetchConfig).toHaveBeenCalledTimes(1);
   expect(mocks.refetchSettings).toHaveBeenCalledTimes(1);
   expect(number(MAX_TASKS)).toBe("5");
+});
+
+// ---------- problems the server would reject, and partial saves ----------
+
+const STALL = "Stalled after (minutes)";
+const fieldText = (label: string) => field(label).parentElement!.textContent ?? "";
+const badge = (section: string) => container.querySelector(`nav button:has([aria-label$="to fix"])`)?.textContent?.startsWith(section) ?? false;
+
+it("lists an empty “Use when” of a new model choice, keeps Save off and calls nothing", async () => {
+  await mount(<Configurator initialSection="workflow" />);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[2]!);
+  await click(button("Add a model choice"));
+  await setValue(field("Model"), "haiku");
+
+  expect(text()).toContain("1 to fix before saving");
+  expect(text()).toContain('Workflows · Workflow "Plan, build, review, ship" › step "Review" › model choice 1: “Use when” must not be empty');
+  expect(button("Save changes").disabled).toBe(true);
+  await click(button("Save changes"));
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("lists an over-long default model under General and next to the field, and keeps Save off", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field("Model"), "m".repeat(201));
+
+  expect(text()).toContain("General · Default model is longer than 200 characters");
+  expect(fieldText("Model")).toContain("Default model is longer than 200 characters");
+  expect(badge("General")).toBe(true);
+  expect(button("Save changes").disabled).toBe(true);
+  await click(button("Save changes"));
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("sends neither document while a workflow is invalid, even with a valid general change", async () => {
+  await mount(<Configurator initialSection="workflow" />);
+  await setValue(field("Name"), "");
+  await click(button("General"));
+  await setValue(field(MAX_TASKS), "5");
+
+  expect(text()).toContain("Workflows · Workflow 1: name must not be empty");
+  expect(button("Save changes").disabled).toBe(true);
+  await click(button("Save changes"));
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("saves a stall threshold typed over the limit as the limit", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(STALL), "5000");
+  await click(button("Save changes"));
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_settings", { stallThresholdMinutes: 1440 });
+});
+
+it("saves an unrelated edit while a loaded value is out of range, sending only the change", async () => {
+  mocks.settings.values = { ...VALUES, stallThresholdMinutes: 5000 };
+  await mount(<Configurator initialSection="general" />);
+  expect(number(STALL)).toBe("5000");
+  await setValue(field(MAX_TASKS), "5");
+
+  expect(text()).not.toContain("to fix before saving");
+  expect(button("Save changes").disabled).toBe(false);
+  await click(button("Save changes"));
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_settings", { maxConcurrentTotal: 5 });
+});
+
+it("says what was saved when the general settings fail after the workflows were written", async () => {
+  mocks.call.mockImplementation(async (method: string) => {
+    if (method === "cos_set_settings") throw new Error("host unavailable");
+    return { ok: true, warnings: ["check the token"] };
+  });
+  mocks.refetchConfig.mockRejectedValue(new Error("offline"));
+  await mount(<Configurator initialSection="workflow" />);
+  await setValue(field("Name"), "Delivery");
+  await click(button("General"));
+  await setValue(field(MAX_TASKS), "5");
+  await click(button("Save changes"));
+
+  expect(mocks.call.mock.calls.map(([method]) => method)).toEqual(["cos_set_config", "cos_set_settings"]);
+  expect(text()).toContain("Workflows saved (check the token); general settings were not: host unavailable");
+  expect(unsavedSections()).toEqual(["General"]);
+  expect(number(MAX_TASKS)).toBe("5");
+  expect(mocks.refetchConfig).toHaveBeenCalledTimes(1);
 });
