@@ -4,7 +4,7 @@
 // draft always means an unsaved change, even while the Configurator is unmounted.
 // Keep this module free of imports from configurator.tsx: app.tsx imports it, and
 // tests mock the configurator module on its own.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import type { WorkflowsDocument } from "../../src/workflow";
@@ -32,6 +32,18 @@ export function useConfigDrafts() {
     setAdvancedWorkflow(null);
   }, []);
   const dirty = repos !== null || general !== null || workflow !== null || advancedRepos !== null || advancedWorkflow !== null;
+
+  // Reloading or closing the page would lose the drafts, so ask first. Switching
+  // tabs inside the dashboard keeps them; the plugin SDK has no hook for leaving the panel.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   return { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, savingRef, clear, dirty };
 }

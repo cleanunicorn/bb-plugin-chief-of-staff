@@ -126,3 +126,49 @@ it("keeps an Advanced JSON draft across a tab switch", async () => {
   expect((field("Workflow") as HTMLTextAreaElement).value).toBe("{}");
   expect(unsavedSections()).toEqual(["Advanced JSON"]);
 });
+
+// ---------- Configure tab marker and leave-page warning ----------
+
+const configureTabDot = () => Array.from(container.querySelectorAll('nav[aria-label="Dashboard tabs"] button')).find((b) => b.textContent === "Configure")!.querySelector('[aria-label="unsaved"]');
+/** Whether a reload would ask before leaving. */
+const leaveWarns = () => {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+};
+
+it("marks the Configure tab on every tab while a draft is pending, and warns before a reload", async () => {
+  await show("config/general");
+  expect(configureTabDot()).toBeNull();
+  expect(leaveWarns()).toBe(false);
+  await setValue(field(MAX_TASKS), "5");
+  expect(configureTabDot()).not.toBeNull();
+  await show("agents");
+  expect(configureTabDot()).not.toBeNull();
+  await show("issues");
+  expect(configureTabDot()).not.toBeNull();
+  expect(leaveWarns()).toBe(true);
+
+  await show("config/general");
+  await click(button("Discard"));
+  expect(configureTabDot()).toBeNull();
+  expect(leaveWarns()).toBe(false);
+});
+
+it("marks the Configure tab for an Advanced JSON draft and clears it after Save", async () => {
+  await show("config/advanced");
+  await setValue(field("Workflow"), "{}");
+  expect(configureTabDot()).not.toBeNull();
+  await click(button("Save changes"));
+  expect(configureTabDot()).toBeNull();
+  expect(leaveWarns()).toBe(false);
+});
+
+it("neither marks nor warns after a general value is typed back to its loaded value", async () => {
+  await show("config/general");
+  await setValue(field(MAX_TASKS), "5");
+  await setValue(field(MAX_TASKS), "8");
+  await show("agents");
+  expect(configureTabDot()).toBeNull();
+  expect(leaveWarns()).toBe(false);
+});

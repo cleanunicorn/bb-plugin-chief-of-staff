@@ -944,6 +944,7 @@ export function Dashboard({ subPath }: { subPath: string }) {
               >
                 <Icon name={t.icon} fallback="Circle" className="size-4" aria-hidden />
                 {t.label}
+                {t.id === "config" && configDrafts.dirty ? <span aria-label="unsaved" className="size-1.5 rounded-full" style={{ background: STATUS.warning }} /> : null}
               </button>
             ))}
           </nav>
