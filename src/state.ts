@@ -318,12 +318,20 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson`;
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity`;
 
 function toRow(item: WorkItem): Record<string, unknown> {
   const { workflow, nodes, queuedEvent, ...rest } = item;
-  return { ...rest, queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null, workflowJson: workflow.steps.length ? JSON.stringify(workflow) : null, nodesJson: JSON.stringify(nodes) };
+  return {
+    ...rest,
+    queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null,
+    workflowJson: workflow.steps.length ? JSON.stringify(workflow) : null,
+    nodesJson: JSON.stringify(nodes),
+    occupiesCapacity: occupiesCapacity(item) ? 1 : 0,
+  };
 }
+
+const ACTIVE_IN = `status IN (${ACTIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`;
 
 export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
@@ -431,11 +439,26 @@ export class StateStore {
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
   }
 
-  /** Count reservations without the roster's display limit. */
+  /** Count reservations without the roster's display limit, from the stored occupies_capacity column. */
   countOccupied(repo?: string, excludeId?: string): number {
-    const rows = this.db.prepare(`SELECT * FROM work_items WHERE status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})${repo ? " AND repo = ?" : ""}`)
-      .all(...ACTIVE_STATUSES, ...(repo ? [repo] : [])) as Row[];
-    return rows.reduce((n, row) => n + (row.id !== excludeId && occupiesCapacity(rowToWorkItem(row)) ? 1 : 0), 0);
+    this.healReservations();
+    const where = [ACTIVE_IN, "occupies_capacity = 1"];
+    const params: string[] = [];
+    if (repo !== undefined) { where.push("repo = ?"); params.push(repo); }
+    if (excludeId !== undefined) { where.push("id <> ?"); params.push(excludeId); }
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM work_items WHERE ${where.join(" AND ")}`).get(...params) as { n: number }).n;
+  }
+
+  /**
+   * Compute occupies_capacity for active rows that predate the column (or
+   * were written by raw SQL). Synchronous, so a count is never taken with
+   * in-flight items unaccounted for; free once every row is healed.
+   */
+  private healReservations(): void {
+    if (!this.db.prepare(`SELECT 1 FROM work_items WHERE ${ACTIVE_IN} AND occupies_capacity IS NULL LIMIT 1`).get()) return;
+    const rows = this.db.prepare(`SELECT * FROM work_items WHERE ${ACTIVE_IN} AND occupies_capacity IS NULL`).all() as Row[];
+    const write = this.db.prepare("UPDATE work_items SET occupies_capacity = ? WHERE id = ?");
+    this.transaction(() => { for (const row of rows) write.run(occupiesCapacity(rowToWorkItem(row)) ? 1 : 0, row.id); });
   }
 
   // ---- item threads ----
