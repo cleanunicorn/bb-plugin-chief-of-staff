@@ -616,13 +616,20 @@ function trackingPull(item: WorkItem): boolean {
   });
 }
 
-/** Poll every open PR we own. Called from the sweep. */
-export async function watchCi(cos: Cos, actor: string): Promise<void> {
+/**
+ * Poll every open PR we own. Called from the sweep, which passes its GitHub
+ * time budget as `deadline` (epoch ms): no further PR is polled after it.
+ */
+export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number } = {}): Promise<void> {
   const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => i.prNumber && trackingPull(i) && !cos.store.isPaused(i.repo));
   if (!items.length) return;
   const github = await cos.github();
   if (!github.hasToken) return;
   for (const item of items) {
+    if (opts.deadline !== undefined && cos.now().getTime() >= opts.deadline) {
+      cos.bb.log.info("CI watch stopped at the sweep's GitHub time budget; it continues on the next sweep");
+      return;
+    }
     const repo = await cos.repo(item.repo);
     if (!repo) continue;
     try {

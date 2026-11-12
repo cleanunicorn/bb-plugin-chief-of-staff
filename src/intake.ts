@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
-import { unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue } from "./github";
+import { GitHubRateLimitError, describeReset, unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes } from "./machine";
@@ -74,7 +74,11 @@ export function pausedMessage(cos: Cos, repo: string, action: string): string {
   return cos.store.isRepoPaused(repo) && !cos.store.isPaused() ? `Project ${repo} is paused. Resume it before ${action}.` : `Chief of Staff is paused. Resume it before ${action}.`;
 }
 
-export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
+/**
+ * @param opts.deadline epoch ms after which no further repo or issue is
+ *   started (the sweep's GitHub budget); the item in hand always finishes.
+ */
+export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string; deadline?: number }): Promise<IntakeResult[]> {
   if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting intake.");
   const config = await cos.config();
   if (!opts.dryRun) await resumeQueued(cos, opts.actor);
@@ -86,7 +90,13 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     return [{ repo: "*", considered: 0, started: [], skipped: [], error: error instanceof Error ? error.message : String(error) }];
   }
   if (!github.hasToken) return [{ repo: "*", considered: 0, started: [], skipped: [], error: "no GitHub token (set the githubToken setting or log in with gh)" }];
-  for (const repo of config.repos) {
+  const outOfTime = () => {
+    if (opts.deadline === undefined || cos.now().getTime() < opts.deadline) return false;
+    cos.bb.log.info("intake stopped at the sweep's GitHub time budget; it continues on the next sweep");
+    return true;
+  };
+  repos: for (const repo of config.repos) {
+    if (outOfTime()) break;
     const key = repoKey(repo);
     if (opts.repo && opts.repo !== key) continue;
     const result: IntakeResult = { repo: key, considered: 0, started: [], skipped: [] };
@@ -104,6 +114,7 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
       result.considered = issues.length;
       for (const issue of issues) {
         if (cos.store.isPaused(key)) break;
+        if (outOfTime()) break repos;
         if (cos.store.findActiveForIssue(key, issue.number)) {
           result.skipped.push({ issue: issue.number, reason: "active thread exists" });
           continue;
@@ -126,6 +137,11 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
         result.started.push({ issue: issue.number, threadId: item?.threadId ?? "?" });
       }
     } catch (error) {
+      // Every later request would be refused too (the limit itself is logged once).
+      if (error instanceof GitHubRateLimitError) {
+        result.error = `GitHub rate limit until ${describeReset(error.resetAt, cos.now())}`;
+        break;
+      }
       result.error = await cos.safe(error instanceof Error ? error.message : String(error));
       cos.store.log({ level: "error", kind: "intake", repo: key, workItemId: null, message: `intake failed: ${result.error}`, actor: opts.actor });
     }

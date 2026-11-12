@@ -11,8 +11,16 @@ const KV_LAST_INTAKE = "sweep:lastIntakeAt";
 const KV_LAST_CI = "sweep:lastCiAt";
 /** CI is polled at most this often. */
 const CI_POLL_MS = 2 * 60_000;
+/**
+ * Time the GitHub phases (intake, then CI) may take in one sweep. Checked
+ * between items, so a phase stops after the item in hand, never in the middle
+ * of one; what is left waits for the next sweep.
+ */
+export const GITHUB_PHASE_BUDGET_MS = 2 * 60_000;
 
 let running = false;
+/** Whether the last sweep saw a GitHub rate limit (its end refreshes the dashboard). */
+let wasLimited = false;
 
 export async function sweep(cos: Cos): Promise<void> {
   if (running || cos.store.isPaused()) return;
@@ -22,18 +30,25 @@ export async function sweep(cos: Cos): Promise<void> {
     const config = await cos.config();
     const now = cos.now();
     const kv = cos.bb.storage.kv;
+    // During a GitHub rate limit the GitHub phases are skipped without being
+    // stamped, so they run as soon as they are due after the reset.
+    const limited = () => cos.githubLimit() !== null;
+    const deadline = now.getTime() + GITHUB_PHASE_BUDGET_MS;
+    const overBudget = () => cos.now().getTime() >= deadline;
+    if (wasLimited && !limited()) cos.invalidate();
+    wasLimited = limited();
 
     const lastIntake = await kv.get<string>(KV_LAST_INTAKE);
-    if (config.repos.length && (!lastIntake || now.getTime() - Date.parse(lastIntake) >= Math.max(1, config.values.intakeIntervalMinutes) * 60_000)) {
+    if (config.repos.length && !limited() && (!lastIntake || now.getTime() - Date.parse(lastIntake) >= Math.max(1, config.values.intakeIntervalMinutes) * 60_000)) {
       await kv.set(KV_LAST_INTAKE, now.toISOString());
-      await runIntake(cos, { actor: "schedule:intake" }).catch(warn("intake"));
+      await runIntake(cos, { actor: "schedule:intake", deadline }).catch(warn("intake"));
     }
 
     if (cos.store.isPaused()) return;
     const lastCi = await kv.get<string>(KV_LAST_CI);
-    if (!lastCi || now.getTime() - Date.parse(lastCi) >= CI_POLL_MS) {
+    if (!limited() && !overBudget() && (!lastCi || now.getTime() - Date.parse(lastCi) >= CI_POLL_MS)) {
       await kv.set(KV_LAST_CI, now.toISOString());
-      await watchCi(cos, "schedule:ci").catch(warn("ci watch"));
+      await watchCi(cos, "schedule:ci", { deadline }).catch(warn("ci watch"));
     }
 
     // Before stall detection, so a thread resumed or answered in BB is not

@@ -81,6 +81,12 @@ export class GitHubRateLimitError extends GitHubError {
   }
 }
 
+/** "14:05 UTC (in 23 min)": when a rate limit resets, for logs and warnings. */
+export function describeReset(until: Date, now: Date): string {
+  const minutes = Math.max(1, Math.ceil((until.getTime() - now.getTime()) / 60_000));
+  return `${until.toISOString().slice(11, 16)} UTC (in ${minutes} min)`;
+}
+
 /** A catch handler that falls back on any error but a rate limit, which it passes on. */
 export function unlessRateLimited<T>(fallback: () => T): (error: unknown) => T {
   return (error) => {
