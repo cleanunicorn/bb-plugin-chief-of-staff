@@ -1,7 +1,7 @@
 // The GitHub client on its own: deadlines, error format, rate limits and the
 // newest-comments fetch, against a fake fetch.
 import { describe, expect, it, vi } from "vitest";
-import { GitHubClient, GitHubError } from "../src/github";
+import { GitHubClient, GitHubError, GitHubLimiter, GitHubRateLimitError } from "../src/github";
 
 const TOKEN = "ghp_secret_token";
 
@@ -88,5 +88,85 @@ describe("GitHubClient requests", () => {
     const sent = fetch.mock.calls[0]![1] as RequestInit;
     expect((sent.headers as Record<string, string>).authorization).toBe(`Bearer ${TOKEN}`);
     expect(sent.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe("GitHub rate limits", () => {
+  const NOW = Date.parse("2026-11-12T10:00:00Z");
+
+  /** A client on a shared limiter whose fetch answers `reply` and counts calls. */
+  function setup(reply: Reply) {
+    const onLimit = vi.fn();
+    const limiter = new GitHubLimiter(onLimit);
+    let now = NOW;
+    const fetch = fakeFetch(() => reply);
+    const client = () => new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch, limiter, now: () => now });
+    return { fetch, limiter, onLimit, client, setNow: (t: number) => (now = t) };
+  }
+  const resetOf = async (promise: Promise<unknown>) => {
+    const error = await promise.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubRateLimitError);
+    return (error as GitHubRateLimitError).resetAt.getTime();
+  };
+
+  it("waits retry-after seconds on a 429", async () => {
+    const { client } = setup({ status: 429, headers: { "retry-after": "120" } });
+    expect(await resetOf(client().getRepo("acme", "app"))).toBe(NOW + 120_000);
+  });
+
+  it("waits until x-ratelimit-reset when the primary window is used up", async () => {
+    const reset = NOW / 1000 + 900;
+    const { client } = setup({ status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) } });
+    expect(await resetOf(client().getRepo("acme", "app"))).toBe(reset * 1000);
+  });
+
+  it("waits a minute on a secondary limit that names no reset", async () => {
+    const { client } = setup({ status: 403, body: { message: "You have exceeded a secondary rate limit." } });
+    expect(await resetOf(client().paginate("/repos/acme/app/issues"))).toBe(NOW + 60_000);
+  });
+
+  it("clamps a far reset to one hour", async () => {
+    const { client } = setup({ status: 403, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(NOW / 1000 + 86_400) } });
+    expect(await resetOf(client().getRepo("acme", "app"))).toBe(NOW + 60 * 60_000);
+  });
+
+  it("treats a plain 403 as a permission error and arms nothing", async () => {
+    const { client, limiter, fetch } = setup({ status: 403, body: { message: "Resource not accessible by integration" } });
+    const error = await client().getRepo("acme", "app").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect(error).not.toBeInstanceOf(GitHubRateLimitError);
+    expect(limiter.limitedUntil(NOW)).toBeNull();
+    await client().getRepo("acme", "app").catch(() => undefined);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails fast on every client sharing the limiter until the reset, then sends again", async () => {
+    const s = setup({ status: 429, headers: { "retry-after": "120" } });
+    await s.client().getRepo("acme", "app").catch(() => undefined);
+    expect(s.fetch).toHaveBeenCalledTimes(1);
+    for (const c of [s.client(), s.client()]) expect(await resetOf(c.getIssue("acme", "app", 1))).toBe(NOW + 120_000);
+    expect(s.fetch).toHaveBeenCalledTimes(1);
+    expect(s.onLimit).toHaveBeenCalledTimes(1);
+    s.setNow(NOW + 120_000);
+    await s.client().getRepo("acme", "app").catch(() => undefined);
+    expect(s.fetch).toHaveBeenCalledTimes(2);
+    // A new episode is reported again.
+    expect(s.onLimit).toHaveBeenCalledTimes(2);
+  });
+
+  it("arms the limiter on a success that used up the window, and still returns its body", async () => {
+    const reset = NOW / 1000 + 300;
+    const s = setup({ body: { default_branch: "main" }, headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) } });
+    expect((await s.client().getRepo("acme", "app")).default_branch).toBe("main");
+    expect(s.limiter.limitedUntil(NOW)?.until.getTime()).toBe(reset * 1000);
+    expect(await resetOf(s.client().getRepo("acme", "app"))).toBe(reset * 1000);
+    expect(s.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("is cleared on demand (a new token)", async () => {
+    const s = setup({ status: 429, headers: { "retry-after": "600" } });
+    await s.client().getRepo("acme", "app").catch(() => undefined);
+    s.limiter.clear();
+    expect(s.limiter.limitedUntil(NOW)).toBeNull();
   });
 });

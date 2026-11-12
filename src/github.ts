@@ -73,6 +73,50 @@ export class GitHubError extends Error {
   }
 }
 
+/** GitHub refused, or would refuse, a request for a rate limit; nothing was done. */
+export class GitHubRateLimitError extends GitHubError {
+  constructor(message: string, url: string, readonly resetAt: Date) {
+    super(message, 429, url);
+    this.name = "GitHubRateLimitError";
+  }
+}
+
+/** Bounds on how long a rate limit pauses GitHub work. */
+const MIN_LIMIT_MS = 30_000;
+const MAX_LIMIT_MS = 60 * 60_000;
+/** GitHub's advice when a secondary limit names no reset time. */
+const DEFAULT_LIMIT_MS = 60_000;
+
+/**
+ * The rate limit in force for one token, shared by every client built for
+ * it, so a limit one request hit pauses all of them until the reset.
+ * In memory only: after a restart the first request finds it again.
+ */
+export class GitHubLimiter {
+  #until: number | null = null;
+  #reason = "";
+
+  /** @param onLimit called once per limit episode (not again while one is in force). */
+  constructor(private readonly onLimit?: (until: Date, reason: string) => void) {}
+
+  /** The limit in force at `now`, or null. A limit ends exactly at its reset time. */
+  limitedUntil(now: number): { until: Date; reason: string } | null {
+    return this.#until !== null && now < this.#until ? { until: new Date(this.#until), reason: this.#reason } : null;
+  }
+
+  record(until: number, reason: string, now: number): void {
+    const fresh = this.limitedUntil(now) === null;
+    this.#until = fresh ? until : Math.max(this.#until!, until);
+    this.#reason = reason;
+    if (fresh) this.onLimit?.(new Date(this.#until), reason);
+  }
+
+  clear(): void {
+    this.#until = null;
+    this.#reason = "";
+  }
+}
+
 export interface GitHubClientOptions {
   token: string | null;
   fetch?: typeof fetch;
@@ -80,6 +124,9 @@ export interface GitHubClientOptions {
   userAgent?: string;
   /** Per-request deadline, headers and body included. */
   timeoutMs?: number;
+  /** Shared rate-limit state (one per token); a private one by default. */
+  limiter?: GitHubLimiter;
+  now?: () => number;
 }
 
 /** Default per-request deadline. */
@@ -98,6 +145,8 @@ export class GitHubClient {
   readonly #baseUrl: string;
   readonly #userAgent: string;
   readonly #timeoutMs: number;
+  readonly #limiter: GitHubLimiter;
+  readonly #now: () => number;
 
   constructor(options: GitHubClientOptions) {
     this.#token = options.token;
@@ -105,6 +154,8 @@ export class GitHubClient {
     this.#baseUrl = (options.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
     this.#userAgent = options.userAgent ?? "bb-plugin-chief-of-staff";
     this.#timeoutMs = options.timeoutMs ?? GITHUB_TIMEOUT_MS;
+    this.#limiter = options.limiter ?? new GitHubLimiter();
+    this.#now = options.now ?? Date.now;
   }
 
   get hasToken(): boolean {
@@ -130,6 +181,9 @@ export class GitHubClient {
     };
     if (this.#token) headers.authorization = `Bearer ${this.#token}`;
     if (opts.body !== undefined) headers["content-type"] = "application/json";
+    // While a limit is in force, fail fast: another request would only extend it.
+    const active = this.#limiter.limitedUntil(this.#now());
+    if (active) throw new GitHubRateLimitError(`GitHub ${method} ${path} not sent: ${active.reason} until ${active.until.toISOString()}`, path, active.until);
     let sent: Sent;
     try {
       const response = await this.#fetch(url, {
@@ -151,6 +205,13 @@ export class GitHubClient {
       if (isAbort(error)) throw new GitHubError(`GitHub ${method} ${path} timed out after ${this.#timeoutMs >= 1000 ? `${Math.round(this.#timeoutMs / 1000)}s` : `${this.#timeoutMs}ms`}`, 0, path);
       throw new GitHubError(redact(`GitHub ${method} ${path} failed: ${error instanceof Error ? error.message : String(error)}`, this.#token), 0, path);
     }
+    const limit = rateLimit(sent, this.#now());
+    if (limit && (sent.status === 403 || sent.status === 429)) {
+      this.#limiter.record(limit.until, limit.reason, this.#now());
+      throw new GitHubRateLimitError(`GitHub ${method} ${path} hit the ${limit.reason} (${sent.status}); GitHub work waits until ${new Date(limit.until).toISOString()}`, path, new Date(limit.until));
+    }
+    // The window is used up (this response still counts): wait for the reset rather than draw a 403.
+    if (limit) this.#limiter.record(limit.until, limit.reason, this.#now());
     if (sent.status < 200 || sent.status >= 300) {
       // Strip the token defensively should GitHub ever echo headers back.
       throw new GitHubError(`GitHub ${method} ${path} failed with ${sent.status}: ${redact(sent.text.slice(0, 500), this.#token)}`, sent.status, path);
@@ -299,6 +360,33 @@ export class GitHubClient {
 function linkUrl(headers: Headers, rel: string): string | null {
   const match = new RegExp(`<([^>]+)>;\\s*rel="${rel}"`).exec(headers.get("link") ?? "");
   return match ? match[1]! : null;
+}
+
+/**
+ * Whether a response says a rate limit is in force, and until when (GitHub
+ * REST docs, "Rate limits for the REST API"):
+ * - 429, or 403 with `retry-after`, `x-ratelimit-remaining: 0`, or a body
+ *   naming a secondary rate limit (a plain 403 is a permission error);
+ * - any response with `x-ratelimit-remaining: 0` (the window is used up).
+ * Reset: `retry-after` seconds, else `x-ratelimit-reset` when the window is
+ * used up, else one minute; clamped to [30 s, 1 h].
+ */
+function rateLimit(sent: Sent, now: number): { until: number; reason: string } | null {
+  const retryAfter = sent.headers.get("retry-after");
+  const exhausted = sent.headers.get("x-ratelimit-remaining") === "0";
+  const limited =
+    exhausted ||
+    sent.status === 429 ||
+    (sent.status === 403 && (retryAfter !== null || /secondary rate limit/i.test(sent.text)));
+  if (!limited) return null;
+  const reset = Number(sent.headers.get("x-ratelimit-reset"));
+  let until = now + DEFAULT_LIMIT_MS;
+  if (retryAfter !== null && Number.isFinite(Number(retryAfter))) until = now + Number(retryAfter) * 1000;
+  else if (exhausted && Number.isFinite(reset) && reset > 0) until = reset * 1000;
+  return {
+    until: Math.min(now + MAX_LIMIT_MS, Math.max(now + MIN_LIMIT_MS, until)),
+    reason: exhausted ? "GitHub API rate limit" : "GitHub secondary rate limit",
+  };
 }
 
 /** The fetch was cut by its deadline (or aborted). */
