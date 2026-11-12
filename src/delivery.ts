@@ -627,7 +627,7 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
   if (!github.hasToken) return;
   for (const item of items) {
     if (opts.deadline !== undefined && cos.now().getTime() >= opts.deadline) {
-      cos.bb.log.info("CI watch stopped at the sweep's GitHub time budget; it continues on the next sweep");
+      cos.bb.log.info("CI watch stopped at the sweep's GitHub time budget; the rest waits for the next CI poll");
       return;
     }
     const repo = await cos.repo(item.repo);

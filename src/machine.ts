@@ -162,8 +162,9 @@ export interface Transition {
 }
 
 /**
- * Rate-limit deferrals in a row before they count as ordinary retries, so an
- * effect that keeps drawing a limit ends up in front of a person.
+ * Rate-limit deferrals of one step's effect (until it succeeds) before they
+ * count as ordinary retries, so an effect that keeps drawing a limit ends up
+ * in front of a person.
  */
 export const MAX_RATE_LIMIT_DEFERRALS = 10;
 

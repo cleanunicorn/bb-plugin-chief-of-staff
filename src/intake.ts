@@ -92,7 +92,7 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
   if (!github.hasToken) return [{ repo: "*", considered: 0, started: [], skipped: [], error: "no GitHub token (set the githubToken setting or log in with gh)" }];
   const outOfTime = () => {
     if (opts.deadline === undefined || cos.now().getTime() < opts.deadline) return false;
-    cos.bb.log.info("intake stopped at the sweep's GitHub time budget; it continues on the next sweep");
+    cos.bb.log.info("intake stopped at the sweep's GitHub time budget; the rest waits for the next intake");
     return true;
   };
   repos: for (const repo of config.repos) {

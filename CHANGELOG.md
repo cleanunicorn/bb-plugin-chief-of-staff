@@ -3,9 +3,9 @@
 ## Unreleased
 
 - **GitHub outages and rate limits no longer stall or fail tasks.** GitHub
-  requests time out after 30 seconds, and a sweep spends at most about two
-  minutes on intake and CI polling, so thread sync, retries and stall
-  detection keep running. On a GitHub rate limit, Chief of Staff pauses
+  requests time out after 30 seconds, and a sweep stops starting new intake
+  and CI work after two minutes, so thread sync, retries and stall detection
+  keep running. On a GitHub rate limit, Chief of Staff pauses
   GitHub work until the limit resets, says so in the overview warnings and
   `cos status`, and runs the waiting steps (opening a PR, starting an agent)
   again after the reset without using up their retries. CI failures are

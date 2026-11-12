@@ -12,9 +12,10 @@ const KV_LAST_CI = "sweep:lastCiAt";
 /** CI is polled at most this often. */
 const CI_POLL_MS = 2 * 60_000;
 /**
- * Time the GitHub phases (intake, then CI) may take in one sweep. Checked
- * between items, so a phase stops after the item in hand, never in the middle
- * of one; what is left waits for the next sweep.
+ * Time after which a sweep starts no further GitHub work (intake, then CI).
+ * Checked between items, so a phase stops after the item in hand, never in
+ * the middle of one: a sweep can run over by one item's requests. What is
+ * left waits until the phase is next due.
  */
 export const GITHUB_PHASE_BUDGET_MS = 2 * 60_000;
 
@@ -58,6 +59,8 @@ export async function sweep(cos: Cos): Promise<void> {
     await syncThreads(cos, "schedule:sync").catch(warn("thread sync"));
     await tickItems(cos, "schedule:tick").catch(warn("item tick"));
     await detectStalls(cos, "schedule:stall").catch(warn("stall detection"));
+    // A limit this sweep ran into: its end refreshes the dashboard too.
+    wasLimited ||= limited();
   } finally {
     running = false;
   }
