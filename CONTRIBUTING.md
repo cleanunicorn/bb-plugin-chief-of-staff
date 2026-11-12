@@ -25,6 +25,11 @@ the `build:ci` script in `package.json`; bump it there.
 - Database migrations are append-only. Never reorder or edit a shipped one;
   existing installs validate their recorded hashes.
 
+## License
+
+By contributing, you agree that your contributions are accepted under the
+[Apache License 2.0](LICENSE), the license of this project.
+
 ## Releasing
 
 1. In `CHANGELOG.md`, rename `## Unreleased` to `## X.Y.Z` and add a fresh
