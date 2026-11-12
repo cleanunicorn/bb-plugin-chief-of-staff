@@ -55,7 +55,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   } else {
     lines.push(`You are working on a task in ${repo.owner}/${repo.repo}: ${item.issueTitle}`, ``, (item.taskBody ?? "(no description)").slice(0, MAX_BODY));
   }
-  lines.push(``, `Your workspace is an isolated git worktree. Chief of Staff (a BB plugin) takes this task through the workflow “${item.workflow.name}” one step at a time and tells you which step you are on.`);
+  lines.push(``, `Your workspace is an isolated git worktree. Chief of Staff (a BB plugin) runs this task through the workflow “${item.workflow.name}”, one step at a time; each prompt names your step.`);
   if (github) {
     const conventions: string[] = [];
     for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"]) {

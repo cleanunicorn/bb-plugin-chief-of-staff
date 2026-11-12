@@ -25,7 +25,8 @@ key or guarantee that a rejected send/spawn promise delivered nothing. Both
 success variants therefore count as accepted; thrown calls remain uncertain.
 This plugin cannot make an SDK call atomic with its SQLite writes.
 
-Each prompt includes a delivery id for tool and text reports. A matching report
+Each prompt (and nudge) carries its delivery id in the `cos_report` call and the
+`## Step report` block it describes. A matching report
 can acknowledge an uncertain attempt under the item lock; step, agent, thread,
 and round must agree. Later rounds require the token even after acceptance.
 Legacy rows retain round validation and may recover only agent-delivery

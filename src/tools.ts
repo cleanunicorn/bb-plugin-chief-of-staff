@@ -16,7 +16,7 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
   bb.agents.registerTool({
     name: "cos_report",
     description:
-      "Report to Chief of Staff that you finished your current workflow step, or that you need a human decision. Chief of Staff moves the task on when your turn ends. Only for threads Chief of Staff started; your prompt names the step id.",
+      "Tell Chief of Staff you finished your current workflow step, or need a human decision; then end your turn. Only for threads Chief of Staff started; your prompt names the step and delivery ids.",
     parameters: z.object({
       delivery: z.string().max(100).optional().describe("Delivery id from your current prompt"),
       step: z.string().min(1).max(40).describe("The step id from your prompt"),
@@ -87,7 +87,7 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
 
   bb.agents.registerTool({
     name: "cos_start_task",
-    description: "Hand a task to Chief of Staff: it starts an agent on a configured repository and takes the task through the workflow (plan, build, verify, review, ship). Use when the user asks to delegate work to Chief of Staff.",
+    description: "Delegate a task to Chief of Staff: it starts an agent on a configured repository and takes the task through that repository's workflow. Use when the user asks to hand work to Chief of Staff.",
     parameters: z.object({
       repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/).describe("owner/repo, as configured in Chief of Staff"),
       title: z.string().max(200).optional().describe("Optional short task title; defaults to the description"),

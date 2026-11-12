@@ -501,6 +501,14 @@ describe("an agent step that chooses the model", () => {
     expect(prompt).toContain("`small`: tiny change");
     expect(prompt).toContain("choice: <id of the model you pick>");
   });
+
+  it("puts the delivery id in the tool call and in a text report that parses", () => {
+    const [started] = run(itemFor(flow), { type: "start" });
+    const prompt = stepPrompt(started, flow.steps[0] as AgentStep, 0, { delivery: "d-42" });
+    expect(prompt).toContain('`delivery: "d-42"`');
+    const block = prompt.slice(prompt.indexOf("## Step report")).replace("<id of the model you pick>", "small").replace("<your result>", "ok");
+    expect(parseTextReport(block, NOW.toISOString())).toMatchObject({ delivery: "d-42", step: "triage", outcome: "done", choice: "small", summary: "ok" });
+  });
 });
 
 describe("an automatic model step", () => {

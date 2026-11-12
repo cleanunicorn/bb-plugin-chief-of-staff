@@ -14,23 +14,13 @@ sends failures back to an earlier step on a budget. Every command lives under
 
 ## If you are a workflow agent
 
-Your prompt names the step you are on and its id. When the step is finished,
-call the `cos_report` tool with that `step` id, an `outcome` (`done`;
-`failed` on a pass/fail step that does not pass, or when you cannot finish;
-`needs_input` with a `question` when a person must decide) and a Markdown
-`summary` (the next steps read it). If your prompt lists model choices, also
-pass the `choice` id you pick (a text report uses a `choice:` line). If your
-step chooses the model, find what is available with `bb provider list --json`
-and `bb provider models <providerId> --json`, and pass the `providerId`,
-`model` and `reasoningLevel` you pick (`providerId:`, `model:` and
-`reasoningLevel:` lines before `summary:` in a text report). Then end
-your turn. When the prompt includes a delivery id, pass it as `delivery` (or
-put `delivery:` before `summary:` in the text report). This associates the
-report with the current prompt, including recovery after a lost send response.
-If the tool is
-unavailable, end your message with a `## Step report` block (`step:`,
-`outcome:`, `summary:` lines). On a read-only step, do not change files. Never
-push or open pull requests; Chief of Staff does that.
+Follow the "When you finish this step" section of your prompt: it gives the
+exact `cos_report` call (step id, delivery id, outcomes, any model-choice
+fields) and the `## Step report` text block to use when the tool is
+unavailable. Report, then end your turn; Chief of Staff waits for
+the report. Use `outcome: "needs_input"` with a `question` when a person must
+decide. On a read-only step, do not change files. Never push or open pull
+requests; Chief of Staff does that.
 
 ## Commands
 
