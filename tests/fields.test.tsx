@@ -39,6 +39,43 @@ it("NumberInput exposes its range, rounds what is typed and ignores an empty box
   expect(input.value).toBe("3");
 });
 
+it("NumberInput keeps what is typed within its range", async () => {
+  function Stall() {
+    const [value, setValue] = useState(30);
+    return <NumberInput id="n" value={value} min={1} max={1440} onChange={(v) => { onChange(v); setValue(v); }} />;
+  }
+  const onChange = vi.fn();
+  await mount(<Stall />);
+  const input = container.querySelector<HTMLInputElement>("#n")!;
+  await setValue(input, "5000");
+  expect(onChange).toHaveBeenLastCalledWith(1440);
+  await blur(input);
+  expect(input.value).toBe("1440");
+
+  await setValue(input, "0");
+  expect(onChange).toHaveBeenLastCalledWith(1);
+  await setValue(input, "-3");
+  expect(onChange).toHaveBeenLastCalledWith(1);
+});
+
+it("NumberInput shows the limit when a value already at it is typed past", async () => {
+  const onChange = vi.fn();
+  await mount(<NumberInput id="n" value={4} min={1} max={4} onChange={onChange} />);
+  const input = container.querySelector<HTMLInputElement>("#n")!;
+  await setValue(input, "45");
+  expect(onChange).toHaveBeenLastCalledWith(4);
+  expect(input.value).toBe("4");
+});
+
+it("NumberInput shows a loaded out-of-range value as it is, without reporting a change", async () => {
+  const onChange = vi.fn();
+  await mount(<NumberInput id="n" value={5000} min={1} max={1440} onChange={onChange} />);
+  expect(container.querySelector<HTMLInputElement>("#n")!.value).toBe("5000");
+  await mount(<NumberInput id="n" value={6000} min={1} max={1440} onChange={onChange} />);
+  expect(container.querySelector<HTMLInputElement>("#n")!.value).toBe("6000");
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 it("NumberInput follows a value changed from outside", async () => {
   await mount(<NumberInput id="n" value={3} onChange={() => {}} />);
   await mount(<NumberInput id="n" value={9} onChange={() => {}} />);
@@ -135,4 +172,21 @@ it("ConfirmRemove removes only after the second click, and Keep backs out", asyn
   await click(button("Remove acme/app"));
   await click(button("Remove"));
   expect(onConfirm).toHaveBeenCalledTimes(1);
+});
+
+it("ConfirmRemove disarms after confirming, so an instance that stays mounted for the next item is not armed", async () => {
+  const onConfirm = vi.fn();
+  await mount(<ConfirmRemove label="Remove acme/app" onConfirm={onConfirm} />);
+  await click(button("Remove acme/app"));
+  await click(button("Remove"));
+  expect(onConfirm).toHaveBeenCalledTimes(1);
+  expect(container.textContent).not.toContain("Remove?");
+  expect(button("Remove acme/app")).toBeTruthy();
+});
+
+it("ConfirmRemove shows its notice only while asking", async () => {
+  await mount(<ConfirmRemove label="Delete Fast" onConfirm={() => {}} notice="acme/app will use the default workflow." />);
+  expect(container.textContent).not.toContain("acme/app");
+  await click(button("Delete Fast"));
+  expect(container.textContent).toContain("acme/app will use the default workflow.");
 });

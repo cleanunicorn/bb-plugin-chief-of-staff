@@ -3,7 +3,7 @@
 // message, failing checks), then answers through cos_answer or opens the thread.
 // Workflow gates (a step waiting for approval, a step out of attempts) get a decision
 // block: approve and move on, or send it back to the agent with feedback.
-import { useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Markdown, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
@@ -13,11 +13,13 @@ import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
 import { Sheet } from "./sheet";
 import { DialogClose, DialogTitle } from "../ui/dialog";
+import { ConfirmDialog } from "../ui/confirm-dialog";
 import { STATUS } from "./viz";
 
 type Contract = typeof rpcContract;
 type QuestionItem = Extract<OpenQuestion, { kind: "question" }>["questions"][number];
 type Draft = Record<string, { selected: string[]; freeText: string }>;
+type Send = (answer: AnswerPayload, label: string) => Promise<boolean>;
 
 const textareaClass =
   "min-h-20 w-full rounded-md border border-input bg-transparent p-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
@@ -88,6 +90,19 @@ function useResizableSize() {
   return { size, maximized, setMaximized, startDrag, resizeBy, reset: () => { setMaximized(false); save(null); } };
 }
 
+/** Inputs report whether they hold unsent text, so closing the sheet can ask before dropping it. */
+const DraftContext = createContext<(key: string, dirty: boolean) => void>(() => {});
+
+function useReportDraft(dirty: boolean) {
+  const key = useId();
+  const report = useContext(DraftContext);
+  useEffect(() => {
+    report(key, dirty);
+    // Unmounting (the question was answered, the sheet moved on) leaves nothing to lose.
+    return () => report(key, false);
+  }, [key, dirty, report]);
+}
+
 const DECISION_LABEL = { allow_once: "Allow once", allow_for_session: "Allow for session", deny: "Deny" } as const;
 
 export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { itemId: string; onClose: () => void; onAnswered: () => void; restoreFocus?: () => void }) {
@@ -105,32 +120,56 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
       ? { width: resize.size.w, height: resize.size.h, maxWidth: "none", maxHeight: "none" }
       : undefined;
 
-  const send = async (answer: AnswerPayload, label: string) => {
+  /** True once the answer reached the agent; the input that sent it then clears, so it cannot go twice. */
+  const send: Send = async (answer, label) => {
     setSending(true);
     setError(null);
     try {
       await rpc.call("cos_answer", { id: itemId, answer });
-      setSent(label);
-      onAnswered();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setSending(false);
+      return false;
+    }
+    setSent(label);
+    onAnswered();
+    try {
       await view.refetch();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }
+    return true;
   };
 
   const data = view.data;
+  const drafts = useRef(new Set<string>());
+  const reportDraft = useCallback((key: string, dirty: boolean) => {
+    if (dirty) drafts.current.add(key);
+    else drafts.current.delete(key);
+  }, []);
+  // What to do once an unsent draft is discarded: close, or close and open the thread.
+  const [discarding, setDiscarding] = useState<"close" | "thread" | null>(null);
+  const leave = (to: "close" | "thread") => {
+    onClose();
+    if (to === "thread" && data?.threadId) navigate.toThread(data.threadId);
+  };
+  const requestLeave = (to: "close" | "thread") => {
+    if (drafts.current.size === 0) return true;
+    setDiscarding(to);
+    return false;
+  };
   const openThread = () => {
     if (!data?.threadId) return;
-    onClose();
-    navigate.toThread(data.threadId);
+    if (requestLeave("thread")) leave("thread");
   };
 
   return (
     <Sheet
       ref={panelRef}
       onClose={onClose}
+      onRequestClose={() => requestLeave("close")}
       restoreFocus={restoreFocus}
       style={panelStyle}
       // A bottom sheet on phones, centred from `sm` up.
@@ -163,6 +202,7 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
         </div>
       </header>
 
+      <DraftContext.Provider value={reportDraft}>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
         {view.error ? <Notice tone="critical" text={view.error.message} /> : null}
         {!data && !view.error ? <p className="text-sm text-muted-foreground">Reading the thread…</p> : null}
@@ -190,6 +230,21 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
           </>
         ) : null}
       </div>
+      </DraftContext.Provider>
+      <ConfirmDialog
+        open={discarding !== null}
+        title="Discard your reply?"
+        description="It has not been sent, and what you typed will be lost."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        tone="destructive"
+        onConfirm={() => {
+          const to = discarding;
+          setDiscarding(null);
+          if (to) leave(to);
+        }}
+        onCancel={() => setDiscarding(null)}
+      />
 
       <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
         <p className="text-xs text-muted-foreground">{data?.decidable ? "Decisions move the task through its workflow; feedback goes to the agent's thread." : "Answers go straight to the agent's thread."}</p>
@@ -233,7 +288,7 @@ function Notice({ tone, text }: { tone: "good" | "critical"; text: string }) {
   );
 }
 
-function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: boolean; onSend: (answer: AnswerPayload, label: string) => void }) {
+function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: boolean; onSend: Send }) {
   if (q.kind === "question") return <QuestionForm q={q} sending={sending} onSend={onSend} />;
   if (q.kind === "approval") {
     return (
@@ -251,7 +306,7 @@ function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: bo
         ) : null}
         <div className="flex flex-wrap gap-2">
           {q.decisions.map((d) => (
-            <Button key={d} size="sm" variant={d === "deny" ? "outline" : "default"} disabled={sending} onClick={() => onSend({ kind: "approval", interactionId: q.interactionId, decision: d }, DECISION_LABEL[d])}>
+            <Button key={d} size="sm" variant={d === "deny" ? "outline" : "default"} disabled={sending} onClick={() => void onSend({ kind: "approval", interactionId: q.interactionId, decision: d }, DECISION_LABEL[d])}>
               {DECISION_LABEL[d]}
             </Button>
           ))}
@@ -281,17 +336,19 @@ function OpenQuestionView({ q, sending, onSend }: { q: OpenQuestion; sending: bo
   );
 }
 
-function QuestionForm({ q, sending, onSend }: { q: Extract<OpenQuestion, { kind: "question" }>; sending: boolean; onSend: (answer: AnswerPayload, label: string) => void }) {
-  const [draft, setDraft] = useState<Draft>(() => Object.fromEntries(q.questions.map((x) => [x.id, { selected: [], freeText: "" }])));
+function QuestionForm({ q, sending, onSend }: { q: Extract<OpenQuestion, { kind: "question" }>; sending: boolean; onSend: Send }) {
+  const empty = (): Draft => Object.fromEntries(q.questions.map((x) => [x.id, { selected: [], freeText: "" }]));
+  const [draft, setDraft] = useState<Draft>(empty);
   const missing = useMemo(() => q.questions.filter((x) => x.required && !draft[x.id]?.selected.length && !draft[x.id]?.freeText.trim()), [q, draft]);
+  useReportDraft(Object.values(draft).some((d) => d.selected.length > 0 || d.freeText.trim() !== ""));
   const update = (id: string, next: Partial<Draft[string]>) => setDraft((d) => ({ ...d, [id]: { ...d[id], ...next } }));
-  const submit = () => {
+  const submit = async () => {
     const answers = Object.fromEntries(
       q.questions
         .filter((x) => draft[x.id].selected.length || draft[x.id].freeText.trim())
         .map((x) => [x.id, draft[x.id].freeText.trim() ? { selected: draft[x.id].selected, freeText: draft[x.id].freeText.trim() } : { selected: draft[x.id].selected }]),
     );
-    onSend({ kind: "question", interactionId: q.interactionId, answers }, q.questions.length > 1 ? "answers" : "answer");
+    if (await onSend({ kind: "question", interactionId: q.interactionId, answers }, q.questions.length > 1 ? "answers" : "answer")) setDraft(empty());
   };
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-border p-4">
@@ -300,7 +357,7 @@ function QuestionForm({ q, sending, onSend }: { q: Extract<OpenQuestion, { kind:
       ))}
       <div className="flex items-center justify-end gap-2">
         {missing.length ? <span className="text-xs text-muted-foreground">{missing.length === 1 ? "1 answer needed" : `${missing.length} answers needed`}</span> : null}
-        <Button size="sm" disabled={sending || missing.length > 0} onClick={submit}>
+        <Button size="sm" disabled={sending || missing.length > 0} onClick={() => void submit()}>
           <Icon name="Send" fallback="Circle" aria-hidden /> {sending ? "Sending…" : "Send answer"}
         </Button>
       </div>
@@ -383,9 +440,10 @@ const DECISION_COPY: Record<string, { title: string; approve: string; back: stri
 };
 
 /** Approve and move on, or send it back with feedback. */
-function Decision({ data, sending, onSend }: { data: DecisionData; sending: boolean; onSend: (answer: AnswerPayload, label: string) => void }) {
+function Decision({ data, sending, onSend }: { data: DecisionData; sending: boolean; onSend: Send }) {
   const copy = DECISION_COPY[data.waitingKind ?? ""] ?? DECISION_COPY.escalation!;
   const [feedback, setFeedback] = useState("");
+  useReportDraft(feedback.trim() !== "");
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-border p-3">
       <SectionTitle icon={data.waitingKind === "approval" ? "ClipboardCheck" : "Hand"} text={data.stepName ? `${data.stepName}: ${copy.title}` : copy.title} />
@@ -401,10 +459,12 @@ function Decision({ data, sending, onSend }: { data: DecisionData; sending: bool
         <textarea className={cn(textareaClass, "mt-1")} placeholder={copy.placeholder} value={feedback} disabled={sending} onChange={(e) => setFeedback(e.target.value)} />
       </label>
       <div className="flex flex-wrap justify-end gap-2">
-        <Button size="sm" variant="outline" disabled={sending || !feedback.trim()} onClick={() => onSend({ kind: "revise", feedback: feedback.trim() }, copy.back.toLowerCase())}>
+        <Button size="sm" variant="outline" disabled={sending || !feedback.trim()} onClick={async () => {
+          if (await onSend({ kind: "revise", feedback: feedback.trim() }, copy.back.toLowerCase())) setFeedback("");
+        }}>
           <Icon name="Undo2" fallback="Circle" aria-hidden /> {copy.back}
         </Button>
-        <Button size="sm" disabled={sending} onClick={() => onSend({ kind: "approve" }, copy.approve.toLowerCase())}>
+        <Button size="sm" disabled={sending} onClick={() => void onSend({ kind: "approve" }, copy.approve.toLowerCase())}>
           <Icon name="Check" fallback="Circle" aria-hidden /> {copy.approve}
         </Button>
       </div>
@@ -425,8 +485,13 @@ function Collapsible({ icon, title, markdown }: { icon: string; title: string; m
   );
 }
 
-function ReplyBox({ label, placeholder, sending, onSend }: { label: string; placeholder: string; sending: boolean; onSend: (text: string) => void }) {
+function ReplyBox({ label, placeholder, sending, onSend }: { label: string; placeholder: string; sending: boolean; onSend: (text: string) => Promise<boolean> }) {
   const [text, setText] = useState("");
+  useReportDraft(text.trim() !== "");
+  const submit = async () => {
+    if (sending || !text.trim()) return;
+    if (await onSend(text.trim())) setText("");
+  };
   return (
     <div className="flex flex-col gap-2">
       <label className="text-xs font-medium text-muted-foreground">
@@ -438,12 +503,12 @@ function ReplyBox({ label, placeholder, sending, onSend }: { label: string; plac
           disabled={sending}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) onSend(text.trim());
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
           }}
         />
       </label>
       <div className="flex justify-end">
-        <Button size="sm" disabled={sending || !text.trim()} onClick={() => onSend(text.trim())}>
+        <Button size="sm" disabled={sending || !text.trim()} onClick={() => void submit()}>
           <Icon name="Send" fallback="Circle" aria-hidden /> {sending ? "Sending…" : "Send"}
         </Button>
       </div>

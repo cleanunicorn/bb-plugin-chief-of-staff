@@ -8,7 +8,7 @@ import { pausedMessage, runIntake, startTask } from "./intake";
 import { parseWorkflows, stepById, topoOrder } from "./workflow";
 import { dispatch, replayDeferred } from "./delivery";
 import { parseRepos } from "./config";
-import { computeStats } from "./stats";
+import { computeStats, statsWindowStart } from "./stats";
 import { answerQuestion, getQuestion } from "./answer";
 import { listSkills } from "./threads";
 import { isReferenceable } from "./skills";
@@ -109,7 +109,8 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return answerQuestion(cos, input.id, input.answer, callerActor(ctx));
       },
       async cos_stats(input) {
-        return computeStats(cos.store.listWorkItems({ limit: 5000 }), cos.now(), input.windowDays);
+        const now = cos.now();
+        return computeStats(cos.store.statsRows(statsWindowStart(now, input.windowDays)), now, input.windowDays, cos.store.countWorkItems());
       },
       async cos_log(input) {
         return { entries: cos.store.listLog(input) };

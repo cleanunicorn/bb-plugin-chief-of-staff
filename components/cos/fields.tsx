@@ -28,7 +28,13 @@ export function TextInput({ id, value, onChange, placeholder, mono, type = "text
   return <input id={id} type={type} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
 }
 
-/** Number field that tolerates an empty box while typing. */
+/**
+ * Number field that tolerates an empty box while typing and keeps what is
+ * typed within `min`..`max`. A value it is given out of range (set elsewhere)
+ * is shown as is and never reported back. Clamping to `min` while typing
+ * works because every `min` is 0 or 1; a field with a `min` of 2 or more
+ * would need it on blur instead, or the first digit could not be typed.
+ */
 export function NumberInput({ id, value, onChange, min, max }: { id?: string; value: number; onChange: (v: number) => void; min?: number; max?: number }) {
   const [text, setText] = useState(String(value));
   useEffect(() => setText(String(value)), [value]);
@@ -44,7 +50,13 @@ export function NumberInput({ id, value, onChange, min, max }: { id?: string; va
       onChange={(e) => {
         setText(e.target.value);
         const n = Number(e.target.value);
-        if (e.target.value.trim() !== "" && Number.isFinite(n)) onChange(Math.round(n));
+        if (e.target.value.trim() === "" || !Number.isFinite(n)) return;
+        let v = Math.round(n);
+        if (max !== undefined) v = Math.min(max, v);
+        if (min !== undefined) v = Math.max(min, v);
+        // Out of range: show the limit now, even when the value does not change.
+        if (v !== Math.round(n)) setText(String(v));
+        onChange(v);
       }}
       onBlur={() => setText(String(value))}
     />
@@ -75,9 +87,9 @@ export function ListInput({ id, value, onChange, placeholder }: { id?: string; v
   );
 }
 
-export function Select<T extends string>({ id, value, onChange, options }: { id?: string; value: T; onChange: (v: T) => void; options: { value: T; label: string }[] }) {
+export function Select<T extends string>({ id, value, onChange, options, disabled }: { id?: string; value: T; onChange: (v: T) => void; options: { value: T; label: string }[]; disabled?: boolean }) {
   return (
-    <select id={id} className={cn(inputClass, "pr-7")} value={value} onChange={(e) => onChange(e.target.value as T)}>
+    <select id={id} className={cn(inputClass, "pr-7")} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as T)}>
       {options.map((o) => (
         <option key={o.value} value={o.value}>
           {o.label}
@@ -144,8 +156,13 @@ export function Problems({ items, tone = "critical" }: { items: string[]; tone?:
   );
 }
 
-export function ConfirmRemove({ onConfirm, label }: { onConfirm: () => void; label: string }) {
+/**
+ * A trash button that asks before removing. `notice` is shown while asking,
+ * for consequences worth reading before confirming.
+ */
+export function ConfirmRemove({ onConfirm, label, notice }: { onConfirm: () => void; label: string; notice?: ReactNode }) {
   const [asking, setAsking] = useState(false);
+  const noticeId = useId();
   if (!asking)
     return (
       <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground" onClick={() => setAsking(true)} aria-label={label}>
@@ -153,9 +170,20 @@ export function ConfirmRemove({ onConfirm, label }: { onConfirm: () => void; lab
       </Button>
     );
   return (
-    <span className="flex items-center gap-1 text-xs text-foreground">
+    <span className={cn("flex items-center gap-1 text-xs text-foreground", notice && "flex-wrap")}>
+      {notice ? <span id={noticeId} className="basis-full text-muted-foreground">{notice}</span> : null}
       Remove?
-      <Button size="sm" variant="destructive" className="h-7 px-2" onClick={onConfirm}>
+      <Button
+        size="sm"
+        variant="destructive"
+        className="h-7 px-2"
+        aria-describedby={notice ? noticeId : undefined}
+        onClick={() => {
+          // Disarm first: when the caller removes this item, the instance may stay mounted for the next one.
+          setAsking(false);
+          onConfirm();
+        }}
+      >
         Remove
       </Button>
       <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setAsking(false)}>

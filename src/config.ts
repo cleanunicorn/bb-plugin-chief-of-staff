@@ -21,6 +21,8 @@ export const repoConfigSchema = z.object({
   /** Pick up matching issues automatically. Off: only tasks you start. */
   intake: z.boolean().default(true),
   issueFilter: issueFilterSchema.default({ labels: ["agent-ready"] }),
+  /** Comment on the GitHub issue when an agent starts and when a PR opens. Off: no issue comments. */
+  issueComments: z.boolean().default(true),
   maxConcurrent: z.number().int().min(0).default(2),
   providerId: z.string().optional(),
   model: z.string().optional(),

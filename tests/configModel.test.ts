@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseRepos } from "../src/config";
-import { blankRepo, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
+import type { RepoConfig } from "../src/config";
+import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
 
 const reposJson = JSON.stringify({
   repos: [
@@ -44,8 +45,16 @@ describe("configModel", () => {
     expect(out.providerId).toBe("codex");
   });
 
+  it("round-trips a repository that turns issue comments off", () => {
+    const repo = { ...blankRepo("proj_1"), owner: "acme", repo: "app", issueComments: false };
+    expect(JSON.parse(serializeRepos([repo])).repos[0].issueComments).toBe(false);
+    const loaded = loadRepos(serializeRepos([repo]));
+    if (!loaded.ok) throw new Error(loaded.error);
+    expect(loaded.items[0]!.issueComments).toBe(false);
+  });
+
   it("starts new repos with defaults and a blank identity", () => {
-    expect(blankRepo()).toMatchObject({ owner: "", repo: "", projectId: "", intake: true, maxConcurrent: 2 });
+    expect(blankRepo()).toMatchObject({ owner: "", repo: "", projectId: "", intake: true, issueComments: true, maxConcurrent: 2 });
   });
 
   it("does not let the seeded placeholder entry block saving", () => {
@@ -110,5 +119,44 @@ describe("project-inferred repository", () => {
   it("keeps a repository the user typed by hand", () => {
     const manual = { ...blankRepo("proj_a"), owner: "acme", repo: "fork" };
     expect(selectProject(manual, "proj_b", projects)).toMatchObject({ projectId: "proj_b", owner: "acme", repo: "fork" });
+  });
+});
+
+describe("generalSettingsProblems", () => {
+  it("finds nothing in valid changes or none", () => {
+    expect(generalSettingsProblems({})).toEqual([]);
+    expect(generalSettingsProblems({ stallThresholdMinutes: 1440, maxConcurrentTotal: 0, defaultModel: "m".repeat(200), notifyPush: false })).toEqual([]);
+  });
+
+  it("words what cos_set_settings would reject, by setting", () => {
+    expect(generalSettingsProblems({ maxConcurrentTotal: -1, stallThresholdMinutes: 5000, intakeIntervalMinutes: 2.5, defaultProviderId: "p".repeat(201), defaultModel: "m".repeat(201) })).toEqual([
+      { key: "maxConcurrentTotal", text: "Max tasks across all repos must be between 0 and 100" },
+      { key: "stallThresholdMinutes", text: "Stalled after (minutes) must be between 1 and 1440" },
+      { key: "intakeIntervalMinutes", text: "Intake every (minutes) must be a whole number" },
+      { key: "defaultProviderId", text: "Default provider is longer than 200 characters" },
+      { key: "defaultModel", text: "Default model is longer than 200 characters" },
+    ]);
+  });
+});
+
+describe("detachWorkflow", () => {
+  const repo = (owner: string, workflow?: RepoConfig["workflow"]) => ({ ...blankRepo("proj"), owner, repo: "app", ...(workflow !== undefined ? { workflow } : {}) });
+
+  it("clears only repositories set to the deleted workflow", () => {
+    const legacy = { review: { enabled: false } } as RepoConfig["workflow"];
+    const repos = [repo("a", "gone"), repo("b", "other"), repo("c"), repo("d", legacy)];
+    const { repos: next, detached } = detachWorkflow(repos, "gone");
+    expect(next[0]!.workflow).toBeUndefined();
+    expect(next.slice(1)).toEqual(repos.slice(1));
+    expect(next[1]).toBe(repos[1]);
+    expect(detached.map((r) => r.owner)).toEqual(["a"]);
+    expect(JSON.parse(serializeRepos(next)).repos[0]).not.toHaveProperty("workflow");
+  });
+
+  it("returns the same array when no repository uses it", () => {
+    const repos = [repo("a", "other"), repo("b")];
+    const result = detachWorkflow(repos, "gone");
+    expect(result.repos).toBe(repos);
+    expect(result.detached).toEqual([]);
   });
 });

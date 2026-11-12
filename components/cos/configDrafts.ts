@@ -1,0 +1,59 @@
+// Unsaved configurator drafts, held by whoever outlives the Configurator: the
+// dashboard keeps them across tab switches, the settings page keeps its own.
+// The Configurator normalizes every draft against what it loaded, so a non-null
+// draft always means an unsaved change, even while the Configurator is unmounted.
+// Keep this module free of imports from configurator.tsx: app.tsx imports it, and
+// tests mock the configurator module on its own.
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { GeneralSettings } from "../../rpcContract";
+import type { RepoConfig } from "../../src/config";
+import type { WorkflowsDocument } from "../../src/workflow";
+
+export type SaveStatus = { ok: boolean; text: string } | null;
+
+/** Written documents whose drafts stay until a successful query returns their saved text. */
+type PendingConfig = {
+  repos?: { draft: RepoConfig[]; json: string };
+  workflow?: { draft: WorkflowsDocument; json: string };
+};
+
+export function useConfigDrafts() {
+  const [repos, setRepos] = useState<RepoConfig[] | null>(null);
+  /** Only the general settings that differ from the loaded ones. */
+  const [general, setGeneral] = useState<Partial<GeneralSettings> | null>(null);
+  const [workflow, setWorkflow] = useState<WorkflowsDocument | null>(null);
+  /** Advanced JSON text that differs from the loaded document. */
+  const [advancedRepos, setAdvancedRepos] = useState<string | null>(null);
+  const [advancedWorkflow, setAdvancedWorkflow] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<SaveStatus>(null);
+  const [pendingConfig, setPendingConfig] = useState<PendingConfig | null>(null);
+  /** Set synchronously on save, so a second click before the next render is a no-op. */
+  const savingRef = useRef(false);
+
+  const clear = useCallback(() => {
+    setRepos(null);
+    setGeneral(null);
+    setWorkflow(null);
+    setAdvancedRepos(null);
+    setAdvancedWorkflow(null);
+    setPendingConfig(null);
+  }, []);
+  const dirty = repos !== null || general !== null || workflow !== null || advancedRepos !== null || advancedWorkflow !== null;
+
+  // Reloading or closing the page would lose the drafts, so ask first. Switching
+  // tabs inside the dashboard keeps them; the plugin SDK has no hook for leaving the panel.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  return { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, pendingConfig, setPendingConfig, savingRef, clear, dirty };
+}
+
+export type ConfigDrafts = ReturnType<typeof useConfigDrafts>;

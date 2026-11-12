@@ -1,5 +1,5 @@
 // Chief of Staff — BB plugin frontend entry: dashboard nav panel + settings section.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { UrlLink, definePluginApp, experimental_useRpcQuery, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
@@ -11,13 +11,16 @@ import { ColumnChart, DataTable, Meter, Panel, PaletteProvider, STATUS, StatusPi
 import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
-import { topoOrder, type Workflow } from "./src/workflow";
+import { descendants, topoOrder, type Workflow } from "./src/workflow";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
+import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
+import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow } from "@/components/cos/stepFlow";
 import { StateMark, StepMiniMap, QueueIllustration } from "./components/cos/taskVisuals";
@@ -64,6 +67,18 @@ function ErrorLine({ error }: { error: { message: string } | string | null }) {
       {typeof error === "string" ? error : error.message}
     </p>
   );
+}
+
+type QueryError = { message: string } | string | null | undefined;
+
+/** One line per distinct message, so two queries failing the same way do not repeat it. */
+function QueryErrors({ errors }: { errors: readonly QueryError[] }) {
+  const messages = new Set<string>();
+  for (const e of errors) {
+    const message = typeof e === "string" ? e : e?.message;
+    if (message) messages.add(message);
+  }
+  return <>{Array.from(messages, (message) => <ErrorLine key={message} error={message} />)}</>;
 }
 
 function Empty({ icon, title, children, illustration = false }: { icon: string; title: string; children?: ReactNode; illustration?: boolean }) {
@@ -128,6 +143,13 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
   return <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{entry.activity}</p>;
 }
 
+/** What "Run again from here" resets: the step and every step reachable after it (the server's rerun does the same). */
+function rerunEffect(wf: Workflow, stepId: string, name: string): string {
+  const after = descendants(wf, stepId).size - 1;
+  if (after <= 0) return `This resets ${name} and runs it again.`;
+  return `This resets ${name} and the ${after === 1 ? "step" : `${after} steps`} after it, then runs ${name} again.`;
+}
+
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
@@ -137,6 +159,9 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<"canvas" | "list">("canvas");
   const [busy, setBusy] = useState(false);
+  const [confirmRerun, setConfirmRerun] = useState(false);
+  const rerunButton = useRef<HTMLButtonElement>(null);
+  const focusRerun = useFocusWhenEnabled(rerunButton, busy);
   const [error, setError] = useState<string | null>(null);
   const data = view.data;
   const wf = data?.workflow as Workflow | undefined;
@@ -264,9 +289,21 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
             <span>
               <b className="text-foreground">{step.name}</b> · {statusLabel(step.id)}
             </span>
-            <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => void rerun()}>
+            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun(true)}>
               <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
             </Button>
+            <ConfirmDialog
+              open={confirmRerun}
+              title={`Run ‘${step.name}’ again?`}
+              description={rerunEffect(wf!, step.id, step.name)}
+              confirmLabel="Run again"
+              onConfirm={() => {
+                setConfirmRerun(false);
+                void rerun();
+              }}
+              onCancel={() => setConfirmRerun(false)}
+              restoreFocus={focusRerun}
+            />
           </>
         ) : (
           <span>Select a step to run it (and everything after it) again.</span>
@@ -282,7 +319,10 @@ type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
 function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
-  const [menu, setMenu] = useState(false);
+  const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+  const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
+  const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
@@ -292,7 +332,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       <header className="flex items-start gap-2">
         <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{entry.issueTitle || entry.threadTitle || "Untitled task"}</h3>
+          <h3 className="text-sm font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{title}</h3>
           <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             <Icon name="FolderGit2" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             <span title={entry.repo}>
@@ -385,38 +425,43 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           </Button>
         ) : null}
         {!finished || entry.detail === "failed" ? (
-          <div className="relative ml-auto">
-            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" aria-label="More actions" aria-expanded={menu} disabled={busy} onClick={() => setMenu((v) => !v)}>
-              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
-            </Button>
-            {menu ? (
-              <div role="menu" className="absolute right-0 bottom-full z-20 mb-1 flex w-44 flex-col rounded-lg border border-border p-1 shadow-md" style={{ background: "var(--popover, var(--card))" }} onMouseLeave={() => setMenu(false)}>
-                {(
-                  [
-                    ["retry", "Retry the stuck step", "RotateCcw"],
-                    ["mark_done", "Mark done", "CircleCheck"],
-                    ["mark_failed", "Mark failed", "CircleX"],
-                  ] as const
-                ).map(([action, label, icon]) => (
-                  <button
-                    key={action}
-                    role="menuitem"
-                    type="button"
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground hover:bg-state-hover"
-                    onClick={() => {
-                      setMenu(false);
-                      onAction(entry.id, action);
-                    }}
-                  >
-                    <Icon name={icon} fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
+                <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top">
+              <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
+                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Retry the stuck step
+              </DropdownMenuItem>
+              {/* The confirm lives on the card, not in the menu: the menu closes when an item is chosen. */}
+              <DropdownMenuItem onSelect={() => setConfirming("mark_done")}>
+                <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Mark done…
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
+                <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Mark failed…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirming !== null}
+        title={`Mark ‘${title}’ ${confirming === "mark_failed" ? "failed" : "done"}?`}
+        description="Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is."
+        confirmLabel={confirming === "mark_failed" ? "Mark failed" : "Mark done"}
+        tone={confirming === "mark_failed" ? "destructive" : undefined}
+        onConfirm={() => {
+          if (confirming) onAction(entry.id, confirming);
+          setConfirming(null);
+        }}
+        onCancel={() => setConfirming(null)}
+        restoreFocus={focusTrigger}
+      />
     </article>
   );
 }
@@ -439,7 +484,8 @@ export function PipelineTab() {
   }, [roster, stats, overview]);
   useLiveRefresh(refetchAll);
   const [pausing, setPausing] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
+  // Every task with an action in flight: one finishing must not re-enable another's buttons.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null);
@@ -448,7 +494,7 @@ export function PipelineTab() {
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const act = useCallback(
     async (id: string, action: ItemAction) => {
-      setBusy(id);
+      setBusy((ids) => new Set(ids).add(id));
       setActionError(null);
       try {
         await rpc.call("cos_item_action", { id, action });
@@ -456,7 +502,11 @@ export function PipelineTab() {
       } catch (error) {
         setActionError(errorText(error));
       } finally {
-        setBusy(null);
+        setBusy((ids) => {
+          const next = new Set(ids);
+          next.delete(id);
+          return next;
+        });
       }
     },
     [rpc, refetchAll],
@@ -484,7 +534,7 @@ export function PipelineTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      <ErrorLine error={roster.error ?? stats.error ?? actionError} />
+      <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
         <div className="flex flex-wrap items-center gap-2">
@@ -558,14 +608,14 @@ export function PipelineTab() {
         }
       >
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
-        {!roster.isLoading && !visible.length ? (
+        {!roster.isLoading && !visible.length && (!roster.error || roster.data) ? (
           <Empty icon="Bot" illustration={filter === "all"} title={filter === "all" ? "No active tasks" : "Nothing in this stage"}>
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy === e.id} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+            <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
           ))}
         </div>
       </Panel>
@@ -678,7 +728,7 @@ function IntakeSummary({ results, dryRun }: { results: IntakeResult[]; dryRun: b
   );
 }
 
-function ReposTab() {
+export function ReposTab() {
   const rpc = useRpc<Contract>();
   const now = useNow();
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
@@ -720,7 +770,7 @@ function ReposTab() {
   const authOk = data?.tokenSource !== "none";
   return (
     <div className="flex flex-col gap-4">
-      <ErrorLine error={overview.error ?? message} />
+      <QueryErrors errors={[overview.error, roster.error, message]} />
       {data?.errors.map((e) => <ErrorLine key={e} error={e} />)}
       {data?.warnings.length ? (
         <div className="flex flex-col gap-1 rounded-lg border border-border bg-card px-3 py-2">
@@ -811,7 +861,7 @@ function ReposTab() {
       ) : null}
       <Panel title="Pull requests" icon="GitPullRequest" dim={roster.isFetching && !roster.isLoading}>
         {!prs.length ? (
-          <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
+          roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
         ) : (
           <ul className="divide-y divide-border">
             {prs.map((e) => (
@@ -900,8 +950,10 @@ export function ActivityFeed() {
 
 // ---------- shell ----------
 
-function Dashboard({ subPath }: { subPath: string }) {
+export function Dashboard({ subPath }: { subPath: string }) {
   const navigate = useBbNavigate();
+  // Held here, above the tab switch, so unsaved configuration survives leaving Configure.
+  const configDrafts = useConfigDrafts();
   const tab = useMemo<Tab>(() => {
     const first = decodeURIComponent(subPath.split("/")[0] ?? "");
     return TABS.some((t) => t.id === first) ? (first as Tab) : "agents";
@@ -941,6 +993,7 @@ function Dashboard({ subPath }: { subPath: string }) {
               >
                 <Icon name={t.icon} fallback="Circle" className="size-4" aria-hidden />
                 {t.label}
+                {t.id === "config" && configDrafts.dirty ? <span aria-label="unsaved" className="size-1.5 rounded-full" style={{ background: STATUS.warning }} /> : null}
               </button>
             ))}
           </nav>
@@ -956,7 +1009,7 @@ function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab /> : tab === "issues" ? <ReposTab /> : <Configurator initialSection={configSection(subPath)} />}
+        {tab === "agents" ? <PipelineTab /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
         {tab === "config" ? null : <ActivityFeed />}
       </div>
     </PaletteProvider>

@@ -59,3 +59,18 @@ export function button(name: string): HTMLButtonElement {
   if (!found) throw new Error(`no button "${name}"`);
   return found;
 }
+
+/** Let pending timers run: Radix layers start listening for outside pointers one tick after they open. */
+export async function tick(ms = 0): Promise<void> {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+}
+
+/** A pointer press and click on `target`, outside any open dialog or menu. Radix dismisses on the click that follows the press. */
+export async function clickOutside(target: Element = document.body): Promise<void> {
+  await tick();
+  await act(async () => {
+    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+  });
+  await tick();
+}

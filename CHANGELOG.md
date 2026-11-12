@@ -2,6 +2,89 @@
 
 ## Unreleased
 
+- **Saved configuration drafts survive a failed reload.** After a partial save,
+  workflow and repository drafts stay until a successful read confirms their
+  saved values. Retry reloads without repeating writes, and keeps any newer
+  edits, including across dashboard tab switches.
+
+- **The dashboard and task admission stay fast as history grows.** Counting
+  task slots, the overview and the stats no longer read every task's full
+  workflow state, a stored workflow is checked once rather than on every
+  read, and the sweep only regroups a task's threads when they change. The
+  stats' total and in-window counts are no longer capped at the 5,000 newest
+  tasks.
+
+- **Finished tasks are trimmed after 90 days.** 90 days after a task finishes,
+  Chief of Staff removes its per-step outputs, report summaries and feedback
+  text. The task keeps its status, PR, branch, timestamps, step statuses,
+  model picks and thread links, so it still appears under finished tasks,
+  counts in stats, and can be retried on the same models.
+
+- **One status comment per issue, and no more `bb://` links.** Chief of Staff
+  posts a single status comment when an agent starts on an issue and edits it
+  when the task restarts or the issue is picked up again, instead of adding a
+  new comment each time. The comment and the pull request description link the
+  agent's thread only when BB has a web URL; without one they no longer carry a
+  `bb://` link that GitHub cannot open. The first restart after the update
+  edits the newest of an issue's old "started an agent" comments, which removes
+  its `bb://` link; older duplicates on the same issue stay as they are. A new
+  per-repository `issueComments` setting (Repositories → Comment on issues,
+  default on) turns the status comment and the "opened pull request" comment
+  off. The pull request comment stays a separate comment.
+
+- **The plugin is now licensed under Apache 2.0.** The full text is in
+  `LICENSE`, and `package.json` declares it.
+
+- **Accurate plugin descriptions.** The plugin description in BB no longer
+  mentions scheduled routines (removed earlier), and the issue intake overview
+  names only the filters that exist: labels and assignee.
+
+- **The visual editor no longer overwrites a stored document it could not
+  load.** When the stored workflow or repositories JSON is invalid (edited by
+  hand or over the CLI, or left invalid by an older version), the Workflows or
+  Repositories section now shows the error and an "Open Advanced JSON" button
+  instead of the built-in default or an empty list. Saving from the visual
+  editor leaves that document out, so one rename or "Add repository" can no
+  longer replace every custom workflow or repository. The other document and
+  General settings stay editable. A repository's workflow picker is read-only
+  while the workflows do not load. The banner now says what failed and that the
+  stored JSON is left unchanged.
+
+- **Unsaved configuration edits are no longer lost.** Drafts in Configure
+  (workflows, repositories, general settings and Advanced JSON) now survive
+  switching sections or dashboard tabs. Advanced JSON edits count as unsaved
+  changes: they mark the section, show the save bar and lock the visual
+  sections until you save or discard them. The Configure tab shows a dot
+  while any edit is pending, and reloading the page asks first. "Save JSON"
+  can no longer be sent twice by a double click, and a JSON edit can be saved
+  even when the loaded configuration has problems the visual editor flags.
+
+- **Save stays off until the configuration is valid.** The configurator now
+  lists every reason the server would reject a save: empty names, choice ids,
+  "Use when" and check commands, out-of-range numbers and over-long text in
+  workflows and general settings. Each problem also shows next to its field.
+  Number boxes keep what you type within range. A save no longer writes the
+  repositories and workflows and then fails on the general settings; if the
+  general settings still fail to send, the status says what was saved and only
+  General stays unsaved once the saved documents are successfully reloaded.
+
+- **Backspace and Delete no longer remove a workflow step.** In the workflow
+  editor the keys deleted the selected step and its instructions at once, even
+  with focus on a switch in the side panel, and the only undo was discarding
+  all unsaved changes. They now remove only a selected arrow; remove a step
+  with the Remove button in its panel, which asks first. The canvas also no
+  longer drops the only step of a workflow while the workflow keeps it.
+
+- **Dashboard query errors are no longer hidden or take over the editor.** The
+  Pipeline tab now shows a failed overview read, and the Repos & PRs tab shows
+  a failed roster read instead of "No pull requests yet" (the Pipeline tab no
+  longer says "No active tasks" for a failed roster either). Each tab lists
+  every failing read once. In the configuration editor, one failed refetch
+  (after Save, or from a live update) no longer replaces the editor and your
+  unsaved changes with an error line: the editor stays and a banner with Retry
+  appears above it. The error alone, also with Retry, shows only when the
+  configuration has never loaded.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,
@@ -24,6 +107,14 @@
   labeled Full screen button uses outward arrows. The expanded workflow editor
   has its own Exit full screen bar with an Escape hint, separated from step
   removal; the task workflow sheet also has a labeled exit button.
+
+- **Task actions that end or reset work ask first.** "Mark done", "Mark
+  failed" and "Run again from here" ask for confirmation; the last one says
+  how many steps it resets. Retry, Resume and Approve stay one click. The More
+  actions menu closes on Escape, outside clicks and taps, and works with the
+  keyboard. A sent message clears so it can't go twice, and closing the
+  question sheet with an unsent reply asks first. Actions on one task no
+  longer re-enable another task's buttons.
 
 - **Fixed Model steps no longer keep the choosing text.** Switching a Model
   step from Automatically to Fixed, or to another step type, drops the default
@@ -61,6 +152,17 @@
   longer required. Single-select answers in a question are one tab stop moved
   through with the arrow keys. Status wording in the workflow sheet now matches
   the canvas (“needs approval” instead of “waiting”).
+
+- **Removal confirmations stay with their item.** Confirming "Remove?" on a
+  repository or model choice no longer leaves the next one armed (a double
+  click removed two), and selecting another step on the canvas, or another
+  workflow tab, no longer carries the confirmation over to it.
+
+- **Deleting a workflow moves its repositories to the default.** The
+  confirmation names the repositories that will use the default workflow, and
+  their choice is cleared, so a later workflow with the same name no longer
+  picks them up silently. A repository already pointing at a deleted workflow
+  shows it as "Missing" in its workflow selector.
 
 - **Dashboard works on phones.** Dashboard tabs stay on one line; the
   Repositories panel no longer scrolls sideways; pull request titles wrap
@@ -154,7 +256,6 @@
   threads (in the task's workspace once code exists).
 - Migration: the stage config converts into a workflow (repos with stage
   overrides get their own), and tasks in flight continue at their stage.
-
 
 - **Delivery workflow: Plan → Build → Verify → Review → Ship.** Chief of Staff
   takes every task through these stages and only moves on when the agent

@@ -8,10 +8,13 @@ import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
-import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, validateDocument } from "../../src/workflow";
+import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
+import { useConfigDrafts } from "./configDrafts";
+import type { ConfigDrafts } from "./configDrafts";
+import { useRowKeys } from "./rowKeys";
 import { Button } from "../ui/button";
 import { Field, TextInput, NumberInput, ListInput, Select, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
 import { Icon } from "../ui/icon";
@@ -124,11 +127,22 @@ function ProviderPicker({ id, value, providers, onChange, allowDefault }: { id: 
   return <Select id={id} value={value} onChange={onChange} options={options} />;
 }
 
-function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove, projects, providers, defaultProvider, workflows }: { repo: RepoConfig; index: number; problems: string[]; open: boolean; onToggle: () => void; onChange: (r: RepoConfig) => void; onRemove: () => void; projects: Project[]; providers: Provider[]; defaultProvider: string; workflows: WorkflowsDocument }) {
+function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove, projects, providers, defaultProvider, workflows }: { repo: RepoConfig; index: number; problems: string[]; open: boolean; onToggle: () => void; onChange: (r: RepoConfig) => void; onRemove: () => void; projects: Project[]; providers: Provider[]; defaultProvider: string; /** Null while the stored workflow document fails to load. */ workflows: WorkflowsDocument | null }) {
   const set = <K extends keyof RepoConfig>(key: K, value: RepoConfig[K]) => onChange({ ...repo, [key]: value });
   const project = projects.find((p) => p.id === repo.projectId);
   const title = repo.owner && repo.repo ? repoKey(repo) : `Repository ${index + 1}`;
   const placeholder = isPlaceholderRepo(repo);
+  const workflowValue = typeof repo.workflow === "string" ? repo.workflow : repo.workflow ? "__legacy" : "";
+  const legacyOption = repo.workflow && typeof repo.workflow !== "string" ? [{ value: "__legacy", label: "Converted from the old stage settings" }] : [];
+  // Without a loaded workflow document there is no default to name, so show only what is stored.
+  const workflowOptions = workflows
+    ? [
+        { value: "", label: `Default (${workflows.workflows.find((w) => w.id === workflows.default)?.name ?? workflows.default})` },
+        ...workflows.workflows.map((w) => ({ value: w.id, label: w.name })),
+        ...(typeof repo.workflow === "string" && !workflows.workflows.some((w) => w.id === repo.workflow) ? [{ value: repo.workflow, label: `Missing: ${repo.workflow} (runs the default)` }] : []),
+        ...legacyOption,
+      ]
+    : [{ value: "", label: "Default" }, ...(typeof repo.workflow === "string" && repo.workflow ? [{ value: repo.workflow, label: repo.workflow }] : []), ...legacyOption];
   return (
     <article className={cn("rounded-lg border bg-background", problems.length ? "border-destructive/60" : "border-border")}>
       <header className="flex flex-wrap items-center gap-2 px-3 py-2.5">
@@ -181,19 +195,8 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
             </Field>
           </Group>
           <Group title="Workflow" icon="Workflow" cols={2}>
-            <Field label="Workflow for this repository" hint="Edit workflows under Workflows. Tasks keep the workflow they started with.">
-              {(id) => (
-                <Select
-                  id={id}
-                  value={typeof repo.workflow === "string" ? repo.workflow : repo.workflow ? "__legacy" : ""}
-                  onChange={(v) => set("workflow", v === "__legacy" ? repo.workflow : v || undefined)}
-                  options={[
-                    { value: "", label: `Default (${workflows.workflows.find((w) => w.id === workflows.default)?.name ?? workflows.default})` },
-                    ...workflows.workflows.map((w) => ({ value: w.id, label: w.name })),
-                    ...(repo.workflow && typeof repo.workflow !== "string" ? [{ value: "__legacy", label: "Converted from the old stage settings" }] : []),
-                  ]}
-                />
-              )}
+            <Field label="Workflow for this repository" hint={workflows ? "Edit workflows under Workflows. Tasks keep the workflow they started with." : "The stored workflows do not load, so this cannot be changed. Fix them in Advanced JSON."}>
+              {(id) => <Select id={id} value={workflowValue} disabled={!workflows} onChange={(v) => set("workflow", v === "__legacy" ? repo.workflow : v || undefined)} options={workflowOptions} />}
             </Field>
           </Group>
           <Group title="Pull requests" icon="GitPullRequest" cols={2}>
@@ -204,6 +207,9 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
               )}
             </Field>
           </Group>
+          <Group title="Issue comments" icon="MessageSquare" cols={1}>
+            <ToggleRow label="Comment on issues" hint="Off: no status or pull request comments on GitHub issues." checked={repo.issueComments} onChange={(v) => set("issueComments", v)} />
+          </Group>
         </div>
       ) : null}
     </article>
@@ -212,18 +218,18 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
 
 // ---------- general + access ----------
 
-function GeneralEditor({ values, onChange, providers }: { values: GeneralSettings; onChange: (v: GeneralSettings) => void; providers: Provider[] }) {
+function GeneralEditor({ values, onChange, providers, errors = {} }: { values: GeneralSettings; onChange: (v: GeneralSettings) => void; providers: Provider[]; errors?: Partial<Record<keyof GeneralSettings, string>> }) {
   const set = <K extends keyof GeneralSettings>(key: K, value: GeneralSettings[K]) => onChange({ ...values, [key]: value });
   return (
     <div className="flex flex-col gap-5">
       <Group title="Capacity" icon="Gauge" cols={3}>
-        <Field label="Max tasks across all repos">{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
-        <Field label="Intake every (minutes)">{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
-        <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled.">{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
+        <Field label="Max tasks across all repos" error={errors.maxConcurrentTotal}>{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
+        <Field label="Intake every (minutes)" error={errors.intakeIntervalMinutes}>{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
+        <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled." error={errors.stallThresholdMinutes}>{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
       </Group>
       <Group title="Default agent" icon="Bot" cols={2}>
-        <Field label="Provider">{(id) => <ProviderPicker id={id} value={values.defaultProviderId} providers={providers} allowDefault="bb default" onChange={(v) => set("defaultProviderId", v)} />}</Field>
-        <Field label="Model" hint="Empty uses the provider's default.">{(id) => <TextInput id={id} value={values.defaultModel} onChange={(v) => set("defaultModel", v)} placeholder="default" />}</Field>
+        <Field label="Provider" error={errors.defaultProviderId}>{(id) => <ProviderPicker id={id} value={values.defaultProviderId} providers={providers} allowDefault="bb default" onChange={(v) => set("defaultProviderId", v)} />}</Field>
+        <Field label="Model" hint="Empty uses the provider's default." error={errors.defaultModel}>{(id) => <TextInput id={id} value={values.defaultModel} onChange={(v) => set("defaultModel", v)} placeholder="default" />}</Field>
       </Group>
       <Group title="Notifications" icon="Bell" cols={1}>
         <ToggleRow label="BB push notifications" hint="Questions, plans to approve, escalations and shipped work. Uses the push-notifications plugin when installed." checked={values.notifyPush} onChange={(v) => set("notifyPush", v)} />
@@ -288,40 +294,41 @@ function AccessEditor({ token, onSaved }: { token: SettingsData["token"]; onSave
   );
 }
 
-function AdvancedEditor({ repos, workflow, locked, onSaved }: { repos: string; workflow: string; locked: boolean; onSaved: () => Promise<void> }) {
-  const rpc = useRpc<Contract>();
-  const [r, setR] = useState<string | null>(null);
-  const [t, setT] = useState<string | null>(null);
-  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
-  const save = async () => {
-    setStatus(null);
-    try {
-      const result = await rpc.call("cos_set_config", { ...(r !== null ? { repos: r } : {}), ...(t !== null ? { workflow: t } : {}) });
-      setStatus({ ok: true, text: result.warnings.length ? `Saved. ${result.warnings.join("; ")}` : "Saved." });
-      setR(null);
-      setT(null);
-      await onSaved();
-    } catch (error) {
-      setStatus({ ok: false, text: errorText(error) });
-    }
-  };
+/** The raw documents. Controlled: the drafts live with the other unsaved edits. */
+function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, locked, saving, onSave, onRevert }: { repos: string; workflow: string; draftRepos: string | null; draftWorkflow: string | null; onChange: (doc: "repos" | "workflow", text: string) => void; locked: boolean; saving: boolean; onSave: () => void; onRevert: () => void }) {
+  const dirty = draftRepos !== null || draftWorkflow !== null;
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">The raw documents behind the visual editor. Useful for copying a setup to another bb or bulk edits. Saving validates both documents.</p>
       {locked ? <Problems tone="warning" items={["You have unsaved visual changes. Save or discard them before editing the JSON."]} /> : null}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <Field label="Repositories">{(id) => <textarea id={id} disabled={locked} className="min-h-72 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs text-foreground disabled:opacity-50" value={r ?? repos} onChange={(e) => setR(e.target.value)} spellCheck={false} />}</Field>
-        <Field label="Workflow">{(id) => <textarea id={id} disabled={locked} className="min-h-72 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs text-foreground disabled:opacity-50" value={t ?? workflow} onChange={(e) => setT(e.target.value)} spellCheck={false} />}</Field>
+        <Field label="Repositories">{(id) => <textarea id={id} disabled={locked} className="min-h-72 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs text-foreground disabled:opacity-50" value={draftRepos ?? repos} onChange={(e) => onChange("repos", e.target.value)} spellCheck={false} />}</Field>
+        <Field label="Workflow">{(id) => <textarea id={id} disabled={locked} className="min-h-72 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs text-foreground disabled:opacity-50" value={draftWorkflow ?? workflow} onChange={(e) => onChange("workflow", e.target.value)} spellCheck={false} />}</Field>
       </div>
       <div className="flex items-center gap-2">
-        <Button size="sm" disabled={locked || (r === null && t === null)} onClick={() => void save()}>
-          Save JSON
+        <Button size="sm" disabled={locked || !dirty || saving} onClick={onSave}>
+          {saving ? "Saving…" : "Save JSON"}
         </Button>
-        <Button size="sm" variant="outline" disabled={r === null && t === null} onClick={() => (setR(null), setT(null), setStatus(null))}>
+        <Button size="sm" variant="outline" disabled={!dirty || saving} onClick={onRevert}>
           Revert
         </Button>
-        {status ? <span className="text-xs" style={{ color: status.ok ? STATUS.good : STATUS.critical }}>{status.text}</span> : null}
       </div>
+    </div>
+  );
+}
+
+/** Stands in for an editor whose stored document failed to load: showing a substitute would invite saving it over the real one. */
+function BlockedDocument({ title, error, locked, onOpenAdvanced }: { title: string; error: string; locked: boolean; onOpenAdvanced: () => void }) {
+  return (
+    <div className="flex flex-col items-start gap-3">
+      <Problems items={[`${title} JSON does not load: ${error}`]} />
+      <p className="max-w-xl text-xs text-muted-foreground">
+        The visual editor cannot show or save this document until it loads. The stored JSON is untouched. Repair it in Advanced JSON.
+        {locked ? " Save or discard your other changes first; Advanced JSON is locked while there are unsaved changes." : ""}
+      </p>
+      <Button size="sm" variant="outline" onClick={onOpenAdvanced}>
+        <Icon name="Braces" fallback="Circle" aria-hidden /> Open Advanced JSON
+      </Button>
     </div>
   );
 }
@@ -334,33 +341,91 @@ function generalDiff(a: GeneralSettings, b: GeneralSettings): Partial<GeneralSet
   return out;
 }
 
-export function Configurator({ initialSection = "workflow", compact = false }: { initialSection?: Section; compact?: boolean }) {
+/** A failed read with a Retry button. Shown over the editor when old data remains, or alone when none loaded. */
+function LoadFailure({ messages, retrying, onRetry }: { messages: string[]; retrying: boolean; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground">
+      <Icon name="CircleX" fallback="Circle" className="size-3.5 shrink-0" style={{ color: STATUS.critical }} aria-hidden />
+      <span className="min-w-0 flex-1">{messages.join(" ")}</span>
+      <Button size="sm" variant="outline" disabled={retrying} onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Pass `drafts` to keep unsaved edits after the Configurator unmounts (the
+ * dashboard does, so they survive tab switches); otherwise it keeps its own.
+ */
+export function Configurator({ initialSection = "workflow", compact = false, drafts }: { initialSection?: Section; compact?: boolean; drafts?: ConfigDrafts }) {
   const rpc = useRpc<Contract>();
+  const own = useConfigDrafts();
+  const { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, pendingConfig, setPendingConfig, savingRef, clear } = drafts ?? own;
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
   const settings = experimental_useRpcQuery<Contract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
   const [section, setSection] = useState<Section>(initialSection);
-  const [repos, setRepos] = useState<RepoConfig[] | null>(null);
-  const [general, setGeneral] = useState<GeneralSettings | null>(null);
-  const [workflow, setWorkflow] = useState<WorkflowsDocument | null>(null);
   const [openRepo, setOpenRepo] = useState<number | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  // A "Saved." or error line belongs to this visit; don't show it again after a tab switch.
+  useEffect(() => () => setStatus(null), [setStatus]);
+  const [retrying, setRetrying] = useState(false);
+  const repoKeys = useRowKeys<RepoConfig>();
 
-  const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
+  // refetch() resolves on failure, so only returned data can confirm a saved document.
+  // Compare the draft identity too: edits made while reloading must remain unsaved.
+  useEffect(() => {
+    if (!pendingConfig || !config.data || config.error || config.isFetching) return;
+    const savedRepos = pendingConfig.repos;
+    const savedWorkflow = pendingConfig.workflow;
+    const reposConfirmed = savedRepos && config.data.repos === savedRepos.json;
+    const workflowConfirmed = savedWorkflow && config.data.workflow === savedWorkflow.json;
+    if (!reposConfirmed && !workflowConfirmed) return;
+    if (reposConfirmed) setRepos((current) => current === savedRepos.draft ? null : current);
+    if (workflowConfirmed) setWorkflow((current) => current === savedWorkflow.draft ? null : current);
+    const remaining = {
+      ...(!reposConfirmed && savedRepos ? { repos: savedRepos } : {}),
+      ...(!workflowConfirmed && savedWorkflow ? { workflow: savedWorkflow } : {}),
+    };
+    setPendingConfig(Object.keys(remaining).length ? remaining : null);
+  }, [config.data, config.error, config.isFetching, pendingConfig, setPendingConfig, setRepos, setWorkflow]);
+
+  // Parsed per JSON text, not per query result: a refetch that returns the same text keeps the same row objects, and so the rows' keys.
+  const reposJson = config.data?.repos;
+  const workflowJson = config.data?.workflow;
+  const loadedRepos = useMemo(() => (reposJson === undefined ? null : loadRepos(reposJson)), [reposJson]);
   const loadedGeneral = settings.data?.values ?? null;
-  const loadedWorkflow = useMemo(() => (config.data ? parseWorkflows(config.data.workflow) : null), [config.data]);
+  const loadedWorkflow = useMemo(() => (workflowJson === undefined ? null : parseWorkflows(workflowJson)), [workflowJson]);
+  // A document that fails to load is never shown, edited or saved from here: the fallbacks below would
+  // otherwise be written over the stored one.
+  const reposError = loadedRepos && !loadedRepos.ok ? loadedRepos.error : null;
+  const workflowError = loadedWorkflow && !loadedWorkflow.ok ? loadedWorkflow.error : null;
+  const reposBlocked = reposError !== null;
+  const workflowBlocked = workflowError !== null;
   const workflowDraft: WorkflowsDocument = workflow ?? (loadedWorkflow?.ok ? loadedWorkflow.value : DEFAULT_DOCUMENT);
 
   const projects = useMemo(() => settings.data?.projects ?? [], [settings.data]);
   // Entries saved without owner/repo show the repository inferred from their project.
-  const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
-  const generalDraft = general ?? loadedGeneral;
-  const generalChanges = loadedGeneral && general ? generalDiff(loadedGeneral, general) : {};
-  const dirty = { repos: repos !== null, general: Object.keys(generalChanges).length > 0, workflow: workflow !== null };
-  const anyDirty = dirty.repos || dirty.general || dirty.workflow;
+  const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => repoKeys.carry(r, inferIdentity(r, projects))) : []), [repos, loadedRepos, projects, repoKeys]);
+  const generalDraft = loadedGeneral ? { ...loadedGeneral, ...general } : null;
+  const generalChanges = useMemo(() => general ?? {}, [general]);
+  const dirty = { repos: !reposBlocked && repos !== null, general: general !== null, workflow: !workflowBlocked && workflow !== null };
+  const visualDirty = dirty.repos || dirty.general || dirty.workflow;
+  const advancedDirty = advancedRepos !== null || advancedWorkflow !== null;
+  // The two editors lock each other, so at most one kind of draft is pending and Save has one meaning.
+  const anyDirty = visualDirty || advancedDirty;
+  // A draft made before its document broke must not come back over the repaired one.
+  useEffect(() => {
+    if (reposBlocked) setRepos(null);
+  }, [reposBlocked, setRepos]);
+  useEffect(() => {
+    if (workflowBlocked) setWorkflow(null);
+  }, [workflowBlocked, setWorkflow]);
 
   const repoIssues = useMemo(() => validateRepos(repoDraft), [repoDraft]);
-  const workflowProblems = useMemo(() => validateDocument(workflowDraft), [workflowDraft]);
+  const workflowIssues = useMemo(() => workflowProblems(workflowDraft), [workflowDraft]);
+  // Only what would be sent: a loaded value out of range must not block other edits.
+  const generalIssues = useMemo(() => generalSettingsProblems(generalChanges), [generalChanges]);
+  const generalErrors = useMemo(() => Object.fromEntries(generalIssues.map((p) => [p.key, p.text])) as Partial<Record<keyof GeneralSettings, string>>, [generalIssues]);
   /** Every blocking problem, with where it is, so the save bar can point at it. */
   const problems = useMemo(() => {
     const out: { section: Section; repo?: number; text: string }[] = [];
@@ -369,10 +434,10 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
       const name = r && r.owner && r.repo ? repoKey(r) : `Repository ${Number(i) + 1}`;
       for (const text of list) out.push({ section: "repos", repo: Number(i), text: `${name}: ${text}` });
     }
-    for (const text of workflowProblems) out.push({ section: "workflow", text });
+    for (const text of new Set(workflowIssues.map((p) => p.text))) out.push({ section: "workflow", text });
+    for (const p of generalIssues) out.push({ section: "general", text: p.text });
     return out;
-  }, [repoIssues, repoDraft, workflowProblems]);
-  const problemCount = problems.length;
+  }, [repoIssues, repoDraft, workflowIssues, generalIssues]);
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
   const usedBy = useMemo(() => {
     const out: Record<string, string[]> = {};
@@ -386,50 +451,148 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
   const refetchAll = async () => {
     await Promise.all([config.refetch(), settings.refetch()]);
   };
+  /** Refetch never rejects, it sets `error` instead; the catch guards a transport failure. Drafts are not touched. */
+  const retry = async () => {
+    setRetrying(true);
+    try {
+      await refetchAll();
+    } catch {
+      // The banner keeps showing the failed read.
+    } finally {
+      setRetrying(false);
+    }
+  };
   useRealtime("cos-changed", () => {
     if (!anyDirty) void refetchAll();
   });
 
+  // Editor setters: an edit replaces the last save's status line.
+  const editRepos = (next: RepoConfig[]) => {
+    setStatus(null);
+    setRepos(next);
+  };
+  const editWorkflow = (next: WorkflowsDocument) => {
+    setStatus(null);
+    setWorkflow(next);
+  };
+  /** Keeps only the settings that differ from the loaded ones; none left means clean. */
+  const editGeneral = (next: GeneralSettings) => {
+    setStatus(null);
+    const diff = loadedGeneral ? generalDiff(loadedGeneral, next) : next;
+    setGeneral(Object.keys(diff).length ? diff : null);
+  };
+
+  /** Text equal to the loaded document is no draft. */
+  const editAdvanced = (doc: "repos" | "workflow", text: string) => {
+    setStatus(null);
+    if (doc === "repos") setAdvancedRepos(text === config.data?.repos ? null : text);
+    else setAdvancedWorkflow(text === config.data?.workflow ? null : text);
+  };
+  const revertAdvanced = () => {
+    setAdvancedRepos(null);
+    setAdvancedWorkflow(null);
+    setStatus(null);
+  };
+
+  /** A deleted workflow's repositories go back to the default, instead of keeping an id a new workflow could reuse. */
+  const detachRepos = (id: string) => {
+    const next = detachWorkflow(repoDraft, id).repos;
+    // Unchanged when no repository used it; also keeps an unloadable repositories JSON from being replaced by [].
+    if (next !== repoDraft) setRepos(next.map((r, i) => repoKeys.carry(repoDraft[i]!, r)));
+  };
+
   const discard = () => {
-    setRepos(null);
-    setGeneral(null);
-    setWorkflow(null);
+    clear();
     setStatus(null);
   };
 
   const save = async () => {
+    if (savingRef.current || problems.length) return;
+    savingRef.current = true;
     setSaving(true);
     setStatus(null);
     try {
       const warnings: string[] = [];
+      // The documents go first: the server can still reject them (repos are checked
+      // against the project remotes), while validated general settings it cannot.
+      let configSaved = false;
       if (dirty.repos || dirty.workflow) {
         const result = await rpc.call("cos_set_config", {
           ...(dirty.repos ? { repos: serializeRepos(repoDraft) } : {}),
           ...(dirty.workflow ? { workflow: serializeWorkflows(workflowDraft) } : {}),
         });
         warnings.push(...result.warnings);
+        configSaved = true;
+        setPendingConfig({
+          ...(dirty.repos ? { repos: { draft: repoDraft, json: serializeRepos(repoDraft) } } : {}),
+          ...(dirty.workflow ? { workflow: { draft: workflowDraft, json: serializeWorkflows(workflowDraft) } } : {}),
+        });
       }
-      if (dirty.general) await rpc.call("cos_set_settings", generalChanges);
+      if (dirty.general) {
+        try {
+          await rpc.call("cos_set_settings", generalChanges);
+        } catch (error) {
+          if (!configSaved) throw error;
+          // Confirm written documents independently of whether General can be read or saved.
+          await refetchAll().catch(() => {});
+          const saved = dirty.repos && dirty.workflow ? "Repositories and workflows" : dirty.repos ? "Repositories" : "Workflows";
+          setStatus({ ok: false, text: `${saved} saved${warnings.length ? ` (${warnings.join("; ")})` : ""}; general settings were not: ${errorText(error)}` });
+          return;
+        }
+      }
       await refetchAll();
-      setRepos(null);
-      setGeneral(null);
-      setWorkflow(null);
+      // Document drafts are cleared by query confirmation, including on a retry of
+      // a partial save. Never replace them with stale query data after a failed read.
+      setGeneral((current) => current === general ? null : current);
       setStatus({ ok: true, text: warnings.length ? `Saved. ${warnings.join("; ")}` : "Saved. Changes apply on the next intake and sweep." });
     } catch (error) {
       setStatus({ ok: false, text: errorText(error) });
     } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  /** Sends only the edited JSON documents; the server validates them. */
+  const saveAdvanced = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    setStatus(null);
+    try {
+      const result = await rpc.call("cos_set_config", { ...(advancedRepos !== null ? { repos: advancedRepos } : {}), ...(advancedWorkflow !== null ? { workflow: advancedWorkflow } : {}) });
+      await refetchAll();
+      setAdvancedRepos(null);
+      setAdvancedWorkflow(null);
+      setStatus({ ok: true, text: result.warnings.length ? `Saved. ${result.warnings.join("; ")}` : "Saved. Changes apply on the next intake and sweep." });
+    } catch (error) {
+      setStatus({ ok: false, text: errorText(error) });
+    } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
   const providers = settings.data?.providers ?? [];
-  const counts: Record<Section, number | null> = { workflow: null, repos: repoDraft.length, general: null, access: null, advanced: null };
-  const sectionDirty: Record<Section, boolean> = { workflow: dirty.workflow, repos: dirty.repos, general: dirty.general, access: false, advanced: false };
-  const loadError =
-    (loadedRepos && !loadedRepos.ok ? `Repositories JSON: ${loadedRepos.error}` : null) ??
-    (loadedWorkflow && !loadedWorkflow.ok ? `Workflow JSON: ${loadedWorkflow.error}` : null);
+  const counts: Record<Section, number | null> = { workflow: null, repos: reposBlocked ? null : repoDraft.length, general: null, access: null, advanced: null };
+  const sectionDirty: Record<Section, boolean> = { workflow: dirty.workflow, repos: dirty.repos, general: dirty.general, access: false, advanced: advancedDirty };
+  const loadErrors: { section: Section; title: string; error: string }[] = [
+    ...(reposError !== null ? [{ section: "repos" as const, title: "Repositories", error: reposError }] : []),
+    ...(workflowError !== null ? [{ section: "workflow" as const, title: "Workflows", error: workflowError }] : []),
+  ];
+  // The blocked section explains itself; other sections carry a banner.
+  const banner = loadErrors
+    .filter((e) => e.section !== section)
+    .map((e) => `${e.title} JSON does not load: ${e.error}. ${section === "advanced" ? "Repair it below." : "Repair it in Advanced JSON; until then the visual editor leaves it unchanged and does not save it."}`);
+  const openAdvanced = () => setSection("advanced");
+  const visualSection = section === "workflow" || section === "repos" || section === "general";
+  // A JSON save sends only the JSON documents and the server validates them, so the visual
+  // problems (which point into sections that are inert right now) don't block it.
+  const blocking = advancedDirty ? [] : problems;
 
-  if (config.error || settings.error) return <Problems items={[errorText(config.error ?? settings.error)]} />;
+  // A failed refresh keeps the loaded data, so the editor and its drafts stay and the error becomes a banner.
+  const failures = Array.from(new Set([config.error, settings.error].filter((e) => e !== null && e !== undefined).map(errorText)));
+  if (failures.length && (!config.data || !settings.data)) return <LoadFailure messages={failures} retrying={retrying} onRetry={() => void retry()} />;
   if (!config.data || !settings.data || !generalDraft) return <p className="text-sm text-muted-foreground">Loading configuration…</p>;
 
   return (
@@ -457,57 +620,79 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
         ))}
       </nav>
       <div className="flex min-w-0 flex-1 flex-col gap-3">
-        {loadError && section !== "advanced" ? (
-          <Problems items={[`${loadError}. Fix it in Advanced JSON; the visual editor shows the last valid parts only.`]} />
+        {failures.length || pendingConfig ? <LoadFailure messages={[
+          ...failures.map((m) => `Could not refresh the configuration: ${m}. Showing the last loaded values.`),
+          ...(pendingConfig ? ["Saved configuration has not been confirmed by a successful reload. Your drafts are kept; retry to reload the saved values."] : []),
+        ]} retrying={retrying} onRetry={() => void retry()} /> : null}
+        <Problems items={banner} />
+        {advancedDirty && visualSection ? <Problems tone="warning" items={["You have unsaved Advanced JSON edits. Save or discard them before editing here."]} /> : null}
+        {visualSection ? (
+          // Inert, not unmounted, so the editors keep their place while the JSON draft is pending.
+          <div className={cn("flex flex-col gap-3", advancedDirty && "opacity-50")} inert={advancedDirty}>
+            {section === "workflow" && workflowBlocked ? <BlockedDocument title="Workflows" error={workflowError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
+            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} problems={workflowIssues} /> : null}
+            {section === "repos" && reposBlocked ? <BlockedDocument title="Repositories" error={reposError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
+            {section === "repos" && !reposBlocked ? (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">Each repository has its own issue filter, agent and limits, and can customise any workflow stage.</p>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      editRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
+                      setOpenRepo(repoDraft.length);
+                      setSection("repos");
+                    }}
+                  >
+                    <Icon name="Plus" fallback="Circle" aria-hidden /> Add repository
+                  </Button>
+                </div>
+                {repoDraft.length ? (
+                  repoDraft.map((repo, i) => (
+                    <RepoEditor
+                      key={repoKeys.key(repo)}
+                      repo={repo}
+                      index={i}
+                      problems={repoIssues[i] ?? []}
+                      open={openRepo === i}
+                      onToggle={() => setOpenRepo(openRepo === i ? null : i)}
+                      onChange={(r) => editRepos(repoDraft.map((x, j) => (j === i ? repoKeys.carry(x, r) : x)))}
+                      onRemove={() => {
+                        editRepos(repoDraft.filter((_, j) => j !== i));
+                        setOpenRepo(null);
+                      }}
+                      projects={projects}
+                      providers={providers}
+                      defaultProvider={generalDraft.defaultProviderId}
+                      workflows={workflowBlocked ? null : workflowDraft}
+                    />
+                  ))
+                ) : (
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-8 text-center">
+                    <Icon name="FolderGit2" fallback="Circle" className="size-6 text-muted-foreground" aria-hidden />
+                    <p className="text-sm font-medium text-foreground">No repositories yet</p>
+                    <p className="max-w-md text-xs text-muted-foreground">Add a GitHub repository and the BB project that holds its checkout. Add as many as you like.</p>
+                  </div>
+                )}
+              </>
+            ) : null}
+            {section === "general" ? <GeneralEditor values={generalDraft} onChange={editGeneral} providers={providers} errors={generalErrors} /> : null}
+          </div>
         ) : null}
-        {section === "workflow" ? <WorkflowsEditor doc={workflowDraft} onChange={setWorkflow} usedBy={usedBy} /> : null}
-        {section === "repos" ? (
-          <>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs text-muted-foreground">Each repository has its own issue filter, agent and limits, and can customise any workflow stage.</p>
-              <Button
-                size="sm"
-                onClick={() => {
-                  setRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
-                  setOpenRepo(repoDraft.length);
-                  setSection("repos");
-                }}
-              >
-                <Icon name="Plus" fallback="Circle" aria-hidden /> Add repository
-              </Button>
-            </div>
-            {repoDraft.length ? (
-              repoDraft.map((repo, i) => (
-                <RepoEditor
-                  key={i}
-                  repo={repo}
-                  index={i}
-                  problems={repoIssues[i] ?? []}
-                  open={openRepo === i}
-                  onToggle={() => setOpenRepo(openRepo === i ? null : i)}
-                  onChange={(r) => setRepos(repoDraft.map((x, j) => (j === i ? r : x)))}
-                  onRemove={() => {
-                    setRepos(repoDraft.filter((_, j) => j !== i));
-                    setOpenRepo(null);
-                  }}
-                  projects={projects}
-                  providers={providers}
-                  defaultProvider={generalDraft.defaultProviderId}
-                  workflows={workflowDraft}
-                />
-              ))
-            ) : (
-              <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-8 text-center">
-                <Icon name="FolderGit2" fallback="Circle" className="size-6 text-muted-foreground" aria-hidden />
-                <p className="text-sm font-medium text-foreground">No repositories yet</p>
-                <p className="max-w-md text-xs text-muted-foreground">Add a GitHub repository and the BB project that holds its checkout. Add as many as you like.</p>
-              </div>
-            )}
-          </>
-        ) : null}
-        {section === "general" ? <GeneralEditor values={generalDraft} onChange={setGeneral} providers={providers} /> : null}
         {section === "access" ? <AccessEditor token={settings.data.token} onSaved={refetchAll} /> : null}
-        {section === "advanced" ? <AdvancedEditor repos={config.data.repos} workflow={config.data.workflow} locked={anyDirty} onSaved={refetchAll} /> : null}
+        {section === "advanced" ? (
+          <AdvancedEditor
+            repos={config.data.repos}
+            workflow={config.data.workflow}
+            draftRepos={advancedRepos}
+            draftWorkflow={advancedWorkflow}
+            onChange={editAdvanced}
+            locked={visualDirty}
+            saving={saving}
+            onSave={() => void saveAdvanced()}
+            onRevert={revertAdvanced}
+          />
+        ) : null}
 
         {anyDirty || status ? (
           <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
@@ -516,19 +701,19 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
                 <span className="flex items-center gap-1.5 text-sm text-foreground">
                   <span aria-hidden className="size-2 rounded-full" style={{ background: STATUS.warning }} />
                   Unsaved changes
-                  {problemCount ? <span className="text-xs" style={{ color: STATUS.critical }}>· {problemCount} to fix before saving</span> : null}
+                  {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
                 </span>
                 <span className="ml-auto flex gap-1.5">
                   <Button size="sm" variant="outline" disabled={saving} onClick={discard}>
                     Discard
                   </Button>
-                  <Button size="sm" disabled={saving || problemCount > 0} onClick={() => void save()}>
+                  <Button size="sm" disabled={saving || blocking.length > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
                     <Icon name="Save" fallback="Circle" aria-hidden /> {saving ? "Saving…" : "Save changes"}
                   </Button>
                 </span>
-                {problemCount ? (
+                {blocking.length ? (
                   <ul className="flex basis-full flex-col gap-0.5">
-                    {problems.slice(0, 5).map((p, i) => (
+                    {blocking.slice(0, 5).map((p, i) => (
                       <li key={i}>
                         <button
                           type="button"
@@ -546,7 +731,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
                         </button>
                       </li>
                     ))}
-                    {problemCount > 5 ? <li className="text-xs text-muted-foreground">and {problemCount - 5} more</li> : null}
+                    {blocking.length > 5 ? <li className="text-xs text-muted-foreground">and {blocking.length - 5} more</li> : null}
                   </ul>
                 ) : null}
               </>

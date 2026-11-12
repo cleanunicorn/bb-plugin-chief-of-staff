@@ -168,9 +168,19 @@ export async function lastAssistantText(cos: Cos, threadId: string): Promise<str
   }
 }
 
-export function threadUrl(cos: Cos, threadId: string): string {
+/**
+ * The thread's web URL for text others read (issue comments, PR bodies), or
+ * null when BB has no public app URL. `bb://` links only mean something to the
+ * operator, so they never belong in public text.
+ */
+export function publicThreadUrl(cos: Cos, threadId: string): string | null {
   const base = cos.bb.server.experimental_appUrl;
-  return base ? `${base.replace(/\/$/, "")}/threads/${threadId}` : `bb://threads/${threadId}`;
+  return base ? `${base.replace(/\/$/, "")}/threads/${threadId}` : null;
+}
+
+/** The thread's link for the operator's own dashboard; falls back to the `bb://` scheme. */
+export function threadUrl(cos: Cos, threadId: string): string {
+  return publicThreadUrl(cos, threadId) ?? `bb://threads/${threadId}`;
 }
 
 const REASON_MAX = 600;

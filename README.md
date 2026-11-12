@@ -190,7 +190,8 @@ A workflow is the path every task takes: **steps** connected by arrows. Steps
 side by side run in parallel, and a step with several arrows into it waits for
 all of them. Edit workflows under **Configure → Workflows**: drag steps on the
 canvas, connect a step's bottom edge to another step, select an arrow and press
-Backspace to remove it, or use the list view.
+Backspace to remove it, or use the list view. To remove a step, use the Remove
+button in its side panel; Backspace never removes a step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/workflow-editor-dark.png">
@@ -362,7 +363,13 @@ dashboard, or the plugin's page under Settings. It edits:
   push notifications.
 - **GitHub access**: a write-only token field. A stored token is never shown,
   returned to the browser, or logged.
-- **Advanced JSON**: the raw documents, for bulk edits.
+- **Advanced JSON**: the raw documents, for bulk edits. It can't be edited
+  at the same time as the visual sections: save or discard one before
+  editing the other.
+
+Unsaved edits stay while you switch sections or dashboard tabs; the
+Configure tab shows a dot while any are pending, and the browser asks
+before a reload discards them.
 
 Everything is validated before saving and every change is logged with who
 made it. The BB project id is specific to each BB instance, so after
@@ -389,6 +396,7 @@ The same settings, as stored:
     {
       "projectId": "proj_xxxxxxxxxx",
       "intake": true,
+      "issueComments": true,
       "issueFilter": { "labels": ["agent-ready"], "assignee": null },
       "maxConcurrent": 2,
       "providerId": "claude-code", "model": "claude-opus-5-5",
@@ -406,6 +414,14 @@ so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
 when they carry every label in `issueFilter.labels` and, if
 `issueFilter.assignee` is set, are assigned to that user. With neither set,
 no issue is picked up. Set `intake: false` to run only tasks you start.
+
+`issueComments` (default `true`) controls the comments Chief of Staff leaves on
+the issue. When an agent starts it posts one status comment and, on a restart
+or when the issue is picked up again, edits that comment instead of adding
+another. The comment links the agent's thread only when BB has a web URL; a
+`bb://` link means nothing to anyone but you, so it is left out. When a pull
+request opens, a second comment with its link is added. Set
+`issueComments: false` to post neither; pull requests are still opened.
 
 `workflow` names one of your workflows (empty: the default). Entries written
 for earlier versions keep working: per-stage overrides and `checkCommand` are
@@ -455,10 +471,20 @@ flowchart TB
 
 - State lives in the plugin's SQLite database: `work_items` (each task with a
   snapshot of its workflow and the state of every step), `item_threads` (which
-  agent thread works on which step) and `activity_log`. On startup the plugin
-  reconciles every active item against its threads.
+  agent thread works on which step), `step_journal` (each step's history) and
+  `activity_log`. On startup the plugin reconciles every active item against
+  its threads.
+- Storage stays bounded as history grows. Whether a task holds a capacity
+  slot is stored with the task, so admission counts it in SQL, and stats are
+  computed from the tasks' status and timestamps. The activity log keeps its
+  newest 5,000 entries and the step journal its newest 50,000.
+- Retention: 90 days after a task finishes (the longest stats window), its
+  per-step outputs, report summaries and feedback text are removed, at startup
+  and then once a day. The task itself stays, with its status, PR, branch,
+  timestamps, workflow, step statuses, model picks and thread links, so it
+  still shows under finished tasks, counts in stats, and can be retried.
 - One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
-  retries and stall detection.
+  retries, stall detection and the daily retention pass.
 - Workflow engine (`src/machine.ts`, pure): each step has a state (pending,
   running, waiting, done), a round and a failure count. Events from threads,
   jobs, CI and you produce new step states and the effects to run; a pending
@@ -513,3 +539,7 @@ bb plugin dev       # build + install + reload on change
 See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and releases. The
 screenshots are captured from the running plugin, with its RPC calls answered
 by [docs/images/demo-data.js](docs/images/demo-data.js).
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).

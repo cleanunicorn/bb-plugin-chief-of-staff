@@ -99,4 +99,5 @@ Not checked: a screen reader, Safari, and a live BB installation (host
 navigation, icons and theme). The running plugin was not reinstalled.
 
 Not in this change: the workflow editor's full screen is still not a dialog,
-and the task card's “More actions” menu has no menu keyboard behaviour.
+and the task card's “More actions” menu has no menu keyboard behaviour. (Since fixed: the
+menu is a Radix dropdown menu with keyboard support, issue #65.)
