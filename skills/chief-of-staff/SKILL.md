@@ -17,10 +17,10 @@ sends failures back to an earlier step on a budget. Every command lives under
 Follow the "When you finish this step" section of your prompt: it gives the
 exact `cos_report` call (step id, delivery id, outcomes, any model-choice
 fields) and the `## Step report` text block to use when the tool is
-unavailable. Report, then end your turn; Chief of Staff waits for
-the report. Use `outcome: "failed"` when you cannot finish, and
-`outcome: "needs_input"` with a `question` when a person must decide. On a read-only step, do not change files. Never push or open pull
-requests; Chief of Staff does that.
+unavailable. Report, then end your turn; Chief of Staff waits for the report.
+Use `outcome: "failed"` when you cannot finish, and `outcome: "needs_input"`
+with a `question` when a person must decide. On a read-only step, do not change
+files. Never push or open pull requests; Chief of Staff does that.
 
 ## Commands
 
@@ -74,7 +74,8 @@ when finished. Use merge mode when the assignment includes merging, and preserve
 
 While shipping waits on CI, review or a person, the task holds no capacity
 slot (it stays tracked); repairs, reruns and later agent steps queue for a
-free slot. Limits count tasks, not threads; other gates keep their slot.
+free repo and global slot, then resume without an agent turn held open.
+Limits count tasks, not threads; other gates keep their slot.
 `cos_overview` reports `occupiedCapacity` and each repo's reserved `active`
 count; roster entries expose `occupiesCapacity`.
 
@@ -105,11 +106,12 @@ then `bb settings experiment pluginUpdates true` for automatic updates.
 
 Each workflow's threads (planners, builder, reviewers, replacements) are
 grouped under its first live thread using BB's native parent-thread tree,
-across worktrees; no coordinator agent or custom sidebar is created. Child
-result notifications are off (`parentNotifications: "off"`); step reports
-still drive progression. Unset provider, model, reasoning and permission
-options may inherit the parent's BB defaults. The sweep regroups active workflows, keeps threads
-already attached to outside parents, and replaces a missing or archived
-parent; failures are logged and retried. With automatic archiving, children
+across worktrees; the parent is stored apart from the builder and survives
+restarts. No coordinator agent or custom sidebar is created. Child result
+notifications are off (`parentNotifications: "off"`); step reports still drive
+progression. Unset provider, model, reasoning and permission options may
+inherit the parent's BB defaults. The sweep regroups active workflows, keeps
+threads already attached to outside parents, and replaces a missing or
+archived parent; failures are logged and retried. With automatic archiving, children
 are archived before their parent. Archiving the parent manually detaches live
 children; deleting it deletes them. BB nests at most four levels.
