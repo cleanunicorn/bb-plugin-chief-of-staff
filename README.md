@@ -532,3 +532,7 @@ bb plugin dev       # build + install + reload on change
 See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests and releases. The
 screenshots are captured from the running plugin, with its RPC calls answered
 by [docs/images/demo-data.js](docs/images/demo-data.js).
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
