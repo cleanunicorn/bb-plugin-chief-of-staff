@@ -170,3 +170,50 @@ describe("GitHub rate limits", () => {
     expect(s.limiter.limitedUntil(NOW)).toBeNull();
   });
 });
+
+describe("newest issue comments and truncated lists", () => {
+  /** GitHub's comment pages for an issue with `total` comments: ids 1..total, 100 per page. */
+  function commentsFetch(total: number) {
+    return fakeFetch((url) => {
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const pages = Math.max(1, Math.ceil(total / 100));
+      const ids = Array.from({ length: Math.max(0, Math.min(100, total - (page - 1) * 100)) }, (_, i) => (page - 1) * 100 + i + 1);
+      const base = `https://api.github.com${url.pathname}?per_page=100`;
+      const link = pages > 1 && page < pages ? `<${base}&page=${page + 1}>; rel="next", <${base}&page=${pages}>; rel="last"` : pages > 1 ? `<${base}&page=1>; rel="first", <${base}&page=${page - 1}>; rel="prev"` : "";
+      return { body: ids.map((id) => ({ id, body: `c${id}`, user: null, created_at: "" })), headers: link ? { link } : ({} as Record<string, string>) };
+    });
+  }
+  const newest = async (total: number) => {
+    const fetch = commentsFetch(total);
+    const comments = await new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch }).listIssueComments("acme", "app", 12, { newest: 10 });
+    return { ids: comments.map((c) => c.id), pages: fetch.mock.calls.map(([u]) => new URL(String(u)).searchParams.get("page") ?? "1") };
+  };
+  const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+  it("reads the last page of a long issue", async () => {
+    expect(await newest(250)).toEqual({ ids: range(241, 250), pages: ["1", "3"] });
+  });
+
+  it("reads the page before a short last page", async () => {
+    expect(await newest(205)).toEqual({ ids: range(196, 205), pages: ["1", "3", "2"] });
+  });
+
+  it("reuses page 1 when it is the page before a short page 2", async () => {
+    expect(await newest(105)).toEqual({ ids: range(96, 105), pages: ["1", "2"] });
+  });
+
+  it("makes one request for a short issue", async () => {
+    expect(await newest(7)).toEqual({ ids: range(1, 7), pages: ["1"] });
+  });
+
+  it("warns once when a list stops at its page limit", async () => {
+    const log = vi.fn();
+    const fetch = commentsFetch(350);
+    const all = await new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch, log }).paginate("/repos/acme/app/issues/12/comments", 2);
+    expect(all).toHaveLength(200);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith("GitHub list /repos/acme/app/issues/12/comments truncated at 2 pages");
+    await new GitHubClient({ token: TOKEN, fetch: commentsFetch(150) as typeof globalThis.fetch, log }).paginate("/repos/acme/app/issues/12/comments", 2);
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+});

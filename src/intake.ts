@@ -20,6 +20,8 @@ export interface IntakeResult {
 const MAX_BODY = 12_000;
 const MAX_COMMENT = 2_000;
 const MAX_CONVENTIONS = 8_000;
+/** The newest issue comments the brief quotes. */
+const BRIEF_COMMENTS = 10;
 
 export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Promise<GitHubIssue[]> {
   const filter = repo.issueFilter;
@@ -42,11 +44,11 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   const lines: string[] = [];
   const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(() => null) : null;
   if (issue && github) {
-    const comments = await github.listIssueComments(repo.owner, repo.repo, issue.number).catch(() => []);
+    const comments = await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENTS }).catch(() => []);
     lines.push(`You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.title}`, issue.html_url, ``, (issue.body ?? "(no description)").slice(0, MAX_BODY));
     if (comments.length) {
       lines.push(``, `## Issue comments`);
-      for (const comment of comments.slice(-10)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
+      for (const comment of comments.slice(-BRIEF_COMMENTS)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
     }
   } else if (item.issueNumber) {
     lines.push(`You are working on GitHub issue #${item.issueNumber} in ${repo.owner}/${repo.repo}: ${item.issueTitle}`, `(The issue could not be loaded; read it with \`gh issue view ${item.issueNumber}\`.)`);

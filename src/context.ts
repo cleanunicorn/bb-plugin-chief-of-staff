@@ -149,7 +149,7 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     },
     async github() {
       const token = await resolveToken();
-      return new GitHubClient({ token: token.value, limiter, now: () => cos.now().getTime() });
+      return new GitHubClient({ token: token.value, limiter, now: () => cos.now().getTime(), log: (message) => bb.log.warn(message) });
     },
     githubLimit() {
       return limiter.limitedUntil(cos.now().getTime());

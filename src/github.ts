@@ -127,6 +127,8 @@ export interface GitHubClientOptions {
   /** Shared rate-limit state (one per token); a private one by default. */
   limiter?: GitHubLimiter;
   now?: () => number;
+  /** Where the client reports things worth a warning (a truncated list). */
+  log?: (message: string) => void;
 }
 
 /** Default per-request deadline. */
@@ -147,6 +149,7 @@ export class GitHubClient {
   readonly #timeoutMs: number;
   readonly #limiter: GitHubLimiter;
   readonly #now: () => number;
+  readonly #log: (message: string) => void;
 
   constructor(options: GitHubClientOptions) {
     this.#token = options.token;
@@ -156,6 +159,7 @@ export class GitHubClient {
     this.#timeoutMs = options.timeoutMs ?? GITHUB_TIMEOUT_MS;
     this.#limiter = options.limiter ?? new GitHubLimiter();
     this.#now = options.now ?? Date.now;
+    this.#log = options.log ?? (() => undefined);
   }
 
   get hasToken(): boolean {
@@ -236,6 +240,7 @@ export class GitHubClient {
       url = linkUrl(sent.headers, "next");
       pages += 1;
     }
+    if (url) this.#log(`GitHub list ${path} truncated at ${maxPages} page${maxPages === 1 ? "" : "s"}`);
     return results;
   }
 
@@ -261,8 +266,27 @@ export class GitHubClient {
     return this.request("GET", `/repos/${owner}/${repo}/issues/${number}`);
   }
 
-  listIssueComments(owner: string, repo: string, number: number): Promise<GitHubComment[]> {
-    return this.paginate(`/repos/${owner}/${repo}/issues/${number}/comments`, 3);
+  /**
+   * The newest `newest` comments, oldest first. The endpoint lists oldest
+   * first and cannot be reversed, so read page 1, then the last page (and
+   * the one before it when the last is short): at most 3 requests.
+   */
+  async listIssueComments(owner: string, repo: string, number: number, opts: { newest?: number } = {}): Promise<GitHubComment[]> {
+    const newest = Math.max(1, Math.min(100, opts.newest ?? 10));
+    const first = await this.#send("GET", `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`);
+    const pages = [JSON.parse(first.text) as GitHubComment[]];
+    const last = linkUrl(first.headers, "last");
+    const lastPage = last ? Number(new URL(last).searchParams.get("page")) : 1;
+    if (last && lastPage > 1) {
+      const tail = JSON.parse((await this.#send("GET", last)).text) as GitHubComment[];
+      if (tail.length < newest && lastPage > 2) {
+        const before = new URL(last);
+        before.searchParams.set("page", String(lastPage - 1));
+        pages[0] = JSON.parse((await this.#send("GET", before.toString())).text) as GitHubComment[];
+      }
+      pages.push(tail);
+    }
+    return pages.flat().slice(-newest);
   }
 
   createIssueComment(owner: string, repo: string, number: number, body: string): Promise<GitHubComment> {

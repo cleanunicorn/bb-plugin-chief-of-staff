@@ -23,7 +23,7 @@ vi.mock("../src/machine", async (importOriginal) => {
   };
 });
 
-type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string } | undefined;
+type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string; headers?: Record<string, string> } | undefined;
 
 function fakeGitHub(routes: Record<string, Route>, calls: { method: string; path: string; body?: unknown; auth?: string | null }[]) {
   return vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -35,7 +35,7 @@ function fakeGitHub(routes: Record<string, Route>, calls: { method: string; path
     const handler = routes[key] ?? routes[`${method} *`];
     const result = handler?.(url, init);
     if (!result) return new Response(JSON.stringify({ message: `no route for ${key}` }), { status: 404 });
-    return new Response(result.text ?? JSON.stringify(result.body ?? {}), { status: result.status ?? 200, headers: { "content-type": "application/json" } });
+    return new Response(result.text ?? JSON.stringify(result.body ?? {}), { status: result.status ?? 200, headers: { "content-type": "application/json", ...result.headers } });
   });
 }
 
@@ -1635,6 +1635,20 @@ describe("chief-of-staff server", () => {
     const [input] = args.input!;
     expect(input!.text).toContain("Use /tdd and /nope.");
     expect(input!.mentions.map((m) => [input!.text.slice(m.start, m.end), m.resource.source])).toEqual([["/tdd", "skill"]]);
+  });
+
+  it("quotes the newest comments of a long issue in the brief", async () => {
+    ghRoutes["GET /repos/acme/app/issues/12/comments"] = (url) => {
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const base = "https://api.github.com/repos/acme/app/issues/12/comments?per_page=100";
+      const ids = Array.from({ length: page === 3 ? 50 : 100 }, (_, i) => (page - 1) * 100 + i + 1);
+      return { body: ids.map((id) => ({ id, body: `comment ${id}`, user: { login: "dan" }, created_at: "" })), headers: page < 3 ? { link: `<${base}&page=${page + 1}>; rel="next", <${base}&page=3>; rel="last"` } : ({} as Record<string, string>) };
+    };
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const { prompt } = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
+    expect(prompt).toContain("comment 241");
+    expect(prompt).toContain("comment 250");
+    expect(prompt).not.toContain("comment 240");
   });
 
   it("validates and stores the workflow from the configurator", async () => {
