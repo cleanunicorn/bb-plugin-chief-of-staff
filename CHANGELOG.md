@@ -34,6 +34,17 @@
   mentions scheduled routines (removed earlier), and the issue intake overview
   names only the filters that exist: labels and assignee.
 
+- **The visual editor no longer overwrites a stored document it could not
+  load.** When the stored workflow or repositories JSON is invalid (edited by
+  hand or over the CLI, or left invalid by an older version), the Workflows or
+  Repositories section now shows the error and an "Open Advanced JSON" button
+  instead of the built-in default or an empty list. Saving from the visual
+  editor leaves that document out, so one rename or "Add repository" can no
+  longer replace every custom workflow or repository. The other document and
+  General settings stay editable. A repository's workflow picker is read-only
+  while the workflows do not load. The banner now says what failed and that the
+  stored JSON is left unchanged.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,

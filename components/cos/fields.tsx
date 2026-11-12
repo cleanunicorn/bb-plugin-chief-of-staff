@@ -75,9 +75,9 @@ export function ListInput({ id, value, onChange, placeholder }: { id?: string; v
   );
 }
 
-export function Select<T extends string>({ id, value, onChange, options }: { id?: string; value: T; onChange: (v: T) => void; options: { value: T; label: string }[] }) {
+export function Select<T extends string>({ id, value, onChange, options, disabled }: { id?: string; value: T; onChange: (v: T) => void; options: { value: T; label: string }[]; disabled?: boolean }) {
   return (
-    <select id={id} className={cn(inputClass, "pr-7")} value={value} onChange={(e) => onChange(e.target.value as T)}>
+    <select id={id} className={cn(inputClass, "pr-7")} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as T)}>
       {options.map((o) => (
         <option key={o.value} value={o.value}>
           {o.label}
