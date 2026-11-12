@@ -459,6 +459,17 @@ export class StateStore {
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
   }
 
+  /** Scalar columns of every active item and every item started or finished since `sinceIso`, for computeStats. */
+  statsRows(sinceIso: string): Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt">[] {
+    return (this.db.prepare(`SELECT status, created_at, finished_at, updated_at FROM work_items WHERE ${ACTIVE_IN} OR created_at >= @since OR COALESCE(finished_at, updated_at) >= @since`)
+      .all({ since: sinceIso }) as Row[])
+      .map((row) => ({ status: row.status as WorkStatus, createdAt: row.created_at as string, finishedAt: (row.finished_at as string | null) ?? null, updatedAt: row.updated_at as string }));
+  }
+
+  countWorkItems(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM work_items").get() as { n: number }).n;
+  }
+
   /** Count reservations without the roster's display limit, from the stored occupies_capacity column. */
   countOccupied(repo?: string, excludeId?: string): number {
     this.healReservations();

@@ -3,6 +3,7 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type WorkItem } from "../src/state";
 import { freshNode, type Nodes } from "../src/machine";
 import { normalizeWorkflow, workflowSchema } from "../src/workflow";
+import { computeStats, statsWindowStart } from "../src/stats";
 
 // Count normalizations done through state.ts's reads.
 vi.mock("../src/workflow", async (importOriginal) => {
@@ -18,13 +19,13 @@ const workflow = workflowSchema.parse({ id: "t", name: "Test", steps: [
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose(); });
 
-function storeSetup(options?: ConstructorParameters<typeof StateStore>[2]) {
+function storeSetup() {
   const host = createFakePluginHost({ pluginId: "state" });
   hosts.push(host);
   const db = host.bb.storage.database();
   host.bb.storage.migrate(db, migrationsForDatabase(db));
   let clock = Date.parse("2026-11-12T10:00:00Z");
-  const store = new StateStore(db, () => new Date(clock), options);
+  const store = new StateStore(db, () => new Date(clock));
   const add = (id: string, over: Partial<NewWorkItem> = {}) => store.insertWorkItem({
     id, repo: "a/b", status: "queued", issueTitle: id, issueNumber: null, branch: id, threadId: null, environmentId: null, prNumber: null, prUrl: null,
     providerId: null, model: null, lastError: null, source: "task", lastActivityAt: null, finishedAt: null, workflow,
@@ -105,5 +106,32 @@ describe("workflow snapshots normalized once", () => {
     expect(b1.workflow.steps[0]).toMatchObject({ type: "model", mode: "fixed" });
     expect(b1.workflow.steps[1]).toMatchObject({ type: "agent", chooses: [] });
     expect(b1.workflow).toStrictEqual(normalizeWorkflow(JSON.parse(old)));
+  });
+});
+
+describe("stats from scalar columns", () => {
+  it("gives the same stats as computing over every stored item", () => {
+    const { store, add, db, setClock } = storeSetup();
+    const at = (id: string, created: string, status: WorkItem["status"], finished: string | null, updated = finished ?? created) => {
+      setClock(created);
+      add(id, { status, finishedAt: finished });
+      db.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run(updated, id);
+    };
+    at("active-old", "2026-01-01T00:00:00.000Z", "agent", null);
+    at("active-new", "2026-11-11T00:00:00.000Z", "ci", null);
+    at("done-in", "2026-11-05T10:00:00.000Z", "done", "2026-11-05T13:00:00.000Z");
+    at("done-no-finish", "2026-10-01T10:00:00.000Z", "done", null, "2026-11-10T10:00:00.000Z");
+    at("failed-in", "2026-11-09T10:00:00.000Z", "failed", "2026-11-09T11:00:00.000Z");
+    at("done-out", "2026-09-01T10:00:00.000Z", "done", "2026-09-02T10:00:00.000Z");
+    at("edge", "2026-10-30T00:00:00.000Z", "done", "2026-10-30T00:00:00.000Z");
+    const now = new Date("2026-11-12T10:00:00Z");
+    for (const windowDays of [undefined, 1, 14, 90]) {
+      const since = statsWindowStart(now, windowDays);
+      const rows = store.statsRows(since);
+      expect(computeStats(rows, now, windowDays, store.countWorkItems())).toEqual(computeStats(store.listWorkItems({ limit: 1e6 }), now, windowDays));
+    }
+    expect(statsWindowStart(now, 14)).toBe("2026-10-30T00:00:00.000Z");
+    expect(store.statsRows(statsWindowStart(now, 14)).length).toBe(6);
+    expect(store.countWorkItems()).toBe(7);
   });
 });

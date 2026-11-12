@@ -1,5 +1,5 @@
 // Aggregates for the dashboard: pipeline counts by stage, daily throughput, and cycle time.
-// Pure over the stored rows so it is cheap to test.
+// Pure over the stored scalar columns so it is cheap to test.
 import { WORK_STATUSES, type WorkItem, type WorkStatus } from "./state";
 
 export interface DailyPoint {
@@ -20,11 +20,24 @@ export interface Stats {
   totalTracked: number;
 }
 
+/** The columns stats are computed from (see StateStore.statsRows). */
+export type StatsItem = Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt">;
+
 const day = (iso: string) => iso.slice(0, 10);
 
-export function computeStats(items: WorkItem[], now: Date, windowDays = 14): Stats {
+/** Start of the stats window: UTC midnight `windowDays - 1` days before `now`. */
+export function statsWindowStart(now: Date, windowDays = 14): string {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (windowDays - 1))).toISOString();
+}
+
+/**
+ * `items` must hold every active item and every item started or finished
+ * since statsWindowStart; `totalTracked` is the number of stored items.
+ */
+export function computeStats(items: StatsItem[], now: Date, windowDays = 14, totalTracked = items.length): Stats {
   const byStatus = Object.fromEntries(WORK_STATUSES.map((s) => [s, 0])) as Record<WorkStatus, number>;
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (windowDays - 1)));
+  const startIso = statsWindowStart(now, windowDays);
+  const start = new Date(startIso);
   const daily: DailyPoint[] = [];
   const index = new Map<string, DailyPoint>();
   for (let i = 0; i < windowDays; i++) {
@@ -33,7 +46,6 @@ export function computeStats(items: WorkItem[], now: Date, windowDays = 14): Sta
     daily.push(point);
     index.set(d, point);
   }
-  const startIso = start.toISOString();
   const cycles: number[] = [];
   let startedInWindow = 0;
   let doneInWindow = 0;
@@ -65,5 +77,5 @@ export function computeStats(items: WorkItem[], now: Date, windowDays = 14): Sta
   cycles.sort((a, b) => a - b);
   const mid = cycles.length >> 1;
   const medianCycleMinutes = cycles.length ? Math.round(cycles.length % 2 ? cycles[mid]! : (cycles[mid - 1]! + cycles[mid]!) / 2) : null;
-  return { byStatus, daily, windowDays, startedInWindow, doneInWindow, failedInWindow, medianCycleMinutes, totalTracked: items.length };
+  return { byStatus, daily, windowDays, startedInWindow, doneInWindow, failedInWindow, medianCycleMinutes, totalTracked };
 }
