@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Intake and CI polling share sweep time fairly.** When a slow phase uses
+  the budget, the other overdue phase gets the first turn on the next sweep,
+  including after errors, rate limits and reloads. Frequent intake cannot
+  indefinitely block CI polling, and slow CI cannot block intake.
+
+- **Slow intake resumes across repositories and issues.** Scheduled intake
+  saves its position between passes, including after reloads. A repository
+  whose issue listing uses the time budget still considers one issue before
+  yielding, so it and later repositories keep making progress.
+
+- **Existing issue status comments are recovered without duplicates.** If the
+  saved comment id is missing, recovery still finds older status comments
+  beyond the newest ten replies. Agent briefs keep their newest-comment view.
+
+- **CI polling resumes where its last pass stopped.** Older pull requests
+  still get checked when slow requests exhaust the polling time budget,
+  including after a plugin reload.
+
 - **Shorter agent prompts.** Each step prompt is about 150–250 characters
   shorter: the delivery id now sits in the `cos_report` call and the
   `## Step report` block instead of a separate trailing sentence, and the
@@ -14,6 +32,32 @@
   failed>` instead of `outcome: done`, so an agent copying it verbatim cannot
   pass the work by accident. The reminder sent to an agent that stops without
   reporting now names the model-choice ids or pick fields its step requires.
+
+- **The dashboard tabs fit on narrow screens.** Below 640 px the Pipeline,
+  Repos & PRs and Configure tabs show their labels without icons, so all
+  three, the selected tab and the unsaved-changes dot on Configure fit
+  within a 320 px screen. If a large font size still makes them too wide,
+  the tab strip scrolls sideways inside its border instead of pushing past
+  the edge of the screen.
+
+- **The task workflow view fits short screens.** In phone landscape and other
+  short, wide windows, the canvas sits beside the details panel and shrinks to
+  the space left. Its zoom and fit controls, the view switch, Close and "Run
+  again from here" stay inside the dialog, with or without a step selected.
+  The task summary keeps to one line. Taller screens keep the layout they had.
+
+- **Fit shows the whole task workflow on phones.** Opening a task's workflow,
+  resizing it and **Fit all steps in view** now zoom out as far as needed to
+  show every step, and Zoom Out no longer stops at half size. Opening and Fit
+  frame the graph the same way, in the task view and in the workflow editor.
+
+- **Intake asks GitHub for open PRs once per repository, and not at all when
+  the repository is full.** It used to list every open PR for each labelled
+  issue, even when the repository had no free slot. It now checks capacity
+  first, lists the open PRs once per run, and reads the newest 500 rather than
+  the oldest, so a recent PR still stops its issue from being picked up again.
+  `bb cos intake --dry-run` now counts the issues it would start against the
+  concurrency limits, so it reports what a real run would do.
 
 - **Saved configuration drafts survive a failed reload.** After a partial save,
   workflow and repository drafts stay until a successful read confirms their
@@ -97,6 +141,18 @@
   unsaved changes with an error line: the editor stays and a banner with Retry
   appears above it. The error alone, also with Retry, shows only when the
   configuration has never loaded.
+
+- **GitHub outages and rate limits no longer stall or fail tasks.** GitHub
+  requests time out after 30 seconds, and a sweep stops starting new intake
+  and CI work after two minutes, so thread sync, retries and stall detection
+  keep running. On a GitHub rate limit, Chief of Staff pauses
+  GitHub work until the limit resets, says so in the overview warnings and
+  `cos status`, and runs the waiting steps (opening a PR, starting an agent)
+  again after the reset without using up their retries. CI failures are
+  reported to the agent once their logs can be downloaded.
+- **Agents see the newest comments of a long issue.** The brief quotes the
+  last 10 comments, however many the issue has; it used to quote the last 10
+  of the first 300.
 
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.

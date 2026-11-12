@@ -64,7 +64,8 @@ flowchart LR
    looks in each configured repository for open issues that carry every label
    you chose (and are assigned to the user you chose, if you set one). An issue
    with an active task or an open PR is never picked up twice. Tasks you
-   describe skip this step.
+   describe skip this step. `bb cos intake --dry-run` applies the same
+   concurrency limits, so it reports only the issues a real run would start.
 2. **A task starts** when the repository and the global limit have a free slot.
    When they are full, an issue waits for a later intake run and a task you
    describe is refused until a slot frees. A task gets its own worktree and
@@ -506,6 +507,19 @@ flowchart TB
   with their own timeout. Their result is applied only if the item is still
   waiting on that job; a job lost to a restart is started again by the sweep.
   Errors are retried with backoff before they reach you.
+- GitHub: every request times out after 30 s. A sweep starts no new intake
+  or CI work after 2 minutes (checked between items, so the item in hand
+  finishes; the rest waits until intake or CI polling is next due). Scheduled
+  intake resumes across repositories and issues; a repository already being
+  listed considers its first issue before yielding even if listing used the
+  budget. When intake or CI uses the budget, the other overdue phase gets
+  the first turn on the next sweep; this order survives reloads. On a rate
+  limit (a 429, or a 403 with `retry-after`,
+  `x-ratelimit-remaining: 0` or a secondary-limit message) all GitHub requests
+  pause until the reset, held in memory: intake and CI polling are skipped,
+  the overview shows a warning, and a step that needed GitHub runs again at
+  the reset without using up its retries (after 10 deferrals of one step
+  they count again, so a limit that never clears reaches you).
 - Answering from the dashboard: click the question on a waiting card to see
   the question, its options and the agent's last message, then answer in place
   or open the thread. Questions, approvals and requests are resolved with

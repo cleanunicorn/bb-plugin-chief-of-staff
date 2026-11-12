@@ -26,6 +26,7 @@ import { StepFlow } from "@/components/cos/stepFlow";
 import { StateMark, StepMiniMap, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
+import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -150,6 +151,13 @@ function rerunEffect(wf: Workflow, stepId: string, name: string): string {
   return `This resets ${name} and the ${after === 1 ? "step" : `${after} steps`} after it, then runs ${name} again.`;
 }
 
+/**
+ * Phone landscape and other short, wide viewports. The workflow sheet then puts the canvas beside the details
+ * and drops the canvas's 16rem floor, which would otherwise push it past the dialog's bottom edge (#98).
+ * Narrow windows keep the stacked layout: side by side, neither half would be usable.
+ */
+export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)";
+
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
@@ -163,6 +171,8 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
   const rerunButton = useRef<HTMLButtonElement>(null);
   const focusRerun = useFocusWhenEnabled(rerunButton, busy);
   const [error, setError] = useState<string | null>(null);
+  // One class set or the other, never both: `md:` and a height query both match at 844×390.
+  const short = useMediaQuery(SHORT_VIEWPORT_QUERY);
   const data = view.data;
   const wf = data?.workflow as Workflow | undefined;
   const live = useMemo(() => (data?.live ?? {}) as Record<string, LiveStatus>, [data?.live]);
@@ -204,11 +214,16 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           setSelected(null);
         }
       }}
-      className={cn("gap-3 p-4", expanded ? "h-dvh max-w-none rounded-none sm:rounded-none" : "h-[90dvh] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[96rem] rounded-xl sm:rounded-xl")}
+      className={cn(
+        short ? "gap-2 p-3" : "gap-3 p-4",
+        expanded
+          ? "h-dvh max-w-none rounded-none sm:rounded-none"
+          : cn(short ? "h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)]" : "h-[90dvh] max-h-[calc(100dvh-2rem)]", "w-[calc(100%-2rem)] max-w-[96rem] rounded-xl sm:rounded-xl"),
+      )}
     >
-      <header className="flex items-start justify-between gap-2">
+      <header className="flex shrink-0 items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="line-clamp-2 text-xs text-muted-foreground" title={data ? `${data.title} · workflow “${wf?.name}”` : undefined}>{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
+          <p className={cn(short ? "line-clamp-1" : "line-clamp-2", "text-xs text-muted-foreground")} title={data ? `${data.title} · workflow “${wf?.name}”` : undefined}>{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
           <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -242,11 +257,11 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           </DialogClose>
         </div>
       </header>
-      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} /> : null}
+      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} oneLine={short} /> : null}
       <ErrorLine error={view.error ?? error} />
-      {wf && data ? <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row">
+      {wf && data ? <div className={cn("flex min-h-0 flex-1", short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
         {mode === "canvas" ? (
-          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className="h-auto min-h-[16rem] flex-1" />
+          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={cn("h-auto min-w-0 flex-1", short ? "min-h-0" : "min-h-[16rem]")} />
         ) : (
           <ol aria-label="Workflow steps" className="flex min-h-0 min-w-0 flex-1 flex-col gap-1.5 overflow-y-auto p-px">
             {topoOrder(wf).map((stepId) => {
@@ -275,7 +290,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
             })}
           </ol>
         )}
-        <aside aria-label={step ? "Step details" : "Task overview"} className="max-h-[45%] min-h-0 overflow-y-auto rounded-lg border border-border p-3 text-sm md:max-h-none md:w-[26rem] md:shrink-0">
+        <aside aria-label={step ? "Step details" : "Task overview"} className={cn("min-h-0 overflow-y-auto rounded-lg border border-border text-sm", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0")}>
           {step ? (
             <StepPanel itemId={id} workflow={wf} step={step} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
           ) : (
@@ -283,7 +298,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           )}
         </aside>
       </div> : null}
-      <footer className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <footer className="flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {step ? (
           <>
             <span>
@@ -982,18 +997,18 @@ export function Dashboard({ subPath }: { subPath: string }) {
               <p className="text-xs text-muted-foreground">Plan, build, verify, review, ship. Live view of every agent.</p>
             </div>
           </div>
-          <nav className="flex w-full rounded-lg border border-border bg-card p-1 sm:w-auto" aria-label="Dashboard tabs">
+          <nav className="flex w-full min-w-0 overflow-x-auto rounded-lg border border-border bg-card p-1 sm:w-auto" aria-label="Dashboard tabs">
             {TABS.map((t) => (
               <button
                 key={t.id}
                 type="button"
                 aria-pressed={tab === t.id}
                 onClick={() => goTab(t.id)}
-                className={cn("flex flex-auto items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:flex-none sm:px-3", tab === t.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}
+                className={cn("flex flex-auto shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:flex-none sm:px-3", tab === t.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}
               >
-                <Icon name={t.icon} fallback="Circle" className="size-4" aria-hidden />
+                <Icon name={t.icon} fallback="Circle" className="hidden size-4 sm:block" aria-hidden />
                 {t.label}
-                {t.id === "config" && configDrafts.dirty ? <span aria-label="unsaved" className="size-1.5 rounded-full" style={{ background: STATUS.warning }} /> : null}
+                {t.id === "config" && configDrafts.dirty ? <span aria-label="unsaved" className="size-1.5 shrink-0 rounded-full" style={{ background: STATUS.warning }} /> : null}
               </button>
             ))}
           </nav>

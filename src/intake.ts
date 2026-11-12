@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
-import type { GitHubClient, GitHubIssue } from "./github";
+import { matchOpenPullForIssue, GitHubRateLimitError, describeReset, unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue, type GitHubPull } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes } from "./machine";
@@ -21,6 +21,8 @@ export interface IntakeResult {
 const MAX_BODY = 12_000;
 const MAX_COMMENT = 2_000;
 const MAX_CONVENTIONS = 8_000;
+/** The newest issue comments the brief quotes. */
+const BRIEF_COMMENTS = 10;
 
 export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Promise<GitHubIssue[]> {
   const filter = repo.issueFilter;
@@ -41,14 +43,15 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
     github = null;
   }
   const lines: string[] = [];
-  const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(() => null) : null;
+  // A rate limit propagates: the prompt waits for the reset rather than go out with a thin brief.
+  const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(unlessRateLimited(() => null)) : null;
   if (issue && github) {
     // Chief of Staff's own status comment tells the agent nothing it does not already know.
-    const comments = (await github.listIssueComments(repo.owner, repo.repo, issue.number).catch(() => [])).filter((c) => !isStatusComment(c.body));
+    const comments = (await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENTS }).catch(unlessRateLimited((): GitHubComment[] => []))).filter((c) => !isStatusComment(c.body));
     lines.push(`You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.title}`, issue.html_url, ``, (issue.body ?? "(no description)").slice(0, MAX_BODY));
     if (comments.length) {
       lines.push(``, `## Issue comments`);
-      for (const comment of comments.slice(-10)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
+      for (const comment of comments.slice(-BRIEF_COMMENTS)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
     }
   } else if (item.issueNumber) {
     lines.push(`You are working on GitHub issue #${item.issueNumber} in ${repo.owner}/${repo.repo}: ${item.issueTitle}`, `(The issue could not be loaded; read it with \`gh issue view ${item.issueNumber}\`.)`);
@@ -59,7 +62,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   if (github) {
     const conventions: string[] = [];
     for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"]) {
-      const content = await github.getFileContent(repo.owner, repo.repo, file).catch(() => null);
+      const content = await github.getFileContent(repo.owner, repo.repo, file).catch(unlessRateLimited(() => null));
       if (content) conventions.push(`### ${file}\n${content.slice(0, MAX_CONVENTIONS)}`);
       if (conventions.length >= 2) break;
     }
@@ -73,7 +76,12 @@ export function pausedMessage(cos: Cos, repo: string, action: string): string {
   return cos.store.isRepoPaused(repo) && !cos.store.isPaused() ? `Project ${repo} is paused. Resume it before ${action}.` : `Chief of Staff is paused. Resume it before ${action}.`;
 }
 
-export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
+/**
+ * @param opts.deadline epoch ms after which no further repo or issue is
+ *   started. A scheduled repo already being listed considers its first issue
+ *   before yielding, so a slow listing cannot prevent all progress.
+ */
+export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string; deadline?: number }): Promise<IntakeResult[]> {
   if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting intake.");
   const config = await cos.config();
   if (!opts.dryRun) await resumeQueued(cos, opts.actor);
@@ -85,9 +93,26 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     return [{ repo: "*", considered: 0, started: [], skipped: [], error: error instanceof Error ? error.message : String(error) }];
   }
   if (!github.hasToken) return [{ repo: "*", considered: 0, started: [], skipped: [], error: "no GitHub token (set the githubToken setting or log in with gh)" }];
-  for (const repo of config.repos) {
+  // Only scheduled, bounded intake consumes the saved position. Manual and
+  // dry runs keep their configured order and leave scheduled progress alone.
+  const resumable = opts.deadline !== undefined && !opts.dryRun && !opts.repo;
+  const kv = cos.bb.storage.kv;
+  const repoCursorKey = "intake:nextRepo";
+  const repos = config.repos.filter((repo) => !opts.repo || opts.repo === repoKey(repo));
+  const nextRepo = resumable ? await kv.get<string>(repoCursorKey) : null;
+  const repoStart = Math.max(0, repos.findIndex((repo) => repoKey(repo) === nextRepo));
+  // A dry run starts nothing, so it counts its own would-starts to report what a real run would do.
+  let dryRunTotal = 0;
+  const outOfTime = () => {
+    if (opts.deadline === undefined || cos.now().getTime() < opts.deadline) return false;
+    cos.bb.log.info("intake stopped at the sweep's GitHub time budget; the rest waits for the next intake");
+    return true;
+  };
+  repos: for (let offset = 0; offset < repos.length; offset++) {
+    if (outOfTime()) break;
+    const repoIndex = (repoStart + offset) % repos.length;
+    const repo = repos[repoIndex]!;
     const key = repoKey(repo);
-    if (opts.repo && opts.repo !== key) continue;
     const result: IntakeResult = { repo: key, considered: 0, started: [], skipped: [] };
     results.push(result);
     if (cos.store.isRepoPaused(key)) {
@@ -101,41 +126,66 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     try {
       const issues = await eligibleIssues(github, repo);
       result.considered = issues.length;
-      for (const issue of issues) {
+      const issueCursorKey = `intake:nextIssue:${key}`;
+      const nextIssue = resumable ? await kv.get<number>(issueCursorKey) : null;
+      const issueStart = Math.max(0, issues.findIndex((issue) => issue.number === nextIssue));
+      let dryRunRepo = 0;
+      // The repository's open PRs, listed on first need and then reused for every issue of this run.
+      let openPulls: Promise<GitHubPull[]> | null = null;
+      for (let issueOffset = 0; issueOffset < issues.length; issueOffset++) {
         if (cos.store.isPaused(key)) break;
-        if (cos.store.findActiveForIssue(key, issue.number)) {
-          result.skipped.push({ issue: issue.number, reason: "active thread exists" });
-          continue;
+        if ((issueOffset > 0 || !resumable) && outOfTime()) break repos;
+        const issueIndex = (issueStart + issueOffset) % issues.length;
+        const issue = issues[issueIndex]!;
+        try {
+          if (cos.store.findActiveForIssue(key, issue.number)) {
+            result.skipped.push({ issue: issue.number, reason: "active thread exists" });
+            continue;
+          }
+          // Capacity is a local read: check it before the GitHub lookup, so a full repository costs no request.
+          const capacity = capacityProblem(cos, repo, config.values.maxConcurrentTotal, { repo: dryRunRepo, total: dryRunTotal });
+          if (capacity) {
+            result.skipped.push({ issue: issue.number, reason: capacity });
+            continue;
+          }
+          openPulls ??= github.listOpenPulls(repo.owner, repo.repo);
+          const pr = matchOpenPullForIssue(await openPulls, issue.number, BRANCH_PREFIX);
+          if (pr) {
+            result.skipped.push({ issue: issue.number, reason: `open PR #${pr.number}` });
+            continue;
+          }
+          if (opts.dryRun) {
+            dryRunRepo += 1;
+            dryRunTotal += 1;
+            result.started.push({ issue: issue.number, threadId: "(dry-run)" });
+            continue;
+          }
+          const item = await startIssue(cos, repo, issue, opts.actor);
+          result.started.push({ issue: issue.number, threadId: item?.threadId ?? "?" });
+        } finally {
+          if (resumable) await kv.set(issueCursorKey, issues[(issueIndex + 1) % issues.length]!.number);
         }
-        const pr = await github.findOpenPullForIssue(repo.owner, repo.repo, issue.number, BRANCH_PREFIX);
-        if (pr) {
-          result.skipped.push({ issue: issue.number, reason: `open PR #${pr.number}` });
-          continue;
-        }
-        const capacity = capacityProblem(cos, repo, config.values.maxConcurrentTotal);
-        if (capacity) {
-          result.skipped.push({ issue: issue.number, reason: capacity });
-          continue;
-        }
-        if (opts.dryRun) {
-          result.started.push({ issue: issue.number, threadId: "(dry-run)" });
-          continue;
-        }
-        const item = await startIssue(cos, repo, issue, opts.actor);
-        result.started.push({ issue: issue.number, threadId: item?.threadId ?? "?" });
       }
     } catch (error) {
+      // Every later request would be refused too (the limit itself is logged once).
+      if (error instanceof GitHubRateLimitError) {
+        result.error = `GitHub rate limit until ${describeReset(error.resetAt, cos.now())}`;
+        break;
+      }
       result.error = await cos.safe(error instanceof Error ? error.message : String(error));
       cos.store.log({ level: "error", kind: "intake", repo: key, workItemId: null, message: `intake failed: ${result.error}`, actor: opts.actor });
+    } finally {
+      if (resumable) await kv.set(repoCursorKey, repoKey(repos[(repoIndex + 1) % repos.length]!));
     }
   }
   if (results.some((r) => r.started.length)) cos.invalidate();
   return results;
 }
 
-function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number): string | null {
-  if (cos.store.countOccupied(repoKey(repo)) >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
-  if (cos.store.countOccupied() >= maxTotal) return `global max concurrency (${maxTotal})`;
+/** `pending` is what a dry run would have started so far: nothing is stored for it, so it is added to the stored count. */
+function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number, pending = { repo: 0, total: 0 }): string | null {
+  if (cos.store.countOccupied(repoKey(repo)) + pending.repo >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
+  if (cos.store.countOccupied() + pending.total >= maxTotal) return `global max concurrency (${maxTotal})`;
   return null;
 }
 

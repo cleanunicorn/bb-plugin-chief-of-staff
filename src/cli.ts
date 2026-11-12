@@ -1,6 +1,6 @@
 // `bb cos …` commands.
 import { cliCommand, defineCli, PluginCliError, type BbPluginApi } from "@get-bb/plugin-sdk";
-import type { Cos } from "./context";
+import { liveWarnings, type Cos } from "./context";
 import { buildRoster, type RosterEntry } from "./roster";
 import { runIntake, startTask } from "./intake";
 import { itemAction } from "./rpc";
@@ -44,8 +44,9 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
           async run(input) {
             const entries = await buildRoster(cos, { repo: input.options.repo, includeDone: input.options.all, withUsage: input.options.usage });
             const overview = await cos.config();
-            if (input.options.json) return json({ entries, errors: overview.errors, warnings: overview.warnings });
-            const notes = [...overview.errors.map((e) => `config error: ${e}`), ...overview.warnings.map((w) => `warning: ${w}`)];
+            const warnings = liveWarnings(cos, overview);
+            if (input.options.json) return json({ entries, errors: overview.errors, warnings });
+            const notes = [...overview.errors.map((e) => `config error: ${e}`), ...warnings.map((w) => `warning: ${w}`)];
             return out(formatRoster(entries) + (notes.length ? "\n" + notes.join("\n") + "\n" : ""));
           },
         }),

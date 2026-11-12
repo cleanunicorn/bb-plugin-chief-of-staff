@@ -129,8 +129,14 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
 }
 
 const nodeTypes = { step: StepNode };
-/** Read-only fit: small workflows are not blown up past their natural size. */
-const FIT = { padding: 0.15, maxZoom: 1.1 };
+/** Zoom floor for fitting and Zoom Out: low enough that a long workflow fits a phone-sized canvas (React Flow's default is 0.5). */
+const MIN_ZOOM = 0.1;
+/**
+ * One framing per mode, shared by the opening fit, the resize refit and the Fit button, so they all agree.
+ * maxZoom: small workflows are not blown up past their natural size.
+ */
+const FIT_VIEW = { padding: 0.15, minZoom: MIN_ZOOM, maxZoom: 1.1 };
+const FIT_EDIT = { padding: 0.2, minZoom: MIN_ZOOM, maxZoom: 1.1 };
 
 export interface WorkflowCanvasProps {
   workflow: Workflow;
@@ -152,6 +158,7 @@ export interface WorkflowCanvasProps {
 function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
   const { fitView } = useReactFlow();
+  const fit = editable ? FIT_EDIT : FIT_VIEW;
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
     (): Node<StepNodeData>[] =>
@@ -280,7 +287,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     let raf = 0;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => void fitView(FIT));
+      raf = requestAnimationFrame(() => void fitView(FIT_VIEW));
     });
     observer.observe(el);
     return () => {
@@ -330,14 +337,15 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           onBeforeDelete={onBeforeDelete}
           deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
           colorMode="system"
+          minZoom={MIN_ZOOM}
           fitView
-          fitViewOptions={editable ? { padding: 0.2 } : FIT}
+          fitViewOptions={fit}
           proOptions={{ hideAttribution: true }}
         >
           <Background gap={16} size={1} />
           {/* React Flow's own fit-view glyph is the corner frame people read as "full screen"; use a crosshair instead. */}
           <Controls showInteractive={false} showFitView={false}>
-            <ControlButton onClick={() => void fitView({ padding: 0.2, duration: 200 })} title="Fit all steps in view" aria-label="Fit all steps in view">
+            <ControlButton onClick={() => void fitView({ ...fit, duration: 200 })} title="Fit all steps in view" aria-label="Fit all steps in view">
               <FitGlyph />
             </ControlButton>
           </Controls>
