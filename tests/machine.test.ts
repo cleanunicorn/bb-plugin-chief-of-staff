@@ -3,7 +3,7 @@ import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, deriveStatus, initialNodes, transi
 import type { WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
-import { pipelineLine, stepPrompt } from "../src/prompts";
+import { nudgePrompt, pipelineLine, stepPrompt } from "../src/prompts";
 import { stepForStage } from "../src/roster";
 import { leadReport } from "../src/delivery";
 
@@ -509,6 +509,21 @@ describe("an agent step that chooses the model", () => {
     const block = prompt.slice(prompt.indexOf("## Step report")).replace("<id of the model you pick>", "small").replace("<your result>", "ok");
     expect(parseTextReport(block, NOW.toISOString())).toMatchObject({ delivery: "d-42", step: "triage", outcome: "done", choice: "small", summary: "ok" });
   });
+
+  it("reminds an agent that stops without reporting which choice ids it may pick", () => {
+    const nudge = nudgePrompt(flow.steps[0] as AgentStep, "d-7");
+    expect(nudge).toContain('`delivery: "d-7"`');
+    expect(nudge).toContain("`choice` (one of `small`, `hard`)");
+  });
+
+  it("asks a pass/fail step's text report for done or failed, and does not parse the placeholder as a pass", () => {
+    const review = DEFAULT_WORKFLOW.steps.find((s) => s.id === "review") as AgentStep;
+    const [started] = run(itemFor(DEFAULT_WORKFLOW), { type: "start" });
+    const block = stepPrompt(started, review, 0).slice(stepPrompt(started, review, 0).indexOf("## Step report"));
+    expect(block).toContain("outcome: <done or failed>");
+    expect(parseTextReport(block, NOW.toISOString())).toBeNull();
+    expect(parseTextReport(block.replace("<done or failed>", "failed"), NOW.toISOString())?.outcome).toBe("failed");
+  });
 });
 
 describe("an automatic model step", () => {
@@ -586,6 +601,7 @@ describe("an automatic model step", () => {
     expect(prompt).not.toContain("or none if it lists none");
     expect(prompt).toContain("Report the provider's `id` as `providerId`");
     expect(prompt).toContain("providerId: <provider id>");
+    expect(nudgePrompt(agentWork(flow.steps[0])!)).toContain("the `providerId` and `model` you pick");
     expect(prompt).toContain("This step is read-only");
   });
 

@@ -62,7 +62,7 @@ function contract(step: AgentWork, delivery?: string): string[] {
     `## Step report`,
     `step: ${step.id}`,
     ...(delivery ? [`delivery: ${delivery}`] : []),
-    `outcome: done`,
+    `outcome: ${step.verdict ? "<done or failed>" : "done"}`,
     ...(picks ? [`choice: <id of the model you pick>`] : []),
     ...(auto ? [`providerId: <provider id>`, `model: <model id>`, `reasoningLevel: <one of the model's reasoning levels; leave this line out if it lists none>`] : []),
     `summary: <your result>`,
@@ -109,11 +109,16 @@ export function stepPrompt(item: WorkItem, step: AgentWork, agent: number, ctx: 
 }
 
 /** The reminder sent when an agent ends its turn without reporting its step. */
-export function nudgePrompt(step: AgentStep, delivery?: string): string {
+export function nudgePrompt(step: AgentWork, delivery?: string): string {
   const id = delivery ? `, \`delivery: "${delivery}"\`` : "";
+  const pick = step.chooses.length
+    ? ` and \`choice\` (one of ${step.chooses.map((c) => `\`${c.id}\``).join(", ")})`
+    : step.picksModel
+      ? " and the `providerId` and `model` you pick (plus `reasoningLevel` if the model lists levels)"
+      : "";
   return [
     `You ended your turn without reporting the step **${step.name}**.`,
-    `- Finished? Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\`${id} (or end with the Step report block${delivery ? `, \`delivery: ${delivery}\` included` : ""}).`,
+    `- Finished? Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\`${id}${pick} (or end with the Step report block${delivery ? `, \`delivery: ${delivery}\` included` : ""}).`,
     `- Need a decision? Ask it, or report \`outcome: "needs_input"\` with the question.`,
     `- Not finished? Keep working, then report.`,
   ].join("\n");
