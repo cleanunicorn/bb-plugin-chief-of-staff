@@ -37,7 +37,15 @@ export interface AgentDelivery {
   sentAt: number;
 }
 
-export interface InfraRetry { cause?: "prompt_delivery" | "thread_failure"; effect: Effect; at: string | null; count: number; uncertain?: boolean }
+export interface InfraRetry {
+  cause?: "prompt_delivery" | "thread_failure";
+  effect: Effect;
+  at: string | null;
+  count: number;
+  uncertain?: boolean;
+  /** Times the effect was put off for a rate limit (these do not count as retries). */
+  deferrals?: number;
+}
 
 /** Old thread-failure retries are distinguished by fresh:true; they predate cause. */
 export function isPromptDeliveryRetry(retry: InfraRetry | null | undefined): boolean {
@@ -97,7 +105,8 @@ export type MachineEvent =
   | { type: "merge_waiting"; reason: string }
   | { type: "pr_merged" }
   | { type: "pr_closed" }
-  | { type: "effect_error"; step: string; effect: Effect; message: string; uncertain?: boolean }
+  /** `retryAt`: the effect was refused for a rate limit; run it again then, without counting a retry. */
+  | { type: "effect_error"; step: string; effect: Effect; message: string; uncertain?: boolean; retryAt?: string }
   | { type: "delivery_ack"; step: string; agent: number; round: number }
   | { type: "retry_due"; step: string }
   /** Jobs this process is not running (restart): start them again. */
@@ -151,6 +160,12 @@ export interface Transition {
   /** What happened, for the task's history. */
   journal: JournalEntry[];
 }
+
+/**
+ * Rate-limit deferrals in a row before they count as ordinary retries, so an
+ * effect that keeps drawing a limit ends up in front of a person.
+ */
+export const MAX_RATE_LIMIT_DEFERRALS = 10;
 
 /** Backoff before infrastructure retry n (1-based): 1, 4, 9 minutes. */
 export function infraBackoffMs(attempt: number): number {
@@ -501,6 +516,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       // recoverable prompt error. Only an explicit retry replaces that thread.
       if (event.effect.type === "agent" && previous && !isPromptDeliveryRetry(previous)) break;
       const count = (previous?.count ?? 0) + 1;
+      const deferrals = previous?.deferrals ?? 0;
       if (event.effect.type !== "agent") patch.jobStartedAt = null;
       patch.lastError = event.message.slice(0, 1000);
       if (event.uncertain) {
@@ -509,10 +525,13 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         }
         n.retry = { effect: event.effect, at: null, count, uncertain: true };
         wait(event.step, "cos_error", `Prompt delivery is uncertain; automatic resend is disabled. A matching agent report can recover it. ${event.message}`, event.effect.type === "agent" ? event.effect.agent : undefined);
+      } else if (event.retryAt && deferrals < MAX_RATE_LIMIT_DEFERRALS) {
+        // Waiting out a rate limit is not a failure: run again at the reset.
+        n.retry = { effect: event.effect, at: event.retryAt, count: previous?.count ?? 0, uncertain: false, deferrals: deferrals + 1 };
       } else if (count <= policy.maxInfraRetries) {
-        n.retry = { effect: event.effect, at: new Date(now.getTime() + infraBackoffMs(count)).toISOString(), count, uncertain: false };
+        n.retry = { effect: event.effect, at: new Date(now.getTime() + infraBackoffMs(count)).toISOString(), count, uncertain: false, ...(deferrals ? { deferrals } : {}) };
       } else {
-        n.retry = { effect: event.effect, at: null, count, uncertain: false };
+        n.retry = { effect: event.effect, at: null, count, uncertain: false, ...(deferrals ? { deferrals } : {}) };
         wait(event.step, "cos_error", `Chief of Staff could not ${EFFECT_LABEL[event.effect.type]} after ${policy.maxInfraRetries} retries (the agent is not asking anything): ${event.message}`);
       }
       if (event.effect.type === "agent" && n.retry) {

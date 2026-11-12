@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
-import type { GitHubClient, GitHubIssue } from "./github";
+import { unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes } from "./machine";
@@ -42,9 +42,10 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
     github = null;
   }
   const lines: string[] = [];
-  const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(() => null) : null;
+  // A rate limit propagates: the prompt waits for the reset rather than go out with a thin brief.
+  const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(unlessRateLimited(() => null)) : null;
   if (issue && github) {
-    const comments = await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENTS }).catch(() => []);
+    const comments = await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENTS }).catch(unlessRateLimited((): GitHubComment[] => []));
     lines.push(`You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.title}`, issue.html_url, ``, (issue.body ?? "(no description)").slice(0, MAX_BODY));
     if (comments.length) {
       lines.push(``, `## Issue comments`);
@@ -59,7 +60,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   if (github) {
     const conventions: string[] = [];
     for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"]) {
-      const content = await github.getFileContent(repo.owner, repo.repo, file).catch(() => null);
+      const content = await github.getFileContent(repo.owner, repo.repo, file).catch(unlessRateLimited(() => null));
       if (content) conventions.push(`### ${file}\n${content.slice(0, MAX_CONVENTIONS)}`);
       if (conventions.length >= 2) break;
     }

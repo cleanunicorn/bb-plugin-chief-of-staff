@@ -1637,6 +1637,89 @@ describe("chief-of-staff server", () => {
     expect(input!.mentions.map((m) => [input!.text.slice(m.start, m.end), m.resource.source])).toEqual([["/tdd", "skill"]]);
   });
 
+  describe("GitHub rate limits", () => {
+    const T0 = Date.parse("2026-11-06T10:00:00Z");
+    const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+    const limited = { status: 429, headers: { "retry-after": "600" }, body: { message: "API rate limit exceeded" } };
+    const itemNodes = () => new StateStore(host.bb.storage.database()).listWorkItems()[0]!.nodes;
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      at(0);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("opens the PR after the reset without using up a retry or asking a person", async () => {
+      let refuse = true;
+      ghRoutes["POST /repos/acme/app/pulls"] = () => {
+        if (refuse) { refuse = false; return limited; }
+        prCreated = true;
+        return { status: 201, body: currentPull };
+      };
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      expect(itemNodes().ship!.retry).toMatchObject({ count: 0, at: "2026-11-06T10:10:00.000Z" });
+      expect(await roster()).toMatchObject({ detail: "retrying", waitingKind: null });
+      at(5);
+      await sweep();
+      const posts = () => ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls").length;
+      expect(posts()).toBe(1);
+      at(10);
+      await sweep();
+      expect(posts()).toBe(2);
+      expect(await roster()).toMatchObject({ detail: "done", prNumber: 7, waitingKind: null });
+    });
+
+    it("defers a spawn whose issue cannot be read rather than brief the agent without it", async () => {
+      let refuse = true;
+      ghRoutes["GET /repos/acme/app/issues/12"] = () => {
+        if (refuse) { refuse = false; return limited; }
+        return { body: issue };
+      };
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(itemNodes().build!.agentRetries?.[0]).toMatchObject({ count: 0, at: "2026-11-06T10:10:00.000Z" });
+      expect(await roster()).toMatchObject({ detail: "retrying", waitingKind: null });
+      at(10);
+      await sweep();
+      const spawns = host.harness.inspection.sdk.callsTo("threads.spawn");
+      expect(spawns).toHaveLength(1);
+      expect((spawns[0]![0] as { prompt: string }).prompt).toContain("Login breaks");
+    });
+
+    it("still records the environment branch when the spawn's issue comment is refused", async () => {
+      ghRoutes["POST /repos/acme/app/issues/12/comments"] = () => limited;
+      host.harness.inspection.sdk.stub("environments.get", async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "bb/fix-login-thr_1", status: "ready" }) as never);
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await vi.waitFor(() => expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]!.branch).toBe("bb/fix-login-thr_1"));
+      expect(itemNodes().build!).toMatchObject({ status: "running", retry: null });
+      expect(await roster()).toMatchObject({ detail: "agent" });
+    });
+
+    it("does not react to failing CI until the logs can be downloaded", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }) });
+      ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
+      ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [{ id: 5, name: "test", conclusion: "failure" }] } });
+      let refuse = true;
+      ghRoutes["GET /repos/acme/app/actions/jobs/5/logs"] = () => {
+        if (refuse) { refuse = false; return limited; }
+        return { text: "AssertionError: expected 1 to be 2" };
+      };
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      expect(await roster()).toMatchObject({ detail: "ci" });
+      await sweep();
+      const id = (await roster()).id;
+      expect(await roster()).toMatchObject({ detail: "ci" });
+      expect(await host.bb.storage.kv.get(`ci-failed:${id}`)).toBeUndefined();
+      at(10);
+      await sweep();
+      expect(await roster()).toMatchObject({ current: ["Build"] });
+      expect(itemNodes().build!.feedback).toContain("AssertionError");
+    });
+  });
+
   it("quotes the newest comments of a long issue in the brief", async () => {
     ghRoutes["GET /repos/acme/app/issues/12/comments"] = (url) => {
       const page = Number(url.searchParams.get("page") ?? "1");

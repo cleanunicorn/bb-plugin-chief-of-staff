@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 // block on a 30-minute test run; a job's result is dropped if the item moved on.
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
-import { GitHubError } from "./github";
+import { GitHubError, GitHubRateLimitError, unlessRateLimited } from "./github";
 import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
@@ -142,8 +142,10 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
         cos.bb.log.warn(`post-delivery bookkeeping failed for ${item.id}/${effect.type === "agent" ? effect.step : ""}: ${message}`);
         continue;
       }
-      cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}${await stackOf(cos, error)}`, actor });
-      if (effect.type !== "notify") await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message, uncertain: delivery?.id !== beforeDelivery && (delivery?.state === "sending" || delivery?.state === "uncertain") }, actor);
+      const retryAt = rateLimitReset(error);
+      if (retryAt) logRateLimited(cos, item.repo, item.id, effect.type, retryAt, actor);
+      else cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `${effect.type} failed: ${message}${await stackOf(cos, error)}`, actor });
+      if (effect.type !== "notify") await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message, uncertain: delivery?.id !== beforeDelivery && (delivery?.state === "sending" || delivery?.state === "uncertain"), ...(retryAt ? { retryAt } : {}) }, actor);
     }
   }
   if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
@@ -165,6 +167,15 @@ async function recordEngineError(cos: Cos, item: WorkItem, event: MachineEvent, 
   cos.invalidate();
   const label = item.issueNumber ? `${item.repo}#${item.issueNumber}` : item.repo;
   await cos.notify(`Chief of Staff needs help: ${label}`, `${lastError}\nIt retries every minute; the agent's report is kept.`, item.threadId ?? undefined).catch(() => undefined);
+}
+
+/** When a GitHub rate limit refused the effect: the reset to run it again at. */
+function rateLimitReset(error: unknown): string | undefined {
+  return error instanceof GitHubRateLimitError ? error.resetAt.toISOString() : undefined;
+}
+
+function logRateLimited(cos: Cos, repo: string | null, itemId: string, what: string, retryAt: string, actor: string): void {
+  cos.store.log({ level: "warn", kind: "effect", repo, workItemId: itemId, message: `${what} is waiting for the GitHub rate limit to reset at ${retryAt}`, actor });
 }
 
 /** An error's stack trace for the activity log (on its own lines, redacted), or "". */
@@ -342,8 +353,10 @@ async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: Age
   if (step.writes) cos.store.updateWorkItem(item.id, { providerId: spawned.providerId, model: spawned.model });
   cos.store.log({ level: "info", kind: "spawn", repo: item.repo, workItemId: item.id, message: `spawned ${step.name} ${spawned.thread.id}`, actor });
   if (step.writes && item.issueNumber && !item.threadId) {
-    const github = await cos.github();
-    await github.createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).\n\nBB thread: ${threadUrl(cos, spawned.thread.id)}`);
+    // Best effort: the agent is already running, and its bookkeeping below must happen.
+    await (await cos.github())
+      .createIssueComment(repo.owner, repo.repo, item.issueNumber, `🤖 Chief of Staff started an agent on this issue (workflow: ${item.workflow.name}).\n\nBB thread: ${threadUrl(cos, spawned.thread.id)}`)
+      .catch(async (error: unknown) => cos.bb.log.warn(`issue comment for ${item.repo}#${item.issueNumber} failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`));
   }
   if (step.writes) void recordEnvironmentBranch(cos, item.id, spawned.thread.id);
   cos.invalidate();
@@ -380,8 +393,10 @@ function startJob(cos: Cos, itemId: string, effect: Extract<Effect, { type: "che
     } catch (error) {
       const message = await cos.safe(error instanceof Error ? error.message : String(error));
       const item = cos.store.getWorkItem(itemId);
-      cos.store.log({ level: "error", kind: "effect", repo: item?.repo ?? null, workItemId: itemId, message: `${effect.type} failed: ${message}`, actor });
-      result = { type: "effect_error", step: effect.step, effect, message };
+      const retryAt = rateLimitReset(error);
+      if (retryAt) logRateLimited(cos, item?.repo ?? null, itemId, effect.type, retryAt, actor);
+      else cos.store.log({ level: "error", kind: "effect", repo: item?.repo ?? null, workItemId: itemId, message: `${effect.type} failed: ${message}`, actor });
+      result = { type: "effect_error", step: effect.step, effect, message, ...(retryAt ? { retryAt } : {}) };
     }
     if (jobs.get(itemId)?.promise === holder.promise) jobs.delete(itemId);
     if (result) await report(result);
@@ -632,15 +647,21 @@ export async function watchCi(cos: Cos, actor: string): Promise<void> {
       if (ci.state === "failing") {
         // React once per head sha.
         if ((await cos.bb.storage.kv.get<string>(CI_MARKER(item.id))) === pr.head.sha) continue;
-        await cos.bb.storage.kv.set(CI_MARKER(item.id), pr.head.sha);
         let log = ci.failed.map((f) => `- ${f.name}: ${f.url}`).join("\n");
         const runId = ci.failed.find((f) => f.runId)?.runId;
-        if (runId) log += `\n\n${await github.getJobLogsForRun(repo.owner, repo.repo, runId).catch(() => "(log download failed)")}`;
+        // A rate limit is not a failed download: react on a later pass, with the logs.
+        if (runId) log += `\n\n${await github.getJobLogsForRun(repo.owner, repo.repo, runId).catch(unlessRateLimited(() => "(log download failed)"))}`;
+        await cos.bb.storage.kv.set(CI_MARKER(item.id), pr.head.sha);
         await dispatch(cos, item.id, { type: "ci_failing", log: await cos.safe(log) }, actor);
       } else if (ci.state === "passing" || ci.state === "no_checks") {
         if (item.nodes[ship.id]?.phase === "ci" || ship.action === "merge") await dispatch(cos, item.id, { type: "ci_passing" }, actor);
       }
     } catch (error) {
+      // Every later request would be refused too; the sweep resumes after the reset.
+      if (error instanceof GitHubRateLimitError) {
+        cos.bb.log.info(`CI watch paused: ${await cos.safe(error.message)}`);
+        return;
+      }
       cos.bb.log.warn(`CI watch for ${item.repo}#${item.prNumber} failed: ${await cos.safe(error instanceof Error ? error.message : String(error))}`);
     }
   }

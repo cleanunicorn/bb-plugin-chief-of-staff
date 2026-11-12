@@ -81,6 +81,14 @@ export class GitHubRateLimitError extends GitHubError {
   }
 }
 
+/** A catch handler that falls back on any error but a rate limit, which it passes on. */
+export function unlessRateLimited<T>(fallback: () => T): (error: unknown) => T {
+  return (error) => {
+    if (error instanceof GitHubRateLimitError) throw error;
+    return fallback();
+  };
+}
+
 /** Bounds on how long a rate limit pauses GitHub work. */
 const MIN_LIMIT_MS = 30_000;
 const MAX_LIMIT_MS = 60 * 60_000;
@@ -358,6 +366,7 @@ export class GitHubClient {
         const text = await this.request<string>("GET", `/repos/${owner}/${repo}/actions/jobs/${job.id}/logs`, undefined, { raw: true, accept: "text/plain" });
         chunks.push(`### Job: ${job.name}\n${text.slice(-Math.floor(maxChars / Math.max(1, Math.min(3, failing.length))))}`);
       } catch (error) {
+        if (error instanceof GitHubRateLimitError) throw error;
         chunks.push(`### Job: ${job.name}\n(log unavailable: ${error instanceof Error ? error.message : String(error)})`);
       }
     }
