@@ -63,6 +63,13 @@
   general settings still fail to send, the status says what was saved and only
   General stays unsaved.
 
+- **Backspace and Delete no longer remove a workflow step.** In the workflow
+  editor the keys deleted the selected step and its instructions at once, even
+  with focus on a switch in the side panel, and the only undo was discarding
+  all unsaved changes. They now remove only a selected arrow; remove a step
+  with the Remove button in its panel, which asks first. The canvas also no
+  longer drops the only step of a workflow while the workflow keeps it.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,

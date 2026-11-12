@@ -216,26 +216,27 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     if (id !== selectedRef.current) onSelectRef.current?.(id);
   }, []);
 
+  // Steps are removed from the panel (which asks first), never from the canvas, so a `remove` change
+  // is dropped here: the canvas can only lose a step the document has lost.
   const onNodesChange = useCallback(
     (changes: NodeChange<Node<StepNodeData>>[]) => {
-      setNodes((ns) => applyNodeChanges(changes, ns));
+      setNodes((ns) => applyNodeChanges(changes.filter((c) => c.type !== "remove"), ns));
       if (!editable) return;
-      const removed = changes.filter((c) => c.type === "remove").map((c) => c.id);
       const moved = changes.filter((c): c is Extract<NodeChange, { type: "position" }> => c.type === "position" && c.dragging === false && Boolean(c.position));
-      if (!removed.length && !moved.length) return;
-      const steps = workflow.steps
-        .filter((s) => !removed.includes(s.id))
-        .map((s) => {
-          const m = moved.find((c) => c.id === s.id);
-          const cleaned = { ...s, next: s.next.filter((n) => !removed.includes(n)), ...(s.onFail && removed.includes(s.onFail) ? { onFail: undefined } : {}) } as Step;
-          return m?.position ? ({ ...cleaned, position: { x: Math.round(m.position.x), y: Math.round(m.position.y) } } as Step) : cleaned;
-        });
-      if (!steps.length) return;
+      if (!moved.length) return;
+      const steps = workflow.steps.map((s) => {
+        const m = moved.find((c) => c.id === s.id);
+        return m?.position ? ({ ...s, position: { x: Math.round(m.position.x), y: Math.round(m.position.y) } } as Step) : s;
+      });
       update({ ...workflow, steps });
-      if (removed.includes(selected ?? "")) onSelect?.(null);
     },
-    [editable, workflow, update, selected, onSelect],
+    [editable, workflow, update],
   );
+
+  // Backspace and Delete listen on the whole document, so a step selected while focus sits on a switch or
+  // button in the side panel would be deleted with no confirmation. React Flow also adds every arrow
+  // connected to a deleted step to `edges`, so hand back only the arrows the user selected.
+  const onBeforeDelete = useCallback(async () => ({ nodes: [], edges: edges.filter((e) => e.selected) }), [edges]);
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
@@ -326,6 +327,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           // Arrows can only be removed, so they are tab stops in the editor only.
           edgesFocusable={editable}
           elementsSelectable
+          onBeforeDelete={onBeforeDelete}
           deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
           colorMode="system"
           fitView
