@@ -1,16 +1,25 @@
 // What React Flow needs to render in jsdom (https://reactflow.dev/learn/advanced-use/testing).
 import { vi } from "vitest";
 
+/** Like a browser, reports every element observed in the same task in one callback, so React Flow's opening fit sees all the steps. */
 class ResizeObserverStub {
+  private pending: Element[] = [];
   constructor(private callback: ResizeObserverCallback) {}
-  observe(target: Element) { this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver); }
-  unobserve() {}
-  disconnect() {}
+  observe(target: Element) {
+    if (this.pending.push(target) > 1) return;
+    queueMicrotask(() => {
+      const targets = this.pending;
+      this.pending = [];
+      if (targets.length) this.callback(targets.map((t) => ({ target: t }) as ResizeObserverEntry), this as unknown as ResizeObserver);
+    });
+  }
+  unobserve(target: Element) { this.pending = this.pending.filter((t) => t !== target); }
+  disconnect() { this.pending = []; }
 }
 class DOMMatrixReadOnlyStub {
   m22: number;
   constructor(transform?: string) {
-    const scale = transform?.match(/scale\(([1-9.]+)\)/)?.[1];
+    const scale = transform?.match(/scale\(([0-9.]+)\)/)?.[1];
     this.m22 = scale !== undefined ? +scale : 1;
   }
 }
