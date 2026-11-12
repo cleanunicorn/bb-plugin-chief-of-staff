@@ -125,6 +125,8 @@ it("runs a step again from the step list, without the canvas", async () => {
   expect(rows[1]!.getAttribute("aria-pressed")).toBe("true");
   expect(dialog()!.querySelector('[aria-label="Step details"]')!.textContent).toContain("needs approval");
   await click(button("Run again from here", dialog()!));
+  expect(mocks.call).not.toHaveBeenCalled();
+  await click(button("Run again", document.querySelectorAll<HTMLElement>('[role="dialog"]')[1]!));
   expect(mocks.call).toHaveBeenCalledWith("cos_item_action", { id: "one", action: "rerun_step", step: "build" });
 
   // The selection survives switching views.
@@ -169,4 +171,21 @@ it("closes the question sheet and opens the thread", async () => {
   await click(button("Open thread", dialog()!));
   expect(dialog()).toBeNull();
   expect(mocks.navigate.toThread).toHaveBeenCalledWith("thread-1");
+});
+
+it("asks before closing the question sheet over a draft, then returns focus to the question button", async () => {
+  const opener = button("Open the question", container);
+  await click(opener);
+  const reply = dialog()!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(reply, "Half a th");
+    reply.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await press("Escape");
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(2);
+  await click(button("Discard", document));
+  await settle();
+  expect(dialog()).toBeNull();
+  expect(document.activeElement).toBe(opener);
+  expect(document.body.style.pointerEvents).not.toBe("none");
 });

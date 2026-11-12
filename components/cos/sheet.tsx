@@ -25,6 +25,11 @@ export function useSheetFocus<Fallback extends HTMLElement = HTMLElement>() {
 
 interface SheetProps {
   onClose: () => void;
+  /**
+   * Asked before Escape, a click outside or a DialogClose closes the sheet. Return false to stay open
+   * (for example to ask about an unsent draft first). Without it the sheet always closes.
+   */
+  onRequestClose?: () => boolean;
   /** Runs once the sheet has closed; put focus back where it came from. */
   restoreFocus?: () => void;
   /** Call `event.preventDefault()` to keep the sheet open. */
@@ -35,10 +40,10 @@ interface SheetProps {
 }
 
 /** Name it with a DialogTitle inside; close buttons go in DialogClose. */
-export const Sheet = forwardRef<HTMLDivElement, SheetProps>(({ onClose, restoreFocus, onEscapeKeyDown, className, style, children }, ref) => (
+export const Sheet = forwardRef<HTMLDivElement, SheetProps>(({ onClose, onRequestClose, restoreFocus, onEscapeKeyDown, className, style, children }, ref) => (
   // Always the centred dialog: the compact drawer closes on swipe, which fights canvas panning and scrolling.
   <CompactViewportOverrideProvider isCompactViewport={false}>
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <Dialog open onOpenChange={(open) => !open && (onRequestClose?.() ?? true) && onClose()}>
       <DialogContent
         ref={ref}
         hideCloseButton

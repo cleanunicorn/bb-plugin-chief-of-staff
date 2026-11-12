@@ -103,6 +103,14 @@
   has its own Exit full screen bar with an Escape hint, separated from step
   removal; the task workflow sheet also has a labeled exit button.
 
+- **Task actions that end or reset work ask first.** "Mark done", "Mark
+  failed" and "Run again from here" ask for confirmation; the last one says
+  how many steps it resets. Retry, Resume and Approve stay one click. The More
+  actions menu closes on Escape, outside clicks and taps, and works with the
+  keyboard. A sent message clears so it can't go twice, and closing the
+  question sheet with an unsent reply asks first. Actions on one task no
+  longer re-enable another task's buttons.
+
 - **Fixed Model steps no longer keep the choosing text.** Switching a Model
   step from Automatically to Fixed, or to another step type, drops the default
   "choose the best model" instructions (text you wrote stays). The Notes field
