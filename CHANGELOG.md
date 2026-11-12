@@ -27,9 +27,12 @@
   default on) turns the status comment and the "opened pull request" comment
   off. The pull request comment stays a separate comment.
 
-
 - **The plugin is now licensed under Apache 2.0.** The full text is in
   `LICENSE`, and `package.json` declares it.
+
+- **Accurate plugin descriptions.** The plugin description in BB no longer
+  mentions scheduled routines (removed earlier), and the issue intake overview
+  names only the filters that exist: labels and assignee.
 
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
@@ -183,7 +186,6 @@
   threads (in the task's workspace once code exists).
 - Migration: the stage config converts into a workflow (repos with stage
   overrides get their own), and tasks in flight continue at their stage.
-
 
 - **Delivery workflow: Plan → Build → Verify → Review → Ship.** Chief of Staff
   takes every task through these stages and only moves on when the agent

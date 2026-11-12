@@ -13,7 +13,7 @@ raise a notification; you can retry, resume or re-run checks from the panel,
 
 ## Issue intake
 
-Label, milestone, assignee or explicit issue numbers decide which GitHub
+Labels and an assignee decide which GitHub
 issues become agent work. Each issue gets an isolated worktree thread with a
 prompt built from the issue, its comments and the repo's conventions, plus one
 status comment on the issue. The comment is edited, not repeated, when the task

@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Chief of Staff",
-    "description": "Watches agents, turns GitHub issues into agent PRs, and runs scheduled batch-merge/release/deploy routines.",
+    "description": "Watches agents, turns GitHub issues into agent PRs, and delivers them through your configured workflow.",
     "branding": {
       "icon": "./assets/chef-hat.svg",
       "experimental_icons": {
@@ -52,7 +52,7 @@
     "typescript-eslint": "^8.72.2",
     "vitest": "^5.1.0"
   },
-  "description": "Engineering chief of staff for BB: watches agents, turns GitHub issues into agent work, delivers PRs, runs scheduled routines.",
+  "description": "Engineering chief of staff for BB: watches agents, turns GitHub issues into agent work, delivers PRs.",
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
