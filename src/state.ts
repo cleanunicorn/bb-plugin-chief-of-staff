@@ -3,6 +3,9 @@
 // step), item_threads (which agent thread works on which step), step_journal
 // (what happened to each step, kept across re-runs) and activity_log. Columns from the fixed-stage model and the removed routines
 // feature are left in place and unused.
+// work_items also stores occupies_capacity (occupiesCapacity of the row, kept
+// by every write and counted in SQL) and detail_pruned_at (when retention
+// removed a finished item's step details; cleared when the item is active again).
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";

@@ -455,10 +455,20 @@ flowchart TB
 
 - State lives in the plugin's SQLite database: `work_items` (each task with a
   snapshot of its workflow and the state of every step), `item_threads` (which
-  agent thread works on which step) and `activity_log`. On startup the plugin
-  reconciles every active item against its threads.
+  agent thread works on which step), `step_journal` (each step's history) and
+  `activity_log`. On startup the plugin reconciles every active item against
+  its threads.
+- Storage stays bounded as history grows. Whether a task holds a capacity
+  slot is stored with the task, so admission counts it in SQL, and stats are
+  computed from the tasks' status and timestamps. The activity log keeps its
+  newest 5,000 entries and the step journal its newest 50,000.
+- Retention: 90 days after a task finishes (the longest stats window), its
+  per-step outputs, report summaries and feedback text are removed, at startup
+  and then once a day. The task itself stays, with its status, PR, branch,
+  timestamps, workflow, step statuses, model picks and thread links, so it
+  still shows under finished tasks, counts in stats, and can be retried.
 - One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
-  retries and stall detection.
+  retries, stall detection and the daily retention pass.
 - Workflow engine (`src/machine.ts`, pure): each step has a state (pending,
   running, waiting, done), a round and a failure count. Events from threads,
   jobs, CI and you produce new step states and the effects to run; a pending

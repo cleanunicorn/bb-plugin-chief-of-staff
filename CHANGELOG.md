@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The dashboard and task admission stay fast as history grows.** Counting
+  task slots, the overview and the stats no longer read every task's full
+  workflow state, a stored workflow is checked once rather than on every
+  read, and the sweep only regroups a task's threads when they change. The
+  stats' total and in-window counts are no longer capped at the 5,000 newest
+  tasks.
+
+- **Finished tasks are trimmed after 90 days.** 90 days after a task finishes,
+  Chief of Staff removes its per-step outputs, report summaries and feedback
+  text. The task keeps its status, PR, branch, timestamps, step statuses,
+  model picks and thread links, so it still appears under finished tasks,
+  counts in stats, and can be retried on the same models.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,
