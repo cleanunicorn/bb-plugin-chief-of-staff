@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Dashboard query errors are no longer hidden or take over the editor.** The
+  Pipeline tab now shows a failed overview read, and the Repos & PRs tab shows
+  a failed roster read instead of "No pull requests yet" (the Pipeline tab no
+  longer says "No active tasks" for a failed roster either). Each tab lists
+  every failing read once. In the configuration editor, one failed refetch
+  (after Save, or from a live update) no longer replaces the editor and your
+  unsaved changes with an error line: the editor stays and a banner with Retry
+  appears above it. The error alone, also with Retry, shows only when the
+  configuration has never loaded.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,
