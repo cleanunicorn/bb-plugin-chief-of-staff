@@ -3,7 +3,11 @@ import type { Cos } from "./context";
 import type { WorkItem } from "./state";
 import { withItemLock } from "./delivery";
 
-const parentKey = (item: WorkItem) => `thread-parent:${item.id}`;
+/** kv key of the thread chosen as the item's parent. */
+export const threadParentKey = (itemId: string) => `thread-parent:${itemId}`;
+/** kv key of the item's thread set as of its last complete grouping pass. */
+export const threadGroupKey = (itemId: string) => `thread-group:${itemId}`;
+const parentKey = (item: WorkItem) => threadParentKey(item.id);
 export function itemThreadIds(cos: Cos, item: WorkItem): string[] {
   return [...new Set([...cos.store.listThreads(item.id).map((t) => t.threadId), ...(item.threadId ? [item.threadId] : [])])];
 }
@@ -42,7 +46,11 @@ export async function itemParent(cos: Cos, item: WorkItem): Promise<string | und
   return undefined;
 }
 
-/** Backfill active workflows; BB can send assignment notices when existing threads move. */
+/**
+ * Backfill active workflows; BB can send assignment notices when existing threads move.
+ * An item is regrouped only when its thread set changed since its last complete
+ * pass; a parent archived mid-run is healed then, or by itemParent on the next spawn.
+ */
 export async function groupExistingThreads(cos: Cos): Promise<void> {
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
     if (cos.store.isPaused()) return;
@@ -51,10 +59,14 @@ export async function groupExistingThreads(cos: Cos): Promise<void> {
       const fresh = cos.store.getWorkItem(item.id);
       if (!fresh || fresh.status === "done" || fresh.status === "failed" || cos.store.isPaused(fresh.repo)) return;
       const ids = itemThreadIds(cos, fresh);
+      const fingerprint = [...ids].sort().join(",");
+      if ((await cos.bb.storage.kv.get<string>(threadGroupKey(fresh.id))) === fingerprint) return;
       const parentThreadId = await itemParent(cos, fresh);
       if (!parentThreadId) return;
+      let complete = true;
       for (const threadId of ids) {
-        if (threadId === parentThreadId || cos.store.isPaused(fresh.repo)) continue;
+        if (threadId === parentThreadId) continue;
+        if (cos.store.isPaused(fresh.repo)) { complete = false; continue; }
         try {
           const thread = await readThread(cos, threadId);
           if (!thread || thread.archivedAt || thread.deletedAt) continue;
@@ -62,9 +74,12 @@ export async function groupExistingThreads(cos: Cos): Promise<void> {
           if (thread.parentThreadId === parentThreadId && thread.parentNotifications === "off") continue;
           await cos.bb.sdk.threads.update({ threadId, parentThreadId, parentNotifications: "off" });
         } catch (error) {
+          complete = false;
           cos.bb.log.warn(`thread grouping ${threadId} failed: ${await cos.safe(String(error))}`);
         }
       }
+      // Only a complete pass is remembered: failures and pauses retry on the next sweep.
+      if (complete) await cos.bb.storage.kv.set(threadGroupKey(fresh.id), fingerprint);
     });
   }
 }
