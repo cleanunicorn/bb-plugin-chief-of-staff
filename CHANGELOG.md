@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Unsaved configuration edits are no longer lost.** Drafts in Configure
+  (workflows, repositories, general settings and Advanced JSON) now survive
+  switching sections or dashboard tabs. Advanced JSON edits count as unsaved
+  changes: they mark the section, show the save bar and lock the visual
+  sections until you save or discard them. The Configure tab shows a dot
+  while any edit is pending, and reloading the page asks first. "Save JSON"
+  can no longer be sent twice by a double click, and a JSON edit can be saved
+  even when the loaded configuration has problems the visual editor flags.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,
