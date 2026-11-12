@@ -77,6 +77,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
   const wfIndex = doc.workflows.indexOf(wf);
   const wfProblems = useMemo(() => allProblems.filter((p) => p.workflow === wfIndex), [allProblems, wfIndex]);
   const shownProblems = useMemo(() => [...new Set(allProblems.filter((p) => p.workflow === undefined || p.workflow === wfIndex).map((p) => p.text))], [allProblems, wfIndex]);
+  const selectedStep = wf.steps.find((s) => s.id === selected);
   const stepProblems = (step: Step) => {
     const index = wf.steps.indexOf(step);
     return wfProblems.filter((p) => p.step === index);
@@ -182,8 +183,8 @@ export function WorkflowsEditor({ doc, onChange, usedBy }: { doc: WorkflowsDocum
           <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
             <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
             <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
-              {selected && wf.steps.some((s) => s.id === selected) ? (
-                <StepPanel workflow={wf} step={wf.steps.find((s) => s.id === selected)!} problems={stepProblems(wf.steps.find((s) => s.id === selected)!)} onChange={(s) => setStep(selected, s)} onRemove={() => removeStep(selected)} skills={skills} narrow />
+              {selectedStep ? (
+                <StepPanel workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow />
               ) : (
                 <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                   <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />

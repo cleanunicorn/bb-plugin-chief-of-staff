@@ -176,7 +176,10 @@ export function generalSettingsProblems(changes: Partial<GeneralSettings>): { ke
     let text = `${label}: ${issue.message}`;
     if (field instanceof z.ZodNumber) {
       if (issue.code === "invalid_type" && issue.expected === "int") text = `${label} must be a whole number`;
-      else if (issue.code === "too_small" || issue.code === "too_big") text = `${label} must be between ${field.minValue} and ${field.maxValue}`;
+      else if (issue.code === "too_small" || issue.code === "too_big") {
+        const { minValue: lo, maxValue: hi } = field;
+        text = lo !== null && hi !== null ? `${label} must be between ${lo} and ${hi}` : lo !== null ? `${label} must be at least ${lo}` : `${label} must be at most ${hi}`;
+      }
     } else if (field instanceof z.ZodString && issue.code === "too_big") {
       text = `${label} is longer than ${field.maxLength} characters`;
     }

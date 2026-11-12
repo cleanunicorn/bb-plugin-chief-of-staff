@@ -58,6 +58,15 @@ it("NumberInput keeps what is typed within its range", async () => {
   expect(onChange).toHaveBeenLastCalledWith(1);
 });
 
+it("NumberInput shows the limit when a value already at it is typed past", async () => {
+  const onChange = vi.fn();
+  await mount(<NumberInput id="n" value={4} min={1} max={4} onChange={onChange} />);
+  const input = container.querySelector<HTMLInputElement>("#n")!;
+  await setValue(input, "45");
+  expect(onChange).toHaveBeenLastCalledWith(4);
+  expect(input.value).toBe("4");
+});
+
 it("NumberInput shows a loaded out-of-range value as it is, without reporting a change", async () => {
   const onChange = vi.fn();
   await mount(<NumberInput id="n" value={5000} min={1} max={1440} onChange={onChange} />);

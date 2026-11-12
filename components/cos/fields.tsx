@@ -54,6 +54,8 @@ export function NumberInput({ id, value, onChange, min, max }: { id?: string; va
         let v = Math.round(n);
         if (max !== undefined) v = Math.min(max, v);
         if (min !== undefined) v = Math.max(min, v);
+        // Out of range: show the limit now, even when the value does not change.
+        if (v !== Math.round(n)) setText(String(v));
         onChange(v);
       }}
       onBlur={() => setText(String(value))}
