@@ -43,8 +43,11 @@ const minutesBetween = (from: string | null | undefined, to: string | null | und
 /** Dashboard actions (approve, send back, run again) are recorded as "rpc:client". */
 const who = (actor: string) => (actor === "rpc:client" ? "you" : null);
 
-/** One line of facts about the task, under the sheet's title. */
-export function TaskSummary({ task, workflow, live, loops, now }: { task: TaskDetail | undefined; workflow: Workflow; live: Record<string, LiveStatus>; loops: LoopSummary; now: number }) {
+/**
+ * One line of facts about the task, under the sheet's title.
+ * `oneLine` keeps the strip to a single row on short screens: the last value truncates (full text in `title`), and the strip scrolls sideways if that is not enough.
+ */
+export function TaskSummary({ task, workflow, live, loops, now, oneLine = false }: { task: TaskDetail | undefined; workflow: Workflow; live: Record<string, LiveStatus>; loops: LoopSummary; now: number; oneLine?: boolean }) {
   const done = workflow.steps.filter((s) => live[s.id]?.status === "done").length;
   const items: { icon: string; label: string; value: ReactNode; title?: string }[] = [];
   if (task) items.push({ icon: "Activity", label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
@@ -59,10 +62,11 @@ export function TaskSummary({ task, workflow, live, loops, now }: { task: TaskDe
   if (task?.prUrl) items.push({ icon: "GitPullRequest", label: "PR", value: <UrlLink href={task.prUrl}>#{task.prNumber}</UrlLink> });
   if (task?.branch) items.push({ icon: "GitBranch", label: "Branch", value: <span className="font-mono">{task.branch}</span>, title: task.branch });
   return (
-    <dl aria-label="Task summary" className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-      {items.map((i) => (
-        <div key={i.label} className="flex min-w-0 items-center gap-1.5" title={i.title}>
-          <dt className="flex items-center gap-1 text-muted-foreground">
+    <dl aria-label="Task summary" className={cn("flex shrink-0 gap-x-4 gap-y-1 text-xs", oneLine ? "flex-nowrap overflow-x-auto [scrollbar-width:thin]" : "flex-wrap")}>
+      {items.map((i, n) => (
+        // On one line only the last value (the branch, when there is one) gives up width; the rest stay whole.
+        <div key={i.label} className={cn("flex min-w-0 items-center gap-1.5", oneLine && n < items.length - 1 && "shrink-0")} title={i.title}>
+          <dt className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
             <Icon name={i.icon} fallback="Circle" className="size-3.5" aria-hidden />
             {i.label}
           </dt>

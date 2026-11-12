@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The task workflow view fits short screens.** In phone landscape and other
+  short, wide windows, the canvas sits beside the details panel and shrinks to
+  the space left. Its zoom and fit controls, the view switch, Close and "Run
+  again from here" stay inside the dialog, with or without a step selected.
+  The task summary keeps to one line. Taller screens keep the layout they had.
+
 - **Saved configuration drafts survive a failed reload.** After a partial save,
   workflow and repository drafts stay until a successful read confirms their
   saved values. Retry reloads without repeating writes, and keeps any newer
