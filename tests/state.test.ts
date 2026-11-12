@@ -1,8 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type WorkItem } from "../src/state";
 import { freshNode, type Nodes } from "../src/machine";
-import { workflowSchema } from "../src/workflow";
+import { normalizeWorkflow, workflowSchema } from "../src/workflow";
+
+// Count normalizations done through state.ts's reads.
+vi.mock("../src/workflow", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/workflow")>();
+  return { ...actual, normalizeWorkflow: vi.fn(actual.normalizeWorkflow) };
+});
 
 const workflow = workflowSchema.parse({ id: "t", name: "Test", steps: [
   { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
@@ -70,5 +76,34 @@ describe("capacity reservations counted in SQL", () => {
     expect(store.countOccupied()).toBe(2);
     expect(db.prepare("SELECT COUNT(*) AS n FROM work_items WHERE occupies_capacity IS NULL AND status <> 'done'").get()).toEqual({ n: 0 });
     expectSame(store);
+  });
+});
+
+describe("workflow snapshots normalized once", () => {
+  it("normalizes each distinct snapshot once and hands out fresh objects", () => {
+    const { store, add, db } = storeSetup();
+    add("one");
+    add("two");
+    // An old snapshot: no `chooses` on the agent step, no `mode` on the model step.
+    const old = JSON.stringify({ id: "old", name: "Old", steps: [
+      { id: "pick", name: "Pick", type: "model", model: "opus", next: ["build"] },
+      { id: "build", name: "Build", type: "agent", writes: true, next: [] },
+    ] });
+    db.prepare("UPDATE work_items SET workflow_json = ? WHERE id = 'two'").run(old);
+    const spy = vi.mocked(normalizeWorkflow);
+    spy.mockClear();
+    const a1 = store.getWorkItem("one")!;
+    const a2 = store.getWorkItem("one")!;
+    const b1 = store.getWorkItem("two")!;
+    store.listWorkItems();
+    store.getWorkItem("two");
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(a2.workflow).toStrictEqual(a1.workflow);
+    expect(a2.workflow).not.toBe(a1.workflow);
+    expect(a2.workflow.steps[0]).not.toBe(a1.workflow.steps[0]);
+    expect(a1.workflow).toStrictEqual(normalizeWorkflow(workflow));
+    expect(b1.workflow.steps[0]).toMatchObject({ type: "model", mode: "fixed" });
+    expect(b1.workflow.steps[1]).toMatchObject({ type: "agent", chooses: [] });
+    expect(b1.workflow).toStrictEqual(normalizeWorkflow(JSON.parse(old)));
   });
 });

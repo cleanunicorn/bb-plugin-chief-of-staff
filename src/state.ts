@@ -271,6 +271,26 @@ function parseJson<T>(value: unknown, fallback: T): T {
 /** Placeholder for rows written before workflows were stored per item (adopted at startup). */
 export const NO_WORKFLOW: Workflow = { id: "none", name: "None", steps: [] };
 
+/** Normalized snapshots, kept as JSON text so every read gets its own objects. */
+const NORMALIZED_CACHE_SIZE = 256;
+const normalizedCache = new Map<string, string>();
+
+/**
+ * Normalize a stored workflow snapshot, once per distinct text per process.
+ * Not done on write: a snapshot picks up defaults added by later plugin
+ * versions, and this cache is empty again after each restart.
+ */
+function readWorkflow(raw: unknown): Workflow {
+  if (typeof raw !== "string" || !raw) return normalizeWorkflow(NO_WORKFLOW);
+  let normalized = normalizedCache.get(raw);
+  if (normalized === undefined) {
+    normalized = JSON.stringify(normalizeWorkflow(parseJson<Workflow>(raw, NO_WORKFLOW)));
+    if (normalizedCache.size >= NORMALIZED_CACHE_SIZE) normalizedCache.delete(normalizedCache.keys().next().value!);
+    normalizedCache.set(raw, normalized);
+  }
+  return JSON.parse(normalized) as Workflow;
+}
+
 function rowToWorkItem(row: Row): WorkItem {
   return {
     id: row.id as string,
@@ -297,7 +317,7 @@ function rowToWorkItem(row: Row): WorkItem {
     waitingKind: (row.waiting_kind as WaitingKind | null) ?? null,
     jobStartedAt: (row.job_started_at as string | null) ?? null,
     taskBody: (row.task_body as string | null) ?? null,
-    workflow: normalizeWorkflow(parseJson<Workflow>(row.workflow_json, NO_WORKFLOW)),
+    workflow: readWorkflow(row.workflow_json),
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
   };
