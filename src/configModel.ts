@@ -1,5 +1,6 @@
-// Editing model for the visual configurator. Pure functions only (zod + the
-// config schemas) so the frontend bundle can use it and tests can cover it.
+// Editing model for the visual configurator. Pure functions only (zod, the
+// config schemas and the RPC contract's schemas) so the frontend bundle can use
+// it and tests can cover it.
 // The stored format stays the same JSON documents the server parses.
 import { isPlaceholderRepo, migrateLegacyRepo, parseGitHubRemote, repoConfigSchema, repoKey, reposDocumentSchema } from "./config";
 import type { RepoConfig } from "./config";
