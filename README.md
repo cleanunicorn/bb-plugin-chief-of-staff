@@ -509,7 +509,10 @@ flowchart TB
   Errors are retried with backoff before they reach you.
 - GitHub: every request times out after 30 s. A sweep starts no new intake
   or CI work after 2 minutes (checked between items, so the item in hand
-  finishes; the rest waits until intake or CI polling is next due). On a
+  finishes; the rest waits until intake or CI polling is next due). Scheduled
+  intake resumes across repositories and issues; a repository already being
+  listed considers its first issue before yielding even if listing used the
+  budget. On a
   rate limit (a 429, or a 403 with `retry-after`,
   `x-ratelimit-remaining: 0` or a secondary-limit message) all GitHub requests
   pause until the reset, held in memory: intake and CI polling are skipped,

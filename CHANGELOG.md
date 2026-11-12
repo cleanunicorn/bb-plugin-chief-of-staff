@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Slow intake resumes across repositories and issues.** Scheduled intake
+  saves its position between passes, including after reloads. A repository
+  whose issue listing uses the time budget still considers one issue before
+  yielding, so it and later repositories keep making progress.
+
 - **Existing issue status comments are recovered without duplicates.** If the
   saved comment id is missing, recovery still finds older status comments
   beyond the newest ten replies. Agent briefs keep their newest-comment view.
