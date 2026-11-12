@@ -120,6 +120,8 @@ describe("shipping repair admission", () => {
     store.deferEvent("existing", { type: "retry" }, "test");
     expect(store.nextDeferredEvent()).toMatchObject({ item_id: "existing", event_json: '{"type":"retry"}' });
     expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "queued_event_json" })]));
+    expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining(["occupies_capacity", "detail_pruned_at"].map((name) => expect.objectContaining({ name }))));
+    expect(db.prepare("PRAGMA index_list(work_items)").all()).toEqual(expect.arrayContaining(["work_items_status", "work_items_created"].map((name) => expect.objectContaining({ name }))));
     // Per-project pause: a paused repo's deferred events wait while others replay.
     store.setPaused(false);
     store.setRepoPaused("a/b", true);
@@ -139,6 +141,25 @@ describe("shipping repair admission", () => {
     const before = db.serialize();
     expect(() => host.bb.storage.migrate(db, migrationsForDatabase(db))).toThrow("migration 26");
     expect(db.serialize()).toEqual(before);
+  });
+
+  it("orders the roster by the created_at index instead of sorting the table", () => {
+    const host = createFakePluginHost({ pluginId: "plan" }); hosts.push(host);
+    const db = host.bb.storage.database();
+    host.bb.storage.migrate(db, migrationsForDatabase(db));
+    const plan = (db.prepare("EXPLAIN QUERY PLAN SELECT * FROM work_items ORDER BY created_at DESC LIMIT 200").all() as { detail: string }[]).map((r) => r.detail).join("\n");
+    expect(plan).toContain("work_items_created");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
+  it("marks finished rows as holding no capacity when upgrading", () => {
+    const host = createFakePluginHost({ pluginId: "backfill" }); hosts.push(host);
+    const db = host.bb.storage.database();
+    host.bb.storage.migrate(db, MIGRATIONS.slice(0, 33));
+    const insert = db.prepare("INSERT INTO work_items (id, repo, status, created_at, updated_at) VALUES (?, 'a/b', ?, 'x', 'x')");
+    insert.run("done", "done"); insert.run("failed", "failed"); insert.run("agent", "agent");
+    host.bb.storage.migrate(db, migrationsForDatabase(db));
+    expect(db.prepare("SELECT id, occupies_capacity AS o FROM work_items ORDER BY id").all()).toEqual([{ id: "agent", o: null }, { id: "done", o: 0 }, { id: "failed", o: 0 }]);
   });
 
   it.each([28, 29])("completes a reordered history with %i applied statements", (count) => {

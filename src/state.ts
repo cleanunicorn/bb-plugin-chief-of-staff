@@ -220,6 +220,13 @@ export const MIGRATIONS = [
     actor TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS step_journal_item ON step_journal(item_id, id)`,
+  // Whether the item holds a task slot (see occupiesCapacity); NULL until first computed.
+  `ALTER TABLE work_items ADD COLUMN occupies_capacity INTEGER`,
+  // When retention removed the finished item's step details.
+  `ALTER TABLE work_items ADD COLUMN detail_pruned_at TEXT`,
+  `CREATE INDEX IF NOT EXISTS work_items_status ON work_items(status)`,
+  `CREATE INDEX IF NOT EXISTS work_items_created ON work_items(created_at)`,
+  `UPDATE work_items SET occupies_capacity = 0 WHERE status IN ('done', 'failed')`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
