@@ -19,13 +19,13 @@ const workflow = workflowSchema.parse({ id: "t", name: "Test", steps: [
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose(); });
 
-function storeSetup() {
+function storeSetup(options?: ConstructorParameters<typeof StateStore>[2]) {
   const host = createFakePluginHost({ pluginId: "state" });
   hosts.push(host);
   const db = host.bb.storage.database();
   host.bb.storage.migrate(db, migrationsForDatabase(db));
   let clock = Date.parse("2026-11-12T10:00:00Z");
-  const store = new StateStore(db, () => new Date(clock));
+  const store = new StateStore(db, () => new Date(clock), options);
   const add = (id: string, over: Partial<NewWorkItem> = {}) => store.insertWorkItem({
     id, repo: "a/b", status: "queued", issueTitle: id, issueNumber: null, branch: id, threadId: null, environmentId: null, prNumber: null, prUrl: null,
     providerId: null, model: null, lastError: null, source: "task", lastActivityAt: null, finishedAt: null, workflow,
@@ -133,5 +133,40 @@ describe("stats from scalar columns", () => {
     expect(statsWindowStart(now, 14)).toBe("2026-10-30T00:00:00.000Z");
     expect(store.statsRows(statsWindowStart(now, 14)).length).toBe(6);
     expect(store.countWorkItems()).toBe(7);
+  });
+});
+
+describe("bounded log and journal", () => {
+  const caps = { logMaxRows: 10, journalMaxRows: 12, pruneEvery: 4 };
+
+  it("keeps the newest log rows, at most one prune interval over the cap", () => {
+    const { store, db } = storeSetup(caps);
+    for (let i = 1; i <= caps.logMaxRows + 25; i++) {
+      store.log({ level: "info", kind: "test", repo: null, workItemId: null, message: `m${i}`, actor: "test" });
+      expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBeLessThanOrEqual(caps.logMaxRows + caps.pruneEvery);
+    }
+    const messages = store.listLog({ limit: 100 }).map((e) => e.message);
+    expect(messages[0]).toBe("m35");
+    expect(messages).toContain("m26");
+    expect(messages).not.toContain("m1");
+  });
+
+  it("keeps the newest journal rows when several are written at once", () => {
+    const { store, db } = storeSetup(caps);
+    for (let i = 1; i <= 20; i++) store.appendJournal("x", [1, 2, 3].map((k) => ({ step: "build", round: i, kind: "started" as const, detail: `${i}.${k}` })), "test");
+    const n = (db.prepare("SELECT COUNT(*) AS n FROM step_journal").get() as { n: number }).n;
+    expect(n).toBeLessThanOrEqual(caps.journalMaxRows + caps.pruneEvery + 2);
+    expect(n).toBeGreaterThanOrEqual(caps.journalMaxRows);
+    const details = store.listJournal("x").map((e) => e.detail);
+    expect(details.at(-1)).toBe("20.3");
+    expect(details).not.toContain("1.1");
+  });
+
+  it("prunes on the first write after a restart", () => {
+    const { store, db } = storeSetup({ ...caps, pruneEvery: 1_000 });
+    for (let i = 0; i < 30; i++) store.log({ level: "info", kind: "test", repo: null, workItemId: null, message: `m${i}`, actor: "test" });
+    expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBe(30);
+    new StateStore(db, undefined, { ...caps, pruneEvery: 1_000 }).log({ level: "info", kind: "test", repo: null, workItemId: null, message: "after", actor: "test" });
+    expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBe(caps.logMaxRows);
   });
 });

@@ -85,6 +85,19 @@ export interface ItemThread {
 
 /** Journal rows kept across all tasks (details are clipped to 4,000 characters). */
 export const JOURNAL_MAX_ROWS = 50_000;
+/** Activity log rows kept. */
+export const LOG_MAX_ROWS = 5_000;
+/**
+ * The log and the journal are pruned on the first write after start and then
+ * once every this many rows, so they can briefly exceed their caps by about this much.
+ */
+export const PRUNE_EVERY = 100;
+
+export interface StoreOptions {
+  logMaxRows?: number;
+  journalMaxRows?: number;
+  pruneEvery?: number;
+}
 
 /** A stored journal entry. */
 export type JournalRecord = JournalEntry & { id: number; at: string; actor: string };
@@ -357,7 +370,21 @@ export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingRea
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
 
 export class StateStore {
-  constructor(private readonly db: Database, private readonly now: () => Date = () => new Date()) {}
+  private readonly caps: Required<StoreOptions>;
+  /** Rows written since each table was last pruned; Infinity until the first prune of this process. */
+  private readonly sincePrune = { activity_log: Infinity, step_journal: Infinity };
+
+  constructor(private readonly db: Database, private readonly now: () => Date = () => new Date(), options: StoreOptions = {}) {
+    this.caps = { logMaxRows: LOG_MAX_ROWS, journalMaxRows: JOURNAL_MAX_ROWS, pruneEvery: PRUNE_EVERY, ...options };
+  }
+
+  /** Keep a table to its newest `max` rows (ids are AUTOINCREMENT), every `pruneEvery` rows written. */
+  private prune(table: "activity_log" | "step_journal", written: number, max: number): void {
+    this.sincePrune[table] += written;
+    if (this.sincePrune[table] < this.caps.pruneEvery) return;
+    this.sincePrune[table] = 0;
+    this.db.prepare(`DELETE FROM ${table} WHERE id <= (SELECT MAX(id) FROM ${table}) - ?`).run(max);
+  }
 
   /** Commit related synchronous writes together, or roll them all back. */
   transaction<T>(write: () => T): T {
@@ -534,7 +561,7 @@ export class StateStore {
     const insert = this.db.prepare(`INSERT INTO step_journal (item_id, at, step_id, round, kind, agent, from_step, to_step, detail, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const e of entries) insert.run(itemId, at, e.step, e.round, e.kind, e.agent ?? null, e.from ?? null, e.to ?? null, e.detail, actor);
     // Keep the journal bounded, like the activity log: the oldest entries go first.
-    this.db.prepare(`DELETE FROM step_journal WHERE id <= (SELECT id FROM step_journal ORDER BY id DESC LIMIT 1 OFFSET ?)`).run(JOURNAL_MAX_ROWS);
+    this.prune("step_journal", entries.length, this.caps.journalMaxRows);
   }
 
   /** The item's journal, oldest first; the most recent `limit` entries. */
@@ -565,8 +592,7 @@ export class StateStore {
     this.db
       .prepare(`INSERT INTO activity_log (at, level, kind, repo, work_item_id, message, actor) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(this.now().toISOString(), entry.level, entry.kind, entry.repo ?? null, entry.workItemId ?? null, entry.message, entry.actor);
-    // Keep the log bounded.
-    this.db.prepare(`DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT 5000)`).run();
+    this.prune("activity_log", 1, this.caps.logMaxRows);
   }
 
   listLog(opts: { limit?: number; workItemId?: string } = {}): LogEntry[] {
