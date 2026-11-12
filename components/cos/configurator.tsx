@@ -424,12 +424,17 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
           await rpc.call("cos_set_settings", generalChanges);
         } catch (error) {
           if (!configSaved) throw error;
-          // Half saved (a transport or host error): say what was written and keep only the general draft.
-          await refetchAll().catch(() => undefined);
-          if (dirty.repos) setRepos(null);
-          if (dirty.workflow) setWorkflow(null);
+          // Half saved (a transport or host error): say what was written. Its drafts are
+          // cleared only once the saved data is reloaded; otherwise the editor would show
+          // the old data as clean, and a later save would send it back.
+          const reloaded = await refetchAll().then(() => true, () => false);
+          if (reloaded) {
+            if (dirty.repos) setRepos(null);
+            if (dirty.workflow) setWorkflow(null);
+          }
           const saved = dirty.repos && dirty.workflow ? "Repositories and workflows" : dirty.repos ? "Repositories" : "Workflows";
-          setStatus({ ok: false, text: `${saved} saved${warnings.length ? ` (${warnings.join("; ")})` : ""}; general settings were not: ${errorText(error)}` });
+          const note = reloaded ? "" : ". They could not be reloaded, so they stay marked unsaved; saving again is safe";
+          setStatus({ ok: false, text: `${saved} saved${warnings.length ? ` (${warnings.join("; ")})` : ""}; general settings were not: ${errorText(error)}${note}` });
           return;
         }
       }

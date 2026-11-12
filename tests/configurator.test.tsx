@@ -232,21 +232,33 @@ it("saves an unrelated edit while a loaded value is out of range, sending only t
   expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_settings", { maxConcurrentTotal: 5 });
 });
 
-it("says what was saved when the general settings fail after the workflows were written", async () => {
+/** Edit the workflow name and a general setting, then save with cos_set_settings failing. */
+async function halfSave() {
   mocks.call.mockImplementation(async (method: string) => {
     if (method === "cos_set_settings") throw new Error("host unavailable");
     return { ok: true, warnings: ["check the token"] };
   });
-  mocks.refetchConfig.mockRejectedValue(new Error("offline"));
   await mount(<Configurator initialSection="workflow" />);
   await setValue(field("Name"), "Delivery");
   await click(button("General"));
   await setValue(field(MAX_TASKS), "5");
   await click(button("Save changes"));
-
   expect(mocks.call.mock.calls.map(([method]) => method)).toEqual(["cos_set_config", "cos_set_settings"]);
+}
+
+it("says what was saved when the general settings fail after the workflows were written", async () => {
+  await halfSave();
   expect(text()).toContain("Workflows saved (check the token); general settings were not: host unavailable");
   expect(unsavedSections()).toEqual(["General"]);
   expect(number(MAX_TASKS)).toBe("5");
   expect(mocks.refetchConfig).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the sent drafts unsaved after a half save when the saved data cannot be reloaded", async () => {
+  mocks.refetchConfig.mockRejectedValue(new Error("offline"));
+  await halfSave();
+  expect(text()).toContain("Workflows saved (check the token); general settings were not: host unavailable");
+  expect(unsavedSections()).toEqual(["Workflows", "General"]);
+  await click(button("Workflows"));
+  expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
 });
