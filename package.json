@@ -1,6 +1,7 @@
 {
   "name": "bb-plugin-chief-of-staff",
   "version": "0.4.2",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "bb": ">=0.48",
