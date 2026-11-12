@@ -18,6 +18,7 @@ import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
+import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow } from "@/components/cos/stepFlow";
 import { StateMark, StepMiniMap, QueueIllustration } from "./components/cos/taskVisuals";
@@ -900,8 +901,10 @@ export function ActivityFeed() {
 
 // ---------- shell ----------
 
-function Dashboard({ subPath }: { subPath: string }) {
+export function Dashboard({ subPath }: { subPath: string }) {
   const navigate = useBbNavigate();
+  // Held here, above the tab switch, so unsaved configuration survives leaving Configure.
+  const configDrafts = useConfigDrafts();
   const tab = useMemo<Tab>(() => {
     const first = decodeURIComponent(subPath.split("/")[0] ?? "");
     return TABS.some((t) => t.id === first) ? (first as Tab) : "agents";
@@ -956,7 +959,7 @@ function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab /> : tab === "issues" ? <ReposTab /> : <Configurator initialSection={configSection(subPath)} />}
+        {tab === "agents" ? <PipelineTab /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
         {tab === "config" ? null : <ActivityFeed />}
       </div>
     </PaletteProvider>

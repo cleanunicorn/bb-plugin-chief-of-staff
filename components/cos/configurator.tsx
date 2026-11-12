@@ -12,6 +12,8 @@ import { blankRepo, inferIdentity, loadRepos, parseRepoSlug, selectProject, seri
 import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, validateDocument } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
+import { useConfigDrafts } from "./configDrafts";
+import type { ConfigDrafts } from "./configDrafts";
 import { Button } from "../ui/button";
 import { Field, TextInput, NumberInput, ListInput, Select, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
 import { Icon } from "../ui/icon";
@@ -334,17 +336,20 @@ function generalDiff(a: GeneralSettings, b: GeneralSettings): Partial<GeneralSet
   return out;
 }
 
-export function Configurator({ initialSection = "workflow", compact = false }: { initialSection?: Section; compact?: boolean }) {
+/**
+ * Pass `drafts` to keep unsaved edits after the Configurator unmounts (the
+ * dashboard does, so they survive tab switches); otherwise it keeps its own.
+ */
+export function Configurator({ initialSection = "workflow", compact = false, drafts }: { initialSection?: Section; compact?: boolean; drafts?: ConfigDrafts }) {
   const rpc = useRpc<Contract>();
+  const own = useConfigDrafts();
+  const { repos, setRepos, general, setGeneral, workflow, setWorkflow, saving, setSaving, status, setStatus, savingRef, clear } = drafts ?? own;
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
   const settings = experimental_useRpcQuery<Contract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
   const [section, setSection] = useState<Section>(initialSection);
-  const [repos, setRepos] = useState<RepoConfig[] | null>(null);
-  const [general, setGeneral] = useState<GeneralSettings | null>(null);
-  const [workflow, setWorkflow] = useState<WorkflowsDocument | null>(null);
   const [openRepo, setOpenRepo] = useState<number | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  // A "Saved." or error line belongs to this visit; don't show it again after a tab switch.
+  useEffect(() => () => setStatus(null), [setStatus]);
 
   const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
   const loadedGeneral = settings.data?.values ?? null;
@@ -354,9 +359,9 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
   const projects = useMemo(() => settings.data?.projects ?? [], [settings.data]);
   // Entries saved without owner/repo show the repository inferred from their project.
   const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
-  const generalDraft = general ?? loadedGeneral;
-  const generalChanges = loadedGeneral && general ? generalDiff(loadedGeneral, general) : {};
-  const dirty = { repos: repos !== null, general: Object.keys(generalChanges).length > 0, workflow: workflow !== null };
+  const generalDraft = loadedGeneral ? { ...loadedGeneral, ...general } : null;
+  const generalChanges = general ?? {};
+  const dirty = { repos: repos !== null, general: general !== null, workflow: workflow !== null };
   const anyDirty = dirty.repos || dirty.general || dirty.workflow;
 
   const repoIssues = useMemo(() => validateRepos(repoDraft), [repoDraft]);
@@ -390,14 +395,30 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
     if (!anyDirty) void refetchAll();
   });
 
+  // Editor setters: an edit replaces the last save's status line.
+  const editRepos = (next: RepoConfig[]) => {
+    setStatus(null);
+    setRepos(next);
+  };
+  const editWorkflow = (next: WorkflowsDocument) => {
+    setStatus(null);
+    setWorkflow(next);
+  };
+  /** Keeps only the settings that differ from the loaded ones; none left means clean. */
+  const editGeneral = (next: GeneralSettings) => {
+    setStatus(null);
+    const diff = loadedGeneral ? generalDiff(loadedGeneral, next) : next;
+    setGeneral(Object.keys(diff).length ? diff : null);
+  };
+
   const discard = () => {
-    setRepos(null);
-    setGeneral(null);
-    setWorkflow(null);
+    clear();
     setStatus(null);
   };
 
   const save = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setStatus(null);
     try {
@@ -411,13 +432,12 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
       }
       if (dirty.general) await rpc.call("cos_set_settings", generalChanges);
       await refetchAll();
-      setRepos(null);
-      setGeneral(null);
-      setWorkflow(null);
+      clear();
       setStatus({ ok: true, text: warnings.length ? `Saved. ${warnings.join("; ")}` : "Saved. Changes apply on the next intake and sweep." });
     } catch (error) {
       setStatus({ ok: false, text: errorText(error) });
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -460,7 +480,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
         {loadError && section !== "advanced" ? (
           <Problems items={[`${loadError}. Fix it in Advanced JSON; the visual editor shows the last valid parts only.`]} />
         ) : null}
-        {section === "workflow" ? <WorkflowsEditor doc={workflowDraft} onChange={setWorkflow} usedBy={usedBy} /> : null}
+        {section === "workflow" ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} /> : null}
         {section === "repos" ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -468,7 +488,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
               <Button
                 size="sm"
                 onClick={() => {
-                  setRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
+                  editRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
                   setOpenRepo(repoDraft.length);
                   setSection("repos");
                 }}
@@ -485,9 +505,9 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
                   problems={repoIssues[i] ?? []}
                   open={openRepo === i}
                   onToggle={() => setOpenRepo(openRepo === i ? null : i)}
-                  onChange={(r) => setRepos(repoDraft.map((x, j) => (j === i ? r : x)))}
+                  onChange={(r) => editRepos(repoDraft.map((x, j) => (j === i ? r : x)))}
                   onRemove={() => {
-                    setRepos(repoDraft.filter((_, j) => j !== i));
+                    editRepos(repoDraft.filter((_, j) => j !== i));
                     setOpenRepo(null);
                   }}
                   projects={projects}
@@ -505,7 +525,7 @@ export function Configurator({ initialSection = "workflow", compact = false }: {
             )}
           </>
         ) : null}
-        {section === "general" ? <GeneralEditor values={generalDraft} onChange={setGeneral} providers={providers} /> : null}
+        {section === "general" ? <GeneralEditor values={generalDraft} onChange={editGeneral} providers={providers} /> : null}
         {section === "access" ? <AccessEditor token={settings.data.token} onSaved={refetchAll} /> : null}
         {section === "advanced" ? <AdvancedEditor repos={config.data.repos} workflow={config.data.workflow} locked={anyDirty} onSaved={refetchAll} /> : null}
 
