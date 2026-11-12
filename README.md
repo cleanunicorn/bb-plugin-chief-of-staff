@@ -362,7 +362,13 @@ dashboard, or the plugin's page under Settings. It edits:
   push notifications.
 - **GitHub access**: a write-only token field. A stored token is never shown,
   returned to the browser, or logged.
-- **Advanced JSON**: the raw documents, for bulk edits.
+- **Advanced JSON**: the raw documents, for bulk edits. It can't be edited
+  at the same time as the visual sections: save or discard one before
+  editing the other.
+
+Unsaved edits stay while you switch sections or dashboard tabs; the
+Configure tab shows a dot while any are pending, and the browser asks
+before a reload discards them.
 
 Everything is validated before saving and every change is logged with who
 made it. The BB project id is specific to each BB instance, so after
