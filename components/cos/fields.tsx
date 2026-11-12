@@ -162,6 +162,7 @@ export function Problems({ items, tone = "critical" }: { items: string[]; tone?:
  */
 export function ConfirmRemove({ onConfirm, label, notice }: { onConfirm: () => void; label: string; notice?: ReactNode }) {
   const [asking, setAsking] = useState(false);
+  const noticeId = useId();
   if (!asking)
     return (
       <Button size="sm" variant="ghost" className="h-7 px-2 text-muted-foreground" onClick={() => setAsking(true)} aria-label={label}>
@@ -169,13 +170,14 @@ export function ConfirmRemove({ onConfirm, label, notice }: { onConfirm: () => v
       </Button>
     );
   return (
-    <span className="flex flex-wrap items-center gap-1 text-xs text-foreground">
-      {notice ? <span className="basis-full text-muted-foreground">{notice}</span> : null}
+    <span className={cn("flex items-center gap-1 text-xs text-foreground", notice && "flex-wrap")}>
+      {notice ? <span id={noticeId} className="basis-full text-muted-foreground">{notice}</span> : null}
       Remove?
       <Button
         size="sm"
         variant="destructive"
         className="h-7 px-2"
+        aria-describedby={notice ? noticeId : undefined}
         onClick={() => {
           // Disarm first: when the caller removes this item, the instance may stay mounted for the next one.
           setAsking(false);

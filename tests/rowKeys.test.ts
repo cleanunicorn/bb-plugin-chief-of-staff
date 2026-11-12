@@ -12,4 +12,5 @@ it("keeps a row's key across edits and gives other rows their own", () => {
   // After removing `a`, `b` keeps its key, so it does not take over a's component.
   const rows = [a, b].filter((r) => r !== a);
   expect(rows.map(keys.key)).toEqual([keys.key(b)]);
+  expect(keys.key(a)).not.toBe(keys.key(b));
 });

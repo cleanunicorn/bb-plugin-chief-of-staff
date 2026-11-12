@@ -371,9 +371,12 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const [retrying, setRetrying] = useState(false);
   const repoKeys = useRowKeys<RepoConfig>();
 
-  const loadedRepos = useMemo(() => (config.data ? loadRepos(config.data.repos) : null), [config.data]);
+  // Parsed per JSON text, not per query result: a refetch that returns the same text keeps the same row objects, and so the rows' keys.
+  const reposJson = config.data?.repos;
+  const workflowJson = config.data?.workflow;
+  const loadedRepos = useMemo(() => (reposJson === undefined ? null : loadRepos(reposJson)), [reposJson]);
   const loadedGeneral = settings.data?.values ?? null;
-  const loadedWorkflow = useMemo(() => (config.data ? parseWorkflows(config.data.workflow) : null), [config.data]);
+  const loadedWorkflow = useMemo(() => (workflowJson === undefined ? null : parseWorkflows(workflowJson)), [workflowJson]);
   // A document that fails to load is never shown, edited or saved from here: the fallbacks below would
   // otherwise be written over the stored one.
   const reposError = loadedRepos && !loadedRepos.ok ? loadedRepos.error : null;
@@ -384,7 +387,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
 
   const projects = useMemo(() => settings.data?.projects ?? [], [settings.data]);
   // Entries saved without owner/repo show the repository inferred from their project.
-  const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => inferIdentity(r, projects)) : []), [repos, loadedRepos, projects]);
+  const repoDraft = useMemo(() => repos ?? (loadedRepos?.ok ? loadedRepos.items.map((r) => repoKeys.carry(r, inferIdentity(r, projects))) : []), [repos, loadedRepos, projects, repoKeys]);
   const generalDraft = loadedGeneral ? { ...loadedGeneral, ...general } : null;
   const generalChanges = useMemo(() => general ?? {}, [general]);
   const dirty = { repos: !reposBlocked && repos !== null, general: general !== null, workflow: !workflowBlocked && workflow !== null };

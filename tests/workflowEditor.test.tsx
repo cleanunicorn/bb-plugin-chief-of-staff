@@ -279,16 +279,17 @@ it("does not carry an armed Remove? from one selected step to the next", async (
 it("keeps each model choice's confirmation with that choice when another is removed", async () => {
   const doc = structuredClone(DEFAULT_DOCUMENT);
   const build = step(doc, "build") as Extract<Step, { type: "agent" }>;
-  build.chooses = [{ id: "small", when: "small change" }, { id: "large", when: "large change" }];
+  build.chooses = [{ id: "small", when: "small change" }, { id: "medium", when: "" }, { id: "large", when: "large change" }];
   await mount(<Stateful initial={doc} />);
   await click(button("select build"));
-  // Arm "large", then remove "small": "large" moves up and must still be the armed one.
+  // Arm "large", then remove "small": "large" must still be the armed one, not "medium" which took small's place.
   await click(button("Remove choice large"));
   await click(button("Remove choice small"));
   await click(button("Remove"));
   expect(() => button("Remove choice small")).toThrow();
   expect(() => button("Remove choice large")).toThrow();
-  expect(container.textContent).toContain("Remove?");
+  expect(button("Remove choice medium")).toBeTruthy();
+  expect(container.textContent!.match(/Remove\?/g)).toHaveLength(1);
 });
 
 it("names the repositories that fall back to the default before deleting a workflow, then reports the deletion", async () => {
@@ -318,4 +319,15 @@ it("does not carry an armed Delete from one workflow to the next", async () => {
   await click(button("Canary"));
   expect(container.textContent).not.toContain("Remove?");
   expect(button("Delete Canary")).toBeTruthy();
+});
+
+it("keeps a model choice mounted while its id is typed", async () => {
+  const doc = structuredClone(DEFAULT_DOCUMENT);
+  (step(doc, "build") as Extract<Step, { type: "agent" }>).chooses = [{ id: "small", when: "" }, { id: "large", when: "" }];
+  await mount(<Stateful initial={doc} />);
+  await click(button("select build"));
+  const id = fields("Choice id")[0]!;
+  await setValue(id, "tiny");
+  expect(fields("Choice id")[0]).toBe(id);
+  expect(id.value).toBe("tiny");
 });
