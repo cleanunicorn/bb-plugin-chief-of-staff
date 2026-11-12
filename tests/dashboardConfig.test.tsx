@@ -116,3 +116,13 @@ it("Discard clears the lifted drafts", async () => {
   expect((field(MAX_TASKS) as HTMLInputElement).value).toBe("8");
   expect(text()).not.toContain("Unsaved changes");
 });
+
+it("keeps an Advanced JSON draft across a tab switch", async () => {
+  await show("config/advanced");
+  await setValue(field("Workflow"), "{}");
+  await show("agents");
+  await show("config/advanced");
+
+  expect((field("Workflow") as HTMLTextAreaElement).value).toBe("{}");
+  expect(unsavedSections()).toEqual(["Advanced JSON"]);
+});

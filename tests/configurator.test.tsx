@@ -166,3 +166,57 @@ it("refetches on cos-changed when clean, and leaves an unsaved draft alone", asy
   expect(mocks.refetchSettings).toHaveBeenCalledTimes(1);
   expect(number(MAX_TASKS)).toBe("5");
 });
+
+// ---------- Advanced JSON drafts ----------
+
+const JSON_NOTICE = "You have unsaved Advanced JSON edits. Save or discard them before editing here.";
+const textarea = (label: "Repositories" | "Workflow") => field(label) as HTMLTextAreaElement;
+const EDITED_REPOS = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", model: "opus" }] });
+
+it("counts an Advanced JSON edit as unsaved, and typing it back is clean again", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Repositories"), EDITED_REPOS);
+  expect(unsavedSections()).toEqual(["Advanced JSON"]);
+  expect(text()).toContain("Unsaved changes");
+  expect(textarea("Repositories").disabled).toBe(false);
+
+  await setValue(textarea("Repositories"), mocks.config.repos);
+  expect(unsavedSections()).toEqual([]);
+  expect(text()).not.toContain("Unsaved changes");
+});
+
+it("keeps an Advanced JSON draft across a section switch, and Discard restores the loaded text", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Workflow"), "{}");
+  await click(button("General"));
+  await click(button("Advanced JSON"));
+  expect(textarea("Workflow").value).toBe("{}");
+
+  await click(button("Discard"));
+  expect(textarea("Workflow").value).toBe(mocks.config.workflow);
+  expect(unsavedSections()).toEqual([]);
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("locks the visual sections while an Advanced JSON draft is pending", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Repositories"), EDITED_REPOS);
+  await click(button("General"));
+  expect(text()).toContain(JSON_NOTICE);
+  expect(field(MAX_TASKS).closest("[inert]")).not.toBeNull();
+
+  await click(button("Repositories1"));
+  expect(button("Add repository").closest("[inert]")).not.toBeNull();
+
+  await click(button("Discard"));
+  expect(text()).not.toContain(JSON_NOTICE);
+  expect(container.querySelector("[inert]")).toBeNull();
+});
+
+it("leaves an Advanced JSON draft alone on cos-changed", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Repositories"), EDITED_REPOS);
+  mocks.realtime.get("cos-changed")!();
+  expect(mocks.refetchConfig).not.toHaveBeenCalled();
+  expect(textarea("Repositories").value).toBe(EDITED_REPOS);
+});

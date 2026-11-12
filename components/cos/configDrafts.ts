@@ -16,6 +16,9 @@ export function useConfigDrafts() {
   /** Only the general settings that differ from the loaded ones. */
   const [general, setGeneral] = useState<Partial<GeneralSettings> | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowsDocument | null>(null);
+  /** Advanced JSON text that differs from the loaded document. */
+  const [advancedRepos, setAdvancedRepos] = useState<string | null>(null);
+  const [advancedWorkflow, setAdvancedWorkflow] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<SaveStatus>(null);
   /** Set synchronously on save, so a second click before the next render is a no-op. */
@@ -25,10 +28,12 @@ export function useConfigDrafts() {
     setRepos(null);
     setGeneral(null);
     setWorkflow(null);
+    setAdvancedRepos(null);
+    setAdvancedWorkflow(null);
   }, []);
-  const dirty = repos !== null || general !== null || workflow !== null;
+  const dirty = repos !== null || general !== null || workflow !== null || advancedRepos !== null || advancedWorkflow !== null;
 
-  return { repos, setRepos, general, setGeneral, workflow, setWorkflow, saving, setSaving, status, setStatus, savingRef, clear, dirty };
+  return { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, savingRef, clear, dirty };
 }
 
 export type ConfigDrafts = ReturnType<typeof useConfigDrafts>;
