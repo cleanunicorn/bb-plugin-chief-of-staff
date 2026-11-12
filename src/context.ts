@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract, type ExecInput, type ExecOutput } from "../contract";
 import { parseRepos, type ProjectRemotes, type RepoConfig } from "./config";
-import { GitHubClient, GitHubLimiter, redact } from "./github";
+import { GitHubClient, GitHubLimiter, describeReset, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
 import { DEFAULT_POLICY, type MachinePolicy } from "./machine";
@@ -206,6 +206,13 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     },
   };
   return cos;
+}
+
+/** The config warnings plus what is true right now (a GitHub rate limit), for the overview and `status`. */
+export function liveWarnings(cos: Pick<Cos, "githubLimit" | "now">, config: Pick<LoadedConfig, "warnings">): string[] {
+  const limit = cos.githubLimit();
+  if (!limit) return config.warnings;
+  return [...config.warnings, `${limit.reason} reached: intake, CI polling and GitHub steps resume at ${describeReset(limit.until, cos.now())}.`];
 }
 
 /** The workflow a repository runs: its chosen id, its converted stage overrides, or the default. */

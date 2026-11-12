@@ -1715,8 +1715,16 @@ describe("chief-of-staff server", () => {
       expect(await kv.get("sweep:lastCiAt")).toBeUndefined();
       expect(host.harness.inspection.sdk.callsTo("threads.list").length).toBeGreaterThan(listed);
 
+      // The overview and `cos status` say so, with the reset time.
+      const warning = "GitHub API rate limit reached: intake, CI polling and GitHub steps resume at 10:30 UTC (in 19 min).";
+      const overview = async () => ((await host.harness.behavior.callRpc("cos_overview", null)) as { warnings: string[] }).warnings;
+      expect(await overview()).toContain(warning);
+      expect((await host.harness.behavior.runCli(["status"])).stdout).toContain(`warning: ${warning}`);
+      expect(JSON.parse((await host.harness.behavior.runCli(["status", "--json"])).stdout).warnings).toContain(warning);
+
       ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [issue] });
       at(30);
+      expect((await overview()).filter((w) => w.includes("rate limit"))).toEqual([]);
       await sweep();
       expect(ghCalls.some((c) => c.path === "/repos/acme/app/issues")).toBe(true);
       expect(await kv.get("sweep:lastIntakeAt")).toBe("2026-11-06T10:30:00.000Z");

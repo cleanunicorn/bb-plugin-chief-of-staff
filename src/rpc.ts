@@ -1,6 +1,6 @@
 // RPC handlers for the contract in ../rpcContract.ts.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { Cos } from "./context";
+import { liveWarnings, type Cos } from "./context";
 import { generalSettingsSchema, rpcContract } from "../rpcContract";
 import type { GeneralSettings } from "../rpcContract";
 import { buildRoster, itemRunDetail, rosterSteps, reconcile } from "./roster";
@@ -44,7 +44,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
             }),
           ),
           errors: config.errors,
-          warnings: config.warnings,
+          warnings: liveWarnings(cos, config),
           settings: {
             stallThresholdMinutes: config.values.stallThresholdMinutes,
             maxConcurrentTotal: config.values.maxConcurrentTotal,
