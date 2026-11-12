@@ -3,7 +3,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract, type ExecInput, type ExecOutput } from "../contract";
 import { parseRepos, type ProjectRemotes, type RepoConfig } from "./config";
-import { GitHubClient, redact } from "./github";
+import { GitHubClient, GitHubLimiter, describeReset, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
 import { DEFAULT_POLICY, type MachinePolicy } from "./machine";
@@ -35,6 +35,8 @@ export interface Cos {
   /** projectId -> git remote URL, or undefined when the project list is unavailable. */
   projectRemotes(): Promise<ProjectRemotes | undefined>;
   github(): Promise<GitHubClient>;
+  /** The GitHub rate limit in force, if any: GitHub work waits until `until`. */
+  githubLimit(): { until: Date; reason: string } | null;
   /** Token source for display: "setting" | "gh-cli" | "none". Never the token itself. */
   tokenSource(): Promise<"setting" | "gh-cli" | "none">;
   hostExec(hostId: string, input: ExecInput, signal?: AbortSignal): Promise<ExecOutput>;
@@ -76,9 +78,17 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     return cachedToken;
   }
 
+  // One limiter for every client: limits belong to the token, not a client.
+  const limiter = new GitHubLimiter((until, reason) => {
+    store.log({ level: "warn", kind: "github", repo: null, workItemId: null, message: `${reason} reached; GitHub work paused until ${until.toISOString()}`, actor: "system" });
+    cos.invalidate();
+  });
+
   settings.onChange(() => {
     cachedToken = null;
     configCache = null;
+    // The token may have changed, and with it the limit.
+    limiter.clear();
   });
 
   let configCache: { at: number; value: LoadedConfig } | null = null;
@@ -139,7 +149,10 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     },
     async github() {
       const token = await resolveToken();
-      return new GitHubClient({ token: token.value });
+      return new GitHubClient({ token: token.value, limiter, now: () => cos.now().getTime(), log: (message) => bb.log.warn(message) });
+    },
+    githubLimit() {
+      return limiter.limitedUntil(cos.now().getTime());
     },
     async tokenSource() {
       return (await resolveToken()).source;
@@ -193,6 +206,13 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
     },
   };
   return cos;
+}
+
+/** The config warnings plus what is true right now (a GitHub rate limit), for the overview and `status`. */
+export function liveWarnings(cos: Pick<Cos, "githubLimit" | "now">, config: Pick<LoadedConfig, "warnings">): string[] {
+  const limit = cos.githubLimit();
+  if (!limit) return config.warnings;
+  return [...config.warnings, `${limit.reason} reached: intake, CI polling and GitHub steps resume at ${describeReset(limit.until, cos.now())}.`];
 }
 
 /** The workflow a repository runs: its chosen id, its converted stage overrides, or the default. */

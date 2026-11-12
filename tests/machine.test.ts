@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MAX_RATE_LIMIT_DEFERRALS, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
@@ -299,6 +299,70 @@ describe("workflow engine", () => {
     expect(item.waitingReason).toContain("the agent is not asking anything");
     [item, fx] = run(item, { type: "retry" });
     expect([item.status, fx]).toEqual(["cos", [effect]]);
+  });
+
+  describe("an effect refused for a GitHub rate limit", () => {
+    const w = () => wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
+      { id: "test", name: "Tests", type: "check", command: "npm test" },
+    ]);
+    const effect: Effect = { type: "check", step: "test" };
+    const later = new Date(NOW.getTime() + 40 * 60_000).toISOString();
+    const started = () => {
+      let item = itemFor(w());
+      [item] = run(item, { type: "start" });
+      [item] = run(item, ended("build", report(), item));
+      return item;
+    };
+
+    it("waits for the reset without counting a retry or asking a person", () => {
+      let item = started();
+      let fx: Effect[];
+      for (let n = 1; n <= 3; n++) {
+        [item] = run(item, { type: "effect_error", step: "test", effect, message: "GitHub rate limit", retryAt: later });
+        expect(item.nodes.test!.retry).toMatchObject({ at: later, count: 0, deferrals: n });
+        expect([item.status, item.nodes.test!.status, item.waitingKind]).toEqual(["retrying", "running", null]);
+        [item, fx] = run(item, { type: "retry_due", step: "test" });
+        expect(fx).toEqual([effect]);
+      }
+    });
+
+    it("counts ordinary retries again after too many deferrals in a row, then asks a person", () => {
+      let item = started();
+      for (let n = 0; n < MAX_RATE_LIMIT_DEFERRALS; n++) {
+        [item] = run(item, { type: "effect_error", step: "test", effect, message: "GitHub rate limit", retryAt: later });
+        [item] = run(item, { type: "retry_due", step: "test" });
+      }
+      for (let n = 1; n <= DEFAULT_POLICY.maxInfraRetries; n++) {
+        [item] = run(item, { type: "effect_error", step: "test", effect, message: "GitHub rate limit", retryAt: later });
+        expect(item.nodes.test!.retry).toMatchObject({ count: n, deferrals: MAX_RATE_LIMIT_DEFERRALS });
+        expect(Date.parse(item.nodes.test!.retry!.at!) - NOW.getTime()).toBe(n * n * 60_000);
+        [item] = run(item, { type: "retry_due", step: "test" });
+      }
+      [item] = run(item, { type: "effect_error", step: "test", effect, message: "GitHub rate limit", retryAt: later });
+      expect([item.status, item.waitingKind]).toEqual(["waiting_on_human", "cos_error"]);
+    });
+
+    it("still parks an uncertain delivery", () => {
+      let item = itemFor(w());
+      [item] = run(item, { type: "start" });
+      [item] = run(item, { type: "effect_error", step: "build", effect: { type: "agent", step: "build", agent: 0, kind: "start" }, message: "lost", uncertain: true, retryAt: later });
+      expect([item.waitingKind, item.nodes.build!.retry?.uncertain, item.nodes.build!.retry?.at]).toEqual(["cos_error", true, null]);
+    });
+
+    it("defers an agent prompt per agent and re-sends it at the reset", () => {
+      let item = itemFor(w());
+      let fx: Effect[];
+      [item] = run(item, { type: "start" });
+      const send: Effect = { type: "agent", step: "build", agent: 0, kind: "start" };
+      [item] = run(item, { type: "effect_error", step: "build", effect: send, message: "GitHub rate limit", retryAt: later });
+      expect(item.nodes.build!.agentRetries?.[0]).toMatchObject({ at: later, count: 0, cause: "prompt_delivery" });
+      expect(item.status).toBe("retrying");
+      [item, fx] = run(item, { type: "retry_due", step: "build" });
+      expect(fx).toEqual([]);
+      const due = transition(item, { type: "retry_due", step: "build" }, DEFAULT_POLICY, new Date(later));
+      expect(due.effects).toEqual([send]);
+    });
   });
 
   it("fails the item when the builder dies, and retry restarts the writer in a fresh thread", () => {

@@ -124,6 +124,18 @@
   appears above it. The error alone, also with Retry, shows only when the
   configuration has never loaded.
 
+- **GitHub outages and rate limits no longer stall or fail tasks.** GitHub
+  requests time out after 30 seconds, and a sweep stops starting new intake
+  and CI work after two minutes, so thread sync, retries and stall detection
+  keep running. On a GitHub rate limit, Chief of Staff pauses
+  GitHub work until the limit resets, says so in the overview warnings and
+  `cos status`, and runs the waiting steps (opening a PR, starting an agent)
+  again after the reset without using up their retries. CI failures are
+  reported to the agent once their logs can be downloaded.
+- **Agents see the newest comments of a long issue.** The brief quotes the
+  last 10 comments, however many the issue has; it used to quote the last 10
+  of the first 300.
+
 - **See what happened in a task's run.** The task workflow view now fills the
   sheet: the canvas takes the full height and refits when the sheet resizes.
   A summary strip shows the task's status, how long it has run, the steps done,

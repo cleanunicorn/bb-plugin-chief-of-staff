@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
-import { matchOpenPullForIssue, type GitHubClient, type GitHubIssue, type GitHubPull } from "./github";
+import { matchOpenPullForIssue, GitHubRateLimitError, describeReset, unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue, type GitHubPull } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes } from "./machine";
@@ -21,6 +21,8 @@ export interface IntakeResult {
 const MAX_BODY = 12_000;
 const MAX_COMMENT = 2_000;
 const MAX_CONVENTIONS = 8_000;
+/** The newest issue comments the brief quotes. */
+const BRIEF_COMMENTS = 10;
 
 export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Promise<GitHubIssue[]> {
   const filter = repo.issueFilter;
@@ -41,14 +43,15 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
     github = null;
   }
   const lines: string[] = [];
-  const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(() => null) : null;
+  // A rate limit propagates: the prompt waits for the reset rather than go out with a thin brief.
+  const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(unlessRateLimited(() => null)) : null;
   if (issue && github) {
     // Chief of Staff's own status comment tells the agent nothing it does not already know.
-    const comments = (await github.listIssueComments(repo.owner, repo.repo, issue.number).catch(() => [])).filter((c) => !isStatusComment(c.body));
+    const comments = (await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENTS }).catch(unlessRateLimited((): GitHubComment[] => []))).filter((c) => !isStatusComment(c.body));
     lines.push(`You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.title}`, issue.html_url, ``, (issue.body ?? "(no description)").slice(0, MAX_BODY));
     if (comments.length) {
       lines.push(``, `## Issue comments`);
-      for (const comment of comments.slice(-10)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
+      for (const comment of comments.slice(-BRIEF_COMMENTS)) lines.push(`- **${comment.user?.login ?? "unknown"}** (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
     }
   } else if (item.issueNumber) {
     lines.push(`You are working on GitHub issue #${item.issueNumber} in ${repo.owner}/${repo.repo}: ${item.issueTitle}`, `(The issue could not be loaded; read it with \`gh issue view ${item.issueNumber}\`.)`);
@@ -59,7 +62,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   if (github) {
     const conventions: string[] = [];
     for (const file of ["AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"]) {
-      const content = await github.getFileContent(repo.owner, repo.repo, file).catch(() => null);
+      const content = await github.getFileContent(repo.owner, repo.repo, file).catch(unlessRateLimited(() => null));
       if (content) conventions.push(`### ${file}\n${content.slice(0, MAX_CONVENTIONS)}`);
       if (conventions.length >= 2) break;
     }
@@ -73,7 +76,11 @@ export function pausedMessage(cos: Cos, repo: string, action: string): string {
   return cos.store.isRepoPaused(repo) && !cos.store.isPaused() ? `Project ${repo} is paused. Resume it before ${action}.` : `Chief of Staff is paused. Resume it before ${action}.`;
 }
 
-export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string }): Promise<IntakeResult[]> {
+/**
+ * @param opts.deadline epoch ms after which no further repo or issue is
+ *   started (the sweep's GitHub budget); the item in hand always finishes.
+ */
+export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string; deadline?: number }): Promise<IntakeResult[]> {
   if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting intake.");
   const config = await cos.config();
   if (!opts.dryRun) await resumeQueued(cos, opts.actor);
@@ -87,7 +94,13 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
   if (!github.hasToken) return [{ repo: "*", considered: 0, started: [], skipped: [], error: "no GitHub token (set the githubToken setting or log in with gh)" }];
   // A dry run starts nothing, so it counts its own would-starts to report what a real run would do.
   let dryRunTotal = 0;
-  for (const repo of config.repos) {
+  const outOfTime = () => {
+    if (opts.deadline === undefined || cos.now().getTime() < opts.deadline) return false;
+    cos.bb.log.info("intake stopped at the sweep's GitHub time budget; the rest waits for the next intake");
+    return true;
+  };
+  repos: for (const repo of config.repos) {
+    if (outOfTime()) break;
     const key = repoKey(repo);
     if (opts.repo && opts.repo !== key) continue;
     const result: IntakeResult = { repo: key, considered: 0, started: [], skipped: [] };
@@ -108,6 +121,7 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
       let openPulls: Promise<GitHubPull[]> | null = null;
       for (const issue of issues) {
         if (cos.store.isPaused(key)) break;
+        if (outOfTime()) break repos;
         if (cos.store.findActiveForIssue(key, issue.number)) {
           result.skipped.push({ issue: issue.number, reason: "active thread exists" });
           continue;
@@ -134,6 +148,11 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
         result.started.push({ issue: issue.number, threadId: item?.threadId ?? "?" });
       }
     } catch (error) {
+      // Every later request would be refused too (the limit itself is logged once).
+      if (error instanceof GitHubRateLimitError) {
+        result.error = `GitHub rate limit until ${describeReset(error.resetAt, cos.now())}`;
+        break;
+      }
       result.error = await cos.safe(error instanceof Error ? error.message : String(error));
       cos.store.log({ level: "error", kind: "intake", repo: key, workItemId: null, message: `intake failed: ${result.error}`, actor: opts.actor });
     }
