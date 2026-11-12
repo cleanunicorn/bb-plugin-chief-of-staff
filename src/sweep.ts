@@ -10,10 +10,12 @@ import { maybeRunRetention } from "./retention";
 
 const KV_LAST_INTAKE = "sweep:lastIntakeAt";
 const KV_LAST_CI = "sweep:lastCiAt";
+const KV_NEXT_GITHUB_PHASE = "sweep:nextGithubPhase";
 /** CI is polled at most this often. */
 const CI_POLL_MS = 2 * 60_000;
 /**
- * Time after which a sweep starts no further GitHub work (intake, then CI).
+ * Time after which a sweep starts no further GitHub work. Intake and CI
+ * take turns going first, so neither can consume every sweep's budget.
  * Checked between items, so a phase stops after the item in hand, never in
  * the middle of one: a sweep can run over by one item's requests. What is
  * left waits until the phase is next due.
@@ -40,17 +42,23 @@ export async function sweep(cos: Cos): Promise<void> {
     if (wasLimited && !limited()) cos.invalidate();
     wasLimited = limited();
 
-    const lastIntake = await kv.get<string>(KV_LAST_INTAKE);
-    if (config.repos.length && !limited() && (!lastIntake || now.getTime() - Date.parse(lastIntake) >= Math.max(1, config.values.intakeIntervalMinutes) * 60_000)) {
-      await kv.set(KV_LAST_INTAKE, now.toISOString());
-      await runIntake(cos, { actor: "schedule:intake", deadline }).catch(warn("intake"));
-    }
-
-    if (cos.store.isPaused()) return;
-    const lastCi = await kv.get<string>(KV_LAST_CI);
-    if (!limited() && !overBudget() && (!lastCi || now.getTime() - Date.parse(lastCi) >= CI_POLL_MS)) {
-      await kv.set(KV_LAST_CI, now.toISOString());
-      await watchCi(cos, "schedule:ci", { deadline }).catch(warn("ci watch"));
+    const nextPhase = await kv.get<string>(KV_NEXT_GITHUB_PHASE);
+    const phases = nextPhase === "ci" ? ["ci", "intake"] as const : ["intake", "ci"] as const;
+    for (const phase of phases) {
+      if (cos.store.isPaused()) return;
+      if (limited() || overBudget()) break;
+      if (phase === "intake" && !config.repos.length) continue;
+      const lastKey = phase === "intake" ? KV_LAST_INTAKE : KV_LAST_CI;
+      const interval = phase === "intake" ? Math.max(1, config.values.intakeIntervalMinutes) * 60_000 : CI_POLL_MS;
+      const last = await kv.get<string>(lastKey);
+      const started = cos.now();
+      if (last && started.getTime() - Date.parse(last) < interval) continue;
+      // Persist before starting: even an error or reload gives the other
+      // overdue phase the next turn instead of resetting intake to first.
+      await kv.set(KV_NEXT_GITHUB_PHASE, phase === "intake" ? "ci" : "intake");
+      await kv.set(lastKey, started.toISOString());
+      if (phase === "intake") await runIntake(cos, { actor: "schedule:intake", deadline }).catch(warn("intake"));
+      else await watchCi(cos, "schedule:ci", { deadline }).catch(warn("ci watch"));
     }
 
     // Before stall detection, so a thread resumed or answered in BB is not

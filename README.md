@@ -512,8 +512,9 @@ flowchart TB
   finishes; the rest waits until intake or CI polling is next due). Scheduled
   intake resumes across repositories and issues; a repository already being
   listed considers its first issue before yielding even if listing used the
-  budget. On a
-  rate limit (a 429, or a 403 with `retry-after`,
+  budget. When intake or CI uses the budget, the other overdue phase gets
+  the first turn on the next sweep; this order survives reloads. On a rate
+  limit (a 429, or a 403 with `retry-after`,
   `x-ratelimit-remaining: 0` or a secondary-limit message) all GitHub requests
   pause until the reset, held in memory: intake and CI polling are skipped,
   the overview shows a warning, and a step that needed GitHub runs again at

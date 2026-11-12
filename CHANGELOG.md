@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Intake and CI polling share sweep time fairly.** When a slow phase uses
+  the budget, the other overdue phase gets the first turn on the next sweep,
+  including after errors, rate limits and reloads. Frequent intake cannot
+  indefinitely block CI polling, and slow CI cannot block intake.
+
 - **Slow intake resumes across repositories and issues.** Scheduled intake
   saves its position between passes, including after reloads. A repository
   whose issue listing uses the time budget still considers one issue before
