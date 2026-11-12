@@ -64,7 +64,8 @@ flowchart LR
    looks in each configured repository for open issues that carry every label
    you chose (and are assigned to the user you chose, if you set one). An issue
    with an active task or an open PR is never picked up twice. Tasks you
-   describe skip this step.
+   describe skip this step. `bb cos intake --dry-run` applies the same
+   concurrency limits, so it reports only the issues a real run would start.
 2. **A task starts** when the repository and the global limit have a free slot.
    When they are full, an issue waits for a later intake run and a task you
    describe is refused until a slot frees. A task gets its own worktree and

@@ -66,6 +66,12 @@ export interface Review {
 
 export type CiSummary = { state: "passing" | "failing" | "pending" | "no_checks"; failed: { name: string; url: string; runId: number | null }[]; total: number };
 
+/** The open PR that already covers an issue: its branch is the issue's, or its body closes the issue. */
+export function matchOpenPullForIssue(pulls: GitHubPull[], issueNumber: number, branchPrefix: string): GitHubPull | null {
+  const closesRe = new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#${issueNumber}\\b`, "i");
+  return pulls.find((pr) => pr.head.ref.startsWith(`${branchPrefix}issue-${issueNumber}-`) || closesRe.test(pr.body ?? "")) ?? null;
+}
+
 export class GitHubError extends Error {
   constructor(message: string, readonly status: number, readonly url: string) {
     super(message);
@@ -171,16 +177,9 @@ export class GitHubClient {
     return this.request("PATCH", `/repos/${owner}/${repo}/issues/comments/${commentId}`, { body });
   }
 
+  /** The newest open PRs first, capped at 5 pages (500), so the PRs Chief of Staff opened recently are always seen. */
   listOpenPulls(owner: string, repo: string): Promise<GitHubPull[]> {
-    return this.paginate(`/repos/${owner}/${repo}/pulls?state=open&sort=created&direction=asc`, 5);
-  }
-
-  async findOpenPullForIssue(owner: string, repo: string, issueNumber: number, branchPrefix: string): Promise<GitHubPull | null> {
-    const pulls = await this.listOpenPulls(owner, repo);
-    const closesRe = new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s+#${issueNumber}\\b`, "i");
-    return (
-      pulls.find((pr) => pr.head.ref.startsWith(`${branchPrefix}issue-${issueNumber}-`) || closesRe.test(pr.body ?? "")) ?? null
-    );
+    return this.paginate(`/repos/${owner}/${repo}/pulls?state=open&sort=created&direction=desc`, 5);
   }
 
   async findPullByHead(owner: string, repo: string, head: string): Promise<GitHubPull | null> {

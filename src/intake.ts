@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
-import type { GitHubClient, GitHubIssue } from "./github";
+import { matchOpenPullForIssue, type GitHubClient, type GitHubIssue, type GitHubPull } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes } from "./machine";
@@ -85,6 +85,8 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     return [{ repo: "*", considered: 0, started: [], skipped: [], error: error instanceof Error ? error.message : String(error) }];
   }
   if (!github.hasToken) return [{ repo: "*", considered: 0, started: [], skipped: [], error: "no GitHub token (set the githubToken setting or log in with gh)" }];
+  // A dry run starts nothing, so it counts its own would-starts to report what a real run would do.
+  let dryRunTotal = 0;
   for (const repo of config.repos) {
     const key = repoKey(repo);
     if (opts.repo && opts.repo !== key) continue;
@@ -101,23 +103,30 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
     try {
       const issues = await eligibleIssues(github, repo);
       result.considered = issues.length;
+      let dryRunRepo = 0;
+      // The repository's open PRs, listed on first need and then reused for every issue of this run.
+      let openPulls: Promise<GitHubPull[]> | null = null;
       for (const issue of issues) {
         if (cos.store.isPaused(key)) break;
         if (cos.store.findActiveForIssue(key, issue.number)) {
           result.skipped.push({ issue: issue.number, reason: "active thread exists" });
           continue;
         }
-        const pr = await github.findOpenPullForIssue(repo.owner, repo.repo, issue.number, BRANCH_PREFIX);
-        if (pr) {
-          result.skipped.push({ issue: issue.number, reason: `open PR #${pr.number}` });
-          continue;
-        }
-        const capacity = capacityProblem(cos, repo, config.values.maxConcurrentTotal);
+        // Capacity is a local read: check it before the GitHub lookup, so a full repository costs no request.
+        const capacity = capacityProblem(cos, repo, config.values.maxConcurrentTotal, { repo: dryRunRepo, total: dryRunTotal });
         if (capacity) {
           result.skipped.push({ issue: issue.number, reason: capacity });
           continue;
         }
+        openPulls ??= github.listOpenPulls(repo.owner, repo.repo);
+        const pr = matchOpenPullForIssue(await openPulls, issue.number, BRANCH_PREFIX);
+        if (pr) {
+          result.skipped.push({ issue: issue.number, reason: `open PR #${pr.number}` });
+          continue;
+        }
         if (opts.dryRun) {
+          dryRunRepo += 1;
+          dryRunTotal += 1;
           result.started.push({ issue: issue.number, threadId: "(dry-run)" });
           continue;
         }
@@ -133,9 +142,10 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
   return results;
 }
 
-function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number): string | null {
-  if (cos.store.countOccupied(repoKey(repo)) >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
-  if (cos.store.countOccupied() >= maxTotal) return `global max concurrency (${maxTotal})`;
+/** `pending` is what a dry run would have started so far: nothing is stored for it, so it is added to the stored count. */
+function capacityProblem(cos: Cos, repo: RepoConfig, maxTotal: number, pending = { repo: 0, total: 0 }): string | null {
+  if (cos.store.countOccupied(repoKey(repo)) + pending.repo >= repo.maxConcurrent) return `repo at max concurrency (${repo.maxConcurrent})`;
+  if (cos.store.countOccupied() + pending.total >= maxTotal) return `global max concurrency (${maxTotal})`;
   return null;
 }
 
