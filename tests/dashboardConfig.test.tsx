@@ -39,7 +39,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => {
     UrlLink: () => null,
   };
 });
-vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
+vi.mock("../components/ui/icon", () => ({ Icon: ({ name, className }: { name: string; className?: string }) => <svg data-icon={name} className={className} aria-hidden="true" /> }));
 vi.mock("../components/cos/question", () => ({ QuestionSheet: () => null }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
 import { Dashboard } from "../app";
@@ -171,4 +171,28 @@ it("neither marks nor warns after a general value is typed back to its loaded va
   await show("agents");
   expect(configureTabDot()).toBeNull();
   expect(leaveWarns()).toBe(false);
+});
+
+// ---------- Dashboard tabs on narrow screens (#96) ----------
+
+const dashboardNav = () => container.querySelector<HTMLElement>('nav[aria-label="Dashboard tabs"]')!;
+const classes = (el: Element) => (el.getAttribute("class") ?? "").split(/\s+/);
+
+it("keeps the dashboard tabs reachable on narrow screens: text-only below sm, scrolling inside the nav as a fallback", async () => {
+  await show("config/general");
+  const nav = dashboardNav();
+  expect(classes(nav)).toEqual(expect.arrayContaining(["min-w-0", "overflow-x-auto"]));
+
+  const tabs = Array.from(nav.querySelectorAll("button"));
+  expect(tabs.map((b) => b.textContent)).toEqual(["Pipeline", "Repos & PRs", "Configure"]);
+  expect(tabs.map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false", "true"]);
+  for (const tab of tabs) {
+    expect(classes(tab)).toContain("shrink-0");
+    expect(classes(tab.querySelector("svg")!)).toEqual(expect.arrayContaining(["hidden", "sm:block"]));
+  }
+
+  await setValue(field(MAX_TASKS), "5");
+  const dot = configureTabDot()!;
+  expect(dot.closest("nav")).toBe(nav);
+  expect(classes(dot)).toContain("shrink-0");
 });

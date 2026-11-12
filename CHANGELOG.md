@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The dashboard tabs fit on narrow screens.** Below 640 px the Pipeline,
+  Repos & PRs and Configure tabs show their labels without icons, so all
+  three, the selected tab and the unsaved-changes dot on Configure fit
+  within a 320 px screen. If a large font size still makes them too wide,
+  the tab strip scrolls sideways inside its border instead of pushing past
+  the edge of the screen.
+
 - **Saved configuration drafts survive a failed reload.** After a partial save,
   workflow and repository drafts stay until a successful read confirms their
   saved values. Retry reloads without repeating writes, and keeps any newer
