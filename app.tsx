@@ -982,18 +982,18 @@ export function Dashboard({ subPath }: { subPath: string }) {
               <p className="text-xs text-muted-foreground">Plan, build, verify, review, ship. Live view of every agent.</p>
             </div>
           </div>
-          <nav className="flex w-full rounded-lg border border-border bg-card p-1 sm:w-auto" aria-label="Dashboard tabs">
+          <nav className="flex w-full min-w-0 overflow-x-auto rounded-lg border border-border bg-card p-1 sm:w-auto" aria-label="Dashboard tabs">
             {TABS.map((t) => (
               <button
                 key={t.id}
                 type="button"
                 aria-pressed={tab === t.id}
                 onClick={() => goTab(t.id)}
-                className={cn("flex flex-auto items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:flex-none sm:px-3", tab === t.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}
+                className={cn("flex flex-auto shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:flex-none sm:px-3", tab === t.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:text-foreground")}
               >
-                <Icon name={t.icon} fallback="Circle" className="size-4" aria-hidden />
+                <Icon name={t.icon} fallback="Circle" className="hidden size-4 sm:block" aria-hidden />
                 {t.label}
-                {t.id === "config" && configDrafts.dirty ? <span aria-label="unsaved" className="size-1.5 rounded-full" style={{ background: STATUS.warning }} /> : null}
+                {t.id === "config" && configDrafts.dirty ? <span aria-label="unsaved" className="size-1.5 shrink-0 rounded-full" style={{ background: STATUS.warning }} /> : null}
               </button>
             ))}
           </nav>
