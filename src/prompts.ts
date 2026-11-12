@@ -48,7 +48,7 @@ export function inputReports(wf: Workflow, nodes: Nodes, stepId: string): string
 }
 
 function contract(step: AgentWork, delivery?: string): string[] {
-  const outcomes = step.verdict ? '`"done"` if it passes, `"failed"` with the findings that must change' : '`"done"`';
+  const outcomes = step.verdict ? '`"done"` if it passes, or `"failed"` with the findings that must change' : '`"done"`';
   const picks = step.chooses.length > 0;
   const auto = Boolean(step.picksModel);
   const fields = picks ? "`choice` (your pick, below), " : auto ? "`providerId`, `model` and `reasoningLevel` (your pick), " : "";
@@ -56,7 +56,7 @@ function contract(step: AgentWork, delivery?: string): string[] {
     ``,
     `### When you finish this step`,
     `Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\`, ${delivery ? `\`delivery: "${delivery}"\`, ` : ""}\`outcome\`: ${outcomes}, ${fields}and a Markdown \`summary\` (later steps read it${picks || auto ? "; say which model you picked and why" : ""}).`,
-    `Need a person to decide? Ask with your question tool, or report \`outcome: "needs_input"\` with the \`question\`. Never end your turn without one of these: Chief of Staff waits for the report.`,
+    `Cannot finish? Report \`outcome: "failed"\` and why. Need a person to decide? Ask with your question tool, or report \`outcome: "needs_input"\` with the \`question\`. Never end your turn without one of these: Chief of Staff waits for the report.`,
     `No \`${REPORT_TOOL}\` tool? End your final message with:`,
     "```",
     `## Step report`,

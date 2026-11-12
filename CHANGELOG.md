@@ -2,11 +2,12 @@
 
 ## Unreleased
 
-- **Shorter step prompts.** Agent prompts are about 14% smaller: the delivery
-  id now sits in the `cos_report` call and the `## Step report` block instead
-  of a separate trailing sentence, and the reporting, model-pick and nudge
-  wording is tighter. The agent section of the skill points to the prompt's
-  reporting instructions instead of repeating them.
+- **Shorter agent prompts.** Each step prompt is about 150–250 characters
+  shorter: the delivery id now sits in the `cos_report` call and the
+  `## Step report` block instead of a separate trailing sentence, and the
+  reporting, model-pick and nudge wording is tighter. The Chief of Staff skill
+  is 20% smaller; its agent section points to the prompt's reporting
+  instructions instead of repeating them.
 
 - **Saved configuration drafts survive a failed reload.** After a partial save,
   workflow and repository drafts stay until a successful read confirms their
