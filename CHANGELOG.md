@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fit shows the whole task workflow on phones.** Opening a task's workflow,
+  resizing it and **Fit all steps in view** now zoom out as far as needed to
+  show every step, and Zoom Out no longer stops at half size. Opening and Fit
+  frame the graph the same way, in the task view and in the workflow editor.
+
 - **Saved configuration drafts survive a failed reload.** After a partial save,
   workflow and repository drafts stay until a successful read confirms their
   saved values. Retry reloads without repeating writes, and keeps any newer

@@ -2,12 +2,12 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { DEFAULT_WORKFLOW } from "../src/workflow";
+import { DEFAULT_WORKFLOW, workflowSchema } from "../src/workflow";
 import { stubReactFlowDom } from "./helpers/reactFlow";
 
 vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
 vi.mock("@xyflow/react/dist/style.css", () => ({}));
-import { WorkflowCanvas, liveTone, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
+import { WorkflowCanvas, layout, liveTone, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
 
 const live = (extra: Partial<LiveStatus>): LiveStatus => ({ status: "pending", phase: null, reported: 0, agents: 1, waitingKind: null, retrying: false, attempts: 0, round: 1, ...extra });
 
@@ -130,3 +130,74 @@ it("keeps the only step on the canvas when a removal is attempted", async () => 
   expect(onChange).not.toHaveBeenCalled();
   expect(node("build")).toBeTruthy();
 });
+
+// Fitting (#97). The DOM stub makes the pane and every node 200 × 100, so a six-row graph is about 200 × 750
+// and only fits below React Flow's default 0.5 zoom floor.
+const SIX_STEPS = workflowSchema.parse({
+  id: "six",
+  name: "Six steps",
+  steps: [
+    { id: "model", name: "Select model", type: "model", mode: "auto", instructions: "Pick one.", next: ["plan"] },
+    { id: "plan", name: "Plan", type: "agent", next: ["review-plan"] },
+    { id: "review-plan", name: "Review plan", type: "agent", verdict: true, next: ["build"] },
+    { id: "build", name: "Build", type: "agent", next: ["review"] },
+    { id: "review", name: "Review implementation", type: "agent", verdict: true, onFail: "build", next: ["ship"] },
+    { id: "ship", name: "Ship", type: "ship" },
+  ],
+});
+/** Parallel review branches after Build, joined again at Ship. */
+const PARALLEL = workflowSchema.parse({
+  id: "parallel",
+  name: "Parallel",
+  steps: [
+    { id: "plan", name: "Plan", type: "agent", next: ["build"] },
+    { id: "build", name: "Build", type: "agent", next: ["review", "docs"] },
+    { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", next: ["ship"] },
+    { id: "docs", name: "Docs", type: "agent", next: ["ship"] },
+    { id: "ship", name: "Ship", type: "ship" },
+  ],
+});
+const PANE = { width: 200, height: 100 };
+const MARGIN = 5;
+const viewport = () => {
+  const m = container.querySelector<HTMLElement>(".react-flow__viewport")!.style.transform.match(/translate\((-?[\d.]+)px, ?(-?[\d.]+)px\) scale\(([\d.]+)\)/)!;
+  return { x: +m[1], y: +m[2], zoom: +m[3] };
+};
+/** Every step lies inside the pane with some margin at the current viewport. */
+const expectAllInView = (wf: typeof DEFAULT_WORKFLOW) => {
+  const { x, y, zoom } = viewport();
+  for (const [id, p] of layout(wf)) {
+    const left = x + p.x * zoom, top = y + p.y * zoom;
+    const right = left + 200 * zoom, bottom = top + 100 * zoom;
+    expect({ id, left: left >= MARGIN, top: top >= MARGIN, right: right <= PANE.width - MARGIN, bottom: bottom <= PANE.height - MARGIN }).toEqual({ id, left: true, top: true, right: true, bottom: true });
+  }
+};
+const zoomOut = () => container.querySelector<HTMLButtonElement>(".react-flow__controls-zoomout")!;
+const settle = (ms = 50) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
+const pressFit = async () => {
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Fit all steps in view"]')!.click(); });
+  await settle(400); // the button animates for 200 ms
+};
+
+for (const [label, wf, editable] of [
+  ["six sequential steps", SIX_STEPS, false],
+  ["parallel review branches", PARALLEL, false],
+  ["six sequential steps in the editor", SIX_STEPS, true],
+] as const) {
+  it(`fits ${label} wholly in view on opening and after Fit, with Zoom Out still enabled`, async () => {
+    await act(async () => {
+      root.render(<WorkflowCanvas workflow={wf} selected={null} onSelect={onSelect} onChange={editable ? vi.fn() : undefined} />);
+    });
+    await settle(); // the opening fit waits for the steps to be measured
+    expectAllInView(wf);
+    expect(zoomOut().disabled).toBe(false);
+    const opened = viewport();
+    await pressFit();
+    expectAllInView(wf);
+    expect(zoomOut().disabled).toBe(false);
+    const fitted = viewport();
+    expect(fitted.zoom).toBeCloseTo(opened.zoom, 3);
+    expect(fitted.x).toBeCloseTo(opened.x, 1);
+    expect(fitted.y).toBeCloseTo(opened.y, 1);
+  });
+}
