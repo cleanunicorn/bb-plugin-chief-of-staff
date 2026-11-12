@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-// The configurator's save path: dirty tracking, Save, Discard and the realtime
-// refetch. Load failures, range validation and partial saves are left out on
-// purpose; they are changed by other open issues.
+// The configurator's save path: dirty tracking, Save, Discard, the realtime
+// refetch, the problems that keep Save off, and a save that fails halfway.
+// Load failures are left out on purpose; they are changed by another open issue.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
 import { button, click, container, field, mount, setValue, unmount } from "./dom";
