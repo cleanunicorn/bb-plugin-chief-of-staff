@@ -674,6 +674,59 @@ describe("chief-of-staff server", () => {
     expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(failure === "merge rejected" ? 1 : 0);
   });
 
+  describe("a head with no checks reported (#50)", () => {
+    const merges = () => ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge")).length;
+    const status = () => new StateStore(host.bb.storage.database()).listWorkItems()[0]!.status;
+    const noChecks = () => {
+      ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 0, check_runs: [] } });
+    };
+
+    it.each([
+      { requireApproval: false },
+      { requireApproval: true },
+    ])("waits for CI to register before merging (requireApproval: $requireApproval)", async ({ requireApproval }) => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval } } }) });
+      noChecks();
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        expect(status()).not.toBe("done");
+        vi.setSystemTime(Date.now() + 3 * 60_000);
+        await sweep();
+        expect(merges()).toBe(0);
+        // A repository that really has no CI merges once the grace is over.
+        vi.setSystemTime(Date.now() + 3 * 60_000);
+        await sweep();
+        expect(merges()).toBe(1);
+        expect(status()).toBe("done");
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("merges as soon as checks that appear during the grace pass", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval: false } } }) });
+      noChecks();
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "in_progress", conclusion: null }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "success" }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(1);
+        expect(status()).toBe("done");
+      } finally { vi.useRealTimers(); }
+    });
+  });
+
   describe("pull request state (#114)", () => {
     const stored = () => new StateStore(host.bb.storage.database()).listWorkItems()[0]!;
     const merges = () => ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge")).length;

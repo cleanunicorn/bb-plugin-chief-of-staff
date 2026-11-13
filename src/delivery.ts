@@ -599,6 +599,27 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
 // ---- CI watching ----
 
 const CI_MARKER = (itemId: string) => `ci-failed:${itemId}`;
+/** The head sha last seen with no checks reported, and when it was first seen so. */
+const NO_CHECKS_SINCE = (itemId: string) => `ci-none:${itemId}`;
+/**
+ * How long a head with no checks counts as pending. Right after a push GitHub
+ * reports no checks until CI registers them, which looks like a repository
+ * with no CI at all.
+ */
+const NO_CHECKS_GRACE_MS = 5 * 60_000;
+
+/** Whether a head with no checks reported has waited out the grace for CI to register. */
+async function noChecksSettled(cos: Cos, itemId: string, sha: string): Promise<boolean> {
+  const key = NO_CHECKS_SINCE(itemId);
+  const seen = await cos.bb.storage.kv.get<{ sha: string; since: number }>(key);
+  const now = cos.now().getTime();
+  // Timed per head, not from the PR's creation: a fix's new head starts without checks too.
+  if (seen?.sha !== sha) {
+    await cos.bb.storage.kv.set(key, { sha, since: now });
+    return false;
+  }
+  return now - seen.since >= NO_CHECKS_GRACE_MS;
+}
 
 /** The ship step an item has open on a PR, if any. */
 function openShip(item: WorkItem): ShipStep | null {
@@ -671,7 +692,7 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
         if (runId) log += `\n\n${await github.getJobLogsForRun(repo.owner, repo.repo, runId).catch(unlessRateLimited(() => "(log download failed)"))}`;
         await cos.bb.storage.kv.set(CI_MARKER(item.id), pr.head.sha);
         await dispatch(cos, item.id, { type: "ci_failing", log: await cos.safe(log) }, actor);
-      } else if (ci.state === "passing" || ci.state === "no_checks") {
+      } else if (ci.state === "passing" || (ci.state === "no_checks" && await noChecksSettled(cos, item.id, pr.head.sha))) {
         if (item.nodes[ship.id]?.phase === "ci" || ship.action === "merge") await dispatch(cos, item.id, { type: "ci_passing" }, actor);
       }
     } catch (error) {
