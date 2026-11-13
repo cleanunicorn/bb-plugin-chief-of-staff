@@ -3,7 +3,8 @@
 ## Unreleased
 
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
-  segmented bar, one segment per step, with a done count. Expanded, steps are
+  segmented bar, one segment per step, with a done count; states differ by
+  shape as well as color. Expanded, steps are
   listed top to bottom in workflow order, each with a status mark; steps that
   run in parallel are boxed together. Chips no longer wrap across lines with
   dangling arrows.

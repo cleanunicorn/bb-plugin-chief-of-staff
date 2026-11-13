@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
@@ -32,7 +33,7 @@ function StepNode({ step, color }: { step: FlowStep; color: string }) {
     <Icon name="Check" fallback="Circle" className="size-2.5" />
   </span>;
   if (state === "running") return <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px] bg-card" style={{ borderColor: color }}>
-    <span className="size-1.5 animate-pulse rounded-full" style={{ background: color }} />
+    <span className="size-1.5 rounded-full motion-safe:animate-pulse" style={{ background: color }} />
   </span>;
   return <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px] bg-card" style={{ borderColor: color, color }}>
     <Icon name={state === "retrying" ? "RefreshCw" : "Hand"} fallback="Circle" className="size-2.5" />
@@ -92,20 +93,33 @@ export function StepFlow({ entry }: { entry: { workflowName: string; steps: (Flo
   );
 }
 
+/** Segment fill per state. Shape, not only hue, tells the states apart. */
+function segmentStyle(state: StepState, color: string): CSSProperties {
+  // Pending: hollow outline.
+  if (state === "pending") return { boxShadow: "inset 0 0 0 1px var(--border)" };
+  // Waiting and retrying need attention: diagonal stripes.
+  if (state === "waiting" || state === "retrying") return { background: `repeating-linear-gradient(-45deg, ${color} 0 3px, color-mix(in srgb, ${color} 35%, transparent) 3px 5px)` };
+  return { background: color };
+}
+
 /**
  * One segment per step, in workflow order. Each segment is a recorded step
  * state, never an estimate of time remaining, so it is not a progressbar.
+ * Done is a thin solid bar; live steps (running, waiting, retrying) stand
+ * taller; pending is a thin hollow outline.
  */
 export function StepProgress({ steps }: { steps: Pick<FlowStep, "id" | "name" | "status" | "retrying" | "waitingKind">[] }) {
   const palette = usePalette();
-  return <span aria-hidden className="flex h-1.5 min-w-0 flex-1 items-stretch gap-0.5">
+  return <span aria-hidden className="flex h-2.5 min-w-0 flex-1 items-center gap-0.5">
     {steps.map((step) => {
       const state = stateOf(step);
+      const live = state === "running" || state === "retrying" || state === "waiting";
       return <span
         key={step.id}
+        data-state={state}
         title={`${step.name}: ${LABEL[state].toLowerCase()}`}
-        className={cn("min-w-0.5 flex-1 rounded-full", state === "running" && "animate-pulse")}
-        style={{ background: state === "pending" ? "var(--border)" : stepColor(step, palette) }}
+        className={cn("min-w-0.5 flex-1 rounded-full", live ? "h-2.5" : "h-1.5", state === "running" && "motion-safe:animate-pulse")}
+        style={segmentStyle(state, stepColor(step, palette))}
       />;
     })}
   </span>;

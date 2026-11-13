@@ -14,7 +14,7 @@ function step(id: string, depth: number, status: RosterStep["status"], extra: Pa
 describe("StepFlow", () => {
   const steps = [step("Plan", 0, "done"), step("A long unbroken step name".replaceAll(" ", ""), 1, "running", { agents: 2, reported: 1 }), step("Review plan", 1, "waiting"), step("Ship", 2, "pending")];
 
-  it("lists every step in workflow order with a visible status", () => {
+  it("lists every step in workflow order with its status (pending is announced, not shown)", () => {
     const html = renderToStaticMarkup(<StepFlow entry={{ workflowName: "Delivery", steps }} />);
     expect(html).toContain('aria-label="Workflow Delivery"');
     const order = ["Plan", "Alongunbrokenstepname", "Review plan", "Ship"].map((name) => html.indexOf(`>${name}<`));
@@ -62,6 +62,16 @@ describe("StepProgress", () => {
       expect(html).toContain(`title="${name}: ${status}"`);
     }
     expect(html).not.toContain("progressbar");
+  });
+
+  it("tells states apart by shape, not only by color", () => {
+    const html = renderToStaticMarkup(<StepProgress steps={[step("Plan", 0, "done"), step("Build", 1, "running"), step("Review", 2, "waiting"), step("Ship", 3, "pending")]} />);
+    const segment = (state: string) => html.match(new RegExp(`<span data-state="${state}"[^>]*>`))![0];
+    expect(segment("done")).toContain("h-1.5");
+    expect(segment("running")).toContain("h-2.5");
+    expect(segment("waiting")).toContain("repeating-linear-gradient");
+    expect(segment("pending")).toContain("inset 0 0 0 1px");
+    expect(segment("pending")).not.toContain("background");
   });
 
   it("keeps every step even for long workflows", () => {

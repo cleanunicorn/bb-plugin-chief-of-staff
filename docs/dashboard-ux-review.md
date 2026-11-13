@@ -36,10 +36,13 @@ this skill's behavioral lenses do not establish iconographic design quality.
   waiting, stalled, failed and completed states retain existing semantics.
 - Repository and metric icons provide scan landmarks; the common task-card
   renderer applies them consistently across issue-backed and standalone tasks.
-- A small step-state strip shows recorded done/running/waiting/retrying/pending
-  states with different shapes, as well as colors. It is not a percentage or an
-  elapsed-time estimate. More than twelve steps show a remaining-count marker;
-  the existing expanded workflow still exposes every step.
+- A segmented step bar (one segment per step) shows recorded
+  done/running/waiting/retrying/pending states with different shapes, as well as
+  colors: done is thin and solid, live steps stand taller, waiting and retrying
+  are striped, pending is a hollow outline. It is not a percentage or an
+  elapsed-time estimate. Expanding it lists every step top to bottom with a
+  status mark and label; parallel steps are boxed together. Pending rows show a
+  dashed mark and announce "Pending" to screen readers without a visible label.
 - A local SVG queue illustration accompanies the empty active roster. It follows
   theme tokens and makes no external image requests.
 
