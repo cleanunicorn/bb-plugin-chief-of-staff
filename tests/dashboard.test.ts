@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attentionKind, matchesTaskFilter, taskLabel } from "../components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, splitThreadIds, taskLabel } from "../components/cos/dashboardModel";
 
 const task = (detail: string, waitingKind: string | null = null, stalled = false) => ({ detail, waitingKind, stalled });
 
@@ -40,5 +40,20 @@ describe("activity task labels", () => {
     expect(taskLabel({ workItemId: "abcdef123456", issueNumber: null, issueTitle: "" })).toEqual({ id: "abcdef123456", label: "abcdef12" });
     expect(taskLabel({ workItemId: "gone", issueNumber: null, issueTitle: null })).toBeNull();
     expect(taskLabel({ workItemId: null, issueNumber: null, issueTitle: null })).toBeNull();
+  });
+});
+
+describe("thread ids in activity text", () => {
+  const join = (parts: ReturnType<typeof splitThreadIds>) => parts.map((p) => ("thread" in p ? p.thread : p.text)).join("");
+  it.each([
+    ["spawned Review thr_abc", [{ text: "spawned Review " }, { thread: "thr_abc" }]],
+    ["archived 2 threads: thr_a1, thr_B2", [{ text: "archived 2 threads: " }, { thread: "thr_a1" }, { text: ", " }, { thread: "thr_B2" }]],
+    ["could not archive thread thr_x: gone", [{ text: "could not archive thread " }, { thread: "thr_x" }, { text: ": gone" }]],
+    ["tool:thr_x", [{ text: "tool:" }, { thread: "thr_x" }]],
+    ["Build failed (exit 1)", [{ text: "Build failed (exit 1)" }]],
+    ["mythr_abc is not an id", [{ text: "mythr_abc is not an id" }]],
+  ])("splits %j into text and thread ids, keeping the text verbatim", (text, parts) => {
+    expect(splitThreadIds(text)).toEqual(parts);
+    expect(join(splitThreadIds(text))).toBe(text);
   });
 });

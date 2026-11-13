@@ -361,3 +361,14 @@ it("names each row's task and opens its workflow sheet, returning focus to the n
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(document.activeElement).toBe(taskButton("#7 Fix login"));
 });
+
+it("links every thread id in a row's message and actor, leaving the text as it was", async () => {
+  mocks.logs = [log({ id: 1, message: "archived 2 threads: thr_a, thr_b", actor: "tool:thr_c" })];
+  await mount(<ActivityFeed />);
+  const row = container.querySelector("li")!;
+  expect(row.textContent).toContain("app archived 2 threads: thr_a, thr_b · tool:thr_c");
+  const links = Array.from(row.querySelectorAll<HTMLButtonElement>('button[aria-label^="Open thread"]'));
+  expect(links.map((b) => b.textContent)).toEqual(["thr_a", "thr_b", "thr_c"]);
+  for (const link of links) await act(async () => link.click());
+  expect(mocks.navigate.toThread.mock.calls).toEqual([["thr_a"], ["thr_b"], ["thr_c"]]);
+});

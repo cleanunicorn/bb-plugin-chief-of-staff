@@ -30,3 +30,22 @@ export function taskLabel(row: { workItemId: string | null; issueNumber: number 
   const label = row.issueNumber ? `#${row.issueNumber}${row.issueTitle ? ` ${row.issueTitle}` : ""}` : row.issueTitle || row.workItemId.slice(0, 8);
   return { id: row.workItemId, label };
 }
+
+/** A run of plain text, or a BB thread id. */
+export type TextPart = { text: string } | { thread: string };
+
+// `\b` keeps ids that start a word: "tool:thr_x" and "thr_a, thr_b" match, "mythr_x" does not.
+const THREAD_ID = /\bthr_[A-Za-z0-9]+/g;
+
+/** Splits text around thread ids, so they can be linked. Joining the parts gives the text back unchanged. */
+export function splitThreadIds(text: string): TextPart[] {
+  const parts: TextPart[] = [];
+  let last = 0;
+  for (const match of text.matchAll(THREAD_ID)) {
+    if (match.index > last) parts.push({ text: text.slice(last, match.index) });
+    parts.push({ thread: match[0] });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length || !parts.length) parts.push({ text: text.slice(last) });
+  return parts;
+}
