@@ -335,6 +335,23 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
 
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
+/** Active cards count the task's age; finished cards say when it finished and how long it took. */
+function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: string; label: string; title: string } {
+  const started = new Date(entry.startedAt).toLocaleString();
+  if (!finished) {
+    const age = duration((now - Date.parse(entry.startedAt)) / 60_000);
+    return { text: age, label: `Task age ${age}`, title: `Task started ${started}` };
+  }
+  // Some legacy rows have no finish time: say only what is known.
+  if (!entry.finishedAt) {
+    const text = `Started ${relative(entry.startedAt, now)}`;
+    return { text, label: text, title: `Task started ${started}` };
+  }
+  const ago = relative(entry.finishedAt, now);
+  const took = duration((Date.parse(entry.finishedAt) - Date.parse(entry.startedAt)) / 60_000);
+  return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
+}
+
 function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
   const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
@@ -342,9 +359,9 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
-  const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
+  const timer = cardTimer(entry, finished, now);
   // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
   const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) ? entry.lastError : null;
   return (
@@ -362,14 +379,14 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           </p>
         </div>
       </header>
-      <div className="flex items-start justify-between gap-2">
+      <div className={cn("flex items-start justify-between gap-2", finished && "flex-wrap gap-y-1")}>
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
           {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
         </div>
-        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums" title={`Task started ${new Date(entry.startedAt).toLocaleString()}`} aria-label={`Task age ${duration(elapsedMin)}`}>
-          <Icon name="Timer" fallback="Clock" className="size-3.5" aria-hidden />
-          {finished ? relative(entry.startedAt, now) : duration(elapsedMin)}
+        <span className={cn("flex items-center gap-1 text-xs text-muted-foreground tabular-nums", finished ? "min-w-0" : "shrink-0")} title={timer.title} aria-label={timer.label}>
+          <Icon name={finished ? "CalendarCheck" : "Timer"} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
+          {timer.text}
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}

@@ -13,6 +13,7 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   BarChart3: "ChartColumn",
   Bell: "BellDot",
   BellRing: "BellDot",
+  CalendarCheck: "CalendarCheckOut02",
   Braces: "Code",
   ChefHat: "chief-of-staff/chef-hat",
   CircleAlert: "AlertCircle",

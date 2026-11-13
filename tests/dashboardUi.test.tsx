@@ -369,3 +369,31 @@ it("labels finished pull requests by how they ended", async () => {
   expect(rows.some((r) => r?.startsWith("PR closed#7"))).toBe(true);
   expect(rows.some((r) => r?.startsWith("Merged#8"))).toBe(true);
 });
+
+it("says when a finished task finished and how long it took", async () => {
+  const finishedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+  const startedAt = new Date(Date.parse(finishedAt) - 72 * 60_000).toISOString();
+  mocks.entries = [finishedCard({ outcome: "pr_opened", startedAt, finishedAt })];
+  await mount();
+  const timer = container.querySelector('article [aria-label^="Finished"]')!;
+  expect(timer.getAttribute("aria-label")).toBe("Finished 2h ago, took 1.2h");
+  expect(timer.textContent).toBe("Finished 2h ago · took 1.2h");
+  expect(timer.getAttribute("title")).toBe(`Finished ${new Date(finishedAt).toLocaleString()} · started ${new Date(startedAt).toLocaleString()}`);
+  expect(container.querySelector('article [aria-label^="Task age"]')).toBeNull();
+});
+
+it("says only when a finished task started when its finish time is unknown", async () => {
+  mocks.entries = [finishedCard({ outcome: "completed", startedAt: new Date(Date.now() - 8 * 86_400_000).toISOString(), finishedAt: null })];
+  await mount();
+  const timer = container.querySelector('article [aria-label^="Started"]')!;
+  expect(timer.getAttribute("aria-label")).toBe("Started 8d ago");
+  expect(timer.textContent).toBe("Started 8d ago");
+});
+
+it("keeps the task age on active cards", async () => {
+  mocks.entries = [entry({ startedAt: new Date(Date.now() - 30 * 60_000).toISOString() })];
+  await mount();
+  const timer = container.querySelector('article [aria-label^="Task age"]')!;
+  expect(timer.getAttribute("aria-label")).toBe("Task age 30m");
+  expect(timer.textContent).toBe("30m");
+});
