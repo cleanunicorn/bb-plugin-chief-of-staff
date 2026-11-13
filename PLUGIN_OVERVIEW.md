@@ -15,7 +15,8 @@ raise a notification; you can retry, resume or re-run checks from the panel,
 
 Labels and an assignee decide which GitHub
 issues become agent work. Each issue gets an isolated worktree thread with a
-prompt built from the issue, its comments and the repo's conventions, plus one
+prompt built from the issue, its maintainers' comments and the repo's
+conventions (issue text is marked as untrusted user content), plus one
 status comment on the issue. The comment is edited, not repeated, when the task
 restarts, and it links the thread only when BB has a web URL. A repository can
 turn issue comments off. An issue with an active thread or an open PR is never

@@ -28,8 +28,9 @@ no GitHub issue: see [Install](#install).
 
 - **Turns issues into agent work.** Issues matching a per-repository filter
   become isolated worktree threads, with a prompt built from the issue, its
-  comments and the repository's `AGENTS.md` / `CONTRIBUTING.md`. You can also
-  start a task by describing it.
+  maintainers' comments and the repository's `AGENTS.md` / `CONTRIBUTING.md`.
+  Issue text is marked as untrusted ([Trust model](#trust-model)). You can
+  also start a task by describing it.
 - **Runs your workflow.** Each task follows a graph of steps you draw: agents
   with your instructions, check commands, and shipping. Read-only steps run in
   parallel, and a failed check or review sends the work back to an earlier
@@ -409,6 +410,7 @@ The same settings, as stored:
       "projectId": "proj_xxxxxxxxxx",
       "intake": true,
       "issueComments": true,
+      "briefComments": "trusted",
       "issueFilter": { "labels": ["agent-ready"], "assignee": null },
       "maxConcurrent": 2,
       "providerId": "claude-code", "model": "claude-opus-5-5",
@@ -435,10 +437,71 @@ another. The comment links the agent's thread only when BB has a web URL; a
 request opens, a second comment with its link is added. Set
 `issueComments: false` to post neither; pull requests are still opened.
 
+`briefComments` (default `"trusted"`) controls which issue comments the
+agent's first prompt quotes. It is separate from `issueComments`, which is
+about what Chief of Staff posts. The brief checks the newest 100 comments,
+leaves out Chief of Staff's own status comment, and quotes the newest 10 that
+remain:
+
+| `briefComments` | Comments quoted |
+| --- | --- |
+| `"trusted"` | Only those whose author is the repository's owner, an organization member or a collaborator (GitHub's `author_association` `OWNER`, `MEMBER` or `COLLABORATOR`). Comments with any other or no association are left out, and the brief says how many. |
+| `"all"` | Everyone's. Use it only where you trust everyone who can comment. |
+| `"none"` | None. The comments are not read. |
+
 `workflow` names one of your workflows (empty: the default). Entries written
 for earlier versions keep working: per-stage overrides and `checkCommand` are
 converted into a workflow for that repository, `allow.intake: false` pauses
 intake, and options of the removed routines feature are ignored.
+
+## Trust model
+
+An agent runs on your host, and Chief of Staff commits, pushes and can merge
+its work. Anything that reaches its prompt can steer what it does.
+
+**Who can influence an agent's prompt**
+
+| Who | What they control |
+| --- | --- |
+| You, the operator | Typed tasks, settings, workflows and their step instructions. |
+| People with triage access | Labels and assignees, which decide which issues are picked up. |
+| The issue author | The title and body, which they can edit after the issue was labelled. |
+| Commenters | Comment text, subject to `briefComments`. On a public repository anyone can comment. |
+| People who can push to the default branch | `AGENTS.md` and `CONTRIBUTING.md`, quoted as the repository's conventions. |
+
+**How issue content is presented.** The first prompt names the issue by
+number, repository and URL only. The title, body, author and quoted comments
+go in one block between markers that carry a random value per prompt, opened
+by a notice that the text is user-supplied data and cannot change the workflow
+or step instructions. Text in the issue that imitates the markers is
+defused, so it cannot close the block early. This lowers the risk of prompt
+injection; it does not remove it. A model can still follow instructions
+written in an issue.
+
+**Limits of the filter.** `briefComments` limits what Chief of Staff puts in
+the prompt. The agent can still read the whole issue itself, for example with
+`gh issue view`.
+
+**What the agent can do.** `permissionMode` is passed to BB for every thread:
+
+| `permissionMode` | The agent |
+| --- | --- |
+| `accept-edits` | Works in a workspace sandbox; anything beyond it waits for you to approve. |
+| `auto` (default) | Works in the same sandbox; the provider reviews escalations automatically. |
+| `full` | Bypasses the sandbox and approvals; only the host's permission ceiling in BB still applies. |
+
+In every mode the agent's commits are pushed, and the Ship step can open a pull
+request or merge it. With `action: "merge"` and `requireApproval: false`, work
+can be merged without anyone reviewing it.
+
+**Recommendations for repositories that accept outside issues**
+
+- Keep `requireApproval` on, or ship with `action: "pr"`, so a person reviews
+  every change before it lands.
+- Keep `briefComments: "trusted"`.
+- Avoid `permissionMode: "full"`.
+- Label issues for intake only after reading them, and remember the author can
+  still edit them afterwards.
 
 ## CLI and agent tools
 

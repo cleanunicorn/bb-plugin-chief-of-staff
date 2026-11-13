@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Issue text in agent prompts is marked untrusted, and only maintainers'
+  comments are quoted.** The issue's title, body and comments now sit in a
+  delimited block that tells the agent they are user-supplied data that
+  cannot override the workflow; text imitating the block's markers is
+  defused. By default the brief quotes only comments by the repository's
+  owner, members and collaborators and says how many others it left out. The
+  new per-repository `briefComments` option (`trusted`, `all` or `none`)
+  changes that. The README has a new Trust model section.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
