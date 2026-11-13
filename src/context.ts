@@ -222,7 +222,9 @@ export function liveWarnings(cos: Pick<Cos, "githubLimit" | "now" | "store">, co
   if (orphaned.length) {
     const named = orphaned.slice(0, UNCONFIGURED_NAMED).map(label).join(", ");
     const more = orphaned.length > UNCONFIGURED_NAMED ? ` and ${orphaned.length - UNCONFIGURED_NAMED} more` : "";
-    warnings.push(`Repository not in the repos setting for ${orphaned.length === 1 ? "this task" : "these tasks"}: ${named}${more}. Add the repository back to repos (or fix the setting's error), or close the ${orphaned.length === 1 ? "task" : "tasks"}.`);
+    const repoCount = new Set(orphaned.map((i) => i.repo)).size;
+    const repository = repoCount === 1 ? "repository" : "repositories";
+    warnings.push(`${repoCount === 1 ? "Repository" : "Repositories"} not in the repos setting for ${orphaned.length === 1 ? "this task" : "these tasks"}: ${named}${more}. Add the ${repository} back to repos (or fix the setting's error), or close the ${orphaned.length === 1 ? "task" : "tasks"}.`);
   }
   const limit = cos.githubLimit();
   if (limit) warnings.push(`${limit.reason} reached: intake, CI polling and GitHub steps resume at ${describeReset(limit.until, cos.now())}.`);

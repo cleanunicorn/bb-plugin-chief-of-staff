@@ -118,6 +118,9 @@ describe("overview warning for tasks whose repository is not configured (#52)", 
     const [capped] = liveWarnings(cosOf(store), config([], []));
     expect(capped).toContain("and 2 more");
     expect(capped.match(/a\/b/g)).toHaveLength(5);
+    expect(capped).toMatch(/Add the repository back/);
+    store.updateWorkItem("c", { repo: "x/y" });
+    expect(liveWarnings(cosOf(store), config([], []))[0]).toMatch(/^Repositories .*Add the repositories back/);
   });
 });
 

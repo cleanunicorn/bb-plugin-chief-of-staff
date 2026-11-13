@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import { GitHubError, GitHubRateLimitError, prStateFrom, reduceReviews, unlessRateLimited } from "./github";
-import { ENGINE_ERROR_PREFIX, deriveStatus, repoNotConfiguredReason, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
+import { CAPACITY_REASON, ENGINE_ERROR_PREFIX, deriveStatus, repoNotConfiguredReason, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
@@ -113,7 +113,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     // sweep after the repo is back (a `repos` parse error empties the list).
     const full = !repo || cos.store.countOccupied(item.repo, item.id) >= repo.maxConcurrent || cos.store.countOccupied(undefined, item.id) >= values.maxConcurrentTotal;
     if (full) {
-      const waitingReason = repo ? "Waiting for task capacity" : repoNotConfiguredReason(item.repo);
+      const waitingReason = repo ? CAPACITY_REASON : repoNotConfiguredReason(item.repo);
       const queued = cos.store.updateWorkItem(item.id, {
         queuedEvent: event, status: "queued", jobStartedAt: null,
         waitingKind: null, waitingReason,

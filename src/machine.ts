@@ -710,12 +710,15 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
   return { nodes, patch, effects, journal };
 }
 
-/** How an error thrown by `transition` itself starts in lastError (see delivery). */
+/** Why a queued task waits while its repo and the global limit leave no free slot. */
+export const CAPACITY_REASON = "Waiting for task capacity";
+
 /** Why a queued task waits while its repository is missing from the `repos` setting. */
 export function repoNotConfiguredReason(repo: string): string {
   return `Repository ${repo} is not in the repos setting (or the setting has an error). The task starts once ${repo} is configured again, or close the task.`;
 }
 
+/** How an error thrown by `transition` itself starts in lastError (see delivery). */
 export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";
 
 /** The step still has an effect error to retry or to show the operator. */
