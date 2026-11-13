@@ -584,6 +584,12 @@ export class StateStore {
     return null;
   }
 
+  /** The issue's newest task, whatever its status (intake uses it to leave a finished issue alone). */
+  latestForIssue(repo: string, issueNumber: number): WorkItem | null {
+    const row = this.db.prepare(`SELECT * FROM work_items WHERE repo = ? AND issue_number = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(repo, issueNumber) as Row | undefined;
+    return row ? rowToWorkItem(row) : null;
+  }
+
   listWorkItems(opts: { repo?: string; activeOnly?: boolean; limit?: number } = {}): WorkItem[] {
     const where: string[] = [];
     const params: unknown[] = [];

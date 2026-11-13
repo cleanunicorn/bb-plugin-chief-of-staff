@@ -258,3 +258,26 @@ describe("activity log filtering and cursor", () => {
     expect(store.listLog({ workItemId: "other", onlyProblems: true })).toEqual([]);
   });
 });
+
+describe("latest task for an issue (#48)", () => {
+  it("returns null without a task, else the newest task of that repo and issue", () => {
+    const { store, add, setClock } = storeSetup();
+    expect(store.latestForIssue("a/b", 12)).toBeNull();
+    add("old", { issueNumber: 12, status: "agent", nodes: nodes({ status: "running" }) });
+    setClock("2026-11-12T11:00:00Z");
+    add("new", { issueNumber: 12, status: "failed" });
+    add("other-issue", { issueNumber: 13 });
+    add("other-repo", { repo: "c/d", issueNumber: 12 });
+    expect(store.latestForIssue("a/b", 12)?.id).toBe("new");
+    // An older active task can sit behind the newer finished one.
+    expect(store.findActiveForIssue("a/b", 12)?.id).toBe("old");
+    expect(store.latestForIssue("a/b", 14)).toBeNull();
+  });
+
+  it("breaks a tie on creation time by insertion order", () => {
+    const { store, add } = storeSetup();
+    add("first", { issueNumber: 12 });
+    add("second", { issueNumber: 12 });
+    expect(store.latestForIssue("a/b", 12)?.id).toBe("second");
+  });
+});
