@@ -4,6 +4,7 @@ import { liveWarnings, type Cos } from "./context";
 import { buildRoster, type RosterEntry } from "./roster";
 import { runIntake, startTask } from "./intake";
 import { itemAction } from "./rpc";
+import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
 
 const MAX_OUT = 60_000;
 const out = (text: string) => ({ exitCode: 0, stdout: text.length > MAX_OUT ? text.slice(0, MAX_OUT) + "\n…(truncated)\n" : text });
@@ -39,7 +40,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
           options: {
             repo: { type: "string", description: "Limit to owner/repo" },
             all: { type: "boolean", description: "Add the most recently finished items after the active ones" },
-            "finished-limit": { type: "integer", description: "Finished items per page with --all (default 50)", min: 1, max: 500 },
+            "finished-limit": { type: "integer", description: `Finished items per page with --all (default ${ROSTER_FINISHED_LIMIT})`, min: 1, max: ROSTER_FINISHED_MAX },
             before: { type: "string", description: "Cursor from an earlier page: list only the next page of finished items (implies --all)" },
             usage: { type: "boolean", description: "Include token usage / cost when the provider reports it" },
             json: { type: "boolean", description: "JSON output" },
@@ -61,7 +62,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
             const notes = [...overview.errors.map((e) => `config error: ${e}`), ...warnings.map((w) => `warning: ${w}`)];
             const result = out(formatRoster(entries) + (notes.length ? "\n" + notes.join("\n") + "\n" : ""));
             // After truncation, so the cursor always shows.
-            if (nextBefore) result.stdout += `\nMore finished: bb cos status --all${repo ? ` --repo ${repo}` : ""}${finishedLimit ? ` --finished-limit ${finishedLimit}` : ""} --before ${nextBefore}\n`;
+            if (nextBefore) result.stdout += `\nMore finished: bb cos status --all${repo ? ` --repo ${repo}` : ""}${usage ? " --usage" : ""}${finishedLimit ? ` --finished-limit ${finishedLimit}` : ""} --before ${nextBefore}\n`;
             return result;
           },
         }),

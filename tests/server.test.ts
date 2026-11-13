@@ -1792,6 +1792,9 @@ describe("chief-of-staff server", () => {
     expect(next.stdout).toMatch(/More finished: bb cos status --all --finished-limit 2 --before \S+/);
     const text2 = (await host.harness.behavior.runCli(["status", "--all"])).stdout;
     expect(text2).toMatch(/More finished: bb cos status --all --before \S+/);
+    // The next-page command keeps the flags that shape the page.
+    const withFlags = (await host.harness.behavior.runCli(["status", "--all", "--repo", "acme/app", "--usage"])).stdout;
+    expect(withFlags).toMatch(/More finished: bb cos status --all --repo acme\/app --usage --before \S+/);
     expect((await host.harness.behavior.runCli(["status"])).stdout).not.toContain("More finished");
   });
 

@@ -4,7 +4,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { Cos } from "./context";
 import { buildRoster } from "./roster";
-import { finishedLimitSchema } from "../rpcContract";
+import { finishedLimitSchema, rosterCursorSchema } from "../rpcContract";
 import { REPORT_OUTCOMES } from "./report";
 import { threadContext } from "./sync";
 import { startTask } from "./intake";
@@ -75,7 +75,7 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
       repo: z.string().optional().describe("Limit to one owner/repo"),
       includeDone: z.boolean().default(false).describe("Add the most recently finished and failed items after the active ones"),
       finishedLimit: finishedLimitSchema.describe("Finished items per page"),
-      before: z.string().min(1).max(1000).optional().describe("Cursor from an earlier call's 'more finished' line: list only the next page of finished items"),
+      before: rosterCursorSchema.optional().describe("Cursor from an earlier call's 'more finished' line: list only the next page of finished items"),
     }),
     async execute(params) {
       const { entries, nextBefore } = await buildRoster(cos, { repo: params.repo, includeDone: params.includeDone, finishedLimit: params.finishedLimit, before: params.before });

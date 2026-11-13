@@ -7,6 +7,8 @@ import { z } from "zod";
 export const ROSTER_FINISHED_LIMIT = 50;
 export const ROSTER_FINISHED_MAX = 500;
 export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_MAX).default(ROSTER_FINISHED_LIMIT);
+/** An earlier roster page's opaque nextBefore cursor. */
+export const rosterCursorSchema = z.string().min(1).max(1000);
 
 const rosterEntry = z.object({
   occupiesCapacity: z.boolean(),
@@ -200,7 +202,7 @@ export const rpcContract = defineRpcContract({
       /** Finished items per page. */
       finishedLimit: finishedLimitSchema,
       /** An earlier page's nextBefore: return only the next page of finished items. */
-      before: z.string().min(1).max(1000).optional(),
+      before: rosterCursorSchema.optional(),
       withUsage: z.boolean().default(false),
     }),
     output: z.object({ entries: z.array(rosterEntry), nextBefore: z.string().nullable() }),
