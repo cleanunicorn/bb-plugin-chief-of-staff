@@ -493,7 +493,6 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
 
     case "pr_closed": {
-      if (item.status === "done" || item.status === "failed") break;
       const ship = shipNode() ?? topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
       if (ship) note("stopped", ship, `Pull request${item.prNumber ? ` #${item.prNumber}` : ""} was closed without merging`);
       patch.lastError = "PR closed without merge";

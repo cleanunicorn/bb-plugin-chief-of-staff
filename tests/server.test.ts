@@ -73,6 +73,9 @@ describe("chief-of-staff server", () => {
   let resolved: unknown[] = [];
   let sent: unknown[] = [];
   let archivedIds: string[] = [];
+  /** Threads archived now (archive adds, unarchive removes), and whether their workspace was removed. */
+  let archivedNow = new Set<string>();
+  let workspaceRemoved = false;
   let assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
   let host: ReturnType<typeof createFakePluginHost>;
   const originalFetch: typeof fetch = globalThis.fetch;
@@ -89,6 +92,8 @@ describe("chief-of-staff server", () => {
     resolved = [];
     sent = [];
     archivedIds = [];
+    archivedNow = new Set();
+    workspaceRemoved = false;
     checkHangs = false;
     checkBlocks = null;
     threadUpdatedAt = 0;
@@ -145,7 +150,15 @@ describe("chief-of-staff server", () => {
             spawned.add(id);
             return makeThreadResponse({ id, environmentId: builder || args.environment.type === "reuse" ? "env_1" : `env_${id}`, providerId: "claude-code" });
           },
-          get: async (args: { threadId: string }) => ({ ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus } }),
+          get: async (args: { threadId: string }) => ({ ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus }, archivedAt: archivedNow.has(args.threadId) ? 1 : null, canRestoreEnvironment: workspaceRemoved && !archivedNow.has(args.threadId) }),
+          unarchive: async (args: { threadId: string }) => {
+            archivedNow.delete(args.threadId);
+            return { ok: true } as never;
+          },
+          restoreEnvironment: async () => {
+            workspaceRemoved = false;
+            return { ok: true } as never;
+          },
           interactions: {
             list: async () => pending as never,
             resolve: async (args: unknown) => {
@@ -157,11 +170,12 @@ describe("chief-of-staff server", () => {
           list: async () =>
             ["thr_1", ...[...spawned].filter((id) => id !== "thr_1")].map((id) => {
               const status = perThread[id]?.status ?? threadStatus;
-              return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0 };
+              return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0, archivedAt: archivedNow.has(id) ? 1 : null };
             }),
           output: async () => ({ output: assistantOutput }),
           archive: async (args: { threadId: string }) => {
             archivedIds.push(args.threadId);
+            archivedNow.add(args.threadId);
             return { archivedThreadIds: [args.threadId] } as never;
           },
           send: async (args: unknown) => {
@@ -1287,6 +1301,21 @@ describe("chief-of-staff server", () => {
       expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
     });
 
+    it("unarchives the threads and restores the workspace when a step of a done task runs again", async () => {
+      await intakeOnce();
+      const { id } = await roster();
+      await markDone();
+      expect([...archivedNow]).toEqual(["thr_1"]);
+      workspaceRemoved = true;
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "rerun_step", step: "build" });
+      await settleJobs();
+      expect(host.harness.inspection.sdk.callsTo("threads.unarchive")).toEqual([[{ threadId: "thr_1" }]]);
+      expect(host.harness.inspection.sdk.callsTo("threads.restoreEnvironment")).toEqual([[{ threadId: "thr_1" }]]);
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "running", detail: "agent", current: ["Build"], lastError: null });
+    });
+
     it("keeps the threads when archiving is turned off", async () => {
       await host.harness.behavior.setSettings({ archiveThreadsOnDone: false });
       await host.harness.behavior.callRpc("cos_intake_now", {});
@@ -1759,6 +1788,7 @@ describe("chief-of-staff server", () => {
     const store = new StateStore(host.bb.storage.database());
     const item = store.listWorkItems()[0];
     store.updateWorkItem(item.id, { status: "ready", finishedAt: null, nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase: "ready" } } });
+    archivedNow.clear(); // A task still waiting on its PR has live threads.
     ghRoutes["GET /repos/acme/app/pulls/7"] = () => ({ status: 503 });
     host = await host.harness.lifecycle.reload(plugin);
     await host.harness.behavior.runService("cos-reconcile").done;

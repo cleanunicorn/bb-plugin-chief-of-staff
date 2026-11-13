@@ -6,7 +6,7 @@ import type { GeneralSettings } from "../rpcContract";
 import { buildRoster, itemRunDetail, rosterSteps, reconcile } from "./roster";
 import { pausedMessage, runIntake, startTask } from "./intake";
 import { parseWorkflows, stepById, topoOrder } from "./workflow";
-import { dispatch, replayDeferred } from "./delivery";
+import { dispatch, dispatchLocked, replayDeferred, withItemLock } from "./delivery";
 import { parseRepos } from "./config";
 import { computeStats, statsWindowStart } from "./stats";
 import { answerQuestion, getQuestion } from "./answer";
@@ -201,14 +201,18 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
     case "mark_done":
     case "mark_failed": {
       // Through the engine, under the item's lock: live steps settle, a running job's result is dropped, and done archives the threads.
+      // The status is read inside the lock, so two marks arriving together log once.
       const outcome = action === "mark_done" ? "done" : "failed";
-      if (item.status === outcome) return item;
-      const updated = await dispatch(cos, id, { type: "close", outcome }, actor);
-      if (updated?.status === outcome) {
-        cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `marked ${outcome}`, actor });
-        cos.invalidate();
-      }
-      return updated;
+      return withItemLock(id, async () => {
+        const current = cos.store.getWorkItem(id);
+        if (!current || current.status === outcome) return current;
+        const updated = await dispatchLocked(cos, id, { type: "close", outcome }, actor);
+        if (updated?.status === outcome) {
+          cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `marked ${outcome}`, actor });
+          cos.invalidate();
+        }
+        return updated;
+      });
     }
   }
 }

@@ -119,6 +119,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
         ...(event.type === "pr_opened" ? { prNumber: event.prNumber, prUrl: event.prUrl } : {}),
       });
       if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+      if (item.status === "done") await reopenItemThreads(cos, item, actor);
       cos.invalidate();
       return queued;
     }
@@ -126,11 +127,14 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   const updated = cos.store.transaction(() => {
     const stored = cos.store.updateWorkItem(item.id, patch);
     if (stored) cos.store.appendJournal(item.id, t.journal, actor);
+    // Closed by hand: a decision held by a pause (a rerun, a retry) must not reopen it on resume.
+    if (stored && event.type === "close" && stored.status === event.outcome) cos.store.deleteDeferredEventsFor(item.id);
     return stored;
   });
   if (!updated) return null;
   if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
+  if (item.status === "done" && updated.status !== "done") await reopenItemThreads(cos, updated, actor);
   for (const effect of t.effects) {
     if (effect.type === "check" || effect.type === "ship" || effect.type === "merge") {
       startJob(cos, item.id, effect, actor);
@@ -159,9 +163,13 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
 /** A task with no workflow steps has nothing for the engine to settle: write the outcome. */
 async function closeWithoutWorkflow(cos: Cos, item: WorkItem, outcome: "done" | "failed", actor: string): Promise<WorkItem | null> {
   if (item.status === outcome) return item;
-  const updated = cos.store.updateWorkItem(item.id, {
-    status: outcome, lastError: outcome === "done" ? MARKED_DONE : MARKED_FAILED, finishedAt: cos.now().toISOString(),
-    jobStartedAt: null, queuedEvent: null, waitingKind: null, waitingReason: null,
+  const updated = cos.store.transaction(() => {
+    const stored = cos.store.updateWorkItem(item.id, {
+      status: outcome, lastError: outcome === "done" ? MARKED_DONE : MARKED_FAILED, finishedAt: cos.now().toISOString(),
+      jobStartedAt: null, queuedEvent: null, waitingKind: null, waitingReason: null,
+    });
+    if (stored) cos.store.deleteDeferredEventsFor(item.id);
+    return stored;
   });
   if (!updated) return null;
   logChanges(cos, item, updated, { type: "close", outcome }, actor);
@@ -245,6 +253,31 @@ async function archiveItemThreads(cos: Cos, item: WorkItem, actor: string): Prom
     }
   }
   if (archived.length) cos.store.log({ level: "info", kind: "effect", repo: item.repo, workItemId: item.id, message: `archived ${archived.length} thread${archived.length === 1 ? "" : "s"}: ${archived.join(", ")}`, actor });
+}
+
+/**
+ * A done task runs again (rerun): bring back the threads archiving retired,
+ * parents first, and have the provider rebuild a workspace it already removed,
+ * before any prompt goes out. Otherwise the prompt reaches an archived thread
+ * and the next sweep fails the task with "thread archived". One thread failing
+ * does not stop the rest; its prompt then fails and is retried as usual.
+ */
+async function reopenItemThreads(cos: Cos, item: WorkItem, actor: string): Promise<void> {
+  const ids = (await archiveOrder(cos, item)).reverse();
+  for (const threadId of ids) {
+    try {
+      let thread = await cos.bb.sdk.threads.get({ threadId });
+      if (thread.deletedAt) continue;
+      if (thread.archivedAt) {
+        await cos.bb.sdk.threads.unarchive({ threadId });
+        thread = await cos.bb.sdk.threads.get({ threadId });
+      }
+      if (thread.canRestoreEnvironment) await cos.bb.sdk.threads.restoreEnvironment({ threadId });
+    } catch (error) {
+      const message = await cos.safe(error instanceof Error ? error.message : String(error));
+      cos.store.log({ level: "warn", kind: "effect", repo: item.repo, workItemId: item.id, message: `could not bring back thread ${threadId}: ${message}`, actor });
+    }
+  }
 }
 
 /** The stored patch for a transition: step states plus the status derived from them. */

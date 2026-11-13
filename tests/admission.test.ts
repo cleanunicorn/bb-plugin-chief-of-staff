@@ -99,6 +99,13 @@ describe("shipping repair admission", () => {
   });
 
   describe("closing a task by hand (#47)", () => {
+    it("logs a mark once when two arrive together", async () => {
+      const { cos, store, add } = setup();
+      add("a");
+      await Promise.all([itemAction(cos, "a", "mark_done", "test"), itemAction(cos, "a", "mark_done", "test")]);
+      expect(store.listLog({ limit: 50 }).filter((e) => e.message === "marked done")).toHaveLength(1);
+    });
+
     it("closes a task queued for capacity, and nothing starts it later", async () => {
       const { cos, store, add, host } = setup();
       add("a", true); add("b");
@@ -119,9 +126,12 @@ describe("shipping repair admission", () => {
       add("a");
       store.setRepoPaused("a/b", true);
       await dispatch(cos, "a", { type: "turn_ended", step: "build", agent: 0, round: 1, report: null, question: null }, "test");
-      expect(deferred()).toBe(1);
+      // An operator decision held by the pause would reopen the task: closing drops it.
+      await itemAction(cos, "a", "rerun_step", "test", { step: "build" });
+      expect(deferred()).toBe(2);
       await itemAction(cos, "a", "mark_done", "test");
       expect(store.getWorkItem("a")).toMatchObject({ status: "done", lastError: "Marked done" });
+      expect(deferred()).toBe(0);
       store.setRepoPaused("a/b", false);
       await replayDeferred(cos);
       expect(deferred()).toBe(0);
