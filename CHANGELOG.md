@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Chief of Staff opens without crashing.** The activity feed omits its
+  pagination cursor until viewing older entries, keeping query inputs valid JSON.
+
 - **Task cards and pull requests link to their GitHub issue.** A card's
   "repo #N" opens the issue in the browser, and its PR chip reads "PR #N" so
   the two numbers are no longer confused. Each row under Repos & PRs → Pull
