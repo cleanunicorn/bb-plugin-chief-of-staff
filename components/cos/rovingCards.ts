@@ -7,7 +7,7 @@ import type { FocusEvent, KeyboardEvent } from "react";
 /** Put this attribute, set to the card's id, on each card element inside the group. */
 export const CARD_ATTRIBUTE = "data-roving-card";
 
-/** Put this attribute on the control the arrow keys should land on in a card; without one, they land on its first control. */
+/** Put this attribute on the one control the arrow keys should land on in a card; without one, they land on its first control. */
 export const ENTRY_ATTRIBUTE = "data-roving-entry";
 
 const CONTROLS = "summary, a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])";

@@ -481,7 +481,8 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
               <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
             </Button>
           ) : null}
-          <Button size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
+          {/* Without a Workflow progress row, the arrow keys land here rather than on the issue link, which leaves the plugin. */}
+          <Button {...(entry.steps.length ? {} : { [ENTRY_ATTRIBUTE]: "" })} size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
             <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
           </Button>
           {entry.prUrl ? (

@@ -201,6 +201,21 @@ it("moves from any control of a card, and ignores arrows with modifier keys", as
   expect(document.activeElement).toBe(cards()[2]!.querySelector("summary"));
 });
 
+it("lands on Workflow progress, or on the Workflow button when a card has no steps", async () => {
+  const list = tasks(3);
+  list[1] = { ...list[1]!, steps: [] };
+  mocks.entries = list;
+  await page();
+  const workflowButton = (card: Element) => Array.from(card.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Workflow")!;
+  cards()[0]!.querySelector("summary")!.focus();
+  await press(document.activeElement!, "ArrowRight");
+  // The issue link comes first in the card, but it opens GitHub.
+  expect(cards()[1]!.querySelector("summary")).toBeNull();
+  expect(document.activeElement).toBe(workflowButton(cards()[1]!));
+  await press(document.activeElement!, "ArrowRight");
+  expect(document.activeElement).toBe(cards()[2]!.querySelector("summary"));
+});
+
 it("lets ArrowDown open More actions instead of moving to the next card", async () => {
   mocks.entries = tasks(3);
   await page();

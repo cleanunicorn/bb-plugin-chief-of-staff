@@ -131,7 +131,7 @@ Decisions worth knowing:
   or a sheet returning focus to its opener. If the current card leaves the
   list (refetch, filter, Show/Hide finished), the first card is current again.
 - Arrow keys land on the card's “Workflow progress” row (marked with
-  `data-roving-entry`), or on its first control when it has no workflow
+  `data-roving-entry`), or on its Workflow button when it has no workflow
   steps. The issue link comes first in the card, but it leaves the plugin,
   so it is not where arrows land.
 - Arrow movement is linear in DOM order, one card per key, so Up and Down in
