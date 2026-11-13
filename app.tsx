@@ -1064,7 +1064,7 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
       <ol className="sm:max-h-80 sm:overflow-auto">
         {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
-          const task = taskLabel(e);
+          const rowTask = taskLabel(e);
           return (
             <li key={e.id} className={cn("flex-wrap items-start gap-x-2.5 gap-y-0.5 py-1.5 text-xs sm:flex-nowrap", !showAll && i >= MOBILE_ACTIVITY_ROWS ? "hidden sm:flex" : "flex")}>
               <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
@@ -1074,19 +1074,19 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
               </time>
               <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
                 {e.repo && showRepo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
-                {task && e.workItemId ? (
+                {rowTask && e.workItemId ? (
                   <>
                     <button
                       type="button"
                       className="inline-block max-w-[16rem] truncate rounded align-bottom font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      title={task}
-                      aria-label={`Open task ${task}`}
+                      title={rowTask}
+                      aria-label={`Open task ${rowTask}`}
                       onClick={(event) => {
                         sheetFocus.remember(event.currentTarget);
                         setViewing(e.workItemId);
                       }}
                     >
-                      {task}
+                      {rowTask}
                     </button>{" "}
                   </>
                 ) : null}
