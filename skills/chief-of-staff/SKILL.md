@@ -24,10 +24,14 @@ files. Never push or open pull requests; Chief of Staff does that.
 
 ## Commands
 
-- `bb cos status [--repo owner/repo] [--all] [--usage] [--json]` — roster of tracked
-  agents: the steps running, who holds the ball (agent / cos / human / system),
-  what is happening now, repo, issue, PR, thread id, stall flag, and a "Waiting
-  on you" list with the question, plan or escalation each item waits on.
+- `bb cos status [--repo owner/repo] [--all [--finished-limit n] [--before cursor]] [--usage] [--json]`
+  — roster of tracked agents: the steps running, who holds the ball (agent /
+  cos / human / system), what is happening now, repo, issue, PR, thread id,
+  stall flag, and a "Waiting on you" list with the question, plan or escalation
+  each item waits on. Every active item is listed; `--all` adds the 50 (or
+  `--finished-limit`) most recently finished. For older ones, run the "More
+  finished" command it prints (`--before <cursor>`, which implies `--all`;
+  `nextBefore` in `--json`).
   Answering or resuming the thread in BB moves the item back to running; the
   plugin re-syncs every thread each minute. In the dashboard, clicking the
   question opens it with its options and context and answers it in place
