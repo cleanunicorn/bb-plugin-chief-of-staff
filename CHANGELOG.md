@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Finished task cards offer actions that fit how the task ended.** Failed
+  cards offer "Restart on a new thread…", which now asks first because it can
+  start an agent and take a task slot, and "Mark done…", whose confirm says
+  what it changes; they no longer offer "Mark failed…". Done cards get a menu
+  with "Run a step again…", which opens the workflow at its step list.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
