@@ -434,6 +434,9 @@ describe("chief-of-staff server", () => {
 
     await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "other", projectId: "proj_1" }] }) });
     await sweep();
+    await sweep();
+    // Each sweep re-tries the queued task; it logs the cause once.
+    expect(store.listLog({ limit: 200 }).filter((e) => e.workItemId === "queued-task" && e.level === "warn")).toHaveLength(1);
     const queued = store.listWorkItems().find((i) => i.status === "queued")!;
     expect(queued.waitingReason).toMatch(/acme\/app is not in the repos setting/);
     expect((await host.harness.behavior.callRpc("cos_roster", {}) as { entries: Entry[] }).entries.find((e) => e.id === queued.id)?.activity).toMatch(/acme\/app is not in the repos setting/);

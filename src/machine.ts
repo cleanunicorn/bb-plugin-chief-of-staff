@@ -716,11 +716,6 @@ export function repoNotConfiguredReason(repo: string): string {
   return `Repository ${repo} is not in the repos setting (or the setting has an error). The task starts once ${repo} is configured again, or close the task.`;
 }
 
-/** Whether a waiting reason is repoNotConfiguredReason's (not the capacity one). */
-export function isRepoNotConfiguredReason(reason: string | null | undefined): boolean {
-  return !!reason?.startsWith("Repository ") && reason.includes(" is not in the repos setting");
-}
-
 export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";
 
 /** The step still has an effect error to retry or to show the operator. */
