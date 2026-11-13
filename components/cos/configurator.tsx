@@ -209,6 +209,20 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
           </Group>
           <Group title="Issue comments" icon="MessageSquare" cols={1}>
             <ToggleRow label="Comment on issues" hint="Off: no status or pull request comments on GitHub issues." checked={repo.issueComments} onChange={(v) => set("issueComments", v)} />
+            <Field label="Comments in the agent's brief" hint="Issue comments quoted to the agent as untrusted content. Anyone can comment on a public issue.">
+              {(id) => (
+                <Select
+                  id={id}
+                  value={repo.briefComments}
+                  onChange={(v) => set("briefComments", v)}
+                  options={[
+                    { value: "trusted", label: "Owners, members and collaborators" },
+                    { value: "all", label: "Everyone" },
+                    { value: "none", label: "None" },
+                  ]}
+                />
+              )}
+            </Field>
           </Group>
         </div>
       ) : null}

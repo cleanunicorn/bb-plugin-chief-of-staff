@@ -325,6 +325,28 @@ describe("taskBrief", () => {
     expect(brief).not.toContain("left out");
   });
 
+  it("quotes every comment when the repository chooses all, still inside the block", async () => {
+    const seed = [comment(1, "NONE", "from anyone"), comment(2, undefined, "with no association"), { ...comment(3, "MEMBER"), body: `${STATUS_MARKER}\nstatus` }];
+    const { cos, repo, item } = setup({ seed, repo: { briefComments: "all" } });
+    const brief = await taskBrief(cos, repo, item("one"));
+    const { open, close } = markers(brief);
+    expect(brief.slice(open, close)).toContain("from anyone");
+    expect(brief.slice(open, close)).toContain("with no association");
+    expect(brief).not.toContain("cos-status");
+    expect(brief).not.toContain("left out");
+  });
+
+  it("reads no comments when the repository chooses none", async () => {
+    const seed = [comment(1, "OWNER", "from the owner")];
+    const { cos, repo, gh, item } = setup({ seed, repo: { briefComments: "none" } });
+    const brief = await taskBrief(cos, repo, item("one"));
+    expect(gh.calls).not.toContain("list");
+    expect(brief).not.toContain("from the owner");
+    expect(brief).not.toContain("Comments:");
+    expect(brief).not.toContain("left out");
+    markers(brief);
+  });
+
   it("truncates a long body before closing the block", async () => {
     const { cos, repo, gh, item } = setup();
     gh.client.getIssue = async () => ({ number: 7, title: "Long", body: "x".repeat(20_000), html_url: "https://github.com/a/b/issues/7" });

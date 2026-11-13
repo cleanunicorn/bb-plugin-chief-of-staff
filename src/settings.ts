@@ -26,7 +26,7 @@ export const settingDescriptors = {
   repos: {
     type: "string",
     label: "Repositories (JSON)",
-    description: 'JSON: {"repos":[{projectId, owner?, repo?, intake, issueComments, issueFilter:{labels, assignee?}, maxConcurrent, providerId?, model?, permissionMode, reviewers, mergeStrategy, workflow?: "<workflow id>"}]}. owner/repo default to the project\'s GitHub remote.',
+    description: 'JSON: {"repos":[{projectId, owner?, repo?, intake, issueComments, briefComments: "trusted"|"all"|"none", issueFilter:{labels, assignee?}, maxConcurrent, providerId?, model?, permissionMode, reviewers, mergeStrategy, workflow?: "<workflow id>"}]}. owner/repo default to the project\'s GitHub remote.',
     experimental_multiline: true,
     experimental_schema: jsonSchema(parseRepos),
     default: JSON.stringify(SEED_REPOS, null, 2),

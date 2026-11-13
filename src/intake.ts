@@ -85,8 +85,10 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   if (issue && github) {
     // Chief of Staff's own status comment tells the agent nothing it does not already know.
     // Filter before keeping the newest few, so outsiders' comments cannot push a maintainer's out.
-    const checked = (await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENT_WINDOW }).catch(unlessRateLimited((): GitHubComment[] => []))).filter((c) => !isStatusComment(c.body));
-    const comments = checked.filter(isTrustedComment);
+    // Anything but an explicit "all" or "none" (an older or hand-built config) quotes trusted comments only.
+    const choice = repo.briefComments;
+    const checked = choice === "none" ? [] : (await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENT_WINDOW }).catch(unlessRateLimited((): GitHubComment[] => []))).filter((c) => !isStatusComment(c.body));
+    const comments = choice === "all" ? checked : checked.filter(isTrustedComment);
     const omitted = checked.length - comments.length;
     const content = [
       `Title: ${oneLine(issue.title)}`,
