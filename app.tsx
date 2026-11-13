@@ -463,7 +463,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, onShowActivity
                 if (!showingActivity.current || !onShowActivity) return;
                 showingActivity.current = false;
                 event.preventDefault();
-                onShowActivity({ id: entry.id, label: taskLabel({ workItemId: entry.id, issueNumber: entry.issueNumber, issueTitle: entry.issueTitle }) ?? title });
+                onShowActivity({ id: entry.id, label: taskLabel({ workItemId: entry.id, issueNumber: entry.issueNumber, issueTitle: entry.issueTitle || null }) ?? title });
               }}
             >
               {onShowActivity ? (
@@ -979,14 +979,17 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
   const task = onTaskChange ? (taskProp ?? null) : ownTask;
   const setTask = onTaskChange ?? setOwnTask;
   const taskTrigger = useRef<HTMLButtonElement>(null);
+  // Set by the clear button: once the feed has re-rendered, focus the Task menu, or the heading when it is gone.
+  const focusAfterClear = useRef(false);
   // Phones get no nested scroll box: show the latest rows and expand in place.
   const [showAll, setShowAll] = useState(false);
   // A task's own rows come from the server, so its older rows are not lost behind the latest 60 of every task.
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: task ? { limit: 60, workItemId: task.id } : { limit: 60 } });
-  // With one repository the name on every row says nothing. Unknown or failed: keep it (the Pipeline tab shows the error).
+  useLiveRefresh(log.refetch);
+  // With one repository its name on every row says nothing; rows of any other (removed) repository keep theirs.
+  // Unknown or failed: keep every name (the tab beside the feed shows the error, and refreshes this query).
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
-  useLiveRefresh(async () => void (await Promise.all([log.refetch(), overview.refetch()])));
-  const showRepo = overview.data?.repos.length !== 1;
+  const onlyRepo = overview.data?.repos.length === 1 ? overview.data.repos[0]!.key : null;
   // The tasks to offer: every task seen while the feed is open, so the list survives narrowing.
   const [seen, setSeen] = useState<ActivityTask[]>([]);
   useEffect(() => {
@@ -1007,6 +1010,11 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
     },
     [sheetFocus.fallback, headingRef],
   );
+  useEffect(() => {
+    if (task || !focusAfterClear.current) return;
+    focusAfterClear.current = false;
+    (taskTrigger.current?.isConnected ? taskTrigger.current : sheetFocus.fallback.current)?.focus();
+  }, [task, sheetFocus.fallback]);
   const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
   return (
     <Panel
@@ -1046,8 +1054,8 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
               className="w-8 p-0"
               aria-label="Show all activity"
               onClick={() => {
+                focusAfterClear.current = true;
                 setTask(null);
-                taskTrigger.current?.focus();
               }}
             >
               <Icon name="X" fallback="Circle" aria-hidden />
@@ -1073,7 +1081,7 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
                 {relative(e.at, now)}
               </time>
               <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
-                {e.repo && showRepo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
+                {e.repo && e.repo !== onlyRepo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
                 {rowTask && e.workItemId ? (
                   <>
                     <button

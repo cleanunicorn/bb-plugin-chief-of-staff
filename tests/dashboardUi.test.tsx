@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import type { LogRow } from "../src/state";
+import type { ActivityTask } from "../components/cos/dashboardModel";
 import type { RosterEntry } from "../src/roster";
 import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { entry } from "./helpers/roster";
@@ -182,6 +183,11 @@ it("names the repository on each row only when more than one is configured", asy
   await mount(<ActivityFeed />);
   expect(container.querySelector("li")!.textContent).toMatch(/^spawn.*#7 Fix login spawned Review thr_abc · event/);
   expect(container.querySelector("li")!.textContent).not.toContain("app #7");
+  // A row from a repository no longer configured keeps its name, so it does not read as the current one.
+  mocks.logs = [logRow({ repo: "acme/old", message: "merged PR" })];
+  await act(async () => { root.render(<ActivityFeed key="removed" />); });
+  expect(container.querySelector("li")!.textContent).toContain("old #7 Fix login merged PR");
+  mocks.logs = [logRow()];
   mocks.repos = [{ key: "acme/app" }, { key: "acme/web" }];
   await act(async () => { root.render(<ActivityFeed key="two" />); });
   expect(container.querySelector("li")!.textContent).toContain("app #7 Fix login spawned Review thr_abc");
@@ -247,6 +253,29 @@ it("combines the task filter with Problems only, and says when a task has nothin
   expect(container.textContent).toContain("No warnings or errors.");
   await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Problems only")!.click());
   expect(container.textContent).toContain("No activity for this task.");
+});
+
+it("moves focus to the Activity heading when clearing leaves no task to offer", async () => {
+  mocks.logs = [];
+  function Held() {
+    const [task, setTask] = useState<ActivityTask | null>({ id: "quiet", label: "#9 Quiet" });
+    return <ActivityFeed task={task} onTaskChange={setTask} />;
+  }
+  await mount(<Held />);
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#9 Quiet");
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show all activity"]')!.click());
+  expect(taskMenu()).toBeUndefined();
+  expect(document.activeElement?.tagName).toBe("H2");
+  expect(document.activeElement?.textContent).toBe("Activity");
+});
+
+it("offers a described task without a title under its card's title", async () => {
+  mocks.entries = [entry({ issueNumber: null, issueTitle: "", threadTitle: "Tidy the docs" })];
+  await mount(<Dashboard subPath="agents" />);
+  await openMenuOn(container.querySelector<HTMLButtonElement>('article [aria-label="More actions"]')!);
+  await act(async () => menuItemsNow()[0]!.click());
+  await tick(5);
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0Tidy the docs");
 });
 
 it("shows a task's activity from its card, finished or not, and moves focus to the Activity heading", async () => {
