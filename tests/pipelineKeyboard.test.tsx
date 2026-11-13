@@ -6,7 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
-import { container, mount, unmount } from "./dom";
+import { act } from "react";
+import { container, mount, tabbables, unmount } from "./dom";
 
 const DAYS = Array.from({ length: 14 }, (_, i) => ({ date: `2026-11-${String(i + 1).padStart(2, "0")}`, started: 1, done: i % 3, failed: i === 2 ? 1 : 0 }));
 
@@ -58,4 +59,33 @@ it("names every Pipeline panel as a region by its heading", async () => {
   const names = regions.map((section) => document.getElementById(section.getAttribute("aria-labelledby")!)?.textContent?.trim());
   expect(names).toEqual(expect.arrayContaining(["Active tasks", "Throughput · last 14 days", "Capacity", "Activity"]));
   for (const section of regions) expect(document.getElementById(section.getAttribute("aria-labelledby")!)?.tagName).toBe("H2");
+});
+
+// ---------- M3: chart days are images, not buttons ----------
+
+it("shows chart days as images with their numbers, not as buttons or tab stops", async () => {
+  mocks.entries = tasks(1);
+  await page();
+  const figure = container.querySelector("figure")!;
+  expect(figure.querySelectorAll("button")).toHaveLength(0);
+  expect(tabbables(figure)).toHaveLength(0);
+  const days = Array.from(figure.querySelectorAll('[role="img"][aria-label]'));
+  expect(days).toHaveLength(14);
+  expect(days[2]!.getAttribute("aria-label")).toMatch(/^Nov 3: Done 2, Failed 1$/);
+});
+
+it("still shows a day's tooltip on hover", async () => {
+  mocks.entries = tasks(1);
+  await page();
+  const day = container.querySelectorAll('figure [role="img"]')[2]!;
+  await act(async () => { day.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+  expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("Nov 3");
+  await act(async () => { day.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })); });
+  expect(container.querySelector('[role="tooltip"]')).toBeNull();
+});
+
+it("names the chart and table view toggles on the buttons themselves", async () => {
+  await page();
+  const toggles = Array.from(container.querySelectorAll('[role="group"][aria-label="View"] button'));
+  expect(toggles.map((b) => b.getAttribute("aria-label"))).toEqual(["Chart view", "Table view"]);
 });
