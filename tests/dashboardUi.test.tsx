@@ -6,6 +6,7 @@ import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 
 const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -18,7 +19,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     return {
-      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      data: method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -315,4 +316,103 @@ it("does not pull focus back to More actions if it moved on while the action ran
   elsewhere.focus();
   await act(async () => finish());
   expect(document.activeElement).toBe(elsewhere);
+});
+
+// ---------- Finished cards: actions that fit how the task ended (#108) ----------
+
+const failed = () => entry({ detail: "failed", status: "failed", occupiesCapacity: false, threadStatus: "idle" });
+const done = () => entry({ detail: "done", status: "done", occupiesCapacity: false, threadStatus: "idle" });
+
+it("offers a failed card a restart and Mark done, never Mark failed", async () => {
+  mocks.entries = [failed()];
+  await mount();
+  await openMenu();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Restart on a new thread…", "Mark done…"]);
+});
+
+it("asks before restarting a failed task, and sends nothing on cancel", async () => {
+  mocks.entries = [failed()];
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Restart on a new thread").click());
+  await tick();
+  expect(document.body.querySelector('[role="menu"]')).toBeNull();
+  expect(confirmDialog()?.textContent).toContain("Restart ‘Fix login’ on a new thread?");
+  await act(async () => bodyButton("Cancel").click());
+  await tick(5);
+  expect(confirmDialog()).toBeNull();
+  expect(mocks.call).not.toHaveBeenCalled();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("restarts a failed task on confirm, naming the new thread and the task slot", async () => {
+  mocks.entries = [failed()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Restart on a new thread").click());
+  await tick();
+  expect(confirmDialog()!.textContent).toMatch(/new thread/);
+  expect(confirmDialog()!.textContent).toMatch(/slot/);
+  expect(actionCalls()).toHaveLength(0);
+  await act(async () => bodyButton("Restart").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "retry" }]]);
+  expect(confirmDialog()).toBeNull();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("says what Mark done means for a failed task, and sends it on confirm", async () => {
+  mocks.entries = [failed()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Mark done").click());
+  await tick();
+  expect(confirmDialog()!.textContent).toContain("Mark ‘Fix login’ done?");
+  expect(confirmDialog()!.textContent).toContain("recorded as done instead of failed");
+  expect(confirmDialog()!.textContent).not.toContain("stops working on this task");
+  await act(async () => bodyButton("Mark done").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "mark_done" }]]);
+});
+
+it("offers a done card only a step re-run", async () => {
+  mocks.entries = [done()];
+  await mount();
+  await openMenu();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Run a step again…"]);
+});
+
+it("opens a done task's workflow at the step list, and returns focus to More actions on close", async () => {
+  mocks.entries = [done()];
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Run a step again").click());
+  await tick(5);
+  const sheet = confirmDialog()!;
+  expect(sheet.textContent).toContain("Where this task is");
+  const toggle = (label: string) => Array.from(sheet.querySelectorAll('[aria-label="View"] button')).find((b) => b.textContent?.trim() === label)!;
+  expect(toggle("List").getAttribute("aria-pressed")).toBe("true");
+  expect(toggle("Canvas").getAttribute("aria-pressed")).toBe("false");
+  expect(sheet.querySelector('ol[aria-label="Workflow steps"]')).not.toBeNull();
+  expect(actionCalls()).toHaveLength(0);
+  await act(async () => (sheet.querySelector('[aria-label="Close"]') as HTMLButtonElement).click());
+  await tick(5);
+  expect(confirmDialog()).toBeNull();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("still opens the workflow on the canvas from the Workflow button", async () => {
+  mocks.entries = [done()];
+  await mount();
+  await act(async () => buttonLabelled("Workflow").click());
+  await tick(5);
+  const sheet = confirmDialog()!;
+  const toggle = (label: string) => Array.from(sheet.querySelectorAll('[aria-label="View"] button')).find((b) => b.textContent?.trim() === label)!;
+  expect(toggle("Canvas").getAttribute("aria-pressed")).toBe("true");
+  expect(sheet.querySelector('ol[aria-label="Workflow steps"]')).toBeNull();
 });
