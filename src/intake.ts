@@ -214,11 +214,13 @@ function finishedReason(latest: WorkItem | null): string | null {
 /**
  * When the task ended, for telling a later relabel from an earlier one. A PR
  * closed or merged on GitHub ended it then, even though Chief of Staff only
- * noticed (and set finishedAt) at its next CI watch.
+ * noticed (and set finishedAt) at its next CI watch. Only the task's current
+ * PR counts: an earlier one closed while the task was still running.
  */
 function finishTime(item: WorkItem): number {
   const finished = Date.parse(item.finishedAt ?? item.updatedAt);
-  const closed = item.prState?.closedAt ? Date.parse(item.prState.closedAt) : NaN;
+  const pr = item.prState?.number === item.prNumber ? item.prState : null;
+  const closed = pr?.closedAt ? Date.parse(pr.closedAt) : NaN;
   return Number.isNaN(closed) ? finished : Math.min(finished, closed);
 }
 

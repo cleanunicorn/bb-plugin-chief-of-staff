@@ -964,6 +964,23 @@ describe("chief-of-staff server", () => {
       beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
       afterEach(() => vi.useRealTimers());
 
+      it("ignores the close time of an earlier PR of the task", async () => {
+        at(0);
+        await intake();
+        const store = new StateStore(host.bb.storage.database());
+        const id = items()[0]!.id;
+        // PR #7 closed at 1; the task shipped again as #8 and then failed at 5.
+        store.setPrState(id, { number: 7, state: "closed", draft: false, checks: null, review: null, checkedAt: iso(1), closedAt: iso(1) });
+        store.updateWorkItem(id, { prNumber: 8 });
+        at(5);
+        await action("mark_failed");
+        // Labelled at 2, while the task was still running.
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(6) }] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = () => ({ body: [{ event: "labeled", created_at: iso(2), label: { name: "agent-ready" } }] });
+        at(7);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+      });
+
       it.each([
         ["closed", { state: "closed", closed_at: iso(1) }, "failed"],
         ["merged", { state: "closed", merged: true, merged_at: iso(1), closed_at: iso(1) }, "done"],
