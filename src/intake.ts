@@ -7,7 +7,7 @@ import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } fro
 import { matchOpenPullForIssue, GitHubRateLimitError, describeReset, unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue, type GitHubPull } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
-import { initialNodes } from "./machine";
+import { initialNodes, PR_CLOSED_ERROR } from "./machine";
 import { isStatusComment } from "./statusComment";
 
 export interface IntakeResult {
@@ -142,6 +142,12 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
             result.skipped.push({ issue: issue.number, reason: "active thread exists" });
             continue;
           }
+          // A finished task is not restarted on its own: a person asks again (see finishedReason).
+          const finished = finishedReason(cos.store.latestForIssue(key, issue.number));
+          if (finished) {
+            result.skipped.push({ issue: issue.number, reason: finished });
+            continue;
+          }
           // Capacity is a local read: check it before the GitHub lookup, so a full repository costs no request.
           const capacity = capacityProblem(cos, repo, config.values.maxConcurrentTotal, { repo: dryRunRepo, total: dryRunTotal });
           if (capacity) {
@@ -180,6 +186,19 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
   }
   if (results.some((r) => r.started.length)) cos.invalidate();
   return results;
+}
+
+/**
+ * Why intake leaves an issue alone whose newest task failed or is done, or
+ * null when there is no such task. The reason names what restarts the work:
+ * relabelling the issue, or `retry` where it revives the task (not for a done
+ * task, nor for one whose PR was closed: retry would only fail it again).
+ */
+function finishedReason(latest: WorkItem | null): string | null {
+  if (latest?.status === "done") return "previous task is done; relabel the issue to start again";
+  if (latest?.status !== "failed") return null;
+  if (latest.lastError === PR_CLOSED_ERROR) return "previous task's PR was closed without merging; relabel the issue to start again";
+  return "previous task failed; retry it or relabel the issue";
 }
 
 /** `pending` is what a dry run would have started so far: nothing is stored for it, so it is added to the stored count. */

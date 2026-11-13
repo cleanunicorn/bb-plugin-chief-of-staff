@@ -864,6 +864,100 @@ describe("chief-of-staff server", () => {
     });
   });
 
+  describe("an issue whose task finished is not restarted (#48)", () => {
+    type Intake = { results: { started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
+    const intake = async (dryRun = false) => ((await host.harness.behavior.callRpc("cos_intake_now", dryRun ? { dryRun: true } : {})) as Intake).results[0]!;
+    const items = () => new StateStore(host.bb.storage.database()).listWorkItems();
+    const action = (act: string) => host.harness.behavior.callRpc("cos_item_action", { id: items()[0]!.id, action: act });
+    /** Writes of the issue's status comment ("started an agent"), created or edited. */
+    const statusWrites = () => ghCalls.filter((c) => (c.method === "POST" || c.method === "PATCH") && c.path.includes("/issues/") && c.path.includes("/comments") && String((c.body as { body?: string } | undefined)?.body ?? "").startsWith("<!-- cos-status -->")).length;
+    const merging = JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } });
+    const FAILED = "previous task failed; retry it or relabel the issue";
+    const DONE = "previous task is done; relabel the issue to start again";
+    const PR_CLOSED = "previous task's PR was closed without merging; relabel the issue to start again";
+    const expectNotRestarted = async (reason: string) => {
+      const result = await intake();
+      expect(result.started).toEqual([]);
+      expect(result.skipped).toEqual([{ issue: 12, reason }]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn").filter(([args]) => String((args as { title?: string }).title).startsWith("cos/"))).toHaveLength(1);
+      expect(statusWrites()).toBe(1);
+      expect(items()).toHaveLength(1);
+    };
+
+    it("after the task is marked failed", async () => {
+      await intake();
+      await action("mark_failed");
+      await expectNotRestarted(FAILED);
+    });
+
+    it("after a task without a PR is marked done", async () => {
+      await intake();
+      await action("mark_done");
+      await expectNotRestarted(DONE);
+    });
+
+    it("after a workflow that ships by pushing finishes", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "push" } } }) });
+      await intake();
+      await report("build"); await idle();
+      expect(items()[0]).toMatchObject({ status: "done", prNumber: null });
+      await expectNotRestarted(DONE);
+    });
+
+    it("after its PR is closed without merging", async () => {
+      await host.harness.behavior.setSettings({ workflow: merging });
+      ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+      await intake();
+      await report("build"); await idle(); await sweep();
+      expect(items()[0]).toMatchObject({ status: "ready" });
+      currentPull = { ...pull, state: "closed" };
+      // The CI watch runs every two minutes.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 3 * 60_000);
+        await sweep();
+      } finally { vi.useRealTimers(); }
+      expect(items()[0]).toMatchObject({ status: "failed", lastError: "PR closed without merge" });
+      await expectNotRestarted(PR_CLOSED);
+    });
+
+    it("after its PR is merged and the issue stays open", async () => {
+      await host.harness.behavior.setSettings({ workflow: merging });
+      await intake();
+      await report("build"); await idle(); await sweep();
+      expect(items()[0]).toMatchObject({ status: "done", prState: { state: "merged" } });
+      await expectNotRestarted(DONE);
+    });
+
+    it.each(["thread.failed", "thread.archived", "thread.deleted"])("after the builder thread ends with %s", async (event) => {
+      await intake();
+      const thread = makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "error", ...(event === "thread.archived" ? { archivedAt: Date.now() } : event === "thread.deleted" ? { deletedAt: Date.now() } : {}) });
+      await host.harness.behavior.emitThreadEvent(event as "thread.failed", { thread, error: "provider crashed" } as never);
+      expect(items()[0]).toMatchObject({ status: "failed" });
+      await expectNotRestarted(FAILED);
+    });
+
+    it("lets the operator retry the same task instead", async () => {
+      await intake();
+      await action("mark_failed");
+      await action("retry");
+      const result = await intake();
+      expect(result.started).toEqual([]);
+      expect(result.skipped).toEqual([{ issue: 12, reason: "active thread exists" }]);
+      expect(items()).toHaveLength(1);
+    });
+
+    it("reports the same skip in a dry run and makes no open-PR request for it", async () => {
+      await intake();
+      await action("mark_failed");
+      const listed = () => ghCalls.filter((c) => c.method === "GET" && c.path === "/repos/acme/app/pulls").length;
+      const before = listed();
+      expect((await intake(true)).skipped).toEqual([{ issue: 12, reason: FAILED }]);
+      await expectNotRestarted(FAILED);
+      expect(listed()).toBe(before);
+    });
+  });
+
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
     const custom = {
       workflows: [

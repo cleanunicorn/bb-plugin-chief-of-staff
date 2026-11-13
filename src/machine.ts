@@ -194,6 +194,9 @@ const WAIT_TITLE: Record<WaitingKind, string> = {
   stalled: "Agent stalled",
 };
 
+/** lastError of a task failed because its pull request was closed without merging. */
+export const PR_CLOSED_ERROR = "PR closed without merge";
+
 export function transition(item: WorkItem, event: MachineEvent, policy: MachinePolicy = DEFAULT_POLICY, now: Date = new Date()): Transition {
   const wf = item.workflow;
   const nodes: Nodes = Object.fromEntries(Object.entries(item.nodes).map(([k, v]) => [k, { ...v, reports: [...v.reports], nudges: [...v.nudges] }]));
@@ -478,7 +481,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (item.status === "done" || item.status === "failed") break;
       const ship = shipNode() ?? topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
       if (ship) note("stopped", ship, `Pull request${item.prNumber ? ` #${item.prNumber}` : ""} was closed without merging`);
-      patch.lastError = "PR closed without merge";
+      patch.lastError = PR_CLOSED_ERROR;
       patch.jobStartedAt = null;
       patch.status = "failed";
       patch.finishedAt = iso;
