@@ -46,6 +46,8 @@ export interface RosterEntry {
   waitingKind: WaitingKind | null;
   repo: string;
   issueNumber: number | null;
+  /** The GitHub issue behind the task; null for a standalone task. */
+  issueUrl: string | null;
   issueTitle: string;
   threadId: string | null;
   threadStatus: string | null;
@@ -90,6 +92,11 @@ export function rosterSteps(item: WorkItem): RosterStep[] {
   });
 }
 
+/** The GitHub URL of a task's issue, or null when the task has none. */
+function issueUrlFor(repo: string, issueNumber: number | null): string | null {
+  return issueNumber ? `https://github.com/${repo}/issues/${issueNumber}` : null;
+}
+
 export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?: boolean; withUsage?: boolean } = {}): Promise<RosterEntry[]> {
   const { values } = await cos.config();
   const items = cos.store.listWorkItems({ repo: opts.repo, activeOnly: !opts.includeDone, limit: 200 });
@@ -123,6 +130,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       waitingKind: item.waitingKind,
       repo: item.repo,
       issueNumber: item.issueNumber,
+      issueUrl: issueUrlFor(item.repo, item.issueNumber),
       issueTitle: item.issueTitle,
       threadId: item.threadId,
       threadStatus: thread?.status ?? null,
@@ -181,7 +189,7 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
     task: {
       repo: item.repo,
       issueNumber: item.issueNumber,
-      issueUrl: item.issueNumber ? `https://github.com/${item.repo}/issues/${item.issueNumber}` : null,
+      issueUrl: issueUrlFor(item.repo, item.issueNumber),
       body: tail(item.taskBody),
       status: item.status,
       branch: item.branch,

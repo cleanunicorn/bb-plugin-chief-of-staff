@@ -32,6 +32,7 @@ const rosterEntry = z.object({
   waitingKind: z.string().nullable(),
   repo: z.string(),
   issueNumber: z.number().nullable(),
+  issueUrl: z.string().nullable(),
   issueTitle: z.string(),
   threadId: z.string().nullable(),
   threadStatus: z.string().nullable(),

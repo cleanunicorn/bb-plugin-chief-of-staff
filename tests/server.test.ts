@@ -194,7 +194,7 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText });
     await settleJobs();
   };
-  type Entry = { id: string; status: string; detail: string; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; fixAttempts: number; counters: Record<string, number> };
+  type Entry = { id: string; status: string; detail: string; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; issueUrl: string | null; fixAttempts: number; counters: Record<string, number> };
   const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
   const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
   const sentTexts = () => (sent as { input: { text: string }[] }[]).map((s) => s.input[0].text);
@@ -594,7 +594,7 @@ describe("chief-of-staff server", () => {
     expect(body.body).toContain("claude-code");
     expect(body.body).toContain("npm test → 12 passing");
     expect(body.body).toContain("all green");
-    expect(await roster()).toMatchObject({ status: "done", detail: "done", prNumber: 7 });
+    expect(await roster()).toMatchObject({ status: "done", detail: "done", prNumber: 7, issueUrl: "https://github.com/acme/app/issues/12" });
     expect(archivedIds).toEqual(["thr_1"]);
     // The workflow view carries the task, what each step produced and the run's history.
     type View = { task: { branch: string; prNumber: number; issueUrl: string }; steps: Record<string, { reports: { summary: string }[]; threads: { threadId: string }[] }>; journal: { kind: string; step: string; detail: string | null; actor: string }[] };
@@ -1642,7 +1642,7 @@ describe("chief-of-staff server", () => {
     const started = await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", title: "Improve login", body: "Explain errors" }) as { id: string; workflow: string };
     expect(started.workflow).toBe("acme/app (converted)");
     const entry = await roster();
-    expect(entry).toMatchObject({ id: started.id, issueNumber: null, current: ["Build"] });
+    expect(entry).toMatchObject({ id: started.id, issueNumber: null, issueUrl: null, current: ["Build"] });
     const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
     expect(spawn.prompt).toContain("Explain errors");
     expect(ghCalls.some((call) => call.path === "/repos/acme/app/issues")).toBe(false);
