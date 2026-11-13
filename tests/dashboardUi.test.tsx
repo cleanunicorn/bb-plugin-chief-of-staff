@@ -264,6 +264,48 @@ it("reports a failed older page and keeps the button", async () => {
   expect(buttonLabelled("Show older finished").disabled).toBe(false);
 });
 
+const hasOlderButton = () => Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.includes("Show older finished"));
+
+it("offers older finished tasks only when no filter hides them", async () => {
+  mocks.roster = () => ({ entries: [entry({ id: "a", issueTitle: "Active task" }), finished("f1", "Finished one")], nextBefore: "c1" });
+  await mount();
+  await act(async () => buttonLabelled("Show finished").click());
+  expect(hasOlderButton()).toBe(true);
+  const stage = Array.from(container.querySelectorAll('[aria-label="Filter active tasks"] button')).find((b) => b.textContent?.includes("Tasks with agents")) as HTMLButtonElement;
+  await act(async () => stage.click());
+  expect(hasOlderButton()).toBe(false);
+  await act(async () => buttonLabelled("Clear filter").click());
+  expect(hasOlderButton()).toBe(true);
+});
+
+it("loads one older page at a time", async () => {
+  mocks.roster = () => ({ entries: [finished("f1", "Finished one")], nextBefore: "c1" });
+  let resolve!: (page: unknown) => void;
+  mocks.call.mockImplementation(() => new Promise((r) => { resolve = r; }));
+  await mount();
+  await act(async () => buttonLabelled("Show finished").click());
+  const button = buttonLabelled("Show older finished");
+  await act(async () => { button.click(); button.click(); });
+  expect(mocks.call).toHaveBeenCalledTimes(1);
+  expect(button.disabled).toBe(true);
+  await act(async () => resolve({ entries: [finished("f2", "Finished two")], nextBefore: null }));
+  expect(container.textContent).toContain("Finished two");
+});
+
+it("drops an older page that arrives after finished tasks were hidden", async () => {
+  mocks.roster = () => ({ entries: [finished("f1", "Finished one")], nextBefore: "c1" });
+  let resolve!: (page: unknown) => void;
+  mocks.call.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+  await mount();
+  await act(async () => buttonLabelled("Show finished").click());
+  await act(async () => buttonLabelled("Show older finished").click());
+  await act(async () => buttonLabelled("Hide finished").click());
+  await act(async () => buttonLabelled("Show finished").click());
+  await act(async () => resolve({ entries: [finished("f2", "Late page")], nextBefore: null }));
+  expect(container.textContent).not.toContain("Late page");
+  expect(buttonLabelled("Show older finished").disabled).toBe(false);
+});
+
 it("lists the pull request of an active task on Repos & PRs, with a deep finished page", async () => {
   mocks.entries = [entry({ id: "old", issueTitle: "Old approval", prNumber: 42, detail: "waiting_on_human", status: "waiting on human" }), finished("f1", "No PR")];
   await mount(<ReposTab />);

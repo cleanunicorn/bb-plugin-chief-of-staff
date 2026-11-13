@@ -683,7 +683,8 @@ export function PipelineTab() {
             <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
           ))}
         </div>
-        {olderCursor ? (
+        {/* Stage and attention filters never match finished tasks. */}
+        {olderCursor && filter === "all" ? (
           <div className="mt-3 flex justify-center">
             <Button size="sm" variant="outline" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => void loadOlder()}>
               <Icon name="History" fallback="Circle" aria-hidden />Show older finished
