@@ -931,7 +931,7 @@ describe("chief-of-staff server", () => {
 
     it.each(["thread.failed", "thread.archived", "thread.deleted"])("after the builder thread ends with %s", async (event) => {
       await intake();
-      const thread = makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "error", ...(event === "thread.archived" ? { archivedAt: Date.now() } : event === "thread.deleted" ? { deletedAt: Date.now() } : {}) });
+      const thread = makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: event === "thread.failed" ? "error" : "idle", ...(event === "thread.archived" ? { archivedAt: Date.now() } : event === "thread.deleted" ? { deletedAt: Date.now() } : {}) });
       await host.harness.behavior.emitThreadEvent(event as "thread.failed", { thread, error: "provider crashed" } as never);
       expect(items()[0]).toMatchObject({ status: "failed" });
       await expectNotRestarted(FAILED);
@@ -1031,6 +1031,13 @@ describe("chief-of-staff server", () => {
         at(3);
         expect((await intake()).started).toEqual([]);
         issueNow(2.5, [{ event: "assigned", created_at: iso(2.5), assignee: { login: "Dan" } }]);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("counts an assignment to anyone when the filter's assignee is *", async () => {
+        await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [], assignee: "*" }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }) });
+        issueNow(2, [{ event: "assigned", created_at: iso(2), assignee: { login: "someone" } }]);
+        at(3);
         expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
       });
 
