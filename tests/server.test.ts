@@ -725,6 +725,26 @@ describe("chief-of-staff server", () => {
         expect(status()).toBe("done");
       } finally { vi.useRealTimers(); }
     });
+
+    it("sends a failure that appears during the grace back to build", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval: false } } }) });
+      ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
+      noChecks();
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(0);
+        const fixing = (await roster()) as Entry & { steps: { id: string; attempts: number }[] };
+        expect(fixing).toMatchObject({ current: ["Build"] });
+        expect(fixing.steps.find((st) => st.id === "ship")!.attempts).toBe(1);
+      } finally { vi.useRealTimers(); }
+    });
   });
 
   describe("pull request state (#114)", () => {

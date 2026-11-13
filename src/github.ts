@@ -399,6 +399,7 @@ export class GitHubClient {
       pages += 1;
     }
     if (url) this.#log(`GitHub list ${path} truncated at ${maxPages} page${maxPages === 1 ? "" : "s"}`);
+    else if (runs.length < total) this.#log(`GitHub list ${path} returned ${runs.length} of ${total} check runs`);
     return { runs, total: Math.max(total, runs.length), complete: !url && runs.length >= total };
   }
 

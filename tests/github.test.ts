@@ -275,7 +275,9 @@ describe("CI summary over every page of check runs (#50)", () => {
   });
 
   it("never passes a list shorter than the total GitHub reports", async () => {
-    expect(await summary(checksFetch(150, {}, 100))).toMatchObject({ state: "pending" });
+    const log = vi.fn();
+    expect(await summary(checksFetch(150, {}, 100), log)).toMatchObject({ state: "pending" });
+    expect(log).toHaveBeenCalledWith("GitHub list /repos/acme/app/commits/abc/check-runs returned 100 of 150 check runs");
   });
 
   it("reads a single page with one request", async () => {
