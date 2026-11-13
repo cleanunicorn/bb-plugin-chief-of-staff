@@ -76,12 +76,38 @@ export function pausedMessage(cos: Cos, repo: string, action: string): string {
   return cos.store.isRepoPaused(repo) && !cos.store.isPaused() ? `Project ${repo} is paused. Resume it before ${action}.` : `Chief of Staff is paused. Resume it before ${action}.`;
 }
 
+type IntakeOptions = { repo?: string; dryRun?: boolean; actor: string; deadline?: number };
+
+/** Settles when the plugin's real intake in progress ends (never rejects). */
+const intakeInProgress = new WeakMap<Cos, Promise<void>>();
+
 /**
+ * Real intakes run one at a time per plugin instance (manual, CLI and the
+ * sweep's alike): a later one waits for the one in progress, then runs its own
+ * pass, so it never starts what the earlier one just started. Dry runs start
+ * nothing and do not wait.
+ *
  * @param opts.deadline epoch ms after which no further repo or issue is
  *   started. A scheduled repo already being listed considers its first issue
- *   before yielding, so a slow listing cannot prevent all progress.
+ *   before yielding, so a slow listing cannot prevent all progress. Time spent
+ *   waiting for another intake counts.
  */
-export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolean; actor: string; deadline?: number }): Promise<IntakeResult[]> {
+export async function runIntake(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]> {
+  if (opts.dryRun) return intakePass(cos, opts);
+  const previous = intakeInProgress.get(cos);
+  let release!: () => void;
+  const done = new Promise<void>((resolve) => (release = resolve));
+  intakeInProgress.set(cos, done);
+  try {
+    await previous;
+    return await intakePass(cos, opts);
+  } finally {
+    release();
+    if (intakeInProgress.get(cos) === done) intakeInProgress.delete(cos);
+  }
+}
+
+async function intakePass(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]> {
   if (cos.store.isPaused()) throw new Error("Chief of Staff is paused. Resume it before starting intake.");
   const config = await cos.config();
   if (!opts.dryRun) await resumeQueued(cos, opts.actor);
