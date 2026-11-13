@@ -124,7 +124,7 @@ export interface ThreadUsage {
   cost: { amount: number; currency: string } | null;
 }
 
-/** A thread's usage, and whether both usage queries answered (an empty answer counts: the provider reports nothing). */
+/** A thread's usage, and whether both usage queries answered (an empty answer or a deleted thread counts: nothing is reported). */
 export interface UsageRead {
   usage: ThreadUsage;
   complete: boolean;
@@ -153,7 +153,9 @@ export async function readThreadUsage(cos: Cos, threadId: string): Promise<Usage
     const amount = pick(cost.value, ["contextWindowUsage", "cost"]) as Record<string, unknown> | undefined;
     if (amount && typeof amount.amount === "number") usage.cost = { amount: amount.amount, currency: typeof amount.currency === "string" ? amount.currency : "USD" };
   }
-  return { usage, complete: tokens.status === "fulfilled" && cost.status === "fulfilled" };
+  // A deleted thread answers 404: it has nothing more to report, so the read is complete.
+  const answered = (r: PromiseSettledResult<unknown>) => r.status === "fulfilled" || (r.reason as { status?: number } | null)?.status === 404;
+  return { usage, complete: answered(tokens) && answered(cost) };
 }
 
 export async function sendToThread(cos: Cos, threadId: string, text: string, mentions: SkillMention[] = [], delivery?: DeliveryHooks): Promise<void> {

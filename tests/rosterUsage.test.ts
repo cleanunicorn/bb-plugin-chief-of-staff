@@ -181,6 +181,18 @@ describe("final usage of finished items", () => {
     expect(t.store.getWorkItem("flaky")!.finalUsage).not.toBeNull();
   });
 
+  it("stores a deleted thread as reporting nothing, and does not read it again", async () => {
+    const t = setup();
+    t.add("gone", done());
+    t.replies.set("t-gone", () => { throw Object.assign(new Error("Thread not found"), { status: 404 }); });
+    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(e!.usage).toEqual(nothing);
+    expect(t.store.getWorkItem("gone")!.finalUsage).toEqual(nothing);
+    t.calls.length = 0;
+    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.calls).toHaveLength(0);
+  });
+
   it("does not store usage while the thread is still busy", async () => {
     const t = setup();
     t.add("manual", done());

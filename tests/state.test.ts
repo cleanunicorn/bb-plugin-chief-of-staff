@@ -215,6 +215,14 @@ describe("final usage of finished items", () => {
     expect(store.getWorkItem("a")!.finalUsage).toBeNull();
   });
 
+  it("is cleared when the item's builder thread changes", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "done", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
+    store.setFinalUsage("a", "t-a", usage);
+    expect(store.updateWorkItem("a", { threadId: "t-b" })!.finalUsage).toBeNull();
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+  });
+
   it("is cleared when a failed item is revived through the machine", () => {
     const { store, add } = storeSetup();
     add("a", { status: "failed", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z", nodes: nodes({ status: "running", round: 1, reports: [null], nudges: [0] }) });

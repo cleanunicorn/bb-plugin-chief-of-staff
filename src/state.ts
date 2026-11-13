@@ -7,7 +7,8 @@
 // by every write and counted in SQL) and detail_pruned_at (when retention
 // removed a finished item's step details; cleared when the item is active again)
 // and final_usage_json (the builder thread's token usage, read once after the
-// item finished; NULL until read, cleared when the item is active again).
+// item finished; NULL until read, cleared when the item is active again or
+// its builder thread changes).
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
@@ -368,7 +369,7 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END, final_usage_json=CASE WHEN ${activeIn("@status")} THEN NULL ELSE final_usage_json END`;
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END, final_usage_json=CASE WHEN ${activeIn("@status")} OR thread_id IS NOT @threadId THEN NULL ELSE final_usage_json END`;
 
 function toRow(item: WorkItem): Record<string, unknown> {
   // finalUsage is written only by setFinalUsage, and cleared by ITEM_COLUMNS.
@@ -481,7 +482,7 @@ export class StateStore {
     const current = this.getWorkItem(id);
     if (!current) return null;
     const next: WorkItem = { ...current, ...patch, updatedAt: this.now().toISOString() };
-    next.finalUsage = isActiveStatus(next.status) ? null : (current.finalUsage ?? null);
+    next.finalUsage = isActiveStatus(next.status) || next.threadId !== current.threadId ? null : (current.finalUsage ?? null);
     this.db.prepare(`UPDATE work_items SET ${ITEM_COLUMNS} WHERE id=@id`).run(toRow(next));
     return next;
   }
