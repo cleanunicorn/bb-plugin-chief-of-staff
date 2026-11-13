@@ -332,13 +332,43 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
 
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
+/** The card's confirms. "restart" sends `retry`: on a failed task that reopens it rather than retrying a stuck step. */
+type CardConfirm = "restart" | "mark_done" | "mark_failed";
+
+/** What each card confirm says and sends. A failed task has nothing running, so its Mark done copy differs from an active task's. */
+function cardConfirm(kind: CardConfirm, title: string, failed: boolean): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
+  const stops = "Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is.";
+  if (kind === "restart") {
+    return {
+      title: `Restart ‘${title}’ on a new thread?`,
+      description: "This reopens the task. If a writing step was unfinished, an agent restarts it on a new thread and takes a task slot, or waits for one if all are in use. The old thread is left as it is.",
+      confirmLabel: "Restart",
+      action: "retry",
+    };
+  }
+  if (kind === "mark_done") {
+    return {
+      title: `Mark ‘${title}’ done?`,
+      description: failed ? "The task is recorded as done instead of failed. No agent work starts, and its threads are left as they are." : stops,
+      confirmLabel: "Mark done",
+      action: "mark_done",
+    };
+  }
+  return { title: `Mark ‘${title}’ failed?`, description: stops, confirmLabel: "Mark failed", tone: "destructive", action: "mark_failed" };
+}
+
 function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
-  const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
+  // The kind outlives `open`, so the dialog keeps its text while it closes.
+  const [confirm, setConfirm] = useState<{ kind: CardConfirm; open: boolean }>({ kind: "mark_done", open: false });
+  const ask = (kind: CardConfirm) => setConfirm({ kind, open: true });
+  const closeConfirm = () => setConfirm((c) => ({ ...c, open: false }));
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
+  const failed = entry.detail === "failed";
+  const confirmCopy = cardConfirm(confirm.kind, title, failed);
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
@@ -445,42 +475,51 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
             <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
           </Button>
         ) : null}
-        {!finished || entry.detail === "failed" ? (
+        {!finished || failed ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
                 <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
+            {/* The items fit how the task ended. Confirms live on the card, not in the menu: the menu closes when an item is chosen. */}
             <DropdownMenuContent align="end" side="top">
-              <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
-                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Retry the stuck step
-              </DropdownMenuItem>
-              {/* The confirm lives on the card, not in the menu: the menu closes when an item is chosen. */}
-              <DropdownMenuItem onSelect={() => setConfirming("mark_done")}>
+              {failed ? (
+                <DropdownMenuItem onSelect={() => ask("restart")}>
+                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Restart on a new thread…
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
+                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Retry the stuck step
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={() => ask("mark_done")}>
                 <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
                 Mark done…
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
-                <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Mark failed…
-              </DropdownMenuItem>
+              {failed ? null : (
+                <DropdownMenuItem onSelect={() => ask("mark_failed")}>
+                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Mark failed…
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
       </div>
       <ConfirmDialog
-        open={confirming !== null}
-        title={`Mark ‘${title}’ ${confirming === "mark_failed" ? "failed" : "done"}?`}
-        description="Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is."
-        confirmLabel={confirming === "mark_failed" ? "Mark failed" : "Mark done"}
-        tone={confirming === "mark_failed" ? "destructive" : undefined}
+        open={confirm.open}
+        title={confirmCopy.title}
+        description={confirmCopy.description}
+        confirmLabel={confirmCopy.confirmLabel}
+        tone={confirmCopy.tone}
         onConfirm={() => {
-          if (confirming) onAction(entry.id, confirming);
-          setConfirming(null);
+          onAction(entry.id, confirmCopy.action);
+          closeConfirm();
         }}
-        onCancel={() => setConfirming(null)}
+        onCancel={closeConfirm}
         restoreFocus={focusTrigger}
       />
     </article>

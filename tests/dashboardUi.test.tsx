@@ -316,3 +316,64 @@ it("does not pull focus back to More actions if it moved on while the action ran
   await act(async () => finish());
   expect(document.activeElement).toBe(elsewhere);
 });
+
+// ---------- Finished cards: the menu fits how the task ended (#108) ----------
+
+const failed = () => entry({ detail: "failed", status: "failed", occupiesCapacity: false });
+
+it("offers a failed card a restart and Mark done, never Mark failed", async () => {
+  mocks.entries = [failed()];
+  await mount();
+  await openMenu();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Restart on a new thread…", "Mark done…"]);
+});
+
+it("asks before restarting a failed task, and sends nothing on Cancel", async () => {
+  mocks.entries = [failed()];
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Restart on a new thread").click());
+  await tick();
+  expect(confirmDialog()?.textContent).toContain("Restart ‘Fix login’ on a new thread?");
+  await act(async () => bodyButton("Cancel").click());
+  await tick(5);
+  expect(confirmDialog()).toBeNull();
+  expect(mocks.call).not.toHaveBeenCalled();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("names the effect of a restart, and sends one retry on confirm", async () => {
+  mocks.entries = [failed()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Restart on a new thread").click());
+  await tick();
+  const text = confirmDialog()!.textContent!;
+  expect(text).toContain("new thread");
+  expect(text).toContain("task slot");
+  expect(actionCalls()).toHaveLength(0);
+  await act(async () => bodyButton("Restart").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "retry" }]]);
+  expect(confirmDialog()).toBeNull();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("says what Mark done changes for a failed task", async () => {
+  mocks.entries = [failed()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Mark done").click());
+  await tick();
+  const text = confirmDialog()!.textContent!;
+  expect(text).toContain("Mark ‘Fix login’ done?");
+  expect(text).toContain("recorded as done instead of failed");
+  expect(text).not.toContain("stops working on this task");
+  await act(async () => bodyButton("Mark done").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "mark_done" }]]);
+});
