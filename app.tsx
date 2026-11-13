@@ -24,7 +24,7 @@ import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, taskLabel, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, splitThreadIds, taskLabel, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 
@@ -919,8 +919,33 @@ const LEVEL: Record<string, { tone: Tone; icon: string; label: string }> = {
 
 const MOBILE_ACTIVITY_ROWS = 12;
 
+/** Activity text as written, with each thread id a link to its thread. */
+function ThreadLinkedText({ text, onThread }: { text: string; onThread: (id: string) => void }) {
+  return (
+    <>
+      {splitThreadIds(text).map((part, i) =>
+        typeof part === "string" ? (
+          part
+        ) : (
+          <button
+            key={i}
+            type="button"
+            className="rounded underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label={`Open thread ${part.thread}`}
+            onClick={() => onThread(part.thread)}
+          >
+            {part.thread}
+          </button>
+        ),
+      )}
+    </>
+  );
+}
+
 export function ActivityFeed() {
   const palette = usePalette();
+  const navigate = useBbNavigate();
+  const toThread = useCallback((id: string) => navigate.toThread(id), [navigate]);
   const now = useNow();
   const [onlyProblems, setOnlyProblems] = useState(false);
   // Phones get no nested scroll box: show the latest rows and expand in place.
@@ -973,8 +998,8 @@ export function ActivityFeed() {
                     </button>{" "}
                   </>
                 ) : null}
-                {e.message}
-                <span className="text-muted-foreground"> · {e.actor}</span>
+                <ThreadLinkedText text={e.message} onThread={toThread} />
+                <span className="text-muted-foreground"> · <ThreadLinkedText text={e.actor} onThread={toThread} /></span>
               </span>
             </li>
           );

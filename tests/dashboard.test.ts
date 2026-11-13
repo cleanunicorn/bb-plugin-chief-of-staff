@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attentionKind, matchesTaskFilter } from "../components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, splitThreadIds, taskLabel } from "../components/cos/dashboardModel";
 
 const task = (detail: string, waitingKind: string | null = null, stalled = false) => ({ detail, waitingKind, stalled });
 
@@ -27,5 +27,33 @@ describe("dashboard attention and filtering", () => {
     expect(matchesTaskFilter(task("waiting_on_human", "cos_error"), "input")).toBe(false);
     expect(matchesTaskFilter(task("queued"), "agent")).toBe(false);
     expect(matchesTaskFilter(task("failed"), "all")).toBe(true);
+  });
+});
+
+describe("activity rows", () => {
+  it("names a row's task by number and title, number, title, or Untitled task, and not at all without one", () => {
+    expect(taskLabel({ workItemId: "a", issueNumber: 7, issueTitle: "Fix login" })).toBe("#7 Fix login");
+    expect(taskLabel({ workItemId: "a", issueNumber: 7, issueTitle: "" })).toBe("#7");
+    expect(taskLabel({ workItemId: "a", issueNumber: null, issueTitle: "Tidy the docs" })).toBe("Tidy the docs");
+    expect(taskLabel({ workItemId: "a", issueNumber: null, issueTitle: "" })).toBe("Untitled task");
+    expect(taskLabel({ workItemId: "gone", issueNumber: null, issueTitle: null })).toBe(null);
+    expect(taskLabel({ workItemId: null, issueNumber: null, issueTitle: null })).toBe(null);
+  });
+
+  it("splits thread ids out of messages and actors, keeping the text around them verbatim", () => {
+    const cases: [string, (string | { thread: string })[]][] = [
+      ["spawned Review thr_abc", ["spawned Review ", { thread: "thr_abc" }]],
+      ["archived 2 threads: thr_a, thr_b", ["archived 2 threads: ", { thread: "thr_a" }, ", ", { thread: "thr_b" }]],
+      ["could not archive thread thr_x: not found", ["could not archive thread ", { thread: "thr_x" }, ": not found"]],
+      ["tool:thr_x", ["tool:", { thread: "thr_x" }]],
+      ["thr_9Z", [{ thread: "thr_9Z" }]],
+      ["Build failed (exit 1)", ["Build failed (exit 1)"]],
+      ["author_thr_x is not a thread", ["author_thr_x is not a thread"]],
+      ["", []],
+    ];
+    for (const [text, parts] of cases) {
+      expect(splitThreadIds(text)).toEqual(parts);
+      expect(splitThreadIds(text).map((p) => (typeof p === "string" ? p : p.thread)).join("")).toBe(text);
+    }
   });
 });

@@ -26,3 +26,18 @@ export function taskLabel(row: { workItemId: string | null; issueNumber?: number
   if (number !== null) return title ? `#${number} ${title}` : `#${number}`;
   return title || "Untitled task";
 }
+
+const THREAD_ID = /\bthr_[A-Za-z0-9]+/g;
+
+/** Text with each BB thread id (`thr_…`) split out, so it can be linked. Joining the parts gives the text back. */
+export function splitThreadIds(text: string): (string | { thread: string })[] {
+  const parts: (string | { thread: string })[] = [];
+  let last = 0;
+  for (const match of text.matchAll(THREAD_ID)) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    parts.push({ thread: match[0] });
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}

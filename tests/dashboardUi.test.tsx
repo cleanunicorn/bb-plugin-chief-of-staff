@@ -158,6 +158,24 @@ it("opens the task's workflow from its name, and returns focus to the name on cl
   expect(document.activeElement).toBe(taskButtons()[1]);
 });
 
+it("links every thread id in a row's message and actor, and keeps the text as it was", async () => {
+  mocks.logs = [logRow({ kind: "archive", message: "archived 2 threads: thr_a, thr_b", actor: "tool:thr_x" })];
+  await mount(<ActivityFeed />);
+  const row = container.querySelector("li")!;
+  expect(row.textContent).toContain("archived 2 threads: thr_a, thr_b · tool:thr_x");
+  const links = Array.from(row.querySelectorAll<HTMLButtonElement>("button[aria-label^='Open thread']"));
+  expect(links.map((b) => [b.textContent, b.getAttribute("aria-label")])).toEqual([
+    ["thr_a", "Open thread thr_a"],
+    ["thr_b", "Open thread thr_b"],
+    ["thr_x", "Open thread thr_x"],
+  ]);
+  await act(async () => links[1]!.click());
+  expect(mocks.navigate.toThread).toHaveBeenLastCalledWith("thr_b");
+  await act(async () => links[2]!.click());
+  expect(mocks.navigate.toThread).toHaveBeenLastCalledWith("thr_x");
+  expect(mocks.navigate.toThread).toHaveBeenCalledTimes(2);
+});
+
 it("pairs task state pictograms with explicit labels", async () => {
   mocks.entries = [entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error", current: ["Build"] })];
   await mount();
