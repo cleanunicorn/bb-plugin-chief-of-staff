@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Task cards and Throughput are easier to tap on touch screens.** On a
+  touch (coarse) pointer, Open thread, Workflow, Approve, Resume, the pull
+  request link and More actions are 40 px high, the Chart/Table toggle buttons
+  are 34 px with space between them, and the Workflow progress row is taller.
+  The whole pull request chip is now the link. On touch, tapping the
+  Throughput chart opens its table instead of targeting 20 px day columns.
+  Sizes with a mouse or trackpad are unchanged.
+
+- **More actions stays on the first row of a task card.** It no longer wraps
+  onto a line of its own; when the actions don't fit, the last one before it
+  wraps instead. This also applies to narrow desktop windows.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
