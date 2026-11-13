@@ -3,7 +3,7 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
+import { occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
@@ -46,6 +46,8 @@ export interface RosterEntry {
   waitingKind: WaitingKind | null;
   repo: string;
   issueNumber: number | null;
+  /** The GitHub issue behind the task; null for a standalone task. */
+  issueUrl: string | null;
   issueTitle: string;
   threadId: string | null;
   threadStatus: string | null;
@@ -53,6 +55,8 @@ export interface RosterEntry {
   branch: string | null;
   prNumber: number | null;
   prUrl: string | null;
+  /** The pull request's last read state, when it was read for this prNumber. */
+  pr: Omit<PrState, "number"> | null;
   startedAt: string;
   lastActivityAt: string | null;
   stalled: boolean;
@@ -90,6 +94,18 @@ export function rosterSteps(item: WorkItem): RosterStep[] {
   });
 }
 
+/** The GitHub URL of a task's issue, or null when the task has none. */
+function issueUrlFor(repo: string, issueNumber: number | null): string | null {
+  return issueNumber ? `https://github.com/${repo}/issues/${issueNumber}` : null;
+}
+
+/** The item's PR state, unless it belongs to an earlier PR than the one it has now. */
+function rosterPr(item: WorkItem): RosterEntry["pr"] {
+  if (!item.prState || item.prState.number !== item.prNumber) return null;
+  const { number: _number, ...pr } = item.prState;
+  return pr;
+}
+
 export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?: boolean; withUsage?: boolean } = {}): Promise<RosterEntry[]> {
   const { values } = await cos.config();
   const items = cos.store.listWorkItems({ repo: opts.repo, activeOnly: !opts.includeDone, limit: 200 });
@@ -123,6 +139,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       waitingKind: item.waitingKind,
       repo: item.repo,
       issueNumber: item.issueNumber,
+      issueUrl: issueUrlFor(item.repo, item.issueNumber),
       issueTitle: item.issueTitle,
       threadId: item.threadId,
       threadStatus: thread?.status ?? null,
@@ -130,6 +147,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       branch: item.branch,
       prNumber: item.prNumber,
       prUrl: item.prUrl,
+      pr: rosterPr(item),
       startedAt: item.createdAt,
       lastActivityAt: item.lastActivityAt,
       stalled: item.status === "agent" && now - Date.parse(last) > stallMs,
@@ -181,7 +199,7 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
     task: {
       repo: item.repo,
       issueNumber: item.issueNumber,
-      issueUrl: item.issueNumber ? `https://github.com/${item.repo}/issues/${item.issueNumber}` : null,
+      issueUrl: issueUrlFor(item.repo, item.issueNumber),
       body: tail(item.taskBody),
       status: item.status,
       branch: item.branch,

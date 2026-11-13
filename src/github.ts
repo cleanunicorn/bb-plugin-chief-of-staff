@@ -1,5 +1,7 @@
 // Minimal GitHub REST client over fetch. The token is held in a closure and
 // never appears in logs, errors, or returned values.
+import type { PrState } from "./state";
+
 export interface GitHubIssue {
   number: number;
   title: string;
@@ -65,6 +67,44 @@ export interface Review {
 }
 
 export type CiSummary = { state: "passing" | "failing" | "pending" | "no_checks"; failed: { name: string; url: string; runId: number | null }[]; total: number };
+
+/** The reviewers' verdict on a pull request: what the merge gate and the PR state show. */
+export type ReviewVerdict = "approved" | "changes_requested" | null;
+
+/**
+ * Each reviewer's latest APPROVED, CHANGES_REQUESTED or DISMISSED review
+ * decides; comments and pending reviews do not, and a dismissal clears that
+ * reviewer's earlier verdict. Any requested changes outweigh approvals.
+ * Reviews come oldest first, as GitHub lists them.
+ */
+export function reduceReviews(reviews: readonly Review[]): ReviewVerdict {
+  const latest = new Map<string, Review["state"]>();
+  for (const review of reviews) {
+    if (!review.user || review.state === "COMMENTED" || review.state === "PENDING") continue;
+    latest.set(review.user.login, review.state);
+  }
+  const states = [...latest.values()];
+  if (states.includes("CHANGES_REQUESTED")) return "changes_requested";
+  return states.includes("APPROVED") ? "approved" : null;
+}
+
+/**
+ * A PrState from a pull request read from GitHub, with its CI and review
+ * verdict when they were read (they are kept for open PRs only). List
+ * endpoints can omit `merged`, so a merge time also counts.
+ */
+export function prStateFrom(pr: Pick<GitHubPull, "number" | "state" | "draft" | "merged" | "merged_at">, now: Date, ci?: CiSummary, review?: ReviewVerdict): PrState {
+  const state = pr.merged || pr.merged_at ? "merged" : pr.state === "closed" ? "closed" : "open";
+  const open = state === "open";
+  return {
+    number: pr.number,
+    state,
+    draft: Boolean(pr.draft),
+    checks: open && ci ? (ci.state === "no_checks" ? "none" : ci.state) : null,
+    review: open ? (review ?? null) : null,
+    checkedAt: now.toISOString(),
+  };
+}
 
 /** The open PR that already covers an issue: its branch is the issue's, or its body closes the issue. */
 export function matchOpenPullForIssue(pulls: GitHubPull[], issueNumber: number, branchPrefix: string): GitHubPull | null {

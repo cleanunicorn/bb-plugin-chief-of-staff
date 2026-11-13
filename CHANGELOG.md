@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- **Task cards and pull requests link to their GitHub issue.** A card's
+  "repo #N" opens the issue in the browser, and its PR chip reads "PR #N" so
+  the two numbers are no longer confused. Each row under Repos & PRs → Pull
+  requests links "closes #N" to the issue and has a Workflow button that opens
+  the task's workflow. Standalone tasks, which have no issue, show no issue
+  link.
+
+- **The Pull requests list shows each PR's own state.** Each row leads with
+  Open, Draft, Merged, Closed or State unknown and, while the PR is open, its
+  checks (passing, failing, pending, none) and review (approved, changes
+  requested), each with its own icon and text. Finished tasks no longer read
+  "Shipped" there. The list defaults to PRs that need action, puts failing
+  checks and requested changes first, has Merged, Closed and All filters, and
+  shows 10 rows at a time with **Show more**. Task cards show their PR's state
+  next to the PR link. Open PRs refresh about every 10 minutes and need GitHub
+  auth.
+
+- **Merging with a required approval ignores pending reviews.** A reviewer's
+  unsubmitted (pending) review no longer overrides their earlier verdict, an
+  approval or requested changes.
+
+- **Browse retained activity without losing older problems.** Problems only filters
+  on the server before the page limit. Show older pages through retained entries;
+  each page displays its time range and offers a return to the newest activity.
+
+- **Keyboard users can skip the task grid.** The first Tab after “Work
+  overview” is a “Skip to throughput and activity” link, shown on focus.
+  Only one task card's actions are in the tab order; arrow keys move between
+  cards, and Home and End jump to the first and last. With 54 tasks, “Problems
+  only” in Activity is about 20 Tab presses away instead of 235, or 5 key
+  presses through the skip link. The task list, Throughput, Capacity and
+  Activity are named regions. Throughput chart days are no longer buttons
+  that did nothing; use the table view for daily numbers by keyboard.
+
+- **The task workflow view reads on phones.** Below 640 px the sheet header
+  gives the task's repository, number and title a full-width line, the
+  Canvas/List switch shows icons only, and the overview scrolls with the
+  canvas instead of in a small box, so the thread, issue and PR links are in
+  reach. The "Select a step…" footer hint is no longer repeated there.
+
+- **Task cards and Throughput are easier to tap on touch screens.** On a
+  touch (coarse) pointer, Open thread, Workflow, Approve, Resume, the pull
+  request link and More actions are 40 px high, the Chart/Table toggle buttons
+  are 34 px with space between them, and the Workflow progress row is taller.
+  The whole pull request chip is now the link. On touch, tapping the
+  Throughput chart opens its table instead of targeting 20 px day columns.
+  Sizes with a mouse or trackpad are unchanged.
+
+- **More actions stays on the first row of a task card.** It no longer wraps
+  onto a line of its own; when the actions don't fit, the last one before it
+  wraps instead. This also applies to narrow desktop windows.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are

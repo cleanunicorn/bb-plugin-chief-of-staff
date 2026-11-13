@@ -13,7 +13,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
   experimental_useRpcQuery: ({ method }: { method: string }) => ({
-    data: method === "cos_roster" ? { entries: mocks.entries } : method === "cos_item_workflow" ? mocks.workflow : method === "cos_question" ? mocks.question : method === "cos_stats" ? { doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [] } : { paused: false, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 } },
+    data: method === "cos_roster" ? { entries: mocks.entries } : method === "cos_item_workflow" ? mocks.workflow : method === "cos_question" ? mocks.question : method === "cos_stats" ? { doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [] } : { paused: false, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
     error: null, refetch: vi.fn(),
   }),
   Markdown: ({ content }: { content: string }) => <span>{content}</span>,
@@ -32,7 +32,7 @@ vi.mock("../components/cos/workflowCanvas", async (original) => ({
     </div>
   ),
 }));
-import { PipelineTab } from "../app";
+import { PipelineTab, ReposTab } from "../app";
 
 const waiting = () => entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "question", waitingReason: "Which database?" });
 
@@ -188,4 +188,29 @@ it("asks before closing the question sheet over a draft, then returns focus to t
   expect(dialog()).toBeNull();
   expect(document.activeElement).toBe(opener);
   expect(document.body.style.pointerEvents).not.toBe("none");
+});
+
+it("opens a pull request's workflow from the Repos tab and returns focus to its Workflow button", async () => {
+  mocks.entries = [entry({ prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" })];
+  await act(async () => { root.render(<ReposTab />); });
+  const opener = button("Workflow", container);
+  await click(opener);
+  expect(dialog()).not.toBeNull();
+  expect(document.getElementById(dialog()!.getAttribute("aria-labelledby")!)?.textContent).toBe("Where this task is");
+  await press("Escape");
+  await settle();
+  expect(dialog()).toBeNull();
+  expect(document.activeElement).toBe(opener);
+});
+
+it("lands on the Pull requests heading when the row is gone by the time the workflow sheet closes", async () => {
+  mocks.entries = [entry({ prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" })];
+  await act(async () => { root.render(<ReposTab />); });
+  await click(button("Workflow", container));
+  mocks.entries = [];
+  await act(async () => { root.render(<ReposTab />); });
+  await click(button("Close", dialog()!));
+  await settle();
+  expect(dialog()).toBeNull();
+  expect(document.activeElement?.textContent).toBe("Pull requests");
 });

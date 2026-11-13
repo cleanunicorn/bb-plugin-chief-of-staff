@@ -26,7 +26,9 @@ import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
+import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
+import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -103,6 +105,11 @@ const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
   cos_error: { label: "CoS stuck", icon: "OctagonAlert" },
 };
 
+/** "acme/app" → "app". */
+function repoName(repo: string): string {
+  return repo.split("/")[1] ?? repo;
+}
+
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
   if (e.detail === "done") return { tone: "good", label: e.lastError ? "Closed" : "Shipped", icon: "CircleCheck" };
   if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
@@ -158,6 +165,13 @@ function rerunEffect(wf: Workflow, stepId: string, name: string): string {
  */
 export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)";
 
+/**
+ * Portrait phones: narrower than Tailwind's `sm`. The exact complement of SHORT_VIEWPORT_QUERY's width condition,
+ * so the two never match together. The workflow sheet then gives the task line its own row, shows the view switch
+ * as icons, and scrolls the canvas and the overview as one column instead of squeezing the overview into a box (#118).
+ */
+export const PHONE_VIEWPORT_QUERY = "not all and (min-width: 40rem)";
+
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
@@ -173,6 +187,11 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
   const [error, setError] = useState<string | null>(null);
   // One class set or the other, never both: `md:` and a height query both match at 844×390.
   const short = useMediaQuery(SHORT_VIEWPORT_QUERY);
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY) && !short;
+  // Full screen keeps the fill layout on a phone too: only the header (and the footer hint) differ there.
+  const phoneColumn = phone && !expanded;
+  const column = useRef<HTMLDivElement>(null);
+  const aside = useRef<HTMLElement>(null);
   const data = view.data;
   const wf = data?.workflow as Workflow | undefined;
   const live = useMemo(() => (data?.live ?? {}) as Record<string, LiveStatus>, [data?.live]);
@@ -196,6 +215,47 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
       setBusy(false);
     }
   };
+  // On a phone the step panel follows the canvas or a long list; bring its top into view when a selection puts it below the fold.
+  useEffect(() => {
+    if (!phoneColumn || !selected || !column.current || !aside.current) return;
+    if (aside.current.getBoundingClientRect().top >= column.current.getBoundingClientRect().bottom) {
+      aside.current.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [phoneColumn, selected]);
+  const taskLine = data ? `${data.title} · workflow “${wf?.name}”` : undefined;
+  const controls = (
+    <div className={cn("flex shrink-0 items-center gap-1.5", phone && "ml-auto")}>
+      {expanded ? (
+        <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2" onClick={() => setExpanded(false)}>
+          <ShrinkGlyph /> Exit full screen
+        </Button>
+      ) : null}
+      <div role="group" aria-label="View" className="flex rounded-md border border-border p-0.5">
+        {(["canvas", "list"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            aria-pressed={mode === v}
+            onClick={() => {
+              setMode(v);
+              // The full-screen control lives on the canvas.
+              if (v === "list") setExpanded(false);
+            }}
+            className={cn("flex items-center rounded text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", phone ? "size-9 justify-center" : "gap-1 px-2 py-1", mode === v ? "bg-state-active text-foreground" : "text-muted-foreground")}
+          >
+            <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />
+            {/* Icons only on a phone; the text stays as the button's name. */}
+            <span className={phone ? "sr-only" : undefined}>{v === "canvas" ? "Canvas" : "List"}</span>
+          </button>
+        ))}
+      </div>
+      <DialogClose asChild>
+        <Button size="sm" variant="ghost" className="size-9 shrink-0 p-0 sm:size-7" aria-label="Close">
+          <Icon name="X" fallback="Circle" aria-hidden />
+        </Button>
+      </DialogClose>
+    </div>
+  );
   return (
     <Sheet
       onClose={onClose}
@@ -215,55 +275,39 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
         }
       }}
       className={cn(
-        short ? "gap-2 p-3" : "gap-3 p-4",
+        short || phone ? "gap-2 p-3" : "gap-3 p-4",
         expanded
           ? "h-dvh max-w-none rounded-none sm:rounded-none"
           : cn(short ? "h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)]" : "h-[90dvh] max-h-[calc(100dvh-2rem)]", "w-[calc(100%-2rem)] max-w-[96rem] rounded-xl sm:rounded-xl"),
       )}
     >
-      <header className="flex shrink-0 items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className={cn(short ? "line-clamp-1" : "line-clamp-2", "text-xs text-muted-foreground")} title={data ? `${data.title} · workflow “${wf?.name}”` : undefined}>{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
-          <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {expanded ? (
-            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2" onClick={() => setExpanded(false)}>
-              <ShrinkGlyph /> Exit full screen
-            </Button>
-          ) : null}
-          <div role="group" aria-label="View" className="flex rounded-md border border-border p-0.5">
-            {(["canvas", "list"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={mode === v}
-                onClick={() => {
-                  setMode(v);
-                  // The full-screen control lives on the canvas.
-                  if (v === "list") setExpanded(false);
-                }}
-                className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", mode === v ? "bg-state-active text-foreground" : "text-muted-foreground")}
-              >
-                <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />
-                {v === "canvas" ? "Canvas" : "List"}
-              </button>
-            ))}
+      {phone ? (
+        // The task line gets the full width: beside the controls it kept only part of the repository's name.
+        <header className="flex shrink-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Basis auto, not 0: the controls drop to a second line before the title is squeezed. */}
+            <DialogTitle className="min-w-0 flex-auto leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+            {controls}
           </div>
-          <DialogClose asChild>
-            <Button size="sm" variant="ghost" className="size-9 shrink-0 p-0 sm:size-7" aria-label="Close">
-              <Icon name="X" fallback="Circle" aria-hidden />
-            </Button>
-          </DialogClose>
-        </div>
-      </header>
+          <p className="line-clamp-3 text-xs text-muted-foreground [overflow-wrap:anywhere]" title={taskLine}>{taskLine ?? "Loading…"}</p>
+        </header>
+      ) : (
+        <header className="flex shrink-0 items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className={cn(short ? "line-clamp-1" : "line-clamp-2", "text-xs text-muted-foreground")} title={taskLine}>{taskLine ?? "Loading…"}</p>
+            <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+          </div>
+          {controls}
+        </header>
+      )}
       {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} oneLine={short} /> : null}
       <ErrorLine error={view.error ?? error} />
-      {wf && data ? <div className={cn("flex min-h-0 flex-1", short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
+      {/* On a phone the row is the one scroller: the canvas at a set height, then the list or overview at natural height. */}
+      {wf && data ? <div ref={column} className={cn("flex min-h-0 flex-1", phoneColumn ? "flex-col gap-2 overflow-y-auto overscroll-contain" : short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
         {mode === "canvas" ? (
-          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={cn("h-auto min-w-0 flex-1", short ? "min-h-0" : "min-h-[16rem]")} />
+          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={phoneColumn ? "h-[min(45dvh,24rem)] min-h-[16rem] min-w-0 flex-none" : cn("h-auto min-w-0 flex-1", short ? "min-h-0" : "min-h-[16rem]")} />
         ) : (
-          <ol aria-label="Workflow steps" className="flex min-h-0 min-w-0 flex-1 flex-col gap-1.5 overflow-y-auto p-px">
+          <ol aria-label="Workflow steps" className={cn("flex min-w-0 flex-col gap-1.5 p-px", phoneColumn ? "flex-none" : "min-h-0 flex-1 overflow-y-auto")}>
             {topoOrder(wf).map((stepId) => {
               const s = wf.steps.find((x) => x.id === stepId)!;
               const tone = liveTone(live[stepId]);
@@ -290,7 +334,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
             })}
           </ol>
         )}
-        <aside aria-label={step ? "Step details" : "Task overview"} className={cn("min-h-0 overflow-y-auto rounded-lg border border-border text-sm", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0")}>
+        <aside ref={aside} aria-label={step ? "Step details" : "Task overview"} className={cn("rounded-lg border border-border text-sm", phoneColumn ? "shrink-0 p-3" : cn("min-h-0 overflow-y-auto", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0"))}>
           {step ? (
             <StepPanel itemId={id} workflow={wf} step={step} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
           ) : (
@@ -298,7 +342,8 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           )}
         </aside>
       </div> : null}
-      <footer className="flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      {/* On a phone the overview already says "Select a step…"; the hint would only take two more lines. */}
+      {step || !phone ? <footer className="flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {step ? (
           <>
             <span>
@@ -323,7 +368,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
         ) : (
           <span>Select a step to run it (and everything after it) again.</span>
         )}
-      </footer>
+      </footer> : null}
     </Sheet>
   );
 }
@@ -332,7 +377,8 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
 
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
-function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
+/** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
+function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
   const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
@@ -342,8 +388,9 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
+  const tabIndex = tabbable ? undefined : -1;
   return (
-    <article className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
+    <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
         <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
@@ -351,8 +398,12 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             <Icon name="FolderGit2" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             <span title={entry.repo}>
-            {entry.repo.split("/")[1] ?? entry.repo}
-            {entry.issueNumber ? ` #${entry.issueNumber}` : ""}
+              {entry.issueUrl ? (
+                // The sr-only word tells this link apart from the PR chip: "app issue #12".
+                <UrlLink href={entry.issueUrl} tabIndex={tabIndex}>{repoName(entry.repo)}<span className="sr-only"> issue</span> #{entry.issueNumber}</UrlLink>
+              ) : (
+                repoName(entry.repo)
+              )}
             </span>
           </p>
         </div>
@@ -369,7 +420,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
       {entry.steps.length ? <details className="group text-xs">
-        <summary className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <summary {...{ [ENTRY_ATTRIBUTE]: "" }} tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
           {/* The sr-only text keeps the accessible name spaced: "Workflow progress: 3/6 steps complete". */}
           <span className="shrink-0">Workflow<span className="sr-only"> progress: </span></span>
@@ -384,6 +435,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
         <button
           type="button"
+          tabIndex={tabIndex}
           onClick={(event) => onAnswer(entry.id, event.currentTarget)}
           className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
           aria-label={entry.waitingKind === "approval" ? "Open the report to approve it" : "Open the question to answer it"}
@@ -421,34 +473,39 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
         </div> : null}
       </dl>
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
-        {entry.threadId ? (
-          <Button size="sm" className="h-7 px-2" onClick={() => navigate.toThread(entry.threadId!)}>
-            <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+      {/* More actions sits outside the wrapping group, so it stays at the end of the first row instead of wrapping onto a line of its own. */}
+      <div className="flex items-start gap-1.5 border-t border-border pt-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          {entry.threadId ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={() => navigate.toThread(entry.threadId!)}>
+              <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+            </Button>
+          ) : null}
+          {/* Without a Workflow progress row, the arrow keys land here rather than on the issue link, which leaves the plugin. */}
+          <Button {...(entry.steps.length ? {} : { [ENTRY_ATTRIBUTE]: "" })} size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
+            <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
           </Button>
-        ) : null}
-        <Button size="sm" variant="outline" className="h-7 px-2" onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
-          <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
-        </Button>
-        {entry.prUrl ? (
-          <span className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium">
-            <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
-            <UrlLink href={entry.prUrl}>#{entry.prNumber}</UrlLink>
-          </span>
-        ) : null}
-        {entry.waitingKind === "approval" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
-            <Icon name="Check" fallback="Circle" aria-hidden /> Approve
-          </Button>
-        ) : needsHuman && entry.waitingKind !== "question" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
-            <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
-          </Button>
-        ) : null}
+          {entry.prUrl ? (
+            <UrlLink href={entry.prUrl} tabIndex={tabIndex} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
+              <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
+              PR #{entry.prNumber}
+            </UrlLink>
+          ) : null}
+          {entry.prUrl && entry.pr ? <PrStatePill pr={entry.pr} compact /> : null}
+          {entry.waitingKind === "approval" ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "approve")}>
+              <Icon name="Check" fallback="Circle" aria-hidden /> Approve
+            </Button>
+          ) : needsHuman && entry.waitingKind !== "question" ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "retry")}>
+              <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
+            </Button>
+          ) : null}
+        </div>
         {!finished || entry.detail === "failed" ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
+              <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
                 <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
@@ -491,6 +548,10 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
 
 // ---------- pipeline tab ----------
 
+/** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
+const THROUGHPUT_ID = "cos-throughput";
+const TASK_KEYS_HINT_ID = "cos-task-keys";
+
 export function PipelineTab() {
   const rpc = useRpc<Contract>();
   const now = useNow();
@@ -513,6 +574,7 @@ export function PipelineTab() {
   const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
+  const throughputHeading = useRef<HTMLHeadingElement>(null);
   const act = useCallback(
     async (id: string, action: ItemAction) => {
       setBusy((ids) => new Set(ids).add(id));
@@ -550,14 +612,28 @@ export function PipelineTab() {
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
   const visible = entries.filter((e) => matchesTaskFilter(e, filter));
+  const roving = useRovingCards(visible.map((e) => e.id));
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
   return (
     <div className="flex flex-col gap-4">
       <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="relative flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
+        {/* The first tab stop after the heading: past the filters and every task card (issue #115).
+            Focus moves by script; the hash is a fallback and must not reach the host's routing.
+            Visible on focus, positioned so it does not push the heading row around. */}
+        <a
+          href={`#${THROUGHPUT_ID}`}
+          onClick={(event) => {
+            event.preventDefault();
+            throughputHeading.current?.focus();
+          }}
+          className="sr-only rounded-md border border-border bg-card text-xs font-medium text-foreground focus:not-sr-only focus:absolute focus:top-full focus:left-0 focus:z-10 focus:mt-1 focus:px-2 focus:py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          Skip to throughput and activity
+        </a>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="outline" aria-describedby="automation-scope" disabled={pausing || !overview.data} onClick={async () => {
             setPausing(true);
@@ -634,15 +710,23 @@ export function PipelineTab() {
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
-          ))}
-        </div>
+        {visible.length ? (
+          // One tab stop group: Tab visits the current card's controls only, arrows move between cards (issue #115).
+          <div role="group" aria-label="Tasks" aria-describedby={TASK_KEYS_HINT_ID} className="group/tasks flex flex-col gap-1.5" {...roving.groupProps}>
+            {/* Above the cards, so it is on screen with the first one. Its space is kept while hidden, so
+                focus entering the grid does not shift the cards. Always the group's description. */}
+            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {visible.map((e) => (
+                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+              ))}
+            </div>
+          </div>
+        ) : null}
       </Panel>
 
       <div className="grid gap-4 lg:grid-cols-5">
-        <Panel className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
+        <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
           {s ? <p className="mb-4 text-sm text-muted-foreground">
             {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
@@ -654,6 +738,7 @@ export function PipelineTab() {
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}
+              onShowTable={() => setThroughputTable(true)}
               rows={s.daily.map((d) => ({ date: d.date, done: d.done, failed: d.failed }))}
               xKey="date"
               formatX={fmtDay}
@@ -759,6 +844,9 @@ export function ReposTab() {
   }, [overview, roster]);
   useLiveRefresh(refetchAll);
   const [intake, setIntake] = useState<{ results: IntakeResult[]; dryRun: boolean } | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
+  // Closing the workflow sheet returns focus to the row's Workflow button, or to the panel heading when the row is gone.
+  const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const runIntake = async (repo?: string, dryRun = false) => {
@@ -880,31 +968,21 @@ export function ReposTab() {
           <IntakeSummary results={intake.results} dryRun={intake.dryRun} />
         </Panel>
       ) : null}
-      <Panel title="Pull requests" icon="GitPullRequest" dim={roster.isFetching && !roster.isLoading}>
-        {!prs.length ? (
-          roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
-        ) : (
-          <ul className="divide-y divide-border">
-            {prs.map((e) => (
-              <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm">
-                <StagePill entry={e} />
-                <span className="inline-flex items-center gap-1 font-medium tabular-nums">{e.prUrl ? <UrlLink href={e.prUrl}>#{e.prNumber}</UrlLink> : `#${e.prNumber}`}</span>
-                {e.issueTitle ? <span className="line-clamp-2 min-w-0 basis-full text-foreground sm:line-clamp-1 sm:flex-1 sm:basis-0" title={e.issueTitle}>{e.issueTitle}</span> : null}
-                {e.fixAttempts ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={`${e.fixAttempts} CI fix cycles`}>
-                    <Icon name="Wrench" fallback="Circle" className="size-3.5" aria-hidden />
-                    {e.fixAttempts}
-                  </span>
-                ) : null}
-                <span className="text-xs text-muted-foreground">
-                  {e.repo.split("/")[1]}
-                  {e.issueNumber ? ` · closes #${e.issueNumber}` : ""} · {relative(e.lastActivityAt ?? e.startedAt, now)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Panel title="Pull requests" icon="GitPullRequest" headingRef={sheetFocus.fallback} dim={roster.isFetching && !roster.isLoading}>
+        <PullRequestList
+          entries={prs}
+          now={now}
+          authOk={authOk}
+          stage={(e) => <StagePill entry={e} />}
+          action={(e) => (
+            <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing(e.id); }}>
+              <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
+            </Button>
+          )}
+          empty={roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their state, checks and review.</Empty>}
+        />
       </Panel>
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }
@@ -925,22 +1003,26 @@ export function ActivityFeed() {
   const [onlyProblems, setOnlyProblems] = useState(false);
   // Phones get no nested scroll box: show the latest rows and expand in place.
   const [showAll, setShowAll] = useState(false);
-  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60 } });
+  const [before, setBefore] = useState<number | undefined>(undefined);
+  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, before } });
   useLiveRefresh(log.refetch);
-  const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
+  const entries = log.data?.entries ?? [];
   return (
     <Panel
       title="Activity"
       icon="Activity"
       dim={log.isFetching && !log.isLoading}
       actions={
-        <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => setOnlyProblems((v) => !v)}>
+        <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => { setOnlyProblems((v) => !v); setBefore(undefined); setShowAll(false); }}>
           <Icon name="TriangleAlert" fallback="Circle" aria-hidden /> Problems only
         </Button>
       }
     >
       <ErrorLine error={log.error} />
-      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{onlyProblems ? "No warnings or errors." : "No activity yet."}</p> : null}
+      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : "No activity yet."}</p> : null}
+      {entries.length > 0 ? <p className="mb-2 text-xs text-muted-foreground">
+        {entries.length} entries · {new Date(entries.at(-1)!.at).toLocaleString()} – {new Date(entries[0]!.at).toLocaleString()}
+      </p> : null}
       <ol className="sm:max-h-80 sm:overflow-auto">
         {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
@@ -960,6 +1042,11 @@ export function ActivityFeed() {
           );
         })}
       </ol>
+      <div className="mt-2 flex gap-2">
+        {before !== undefined ? <Button size="sm" variant="ghost" onClick={() => { setBefore(undefined); setShowAll(false); }}>Back to newest</Button> : null}
+        {log.data?.nextCursor != null ? <Button size="sm" variant="ghost" disabled={log.isFetching} onClick={() => { setBefore(log.data!.nextCursor!); setShowAll(false); }}>Show older</Button> : null}
+        {log.data && log.data.nextCursor === null && entries.length > 0 ? <span className="text-xs text-muted-foreground">End of retained activity</span> : null}
+      </div>
       {!showAll && entries.length > MOBILE_ACTIVITY_ROWS ? (
         <Button size="sm" variant="ghost" className="mt-1 w-full sm:hidden" onClick={() => setShowAll(true)}>
           Show {entries.length - MOBILE_ACTIVITY_ROWS} more

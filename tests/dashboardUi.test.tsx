@@ -7,22 +7,24 @@ import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
-  experimental_useRpcQuery: ({ method }: { method: string }) => {
+  experimental_useRpcQuery: ({ method, input }: { method: string; input: { onlyProblems?: boolean; before?: number; limit?: number } }) => {
     const failure = mocks.failing[method];
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     return {
-      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
-  ThreadTitle: () => null, UrlLink: () => null,
+  ThreadTitle: () => null,
+  // Like the host's UrlLink: a plain anchor that passes its props through.
+  UrlLink: ({ href, children, ...rest }: { href: string; children?: ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
@@ -38,7 +40,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.daily = []; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -90,6 +92,62 @@ it("names the workflow summary as a spaced sentence for screen readers", async (
   await mount();
   const summary = container.querySelector("article details > summary")!;
   expect(summary.textContent!.replace(/\s+/g, " ").trim()).toBe("Workflow progress: 1/3 steps complete");
+});
+
+it("pads the Workflow progress disclosure to a touch-sized hit area on a coarse pointer only", async () => {
+  const step = { id: "Plan", name: "Plan", depth: 0, status: "done" as const, type: "agent" as const, phase: null, agents: 1, reported: 0, nudged: 0, attempts: 0, round: 1, waitingKind: null, retrying: false };
+  mocks.entries = [entry({ steps: [step] })];
+  await mount();
+  expect(container.querySelector("article details > summary")!.className.split(/\s+/)).toEqual(expect.arrayContaining(["py-0.5", "pointer-coarse:py-2"]));
+});
+
+// ---------- touch sizes (#116) ----------
+// jsdom has no layout, so these pin the structure and the coarse-pointer classes; the sizes are measured in a browser.
+const classes = (el: Element) => el.className.split(/\s+/);
+
+it("makes the PR link the chip itself, sized for touch", async () => {
+  mocks.entries = [entry({ prNumber: 42, prUrl: "https://github.com/acme/app/pull/42" })];
+  await mount();
+  const link = container.querySelector<HTMLAnchorElement>('article a[href="https://github.com/acme/app/pull/42"]')!;
+  // The visible text is the link's name: no aria-label that would differ from it (WCAG 2.5.3).
+  expect(link.hasAttribute("aria-label")).toBe(false);
+  expect(link.textContent).toBe("PR #42");
+  expect(link.querySelector('[data-icon="GitPullRequest"]')).not.toBeNull();
+  expect(classes(link)).toEqual(expect.arrayContaining(["inline-flex", "h-7", "border", "pointer-coarse:h-10", "focus-visible:ring-1"]));
+  expect(link.parentElement!.tagName).not.toBe("SPAN");
+});
+
+it("gives the card actions touch heights and keeps More actions out of the wrapping group", async () => {
+  mocks.entries = [entry({ prNumber: 42, prUrl: "https://github.com/acme/app/pull/42", waitingKind: "approval", status: "waiting on human" })];
+  await mount();
+  const card = container.querySelector("article")!;
+  const button = (label: string) => Array.from(card.querySelectorAll("button")).find((b) => b.textContent?.trim() === label)!;
+  for (const label of ["Open thread", "Workflow", "Approve"]) expect(classes(button(label))).toEqual(expect.arrayContaining(["h-7", "pointer-coarse:h-10"]));
+  const more = card.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  expect(classes(more)).toEqual(expect.arrayContaining(["h-7", "w-7", "pointer-coarse:size-10", "shrink-0"]));
+  expect(classes(more)).not.toContain("ml-auto");
+  const group = button("Open thread").parentElement!;
+  expect(classes(group)).toEqual(expect.arrayContaining(["flex-1", "flex-wrap"]));
+  expect(group.contains(more)).toBe(false);
+  expect(more.parentElement).toBe(group.parentElement);
+  expect(classes(more.parentElement!)).not.toContain("flex-wrap");
+});
+
+it("keeps Resume and Retry step at touch height", async () => {
+  mocks.entries = [entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error" })];
+  await mount();
+  const retry = Array.from(container.querySelectorAll("article button")).find((b) => b.textContent?.trim() === "Retry step")!;
+  expect(classes(retry)).toContain("pointer-coarse:h-10");
+});
+
+it("opens the Throughput table when the chart is tapped on a coarse pointer", async () => {
+  mocks.entries = [];
+  mocks.daily = Array.from({ length: 14 }, (_, i) => ({ date: `2026-11-${String(i + 1).padStart(2, "0")}`, started: 1, done: 1, failed: 0 }));
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)", media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+  await mount();
+  expect(container.querySelector("table")).toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Show throughput as a table"]')!.click());
+  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed"]);
 });
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
@@ -169,6 +227,17 @@ it("shows every failing query once, even when they share a message", async () =>
   mocks.failing = { cos_roster: "backend down", cos_overview: "backend down" };
   await act(async () => { root.render(<ReposTab key="again" />); });
   expect(container.textContent!.split("backend down")).toHaveLength(2);
+});
+
+it("shows a finished task's PR state next to its PR link", async () => {
+  const finished = (id: string, title: string, state: "merged" | "open") => entry({ id, issueTitle: title, detail: "done", status: "done", actor: "none", current: [], prNumber: 7, prUrl: "https://github.com/acme/app/pull/7", pr: { state, draft: false, checks: state === "open" ? "failing" : null, review: null, checkedAt: new Date().toISOString() } });
+  mocks.entries = [finished("a", "Merged task", "merged"), finished("b", "Open task", "open")];
+  await mount();
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Show finished"))!.click());
+  const card = (title: string) => Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes(title))!;
+  expect(card("Merged task").querySelector("[data-pr-state]")!.textContent).toBe("Merged");
+  // The card shows the state alone; checks and review are on the Pull requests list.
+  expect(card("Open task").querySelector("[data-pr-state]")!.textContent).toBe("Open");
 });
 
 it("still shows the empty pull request state when nothing failed", async () => {
@@ -315,4 +384,55 @@ it("does not pull focus back to More actions if it moved on while the action ran
   elsewhere.focus();
   await act(async () => finish());
   expect(document.activeElement).toBe(elsewhere);
+});
+
+it("links an issue-backed card to its GitHub issue and labels the PR chip", async () => {
+  mocks.entries = [entry({ prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" })];
+  await mount();
+  const card = container.querySelector("article")!;
+  const issue = card.querySelector<HTMLAnchorElement>('a[href="https://github.com/acme/app/issues/1"]')!;
+  expect(issue.textContent).toBe("app issue #1");
+  const pr = card.querySelector<HTMLAnchorElement>('a[href="https://github.com/acme/app/pull/7"]')!;
+  expect(pr.textContent).toBe("PR #7");
+});
+
+it("shows a standalone card's repository without an issue link", async () => {
+  mocks.entries = [entry({ issueNumber: null, issueUrl: null })];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.querySelector('a[href*="/issues/"]')).toBeNull();
+  expect(card.querySelector('[title="acme/app"]')!.textContent).toBe("app");
+});
+
+it("links each pull request row to its PR and issue, with a Workflow button", async () => {
+  mocks.entries = [entry({ prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" }), entry({ id: "two", issueNumber: null, issueUrl: null, issueTitle: "Tidy", prNumber: 8, prUrl: "https://github.com/acme/app/pull/8" })];
+  await mount(<ReposTab />);
+  const [linked, standalone] = Array.from(container.querySelectorAll("li"));
+  expect(linked!.querySelector('a[href$="/pull/7"]')!.textContent).toBe("PR #7");
+  expect(linked!.querySelector('a[href$="/issues/1"]')!.textContent).toBe("issue #1");
+  expect(linked!.textContent).toContain("closes issue #1");
+  expect(Array.from(linked!.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Workflow")).toBe(true);
+  expect(standalone!.querySelector('a[href$="/pull/8"]')!.textContent).toBe("PR #8");
+  expect(standalone!.querySelector('a[href*="/issues/"]')).toBeNull();
+  expect(standalone!.textContent).not.toContain("closes");
+  expect(Array.from(standalone!.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Workflow")).toBe(true);
+});
+
+it("pages older activity and resets the cursor when changing the server filter", async () => {
+  mocks.logs = Array.from({ length: 201 }, (_, i) => ({ id: 201 - i, at: "2026-11-13T10:00:00Z", level: i === 200 ? "error" as const : "info" as const, kind: "test", message: `entry ${201 - i}`, actor: "test", repo: null, workItemId: null }));
+  await mount(<ActivityFeed />);
+  const click = async (label: string) => { await act(async () => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === label)!.click()); };
+  expect(container.querySelectorAll("li")).toHaveLength(60);
+  await click("Show older");
+  expect(container.textContent).toContain("entry 141");
+  await click("Show older");
+  await click("Show older");
+  expect(container.querySelectorAll("li")).toHaveLength(21);
+  expect(container.textContent).toContain("End of retained activity");
+  expect(container.textContent).not.toContain("Show older");
+  await click("Back to newest");
+  await click("Problems only");
+  expect(container.querySelectorAll("li")).toHaveLength(1);
+  expect(container.textContent).toContain("entry 1");
+  expect(container.textContent).not.toContain("Back to newest");
 });

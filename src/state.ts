@@ -6,6 +6,8 @@
 // work_items also stores occupies_capacity (occupiesCapacity of the row, kept
 // by every write and counted in SQL) and detail_pruned_at (when retention
 // removed a finished item's step details; cleared when the item is active again).
+// The pr_state* columns and pr_checked_at cache the item's pull request state
+// (see PrState); only setPrState and touchPrChecked write them.
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
@@ -65,6 +67,33 @@ export interface WorkItem {
   workflow: Workflow;
   /** State of each step. */
   nodes: Nodes;
+  /**
+   * The last pull request state read from GitHub, or null. Its `number` can
+   * differ from prNumber after a re-ship. Written only by setPrState, never
+   * by insertWorkItem or updateWorkItem.
+   */
+  prState: PrState | null;
+}
+
+/** A pull request's state as last read from GitHub. */
+export interface PrState {
+  number: number;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  /** CI on the head commit; null when not read (always for merged and closed PRs). */
+  checks: "passing" | "failing" | "pending" | "none" | null;
+  /** The reviewers' verdict (see reduceReviews); null when none or not read. */
+  review: "approved" | "changes_requested" | null;
+  /** When it was last read successfully. */
+  checkedAt: string;
+}
+
+/** A work item whose pull request state may need reading (see listPrItemsDue). */
+export interface PrItemDue {
+  id: string;
+  repo: string;
+  prNumber: number;
+  prState: PrState | null;
 }
 
 /** An agent thread working for an item: the builder, or one agent on a read-only step. */
@@ -245,6 +274,12 @@ export const MIGRATIONS = [
   `UPDATE work_items SET occupies_capacity = 0 WHERE status IN ('done', 'failed')`,
   // Keep every branch of statsRows' OR filter indexed as finished history grows.
   `CREATE INDEX IF NOT EXISTS work_items_finished ON work_items(COALESCE(finished_at, updated_at))`,
+  // The cached pull request state (PrState): open | merged | closed, the PR number it
+  // belongs to, its details as JSON, and the last attempt to read it.
+  `ALTER TABLE work_items ADD COLUMN pr_state TEXT`,
+  `ALTER TABLE work_items ADD COLUMN pr_state_number INTEGER`,
+  `ALTER TABLE work_items ADD COLUMN pr_state_json TEXT`,
+  `ALTER TABLE work_items ADD COLUMN pr_checked_at TEXT`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -313,6 +348,18 @@ function readWorkflow(raw: unknown): Workflow {
   return JSON.parse(normalized) as Workflow;
 }
 
+const PR_STATES: readonly PrState["state"][] = ["open", "merged", "closed"];
+
+/** The cached PR state of a row, or null when none is recorded or its details are unreadable. */
+function readPrState(row: Row): PrState | null {
+  const state = row.pr_state as PrState["state"] | null;
+  const number = row.pr_state_number as number | null;
+  if (!state || !PR_STATES.includes(state) || typeof number !== "number") return null;
+  const details = parseJson<Partial<PrState> | null>(row.pr_state_json, null);
+  if (!details || typeof details !== "object" || typeof details.checkedAt !== "string") return null;
+  return { number, state, draft: Boolean(details.draft), checks: details.checks ?? null, review: details.review ?? null, checkedAt: details.checkedAt };
+}
+
 function rowToWorkItem(row: Row): WorkItem {
   return {
     id: row.id as string,
@@ -342,6 +389,7 @@ function rowToWorkItem(row: Row): WorkItem {
     workflow: readWorkflow(row.workflow_json),
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
+    prState: readPrState(row),
   };
 }
 
@@ -362,8 +410,9 @@ function rowToThread(row: Row): ItemThread {
 
 const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END`;
 
+// The pr_state* columns are not here: only setPrState and touchPrChecked write them.
 function toRow(item: WorkItem): Record<string, unknown> {
-  const { workflow, nodes, queuedEvent, ...rest } = item;
+  const { workflow, nodes, queuedEvent, prState: _prState, ...rest } = item;
   return {
     ...rest,
     queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null,
@@ -400,7 +449,7 @@ export function compactNodes(nodes: Nodes): Nodes {
   return out;
 }
 
-export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
+export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "prState" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
 
 export class StateStore {
@@ -458,7 +507,7 @@ export class StateStore {
   // ---- work items ----
   insertWorkItem(item: NewWorkItem): WorkItem {
     const at = this.now().toISOString();
-    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at };
+    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at, prState: null };
     this.db
       .prepare(
         `INSERT INTO work_items (id, created_at, updated_at, status, repo) VALUES (@id, @createdAt, @createdAt, @status, @repo)`,
@@ -468,12 +517,43 @@ export class StateStore {
     return full;
   }
 
-  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt">>): WorkItem | null {
+  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt" | "prState">>): WorkItem | null {
     const current = this.getWorkItem(id);
     if (!current) return null;
     const next: WorkItem = { ...current, ...patch, updatedAt: this.now().toISOString() };
     this.db.prepare(`UPDATE work_items SET ${ITEM_COLUMNS} WHERE id=@id`).run(toRow(next));
     return next;
+  }
+
+  /**
+   * Record a pull request state read from GitHub, and the read as the last
+   * attempt. Leaves updated_at alone, so stats and retention do not move.
+   */
+  setPrState(id: string, state: PrState): void {
+    const { number, state: value, ...details } = state;
+    this.db.prepare("UPDATE work_items SET pr_state = ?, pr_state_number = ?, pr_state_json = ?, pr_checked_at = ? WHERE id = ?")
+      .run(value, number, JSON.stringify(details), state.checkedAt, id);
+  }
+
+  /** Record an attempt to read the PR state that read nothing (skipped or failed). */
+  touchPrChecked(id: string, at: string): void {
+    this.db.prepare("UPDATE work_items SET pr_checked_at = ? WHERE id = ?").run(at, id);
+  }
+
+  /**
+   * Items whose PR state is unknown, open, or recorded for another PR number,
+   * last attempted before `staleBeforeIso`, outside paused repos. Never
+   * attempted first, then the oldest attempt, so a row that keeps failing
+   * cannot starve the others. Merged and closed PRs are terminal.
+   */
+  listPrItemsDue(staleBeforeIso: string): PrItemDue[] {
+    const rows = this.db.prepare(`SELECT id, repo, pr_number, pr_state, pr_state_number, pr_state_json FROM work_items
+      WHERE pr_number IS NOT NULL
+        AND repo NOT IN (SELECT repo FROM paused_repos)
+        AND (pr_state IS NULL OR pr_state = 'open' OR pr_state_number IS NOT pr_number)
+        AND (pr_checked_at IS NULL OR pr_checked_at < ?)
+      ORDER BY pr_checked_at IS NOT NULL, pr_checked_at, created_at DESC`).all(staleBeforeIso) as Row[];
+    return rows.map((row) => ({ id: row.id as string, repo: row.repo as string, prNumber: row.pr_number as number, prState: readPrState(row) }));
   }
 
   getWorkItem(id: string): WorkItem | null {
@@ -655,10 +735,14 @@ export class StateStore {
     this.prune("activity_log", 1, this.caps.logMaxRows);
   }
 
-  listLog(opts: { limit?: number; workItemId?: string } = {}): LogEntry[] {
-    const rows = opts.workItemId
-      ? (this.db.prepare(`SELECT * FROM activity_log WHERE work_item_id = ? ORDER BY id DESC LIMIT ?`).all(opts.workItemId, opts.limit ?? 100) as Row[])
-      : (this.db.prepare(`SELECT * FROM activity_log ORDER BY id DESC LIMIT ?`).all(opts.limit ?? 100) as Row[]);
+  listLog(opts: { limit?: number; workItemId?: string; onlyProblems?: boolean; before?: number } = {}): LogEntry[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (opts.workItemId !== undefined) { where.push("work_item_id = ?"); params.push(opts.workItemId); }
+    if (opts.onlyProblems) where.push("level IN ('warn', 'error')");
+    if (opts.before !== undefined) { where.push("id < ?"); params.push(opts.before); }
+    params.push(opts.limit ?? 100);
+    const rows = this.db.prepare(`SELECT * FROM activity_log ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`).all(...params) as Row[];
     return rows.map((row) => ({
       id: row.id as number,
       at: row.at as string,

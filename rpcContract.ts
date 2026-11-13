@@ -32,6 +32,7 @@ const rosterEntry = z.object({
   waitingKind: z.string().nullable(),
   repo: z.string(),
   issueNumber: z.number().nullable(),
+  issueUrl: z.string().nullable(),
   issueTitle: z.string(),
   threadId: z.string().nullable(),
   threadStatus: z.string().nullable(),
@@ -39,6 +40,16 @@ const rosterEntry = z.object({
   branch: z.string().nullable(),
   prNumber: z.number().nullable(),
   prUrl: z.string().nullable(),
+  /** The pull request's last read state (see PrState); null when not read yet. */
+  pr: z
+    .object({
+      state: z.enum(["open", "merged", "closed"]),
+      draft: z.boolean(),
+      checks: z.enum(["passing", "failing", "pending", "none"]).nullable(),
+      review: z.enum(["approved", "changes_requested"]).nullable(),
+      checkedAt: z.string(),
+    })
+    .nullable(),
   startedAt: z.string(),
   lastActivityAt: z.string().nullable(),
   stalled: z.boolean(),
@@ -226,7 +237,7 @@ export const rpcContract = defineRpcContract({
       totalTracked: z.number(),
     }),
   },
-  cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional() }), output: z.object({ entries: z.array(logEntry) }) },
+  cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional(), onlyProblems: z.boolean().default(false), before: z.number().int().positive().optional() }), output: z.object({ entries: z.array(logEntry), nextCursor: z.number().int().nullable() }) },
   cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), workflow: z.string() }) },
   cos_set_config: { input: z.object({ repos: z.string().optional(), workflow: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
   cos_get_settings: {
