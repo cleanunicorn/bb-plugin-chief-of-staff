@@ -138,8 +138,10 @@ Decisions worth knowing:
   and does not move to the next card. ArrowUp there moves to the previous
   card. Keys with modifiers and keys from DOM nodes outside the grid (the menu
   and dialogs are portals, but React events bubble through them) are ignored.
-- The hint “Arrow keys move between tasks.” is the group's description, and
-  it shows below the grid while focus is inside it.
+- The hint “Arrow keys move between tasks.” is the group's description. It
+  sits above the cards and is visible only while focus is inside the group;
+  its line is reserved while hidden, so focus entering the grid does not
+  shift the cards.
 
 Checks:
 
@@ -158,17 +160,19 @@ Checks:
 - Real browser (BetterWright, Chromium, 1440×1000): the actual `PipelineTab`
   and `ActivityFeed` with the built plugin CSS and fixture data of 54 tasks
   (each with workflow steps, a thread and a PR). From “Work overview”:
-  21 Tab presses to “Problems only” (the issue measured 235); with the skip
+  21 Tab presses to “Problems only” with an approval card current (the issue measured 235 in a live install); with the skip
   link, Tab, Enter, Tab ×3 (5 key presses). The skip link appears on focus
   with the focus ring and does not move the heading row. Enter scrolls to and
   focuses the Throughput heading. ArrowRight, ArrowDown, End and Home move
   between cards, and End scrolls the last card into view. Only the current
   card's PR link has tabIndex 0. ArrowDown on More actions opens the menu,
   Escape returns to the trigger, and Tab leaves the grid for “Chart view”.
-  The hint shows only while focus is in the grid. Hovering a chart day shows
+  The hint is on screen with focus on the first card and hidden once focus leaves the grid. Hovering a chart day shows
   its tooltip.
 
-Not checked: a screen reader, Safari, and a live BB installation (the host's
-`UrlLink`, icons and theme). The browser pass used a stand-in `UrlLink` that
-spreads its props, as the SDK's type allows. The running plugin was not
-reinstalled.
+The browser pass used a stand-in `UrlLink` that spreads its props. The host's
+`UrlLink` in bb-app 0.49.0 (the version `build:ci` uses) does the same: it
+renders an `<a>` with the rest props spread, so `tabIndex` reaches the anchor.
+
+Not checked: a screen reader, Safari, and a live BB installation (icons and
+theme). The running plugin was not reinstalled.

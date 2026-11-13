@@ -660,13 +660,14 @@ export function PipelineTab() {
         {visible.length ? (
           // One tab stop group: Tab visits the current card's controls only, arrows move between cards (issue #115).
           <div role="group" aria-label="Tasks" aria-describedby={TASK_KEYS_HINT_ID} className="group/tasks flex flex-col gap-1.5" {...roving.groupProps}>
+            {/* Above the cards, so it is on screen with the first one. Its space is kept while hidden, so
+                focus entering the grid does not shift the cards. Always the group's description. */}
+            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
                 <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
               ))}
             </div>
-            {/* Shown while focus is in the group; always the group's description for screen readers. */}
-            <p id={TASK_KEYS_HINT_ID} className="hidden text-xs text-muted-foreground group-focus-within/tasks:block">Arrow keys move between tasks.</p>
           </div>
         ) : null}
       </Panel>

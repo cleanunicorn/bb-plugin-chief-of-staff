@@ -6,7 +6,7 @@
   overview” is a “Skip to throughput and activity” link, shown on focus.
   Only one task card's actions are in the tab order; arrow keys move between
   cards, and Home and End jump to the first and last. With 54 tasks, “Problems
-  only” in Activity is now 21 Tab presses away instead of 235, or 5 key
+  only” in Activity is about 20 Tab presses away instead of 235, or 5 key
   presses through the skip link. The task list, Throughput, Capacity and
   Activity are named regions. Throughput chart days are no longer buttons
   that did nothing; use the table view for daily numbers by keyboard.
