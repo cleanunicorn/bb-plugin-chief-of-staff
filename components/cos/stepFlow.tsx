@@ -8,13 +8,13 @@ import { STATUS, usePalette, type Palette } from "./viz";
 
 type RosterStep = PluginRpcResult<typeof rpcContract["cos_roster"]>["entries"][number]["steps"][number];
 type FlowStep = Pick<RosterStep, "id" | "name" | "status" | "retrying" | "waitingKind" | "phase" | "agents" | "reported" | "attempts">;
-type StepState = "done" | "running" | "retrying" | "waiting" | "pending";
+type StepState = "done" | "running" | "retrying" | "waiting" | "pending" | "stopped";
 
 function stateOf(step: Pick<FlowStep, "status" | "retrying">): StepState {
   return step.status === "running" && step.retrying ? "retrying" : step.status;
 }
 
-const LABEL: Record<StepState, string> = { done: "Done", running: "Running", retrying: "Retrying", waiting: "Waiting", pending: "Pending" };
+const LABEL: Record<StepState, string> = { done: "Done", running: "Running", retrying: "Retrying", waiting: "Waiting", pending: "Pending", stopped: "Stopped" };
 
 const PHASE_LABEL: Record<NonNullable<FlowStep["phase"]>, string> = { pushing: "Pushing", ci: "Waiting for CI", ready: "Ready to merge", merging: "Merging" };
 
@@ -27,6 +27,7 @@ function stepColor(step: Pick<FlowStep, "status" | "retrying" | "waitingKind">, 
   if (state === "waiting") return step.waitingKind === "cos_error" ? STATUS.serious : STATUS.warning;
   if (state === "retrying") return STATUS.serious;
   if (state === "running") return palette.accent;
+  if (state === "stopped") return PENDING_MARK;
   return "var(--border)";
 }
 
@@ -36,6 +37,10 @@ function StepNode({ step, color }: { step: FlowStep; color: string }) {
   if (state === "pending") return <span aria-hidden className="size-4 shrink-0 rounded-full border-[1.5px] border-dashed bg-card" style={{ borderColor: PENDING_MARK }} />;
   if (state === "done") return <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full text-white" style={{ background: color }}>
     <Icon name="Check" fallback="Circle" className="size-2.5" />
+  </span>;
+  // Stopped: a finished task left it unfinished. Still and muted, with its own glyph.
+  if (state === "stopped") return <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px] bg-card" style={{ borderColor: color, color }}>
+    <Icon name="Square" fallback="Circle" className="size-2" />
   </span>;
   if (state === "running") return <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px] bg-card" style={{ borderColor: color }}>
     <span className="size-1.5 rounded-full motion-safe:animate-pulse" style={{ background: color }} />
@@ -102,6 +107,8 @@ export function StepFlow({ entry }: { entry: { workflowName: string; steps: (Flo
 function segmentStyle(state: StepState, color: string): CSSProperties {
   // Pending: hollow outline.
   if (state === "pending") return { boxShadow: `inset 0 0 0 1px ${PENDING_MARK}` };
+  // Stopped: a short solid muted bar (shorter than done, never live).
+  if (state === "stopped") return { background: PENDING_MARK };
   // Waiting and retrying need attention: diagonal stripes.
   if (state === "waiting" || state === "retrying") return { background: `repeating-linear-gradient(-45deg, ${color} 0 3px, color-mix(in srgb, ${color} 35%, transparent) 3px 5px)` };
   return { background: color };
@@ -111,7 +118,8 @@ function segmentStyle(state: StepState, color: string): CSSProperties {
  * One segment per step, in workflow order. Each segment is a recorded step
  * state, never an estimate of time remaining, so it is not a progressbar.
  * Done is a thin solid bar; live steps (running, waiting, retrying) stand
- * taller; pending is a thin hollow outline.
+ * taller; pending is a thin hollow outline; stopped (left unfinished by a
+ * finished task) is the shortest, muted solid bar.
  */
 export function StepProgress({ steps }: { steps: Pick<FlowStep, "id" | "name" | "status" | "retrying" | "waitingKind">[] }) {
   const palette = usePalette();
@@ -123,7 +131,7 @@ export function StepProgress({ steps }: { steps: Pick<FlowStep, "id" | "name" | 
         key={step.id}
         data-state={state}
         title={`${step.name}: ${LABEL[state].toLowerCase()}`}
-        className={cn("min-w-0.5 flex-1 rounded-full", live ? "h-2.5" : "h-1.5", state === "running" && "motion-safe:animate-pulse")}
+        className={cn("min-w-0.5 flex-1 rounded-full", live ? "h-2.5" : state === "stopped" ? "h-1" : "h-1.5", state === "running" && "motion-safe:animate-pulse")}
         style={segmentStyle(state, stepColor(step, palette))}
       />;
     })}

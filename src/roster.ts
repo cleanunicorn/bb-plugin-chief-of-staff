@@ -10,13 +10,16 @@ import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
 import { agentWork, describePick, isAuthoredAgent, isWriter, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
 
+const isFinished = (item: Pick<WorkItem, "status">) => item.status === "done" || item.status === "failed";
+
 export interface RosterStep {
   id: string;
   name: string;
   type: StepType;
   /** Longest-path depth: steps with the same depth can run in parallel. */
   depth: number;
-  status: NodeStatus;
+  /** "stopped": a finished task left this step running or waiting (display only; the stored node keeps its state). */
+  status: NodeStatus | "stopped";
   phase: ShipPhase | null;
   agents: number;
   /** Agents that have reported this round. */
@@ -71,25 +74,33 @@ export interface RosterEntry {
   usage: ThreadUsage | null;
 }
 
+/**
+ * Each step's state for display. A finished task's steps are settled: one it
+ * left running or waiting reads "stopped", without the phase, retry or
+ * waiting kind that would make it look live. Pending steps never ran and stay
+ * pending. The stored nodes keep their raw state (rerun depends on it).
+ */
 export function rosterSteps(item: WorkItem): RosterStep[] {
   const depth = depths(item.workflow);
+  const finished = isFinished(item);
   return topoOrder(item.workflow).map((id) => {
     const s = stepById(item.workflow, id)!;
     const n = item.nodes[id] ?? freshNode();
+    const stopped = finished && (n.status === "running" || n.status === "waiting");
     return {
       id,
       name: s.name,
       type: s.type,
       depth: depth.get(id) ?? 0,
-      status: n.status,
-      phase: n.phase,
+      status: stopped ? "stopped" : n.status,
+      phase: stopped ? null : n.phase,
       agents: agentWork(s)?.agents ?? 1,
       reported: n.reports.filter(Boolean).length,
       nudged: Math.max(0, ...n.nudges),
       attempts: n.attempts,
       round: n.round,
-      waitingKind: n.waiting?.kind ?? null,
-      retrying: Boolean(n.retry?.at),
+      waitingKind: stopped ? null : (n.waiting?.kind ?? null),
+      retrying: !stopped && Boolean(n.retry?.at),
       picked: agentWork(s)?.picksModel ? describePick(pickedModel(n)) : null,
     };
   });
@@ -207,8 +218,6 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
     journal: cos.store.listJournal(item.id).map(previewEntry),
   };
 }
-
-const isFinished = (item: Pick<WorkItem, "status">) => item.status === "done" || item.status === "failed";
 
 /** How a finished task ended, with why when it did not deliver ("Failed: thread archived"). */
 export function describeOutcome(outcome: Outcome, lastError: string | null): string {

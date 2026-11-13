@@ -59,6 +59,14 @@ describe("StepFlow", () => {
     expect(rows().map((r) => r.icon)).toEqual(["Check", "Hand", "RefreshCw", null]);
   });
 
+  it("shows a step a finished task left behind as stopped, not live", async () => {
+    await mount(<StepFlow entry={{ workflowName: "Delivery", steps: [step("Build", 0, "done"), step("Ship", 1, "stopped")] }} />);
+    expect(rows()[1]).toMatchObject({ name: "Ship", status: "Stopped", statusVisible: true, icon: "Square", details: "" });
+    const name = Array.from(container.querySelectorAll("span")).find((s) => s.textContent === "Ship")!;
+    expect(name.className).not.toContain("font-semibold");
+    expect(rows().map((r) => r.icon)).toEqual(["Check", "Square"]);
+  });
+
   it("shows retry, ship phase and failure details as readable text", async () => {
     await mount(<StepFlow entry={{ workflowName: "Delivery", steps: [step("Ship", 0, "running", { retrying: true, phase: "ci", attempts: 2 })] }} />);
     expect(rows()).toMatchObject([{ name: "Ship", status: "Retrying", details: "Waiting for CI · failed 2×" }]);
@@ -93,5 +101,19 @@ describe("StepProgress", () => {
     expect(waiting!.getAttribute("style")).toContain("repeating-linear-gradient");
     expect(pending!.getAttribute("style")).toContain("inset 0 0 0 1px");
     expect(pending!.getAttribute("style")).not.toContain("background");
+  });
+
+  it("draws a stopped step as a short, still, muted bar", async () => {
+    await mount(<StepProgress steps={[step("Build", 0, "done"), step("Ship", 1, "stopped"), step("Docs", 2, "pending")]} />);
+    const [done, stopped] = segments();
+    expect(stopped!.dataset.state).toBe("stopped");
+    expect(stopped!.title).toBe("Ship: stopped");
+    // Shorter than done and pending; never tall, pulsing or striped like a live step.
+    expect(stopped!.classList).toContain("h-1");
+    expect(stopped!.classList).not.toContain("h-2.5");
+    expect(stopped!.classList).not.toContain("motion-safe:animate-pulse");
+    expect(stopped!.getAttribute("style")).toContain("var(--muted-foreground)");
+    expect(stopped!.getAttribute("style")).not.toContain("repeating-linear-gradient");
+    expect(done!.classList).toContain("h-1.5");
   });
 });

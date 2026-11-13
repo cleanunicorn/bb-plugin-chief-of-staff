@@ -1528,6 +1528,34 @@ describe("chief-of-staff server", () => {
     }
   });
 
+  it("shows the steps a finished task left running or waiting as stopped, without rewriting them", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0]!;
+    type Step = { id: string; status: string; phase: string | null; retrying: boolean; waitingKind: string | null };
+    const steps = async () => ((await roster()) as unknown as { steps: Step[] }).steps;
+    // Active: live states pass through untouched.
+    expect((await steps()).find((st) => st.id === "build")).toMatchObject({ status: "running" });
+    const nodes = {
+      ...item.nodes,
+      build: { ...item.nodes.build!, status: "waiting" as const, waiting: { kind: "question" as const, reason: "Which login?" } },
+      ship: { ...item.nodes.ship!, status: "running" as const, phase: "ci" as const, retry: { effect: { type: "merge", step: "ship" }, at: new Date().toISOString(), count: 1 } },
+    } as typeof item.nodes;
+    store.updateWorkItem(item.id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString(), nodes });
+    const settled = { status: "stopped", phase: null, retrying: false, waitingKind: null };
+    expect(await roster()).toMatchObject({ current: [], outcome: "failed", activity: "Failed: thread archived" });
+    expect((await steps()).find((st) => st.id === "ship")).toMatchObject(settled);
+    expect((await steps()).find((st) => st.id === "build")).toMatchObject(settled);
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id: item.id }) as { live: Record<string, Step> };
+    expect(view.live.ship).toMatchObject(settled);
+    expect(view.live.build).toMatchObject(settled);
+    // Pending steps never ran: they stay pending.
+    expect(Object.values(view.live).map((l) => l.status)).not.toContain("running");
+    const stored = store.getWorkItem(item.id)!.nodes;
+    expect(stored.ship).toMatchObject({ status: "running", phase: "ci" });
+    expect(stored.build).toMatchObject({ status: "waiting" });
+  });
+
   it("says a task marked done by hand ended that way, and when", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const before = await roster();
