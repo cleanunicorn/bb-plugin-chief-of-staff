@@ -13,7 +13,8 @@
   auth.
 
 - **Merging with a required approval ignores pending reviews.** A reviewer's
-  unsubmitted (pending) review no longer withdraws their earlier approval.
+  unsubmitted (pending) review no longer overrides their earlier verdict, an
+  approval or requested changes.
 
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by

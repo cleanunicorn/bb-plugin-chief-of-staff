@@ -145,7 +145,7 @@ export function PullRequestList<E extends PrListEntry>({ entries, now, authOk, s
   const merged = count("merged");
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-1" role="toolbar" aria-label="Filter pull requests">
+      <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Filter pull requests">
         {FILTERS.map((f) => (
           <Button key={f.key} size="sm" variant="ghost" aria-pressed={filter === f.key} onClick={() => choose(f.key)}>
             <Icon name={f.icon} fallback="Circle" aria-hidden />
