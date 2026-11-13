@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Finished cards say how a task ended, when, and why.** With **Show
+  finished**, a card and its Pull requests row read Merged, PR opened,
+  Completed, Marked done, Failed, Marked failed or PR closed, each with its own
+  icon. A delivered task no longer reads "Closed" because of an old error,
+  and a task marked done by hand no longer reads "Shipped". Failed,
+  marked-failed and PR-closed cards show why they ended (for example "thread
+  archived") without opening the workflow. The timer says "Finished 2h ago ·
+  took 1.2h" instead of the start time. Steps a finished task left running,
+  waiting or in CI show as stopped in the card, the step list and the
+  workflow view. A finished task with no history no longer says "No history
+  yet".
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are

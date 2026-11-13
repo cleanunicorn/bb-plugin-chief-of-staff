@@ -96,6 +96,11 @@ Every task has one status, derived from its steps:
 | `blocked` | You | Stalled: no activity past the stall threshold. |
 | `done` / `failed` | Nobody | Finished. Shown with **Show finished**. |
 
+A finished card says how the task ended: **Merged**, **PR opened**,
+**Completed**, **Marked done**, **Failed**, **Marked failed** or **PR closed**.
+It also says when the task finished and how long it took, and why it ended if it
+did not deliver. Steps it left unfinished show as **stopped**.
+
 ### Read a task card
 
 Each card shows the task's workflow as a bar with one segment per step, in
