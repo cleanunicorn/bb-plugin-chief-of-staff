@@ -176,6 +176,23 @@ it("links every thread id in a row's message and actor, and keeps the text as it
   expect(mocks.navigate.toThread).toHaveBeenCalledTimes(2);
 });
 
+it("names the repository on each row only when more than one is configured", async () => {
+  mocks.logs = [logRow()];
+  mocks.repos = [{ key: "acme/app" }];
+  await mount(<ActivityFeed />);
+  expect(container.querySelector("li")!.textContent).toMatch(/^spawn.*#7 Fix login spawned Review thr_abc · event/);
+  expect(container.querySelector("li")!.textContent).not.toContain("app #7");
+  mocks.repos = [{ key: "acme/app" }, { key: "acme/web" }];
+  await act(async () => { root.render(<ActivityFeed key="two" />); });
+  expect(container.querySelector("li")!.textContent).toContain("app #7 Fix login spawned Review thr_abc");
+  // Unknown repositories keep the name: nothing is hidden on a guess.
+  mocks.repos = [{ key: "acme/app" }];
+  mocks.failing = { cos_overview: "overview unavailable" };
+  await act(async () => { root.render(<ActivityFeed key="failed" />); });
+  expect(container.querySelector("li")!.textContent).toContain("app #7 Fix login spawned Review thr_abc");
+  expect(container.textContent).not.toContain("overview unavailable");
+});
+
 // ---------- Narrowing the feed to one task ----------
 
 const logQueries = () => mocks.queries.filter((q) => q.method === "cos_log").map((q) => q.input);

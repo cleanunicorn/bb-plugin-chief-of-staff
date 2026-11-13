@@ -983,7 +983,10 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
   const [showAll, setShowAll] = useState(false);
   // A task's own rows come from the server, so its older rows are not lost behind the latest 60 of every task.
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: task ? { limit: 60, workItemId: task.id } : { limit: 60 } });
-  useLiveRefresh(log.refetch);
+  // With one repository the name on every row says nothing. Unknown or failed: keep it (the Pipeline tab shows the error).
+  const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  useLiveRefresh(async () => void (await Promise.all([log.refetch(), overview.refetch()])));
+  const showRepo = overview.data?.repos.length !== 1;
   // The tasks to offer: every task seen while the feed is open, so the list survives narrowing.
   const [seen, setSeen] = useState<ActivityTask[]>([]);
   useEffect(() => {
@@ -1070,7 +1073,7 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
                 {relative(e.at, now)}
               </time>
               <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
-                {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
+                {e.repo && showRepo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
                 {task && e.workItemId ? (
                   <>
                     <button
