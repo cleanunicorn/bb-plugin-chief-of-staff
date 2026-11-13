@@ -17,3 +17,12 @@ export function matchesTaskFilter(entry: TaskState, filter: TaskFilter): boolean
   if (filter === "failures" || filter === "stalled") return attentionKind(entry) === filter;
   return stageOf(entry)?.key === filter;
 }
+
+/** How an activity row names its task: "#7 Fix login", "#7", a standalone task's title, or "Untitled task". Null when the row has no task, or its task is gone. */
+export function taskLabel(row: { workItemId: string | null; issueNumber?: number | null; issueTitle?: string | null }): string | null {
+  const number = row.issueNumber ?? null;
+  const title = row.issueTitle ?? null;
+  if (!row.workItemId || (number === null && title === null)) return null;
+  if (number !== null) return title ? `#${number} ${title}` : `#${number}`;
+  return title || "Untitled task";
+}

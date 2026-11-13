@@ -1646,6 +1646,10 @@ describe("chief-of-staff server", () => {
     const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
     expect(spawn.prompt).toContain("Explain errors");
     expect(ghCalls.some((call) => call.path === "/repos/acme/app/issues")).toBe(false);
+    // The activity log names the task each row belongs to: here a standalone task, by its title alone.
+    const log = (await host.harness.behavior.callRpc("cos_log", { workItemId: started.id })) as { entries: { workItemId: string; issueNumber: number | null; issueTitle: string | null }[] };
+    expect(log.entries.length).toBeGreaterThan(0);
+    for (const e of log.entries) expect(e).toMatchObject({ workItemId: started.id, issueNumber: null, issueTitle: "Improve login" });
   });
 
   it("shows the open question with options and context, and answers it from the dashboard", async () => {

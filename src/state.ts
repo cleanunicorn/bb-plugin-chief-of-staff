@@ -116,6 +116,12 @@ export interface LogEntry {
   actor: string;
 }
 
+/** A log row as read back, with its task's issue number and title (both null when it has no task, or the task is gone). */
+export interface LogRow extends LogEntry {
+  issueNumber: number | null;
+  issueTitle: string | null;
+}
+
 // Append only: BB records each statement hash by index, including whitespace.
 export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS work_items (
@@ -655,10 +661,13 @@ export class StateStore {
     this.prune("activity_log", 1, this.caps.logMaxRows);
   }
 
-  listLog(opts: { limit?: number; workItemId?: string } = {}): LogEntry[] {
+  listLog(opts: { limit?: number; workItemId?: string } = {}): LogRow[] {
+    // Both tables have id and repo: every column is named, so the task's never replace the row's.
+    const select = `SELECT l.id, l.at, l.level, l.kind, l.repo, l.work_item_id, l.message, l.actor, w.id AS task_id, w.issue_number, w.issue_title
+      FROM activity_log l LEFT JOIN work_items w ON w.id = l.work_item_id`;
     const rows = opts.workItemId
-      ? (this.db.prepare(`SELECT * FROM activity_log WHERE work_item_id = ? ORDER BY id DESC LIMIT ?`).all(opts.workItemId, opts.limit ?? 100) as Row[])
-      : (this.db.prepare(`SELECT * FROM activity_log ORDER BY id DESC LIMIT ?`).all(opts.limit ?? 100) as Row[]);
+      ? (this.db.prepare(`${select} WHERE l.work_item_id = ? ORDER BY l.id DESC LIMIT ?`).all(opts.workItemId, opts.limit ?? 100) as Row[])
+      : (this.db.prepare(`${select} ORDER BY l.id DESC LIMIT ?`).all(opts.limit ?? 100) as Row[]);
     return rows.map((row) => ({
       id: row.id as number,
       at: row.at as string,
@@ -666,6 +675,9 @@ export class StateStore {
       kind: row.kind as string,
       repo: (row.repo as string | null) ?? null,
       workItemId: (row.work_item_id as string | null) ?? null,
+      issueNumber: (row.issue_number as number | null) ?? null,
+      // A found task keeps its title even when empty; null means no task.
+      issueTitle: row.task_id == null ? null : ((row.issue_title as string | null) ?? ""),
       message: row.message as string,
       actor: row.actor as string,
     }));

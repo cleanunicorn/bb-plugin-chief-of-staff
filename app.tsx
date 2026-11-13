@@ -24,7 +24,7 @@ import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, taskLabel, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 
@@ -927,6 +927,9 @@ export function ActivityFeed() {
   const [showAll, setShowAll] = useState(false);
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60 } });
   useLiveRefresh(log.refetch);
+  // The feed opens a task's workflow itself: it sits beside the tabs, not inside the Pipeline tab.
+  const [viewing, setViewing] = useState<string | null>(null);
+  const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
   return (
     <Panel
@@ -944,6 +947,7 @@ export function ActivityFeed() {
       <ol className="sm:max-h-80 sm:overflow-auto">
         {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
+          const task = taskLabel(e);
           return (
             <li key={e.id} className={cn("flex-wrap items-start gap-x-2.5 gap-y-0.5 py-1.5 text-xs sm:flex-nowrap", !showAll && i >= MOBILE_ACTIVITY_ROWS ? "hidden sm:flex" : "flex")}>
               <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
@@ -953,6 +957,22 @@ export function ActivityFeed() {
               </time>
               <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
                 {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
+                {task && e.workItemId ? (
+                  <>
+                    <button
+                      type="button"
+                      className="inline-block max-w-[16rem] truncate rounded align-bottom font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      title={task}
+                      aria-label={`Open task ${task}`}
+                      onClick={(event) => {
+                        sheetFocus.remember(event.currentTarget);
+                        setViewing(e.workItemId);
+                      }}
+                    >
+                      {task}
+                    </button>{" "}
+                  </>
+                ) : null}
                 {e.message}
                 <span className="text-muted-foreground"> · {e.actor}</span>
               </span>
@@ -965,6 +985,7 @@ export function ActivityFeed() {
           Show {entries.length - MOBILE_ACTIVITY_ROWS} more
         </Button>
       ) : null}
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void log.refetch()} restoreFocus={sheetFocus.restore} /> : null}
     </Panel>
   );
 }

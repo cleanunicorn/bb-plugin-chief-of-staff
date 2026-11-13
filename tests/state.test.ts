@@ -151,6 +151,22 @@ describe("bounded log and journal", () => {
     expect(messages).not.toContain("m1");
   });
 
+  it("names each row's task from its work item, without overwriting the row's own id and repo", () => {
+    const { store, add } = storeSetup();
+    add("issue", { repo: "acme/app", issueNumber: 7, issueTitle: "Fix login" });
+    add("standalone", { repo: "acme/app", issueNumber: null, issueTitle: "Tidy the docs" });
+    store.log({ level: "info", kind: "spawn", repo: "other/repo", workItemId: "issue", message: "spawned", actor: "event" });
+    store.log({ level: "info", kind: "spawn", repo: "acme/app", workItemId: "standalone", message: "spawned", actor: "event" });
+    store.log({ level: "info", kind: "control", repo: null, workItemId: null, message: "paused", actor: "rpc:client" });
+    store.log({ level: "info", kind: "spawn", repo: "acme/app", workItemId: "gone", message: "spawned", actor: "event" });
+    const [gone, control, standalone, issue] = store.listLog();
+    expect(issue).toMatchObject({ id: 1, repo: "other/repo", workItemId: "issue", issueNumber: 7, issueTitle: "Fix login" });
+    expect(standalone).toMatchObject({ id: 2, workItemId: "standalone", issueNumber: null, issueTitle: "Tidy the docs" });
+    expect(control).toMatchObject({ id: 3, repo: null, workItemId: null, issueNumber: null, issueTitle: null });
+    expect(gone).toMatchObject({ id: 4, workItemId: "gone", issueNumber: null, issueTitle: null });
+    expect(store.listLog({ workItemId: "issue" })).toEqual([issue]);
+  });
+
   it("keeps the newest journal rows when several are written at once", () => {
     const { store, db } = storeSetup(caps);
     for (let i = 1; i <= 20; i++) store.appendJournal("x", [1, 2, 3].map((k) => ({ step: "build", round: i, kind: "started" as const, detail: `${i}.${k}` })), "test");
