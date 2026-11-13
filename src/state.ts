@@ -263,6 +263,26 @@ const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", 
 const activeIn = (expr: string) => `${expr} IN (${ACTIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`;
 const ACTIVE_IN = activeIn("status");
 const FINISHED_IN = "status IN ('done', 'failed')";
+/** Finished items per roster page when the caller does not say. */
+export const ROSTER_FINISHED_LIMIT = 50;
+/** Most finished items one roster page may ask for. */
+export const ROSTER_FINISHED_MAX = 500;
+
+/** Opaque roster cursor: the last finished item's sort key and id. */
+function encodeRosterCursor(at: string, id: string): string {
+  return Buffer.from(JSON.stringify([at, id])).toString("base64url");
+}
+function decodeRosterCursor(cursor: string): [string, string] {
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    value = null;
+  }
+  if (!Array.isArray(value) || value.length !== 2 || !value.every((v) => typeof v === "string" && v)) throw new Error("invalid cursor");
+  return value as [string, string];
+}
+
 export function isActiveStatus(status: WorkStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
 }
@@ -518,6 +538,29 @@ export class StateStore {
     const sql = `SELECT * FROM work_items ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`;
     params.push(opts.limit ?? 200);
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
+  }
+
+  /**
+   * The roster's items: every active item (newest created first), then one
+   * page of finished items (most recently finished first). A `before` cursor
+   * from an earlier page returns only the next finished page. Finished items
+   * are keyed by COALESCE(finished_at, updated_at), as indexed, with the id as
+   * the tie-break so items finished in the same tick are neither skipped nor repeated.
+   */
+  listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
+    const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before);
+    const repo = opts.repo ? " AND repo = @repo" : "";
+    const active = cursor ? [] : (this.db.prepare(`SELECT * FROM work_items WHERE ${ACTIVE_IN}${repo} ORDER BY created_at DESC`).all({ repo: opts.repo }) as Row[]).map(rowToWorkItem);
+    if (!cursor && !opts.includeDone) return { active, finished: [], nextBefore: null };
+    const limit = Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT));
+    const key = "COALESCE(finished_at, updated_at)";
+    const after = cursor ? ` AND (${key} < @at OR (${key} = @at AND id < @id))` : "";
+    const rows = this.db.prepare(`SELECT *, ${key} AS finished_key FROM work_items WHERE ${FINISHED_IN}${repo}${after} ORDER BY ${key} DESC, id DESC LIMIT @limit`)
+      .all({ repo: opts.repo, at: cursor?.[0], id: cursor?.[1], limit: limit + 1 }) as Row[];
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    const nextBefore = rows.length > limit && last ? encodeRosterCursor(last.finished_key as string, last.id as string) : null;
+    return { active, finished: page.map(rowToWorkItem), nextBefore };
   }
 
   /**

@@ -170,3 +170,88 @@ describe("bounded log and journal", () => {
     expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBe(caps.logMaxRows);
   });
 });
+
+describe("roster items: every active item plus a page of finished ones", () => {
+  /** One active item created first, then `finished` finished ones; finish times come in groups of three that share a timestamp. */
+  function seed(finished: number) {
+    const s = storeSetup();
+    const base = Date.parse("2026-01-01T00:00:00Z");
+    s.setClock(new Date(base).toISOString());
+    s.add("active-oldest", { status: "waiting_on_human" });
+    const expected: { id: string; at: string }[] = [];
+    for (let i = 0; i < finished; i++) {
+      const id = `f${String(i).padStart(3, "0")}`;
+      s.setClock(new Date(base + (i + 1) * 60_000).toISOString());
+      const at = new Date(base + 10 * 86_400_000 + Math.floor(i / 3) * 1_000).toISOString();
+      s.add(id, { status: i % 5 ? "done" : "failed", finishedAt: at });
+      expected.push({ id, at });
+    }
+    expected.sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1));
+    return { ...s, expected: expected.map((e) => e.id) };
+  }
+
+  it("lists an old active item past 200 newer finished ones and pages every finished item once, in order", () => {
+    const { store, expected } = seed(249);
+    // The newest-200 list no longer reaches it.
+    expect(store.listWorkItems({ limit: 200 }).some((i) => i.id === "active-oldest")).toBe(false);
+    expect(store.listRosterItems({}).active.map((i) => i.id)).toEqual(["active-oldest"]);
+    expect(store.listRosterItems({}).finished).toEqual([]);
+    expect(store.listRosterItems({}).nextBefore).toBeNull();
+
+    const first = store.listRosterItems({ includeDone: true, finishedLimit: 50 });
+    expect(first.active.map((i) => i.id)).toEqual(["active-oldest"]);
+    const seen = first.finished.map((i) => i.id);
+    let cursor = first.nextBefore;
+    let pages = 1;
+    while (cursor) {
+      const page = store.listRosterItems({ includeDone: true, finishedLimit: 50, before: cursor });
+      expect(page.active).toEqual([]);
+      seen.push(...page.finished.map((i) => i.id));
+      cursor = page.nextBefore;
+      pages++;
+    }
+    // 50 is not a multiple of 3, so tie groups straddle page boundaries.
+    expect(pages).toBe(5);
+    expect(seen).toEqual(expected);
+  });
+
+  it("says when there is nothing more", () => {
+    const { store } = seed(6);
+    expect(store.listRosterItems({ includeDone: true, finishedLimit: 6 })).toMatchObject({ nextBefore: null });
+    const page = store.listRosterItems({ includeDone: true, finishedLimit: 5 });
+    expect(page.finished).toHaveLength(5);
+    expect(store.listRosterItems({ includeDone: true, finishedLimit: 5, before: page.nextBefore! }).finished).toHaveLength(1);
+  });
+
+  it("orders a finished row without finished_at by its last update", () => {
+    const { store, add, db } = storeSetup();
+    add("a", { status: "done", finishedAt: "2026-11-01T00:00:00.000Z" });
+    add("legacy", { status: "done", finishedAt: null });
+    add("c", { status: "failed", finishedAt: "2026-11-03T00:00:00.000Z" });
+    db.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run("2026-11-02T00:00:00.000Z", "legacy");
+    db.prepare("UPDATE work_items SET updated_at = ? WHERE id <> ?").run("2026-11-12T00:00:00.000Z", "legacy");
+    const first = store.listRosterItems({ includeDone: true, finishedLimit: 2 });
+    expect(first.finished.map((i) => i.id)).toEqual(["c", "legacy"]);
+    expect(store.listRosterItems({ includeDone: true, finishedLimit: 2, before: first.nextBefore! }).finished.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("filters both lists by repo", () => {
+    const { store, add } = storeSetup();
+    add("mine-active", { status: "agent" });
+    add("theirs-active", { repo: "c/d", status: "agent" });
+    add("mine-done", { status: "done", finishedAt: "2026-11-01T00:00:00.000Z" });
+    add("theirs-done", { repo: "c/d", status: "done", finishedAt: "2026-11-02T00:00:00.000Z" });
+    const page = store.listRosterItems({ repo: "a/b", includeDone: true, finishedLimit: 1 });
+    expect(page.active.map((i) => i.id)).toEqual(["mine-active"]);
+    expect(page.finished.map((i) => i.id)).toEqual(["mine-done"]);
+    expect(page.nextBefore).toBeNull();
+  });
+
+  it("rejects a malformed cursor instead of returning the first page", () => {
+    const { store, add } = storeSetup();
+    add("x", { status: "done", finishedAt: "2026-11-01T00:00:00.000Z" });
+    for (const before of ["", "nope", Buffer.from("[1,2]").toString("base64url"), Buffer.from('["2026-11-01T00:00:00.000Z"]').toString("base64url"), Buffer.from("{}").toString("base64url")]) {
+      expect(() => store.listRosterItems({ includeDone: true, before })).toThrow("invalid cursor");
+    }
+  });
+});
