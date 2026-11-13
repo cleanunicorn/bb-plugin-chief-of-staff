@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The Pull requests list shows each PR's own state.** Each row leads with
+  Open, Draft, Merged, Closed or State unknown and, while the PR is open, its
+  checks (passing, failing, pending, none) and review (approved, changes
+  requested), each with its own icon and text. Finished tasks no longer read
+  "Shipped" there. The list defaults to PRs that need action, puts failing
+  checks and requested changes first, has Merged, Closed and All filters, and
+  shows 10 rows at a time with **Show more**. Task cards show their PR's state
+  next to the PR link. Open PRs refresh about every 10 minutes and need GitHub
+  auth.
+
+- **Merging with a required approval ignores pending reviews.** A reviewer's
+  unsubmitted (pending) review no longer withdraws their earlier approval.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are

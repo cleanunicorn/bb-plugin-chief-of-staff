@@ -107,6 +107,18 @@ grouped under **In parallel**, and a step's line also notes its agents
 (`1/2 agents`), its shipping phase (`Waiting for CI`) and earlier failures
 (`failed 1×`).
 
+A card with a pull request shows the PR's state next to its link: **Open**,
+**Draft**, **Merged** or **Closed**.
+
+### Pull requests
+
+The **Pull requests** list on the Repos & PRs tab shows every task's PR with
+its own state and, while it is open, its checks and review. It starts on the
+PRs that still need action (open, draft, or not read yet), failing checks and
+requested changes first; **Merged**, **Closed** and **All** are one click
+away. The sweep reads each open PR's state about every 10 minutes (and once
+for merged or closed ones), so it needs GitHub auth.
+
 ### See a task on its workflow
 
 **Workflow** on a task card shows the task live on the canvas: green steps are
@@ -495,8 +507,13 @@ flowchart TB
   and then once a day. The task itself stays, with its status, PR, branch,
   timestamps, workflow, step statuses, model picks and thread links, so it
   still shows under finished tasks, counts in stats, and can be retried.
-- One durable schedule (`* * * * *`) runs intake, CI polling, thread sync,
-  retries, stall detection and the daily retention pass.
+- One durable schedule (`* * * * *`) runs intake, CI polling, PR state,
+  thread sync, retries, stall detection and the daily retention pass.
+- PR state: the ship step records a PR's state when it opens, merges or sees
+  it closed. Each sweep then reads the open PRs whose last read is over 10
+  minutes old (state, checks and reviews: about 4 requests each), and PRs
+  with no state yet, after intake and CI, within the time they leave.
+  Merged and closed PRs are not read again.
 - Workflow engine (`src/machine.ts`, pure): each step has a state (pending,
   running, waiting, done), a round and a failure count. Events from threads,
   jobs, CI and you produce new step states and the effects to run; a pending
