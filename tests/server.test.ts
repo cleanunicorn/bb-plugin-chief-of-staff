@@ -48,7 +48,7 @@ const repos = JSON.stringify({
 const minimalWorkflow = JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, verify: { maxAttempts: 1 } } });
 
 
-const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "open", html_url: "https://github.com/acme/app/issues/12", labels: [{ name: "agent-ready" }], milestone: null, assignees: [], updated_at: "2026-11-05T00:00:00Z" };
+const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "open", html_url: "https://github.com/acme/app/issues/12", labels: [{ name: "agent-ready" }], milestone: null, assignees: [], updated_at: "2026-11-05T00:00:00Z", user: { login: "reporter" }, author_association: "NONE" };
 const pull: Record<string, unknown> & { merged: boolean; merged_at: string | null; state: string } = { number: 7, title: "Fix login (#12)", body: "Closes #12", state: "open", draft: false, merged: false, merged_at: null, html_url: "https://github.com/acme/app/pull/7", head: { ref: "cos/issue-12-fix-login", sha: "abc" }, base: { ref: "main" }, labels: [], created_at: "2026-11-05T01:00:00Z", updated_at: "2026-11-05T01:00:00Z", mergeable: true, mergeable_state: "clean", user: { login: "bot" } };
 
 describe("chief-of-staff server", () => {
@@ -568,6 +568,7 @@ describe("chief-of-staff server", () => {
     expect(spawnArgs.environment).toMatchObject({ type: "host", hostId: "host_1", workspace: { type: "managed-worktree" } });
     expect(spawnArgs.prompt).toContain("Fix login");
     expect(spawnArgs.prompt).toContain("please fix");
+    expect(spawnArgs.prompt).toContain("Author: reporter (NONE)");
     expect(spawnArgs.prompt).toContain("Use pnpm");
     // The first prompt names the stage and the reporting contract.
     expect(spawnArgs.prompt).toContain("Build");

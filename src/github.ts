@@ -11,6 +11,9 @@ export interface GitHubIssue {
   assignees: { login: string }[];
   pull_request?: unknown;
   updated_at: string;
+  user?: { login: string } | null;
+  /** The author's relation to the repository (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...). */
+  author_association?: string;
 }
 
 export interface GitHubComment {
