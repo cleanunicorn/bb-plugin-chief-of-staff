@@ -22,7 +22,8 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
       error: null, refetch: vi.fn(),
     };
   },
-  ThreadTitle: () => null, UrlLink: () => null,
+  ThreadTitle: () => null,
+  UrlLink: ({ href, children, ...rest }: { href: string; children?: ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
@@ -315,4 +316,36 @@ it("does not pull focus back to More actions if it moved on while the action ran
   elsewhere.focus();
   await act(async () => finish());
   expect(document.activeElement).toBe(elsewhere);
+});
+
+it("links an issue-backed card to its GitHub issue and labels the PR chip", async () => {
+  mocks.entries = [entry({ prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" })];
+  await mount();
+  const card = container.querySelector("article")!;
+  const issue = card.querySelector<HTMLAnchorElement>('a[href="https://github.com/acme/app/issues/1"]')!;
+  expect(issue.textContent).toBe("app issue #1");
+  const pr = card.querySelector<HTMLAnchorElement>('a[href="https://github.com/acme/app/pull/7"]')!;
+  expect(pr.textContent).toBe("PR #7");
+});
+
+it("shows a standalone card's repository without an issue link", async () => {
+  mocks.entries = [entry({ issueNumber: null, issueUrl: null })];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.querySelector('a[href*="/issues/"]')).toBeNull();
+  expect(card.querySelector('[title="acme/app"]')!.textContent).toBe("app");
+});
+
+it("links each pull request row to its PR and issue, with a Workflow button", async () => {
+  mocks.entries = [entry({ prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" }), entry({ id: "two", issueNumber: null, issueUrl: null, issueTitle: "Tidy", prNumber: 8, prUrl: "https://github.com/acme/app/pull/8" })];
+  await mount(<ReposTab />);
+  const [linked, standalone] = Array.from(container.querySelectorAll("li"));
+  expect(linked!.querySelector('a[href$="/pull/7"]')!.textContent).toBe("PR #7");
+  expect(linked!.querySelector('a[href$="/issues/1"]')!.textContent).toBe("issue #1");
+  expect(linked!.textContent).toContain("closes issue #1");
+  expect(Array.from(linked!.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Workflow")).toBe(true);
+  expect(standalone!.querySelector('a[href$="/pull/8"]')!.textContent).toBe("PR #8");
+  expect(standalone!.querySelector('a[href*="/issues/"]')).toBeNull();
+  expect(standalone!.textContent).not.toContain("closes");
+  expect(Array.from(standalone!.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Workflow")).toBe(true);
 });

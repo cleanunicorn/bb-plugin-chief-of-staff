@@ -103,6 +103,11 @@ const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
   cos_error: { label: "CoS stuck", icon: "OctagonAlert" },
 };
 
+/** "acme/app" → "app". */
+function repoName(repo: string): string {
+  return repo.split("/")[1] ?? repo;
+}
+
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
   if (e.detail === "done") return { tone: "good", label: e.lastError ? "Closed" : "Shipped", icon: "CircleCheck" };
   if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
@@ -351,8 +356,12 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             <Icon name="FolderGit2" className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             <span title={entry.repo}>
-            {entry.repo.split("/")[1] ?? entry.repo}
-            {entry.issueNumber ? ` #${entry.issueNumber}` : ""}
+              {entry.issueUrl ? (
+                // The sr-only word tells this link apart from the PR chip: "app issue #12".
+                <UrlLink href={entry.issueUrl}>{repoName(entry.repo)}<span className="sr-only"> issue</span> #{entry.issueNumber}</UrlLink>
+              ) : (
+                repoName(entry.repo)
+              )}
             </span>
           </p>
         </div>
@@ -433,7 +442,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
         {entry.prUrl ? (
           <span className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium">
             <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
-            <UrlLink href={entry.prUrl}>#{entry.prNumber}</UrlLink>
+            <UrlLink href={entry.prUrl}>PR #{entry.prNumber}</UrlLink>
           </span>
         ) : null}
         {entry.waitingKind === "approval" ? (
@@ -759,6 +768,9 @@ export function ReposTab() {
   }, [overview, roster]);
   useLiveRefresh(refetchAll);
   const [intake, setIntake] = useState<{ results: IntakeResult[]; dryRun: boolean } | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
+  // Closing the workflow sheet returns focus to the row's Workflow button, or to the panel heading when the row is gone.
+  const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const runIntake = async (repo?: string, dryRun = false) => {
@@ -880,7 +892,7 @@ export function ReposTab() {
           <IntakeSummary results={intake.results} dryRun={intake.dryRun} />
         </Panel>
       ) : null}
-      <Panel title="Pull requests" icon="GitPullRequest" dim={roster.isFetching && !roster.isLoading}>
+      <Panel title="Pull requests" icon="GitPullRequest" headingRef={sheetFocus.fallback} dim={roster.isFetching && !roster.isLoading}>
         {!prs.length ? (
           roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
         ) : (
@@ -888,7 +900,7 @@ export function ReposTab() {
             {prs.map((e) => (
               <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm">
                 <StagePill entry={e} />
-                <span className="inline-flex items-center gap-1 font-medium tabular-nums">{e.prUrl ? <UrlLink href={e.prUrl}>#{e.prNumber}</UrlLink> : `#${e.prNumber}`}</span>
+                <span className="inline-flex items-center gap-1 font-medium tabular-nums">{e.prUrl ? <UrlLink href={e.prUrl}>PR #{e.prNumber}</UrlLink> : `PR #${e.prNumber}`}</span>
                 {e.issueTitle ? <span className="line-clamp-2 min-w-0 basis-full text-foreground sm:line-clamp-1 sm:flex-1 sm:basis-0" title={e.issueTitle}>{e.issueTitle}</span> : null}
                 {e.fixAttempts ? (
                   <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={`${e.fixAttempts} CI fix cycles`}>
@@ -897,14 +909,18 @@ export function ReposTab() {
                   </span>
                 ) : null}
                 <span className="text-xs text-muted-foreground">
-                  {e.repo.split("/")[1]}
-                  {e.issueNumber ? ` · closes #${e.issueNumber}` : ""} · {relative(e.lastActivityAt ?? e.startedAt, now)}
+                  {repoName(e.repo)}
+                  {e.issueUrl ? <> · closes <UrlLink href={e.issueUrl}><span className="sr-only">issue </span>#{e.issueNumber}</UrlLink></> : null} · {relative(e.lastActivityAt ?? e.startedAt, now)}
                 </span>
+                <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing(e.id); }}>
+                  <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
+                </Button>
               </li>
             ))}
           </ul>
         )}
       </Panel>
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }

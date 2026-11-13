@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Task cards and pull requests link to their GitHub issue.** A card's
+  "repo #N" opens the issue in the browser, and its PR chip reads "PR #N" so
+  the two numbers are no longer confused. Each row under Repos & PRs → Pull
+  requests links "closes #N" to the issue and has a Workflow button that opens
+  the task's workflow. Standalone tasks, which have no issue, show no issue
+  link.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
