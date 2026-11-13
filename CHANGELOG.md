@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Older tasks keep being tracked once you have more than 200.** Thread sync,
+  retries, stall detection and restart recovery only reached the 200 newest
+  tasks, so an older active task could miss turn ends, answered questions or
+  deleted threads, and an older failed task was not revived when you resumed
+  its thread. Every active task, and every task that failed in the last 3
+  days, is now covered; the roster still shows the 200 newest.
+
 - **Task cards and pull requests link to their GitHub issue.** A card's
   "repo #N" opens the issue in the browser, and its PR chip reads "PR #N" so
   the two numbers are no longer confused. Each row under Repos & PRs → Pull
