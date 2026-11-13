@@ -36,7 +36,7 @@ vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => 
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
 vi.mock("../components/cos/question", () => ({ QuestionSheet: () => null }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
-import { PipelineTab, ReposTab, ActivityFeed } from "../app";
+import { PipelineTab, ReposTab, ActivityFeed, Dashboard } from "../app";
 
 const container = document.createElement("div");
 let root: ReturnType<typeof createRoot>;
@@ -174,6 +174,82 @@ it("links every thread id in a row's message and actor, and keeps the text as it
   await act(async () => links[2]!.click());
   expect(mocks.navigate.toThread).toHaveBeenLastCalledWith("thr_x");
   expect(mocks.navigate.toThread).toHaveBeenCalledTimes(2);
+});
+
+// ---------- Narrowing the feed to one task ----------
+
+const logQueries = () => mocks.queries.filter((q) => q.method === "cos_log").map((q) => q.input);
+const activityPanel = () => Array.from(container.querySelectorAll("h2")).find((h) => h.textContent === "Activity")!.closest("section")!;
+const rowMessages = () => Array.from(activityPanel().querySelectorAll("ol > li")).map((li) => li.textContent);
+const taskLogs = () => [
+  logRow({ id: 1, message: "spawned Review thr_abc" }),
+  logRow({ id: 2, workItemId: "two", issueNumber: 8, issueTitle: "Repair deploy", message: "Review agent 1 reported done" }),
+  logRow({ id: 3, workItemId: "two", issueNumber: 8, issueTitle: "Repair deploy", level: "error", kind: "check", message: "Build failed (exit 1)" }),
+  logRow({ id: 4, kind: "control", workItemId: null, issueNumber: null, issueTitle: null, repo: null, message: "paused", actor: "rpc:client" }),
+];
+/** Radix menus open on pointerdown or the keyboard, not on click. */
+const openMenuOn = async (trigger: HTMLElement) => {
+  trigger.focus();
+  await act(async () => { trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  await tick();
+};
+const taskMenu = () => Array.from(activityPanel().querySelectorAll<HTMLButtonElement>("button[aria-haspopup='menu']")).find((b) => b.textContent?.startsWith("Task"));
+const menuItemsNow = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+
+it("narrows the feed to a task picked in it, and clears back to all activity", async () => {
+  mocks.logs = taskLogs();
+  await mount(<ActivityFeed />);
+  expect(logQueries().at(-1)).toEqual({ limit: 60 });
+  await openMenuOn(taskMenu()!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["#7 Fix login", "#8 Repair deploy"]);
+  await act(async () => menuItemsNow()[1]!.click());
+  await tick();
+  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "two" });
+  expect(rowMessages()).toHaveLength(2);
+  for (const text of rowMessages()) expect(text).toContain("#8 Repair deploy");
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#8 Repair deploy");
+  expect(document.activeElement).toBe(taskMenu());
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show all activity"]')!.click());
+  expect(logQueries().at(-1)).toEqual({ limit: 60 });
+  expect(rowMessages()).toHaveLength(4);
+  expect(taskMenu()!.textContent).toBe("Task");
+  expect(document.activeElement).toBe(taskMenu());
+  // The tasks seen before filtering are still offered.
+  await openMenuOn(taskMenu()!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["#7 Fix login", "#8 Repair deploy"]);
+});
+
+it("combines the task filter with Problems only, and says when a task has nothing to show", async () => {
+  mocks.logs = taskLogs();
+  await mount(<ActivityFeed task={{ id: "two", label: "#8 Repair deploy" }} onTaskChange={() => {}} />);
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Problems only")!.click());
+  expect(rowMessages()).toHaveLength(1);
+  expect(rowMessages()[0]).toContain("Build failed (exit 1)");
+  await act(async () => { root.render(<ActivityFeed task={{ id: "three", label: "#9 Quiet" }} onTaskChange={() => {}} />); });
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#9 Quiet");
+  expect(container.textContent).toContain("No warnings or errors.");
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Problems only")!.click());
+  expect(container.textContent).toContain("No activity for this task.");
+});
+
+it("shows a task's activity from its card, finished or not, and moves focus to the Activity heading", async () => {
+  mocks.entries = [entry(), entry({ id: "old", detail: "done", status: "done", issueNumber: 3, issueTitle: "Old work" })];
+  mocks.logs = [...taskLogs(), logRow({ id: 5, workItemId: "old", issueNumber: 3, issueTitle: "Old work", message: "marked done" })];
+  await mount(<Dashboard subPath="agents" />);
+  const [active, done] = Array.from(container.querySelectorAll("article"));
+  await openMenuOn(active!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity", "Retry the stuck step", "Mark done…", "Mark failed…"]);
+  await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await tick();
+  await openMenuOn(done!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity"]);
+  await act(async () => menuItemsNow()[0]!.click());
+  await tick(5);
+  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "old" });
+  expect(rowMessages()).toEqual([expect.stringContaining("marked done")]);
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#3 Old work");
+  expect(document.activeElement?.tagName).toBe("H2");
+  expect(document.activeElement?.textContent).toBe("Activity");
 });
 
 it("pairs task state pictograms with explicit labels", async () => {

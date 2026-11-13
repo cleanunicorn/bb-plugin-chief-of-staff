@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attentionKind, matchesTaskFilter, splitThreadIds, taskLabel } from "../components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel } from "../components/cos/dashboardModel";
 
 const task = (detail: string, waitingKind: string | null = null, stalled = false) => ({ detail, waitingKind, stalled });
 
@@ -38,6 +38,14 @@ describe("activity rows", () => {
     expect(taskLabel({ workItemId: "a", issueNumber: null, issueTitle: "" })).toBe("Untitled task");
     expect(taskLabel({ workItemId: "gone", issueNumber: null, issueTitle: null })).toBe(null);
     expect(taskLabel({ workItemId: null, issueNumber: null, issueTitle: null })).toBe(null);
+  });
+
+  it("offers the tasks named in the feed, newest first, then those seen before, once each", () => {
+    const row = (workItemId: string | null, issueNumber: number | null, issueTitle: string | null) => ({ workItemId, issueNumber, issueTitle });
+    const rows = [row("b", 8, "Repair deploy"), row(null, null, null), row("a", 7, "Fix login"), row("b", 8, "Repair deploy"), row("gone", null, null)];
+    expect(recentTasks(rows)).toEqual([{ id: "b", label: "#8 Repair deploy" }, { id: "a", label: "#7 Fix login" }]);
+    expect(recentTasks([row("a", 7, "Fix login")], [{ id: "c", label: "Old" }, { id: "a", label: "#7 stale" }])).toEqual([{ id: "a", label: "#7 Fix login" }, { id: "c", label: "Old" }]);
+    expect(recentTasks([], [{ id: "a", label: "A" }, { id: "b", label: "B" }], 1)).toEqual([{ id: "a", label: "A" }]);
   });
 
   it("splits thread ids out of messages and actors, keeping the text around them verbatim", () => {

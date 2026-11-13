@@ -41,3 +41,17 @@ export function splitThreadIds(text: string): (string | { thread: string })[] {
   if (last < text.length) parts.push(text.slice(last));
   return parts;
 }
+
+/** A task the Activity feed can be narrowed to. */
+export type ActivityTask = { id: string; label: string };
+
+/** Tasks named in `rows` (newest first), then those seen `before` that are not among them, at most `max`. */
+export function recentTasks(rows: readonly { workItemId: string | null; issueNumber?: number | null; issueTitle?: string | null }[], before: readonly ActivityTask[] = [], max = 20): ActivityTask[] {
+  const tasks = new Map<string, ActivityTask>();
+  for (const row of rows) {
+    const label = taskLabel(row);
+    if (label && row.workItemId && !tasks.has(row.workItemId)) tasks.set(row.workItemId, { id: row.workItemId, label });
+  }
+  for (const task of before) if (!tasks.has(task.id)) tasks.set(task.id, task);
+  return [...tasks.values()].slice(0, max);
+}

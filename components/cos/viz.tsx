@@ -3,7 +3,7 @@
 // dataviz palette: an ordinal blue ramp for pipeline stages and the fixed status palette.
 // Status color always ships with an icon and a label.
 import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
-import type { ReactNode, RefObject } from "react";
+import type { ReactNode, Ref, RefObject } from "react";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
@@ -128,11 +128,12 @@ export function compact(n: number): string {
 
 // ---------- chrome ----------
 
-export function Panel({ title, icon, actions, children, className, dim }: { title: string; icon?: string; actions?: ReactNode; children: ReactNode; className?: string; dim?: boolean }) {
+/** `headingRef` makes the heading focusable from script (tabIndex -1), for moving focus to the panel. */
+export function Panel({ title, icon, actions, children, className, dim, headingRef }: { title: string; icon?: string; actions?: ReactNode; children: ReactNode; className?: string; dim?: boolean; headingRef?: Ref<HTMLHeadingElement> }) {
   return (
     <section className={cn("flex min-w-0 flex-col rounded-xl border border-border bg-card", className)}>
       <header className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3.5 pb-2">
-        <h2 className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
+        <h2 ref={headingRef} tabIndex={headingRef ? -1 : undefined} className="flex min-w-0 items-center gap-2 rounded text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           {icon ? <Icon name={icon} fallback="Circle" className="size-4 text-muted-foreground" aria-hidden /> : null}
           {title}
         </h2>
