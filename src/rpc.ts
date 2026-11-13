@@ -49,6 +49,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
             stallThresholdMinutes: config.values.stallThresholdMinutes,
             maxConcurrentTotal: config.values.maxConcurrentTotal,
             intakeIntervalMinutes: config.values.intakeIntervalMinutes,
+            archiveThreadsOnDone: config.values.archiveThreadsOnDone,
           },
         };
       },

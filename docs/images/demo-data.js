@@ -80,7 +80,7 @@
   const R = {
     cos_roster: (i) => ({ entries: i && i.includeDone ? [...active, ...done] : active }),
     cos_stats: () => ({ byStatus: { queued: 1, agent: 2, cos: 1, ci: 1, ready: 0, waiting_on_human: 1, retrying: 0, blocked: 0, done: 34, failed: 3 }, daily, windowDays: 14, startedInWindow: 43, doneInWindow: 34, failedInWindow: 3, medianCycleMinutes: 38, totalTracked: 43 }),
-    cos_overview: () => ({ paused: false, occupiedCapacity: 4, tokenSource: "gh-cli", errors: [], warnings: [], settings: { stallThresholdMinutes: 30, maxConcurrentTotal: 8, intakeIntervalMinutes: 10 }, repos: [
+    cos_overview: () => ({ paused: false, occupiedCapacity: 4, tokenSource: "gh-cli", errors: [], warnings: [], settings: { stallThresholdMinutes: 30, maxConcurrentTotal: 8, intakeIntervalMinutes: 10, archiveThreadsOnDone: true }, repos: [
       { key: "acme/storefront", projectId: "proj_storefront", maxConcurrent: 3, active: 2, labels: ["agent-ready"], intake: true, paused: false, workflowId: "careful", workflowName: "Careful", stepNames: names },
       { key: "acme/api", projectId: "proj_api", maxConcurrent: 2, active: 2, labels: ["agent-ready", "backend"], intake: true, paused: false, workflowId: "careful", workflowName: "Careful", stepNames: names } ] }),
     cos_log: () => ({ entries: [

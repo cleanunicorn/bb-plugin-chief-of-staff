@@ -410,7 +410,7 @@ The same settings, as stored:
 | `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. |
 | `defaultProviderId`, `defaultModel` | Used when a repo does not set its own. |
 | `notifyPush` | Push notifications through the push-notifications plugin. |
-| `archiveThreadsOnDone` | Archive a task's builder and step threads once its workflow is done (default on). Failed tasks keep theirs. |
+| `archiveThreadsOnDone` | Archive a task's builder and step threads once its workflow is done or you mark it done (default on). Failed tasks keep theirs. |
 
 ### Repositories
 
