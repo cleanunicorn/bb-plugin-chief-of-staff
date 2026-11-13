@@ -171,6 +171,17 @@ it("shows every failing query once, even when they share a message", async () =>
   expect(container.textContent!.split("backend down")).toHaveLength(2);
 });
 
+it("shows a finished task's PR state next to its PR link", async () => {
+  const finished = (id: string, title: string, state: "merged" | "open") => entry({ id, issueTitle: title, detail: "done", status: "done", actor: "none", current: [], prNumber: 7, prUrl: "https://github.com/acme/app/pull/7", pr: { state, draft: false, checks: state === "open" ? "failing" : null, review: null, checkedAt: new Date().toISOString() } });
+  mocks.entries = [finished("a", "Merged task", "merged"), finished("b", "Open task", "open")];
+  await mount();
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Show finished"))!.click());
+  const card = (title: string) => Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes(title))!;
+  expect(card("Merged task").querySelector("[data-pr-state]")!.textContent).toBe("Merged");
+  // The card shows the state alone; checks and review are on the Pull requests list.
+  expect(card("Open task").querySelector("[data-pr-state]")!.textContent).toBe("Open");
+});
+
 it("still shows the empty pull request state when nothing failed", async () => {
   mocks.entries = [];
   await mount(<ReposTab />);

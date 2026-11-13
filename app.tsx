@@ -26,7 +26,7 @@ import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
-import { PullRequestList } from "@/components/cos/prState";
+import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 
 type Contract = typeof rpcContract;
@@ -437,6 +437,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
             <UrlLink href={entry.prUrl}>#{entry.prNumber}</UrlLink>
           </span>
         ) : null}
+        {entry.prUrl && entry.pr ? <PrStatePill pr={entry.pr} compact /> : null}
         {entry.waitingKind === "approval" ? (
           <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
             <Icon name="Check" fallback="Circle" aria-hidden /> Approve
