@@ -379,9 +379,27 @@ export class GitHubClient {
     return this.paginate(`/repos/${owner}/${repo}/pulls/${number}/reviews`, 2);
   }
 
-  async listCheckRuns(owner: string, repo: string, ref: string): Promise<CheckRun[]> {
-    const result = await this.request<{ check_runs: CheckRun[] }>("GET", `/repos/${owner}/${repo}/commits/${ref}/check-runs?per_page=100`);
-    return result.check_runs;
+  /**
+   * Every check run on a ref, up to `maxPages` pages of 100. `complete` is
+   * false when the list stopped at the cap or holds fewer runs than GitHub
+   * counts, so a caller never takes a partial list for the whole.
+   */
+  async listCheckRuns(owner: string, repo: string, ref: string, maxPages = 10): Promise<{ runs: CheckRun[]; total: number; complete: boolean }> {
+    const path = `/repos/${owner}/${repo}/commits/${ref}/check-runs`;
+    const runs: CheckRun[] = [];
+    let total = 0;
+    let url: string | null = `${path}?per_page=100`;
+    let pages = 0;
+    while (url && pages < maxPages) {
+      const sent = await this.#send("GET", url);
+      const page = JSON.parse(sent.text) as { total_count?: number; check_runs: CheckRun[] };
+      runs.push(...page.check_runs);
+      total = Math.max(total, page.total_count ?? 0);
+      url = linkUrl(sent.headers, "next");
+      pages += 1;
+    }
+    if (url) this.#log(`GitHub list ${path} truncated at ${maxPages} page${maxPages === 1 ? "" : "s"}`);
+    return { runs, total: Math.max(total, runs.length), complete: !url && runs.length >= total };
   }
 
   getCombinedStatus(owner: string, repo: string, ref: string): Promise<CombinedStatus> {
@@ -389,12 +407,14 @@ export class GitHubClient {
   }
 
   async ciSummary(owner: string, repo: string, ref: string): Promise<CiSummary> {
-    const [checks, status] = await Promise.all([this.listCheckRuns(owner, repo, ref), this.getCombinedStatus(owner, repo, ref)]);
+    const [list, status] = await Promise.all([this.listCheckRuns(owner, repo, ref), this.getCombinedStatus(owner, repo, ref)]);
+    const checks = list.runs;
     const failed = checks
       .filter((c) => c.status === "completed" && c.conclusion && ["failure", "timed_out", "cancelled", "action_required"].includes(c.conclusion))
       .map((c) => ({ name: c.name, url: c.html_url, runId: runIdFromUrl(c.html_url ?? c.details_url ?? "") }));
-    const pending = checks.some((c) => c.status !== "completed") || status.state === "pending";
-    const total = checks.length + status.total_count;
+    // A run past the pages read may still be running or red: never call a partial list green.
+    const pending = !list.complete || checks.some((c) => c.status !== "completed") || status.state === "pending";
+    const total = list.total + status.total_count;
     if (total === 0) return { state: "no_checks", failed: [], total: 0 };
     if (failed.length || status.state === "failure" || status.state === "error") return { state: "failing", failed, total };
     if (pending) return { state: "pending", failed: [], total };
