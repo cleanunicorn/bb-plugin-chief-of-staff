@@ -2,10 +2,11 @@ import reorderedMigrations from "./fixtures/migrations-reordered-pause.json";
 import previousMigrations from "./fixtures/migrations-before-pause.json";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { MIGRATIONS, migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
+import { MIGRATIONS, NO_WORKFLOW, migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
 import { DEFAULT_POLICY, freshNode } from "../src/machine";
 import { workflowSchema } from "../src/workflow";
-import { dispatch, settleJobs, watchCi } from "../src/delivery";
+import { dispatch, replayDeferred, settleJobs, watchCi } from "../src/delivery";
+import { itemAction } from "../src/rpc";
 import { tickItems } from "../src/sync";
 import type { Cos } from "../src/context";
 
@@ -95,6 +96,49 @@ describe("shipping repair admission", () => {
     await tickItems(cos, "test");
     expect(store.getWorkItem("a")!.status).toBe("agent");
     expect(JSON.stringify(host.harness.inspection.sdk.callsTo("threads.send"))).toContain("retry manually");
+  });
+
+  describe("closing a task by hand (#47)", () => {
+    it("closes a task queued for capacity, and nothing starts it later", async () => {
+      const { cos, store, add, host } = setup();
+      add("a", true); add("b");
+      await dispatch(cos, "a", { type: "ci_failing", log: "red check" }, "test");
+      expect(store.getWorkItem("a")).toMatchObject({ status: "queued", queuedEvent: { type: "ci_failing" } });
+      await itemAction(cos, "a", "mark_done", "test");
+      expect(store.getWorkItem("a")).toMatchObject({ status: "done", queuedEvent: null, lastError: "Marked done" });
+      store.updateWorkItem("b", { status: "done" });
+      await tickItems(cos, "test");
+      await tickItems(cos, "test");
+      expect(store.getWorkItem("a")!.status).toBe("done");
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    });
+
+    it("closes a task at once in a paused project; events held by the pause change nothing", async () => {
+      const { cos, store, add, host, db } = setup();
+      const deferred = () => (db.prepare("SELECT COUNT(*) AS n FROM deferred_events").get() as { n: number }).n;
+      add("a");
+      store.setRepoPaused("a/b", true);
+      await dispatch(cos, "a", { type: "turn_ended", step: "build", agent: 0, round: 1, report: null, question: null }, "test");
+      expect(deferred()).toBe(1);
+      await itemAction(cos, "a", "mark_done", "test");
+      expect(store.getWorkItem("a")).toMatchObject({ status: "done", lastError: "Marked done" });
+      store.setRepoPaused("a/b", false);
+      await replayDeferred(cos);
+      expect(deferred()).toBe(0);
+      expect(store.getWorkItem("a")!.status).toBe("done");
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    });
+
+    it("closes a task without workflow steps", async () => {
+      const { cos, store, add } = setup();
+      add("a");
+      store.updateWorkItem("a", { workflow: NO_WORKFLOW, nodes: {}, waitingKind: "question", waitingReason: "old" });
+      await itemAction(cos, "a", "mark_failed", "test");
+      expect(store.getWorkItem("a")).toMatchObject({ status: "failed", lastError: "Marked failed", waitingKind: null, waitingReason: null });
+      await itemAction(cos, "a", "mark_done", "test");
+      expect(store.getWorkItem("a")).toMatchObject({ status: "done", lastError: "Marked done" });
+      expect(store.getWorkItem("a")!.finishedAt).not.toBeNull();
+    });
   });
 
   it.each([
