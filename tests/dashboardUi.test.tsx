@@ -94,6 +94,13 @@ it("names the workflow summary as a spaced sentence for screen readers", async (
   expect(summary.textContent!.replace(/\s+/g, " ").trim()).toBe("Workflow progress: 1/3 steps complete");
 });
 
+it("pads the Workflow progress disclosure to a touch-sized hit area on a coarse pointer only", async () => {
+  const step = { id: "Plan", name: "Plan", depth: 0, status: "done" as const, type: "agent" as const, phase: null, agents: 1, reported: 0, nudged: 0, attempts: 0, round: 1, waitingKind: null, retrying: false };
+  mocks.entries = [entry({ steps: [step] })];
+  await mount();
+  expect(container.querySelector("article details > summary")!.className.split(/\s+/)).toEqual(expect.arrayContaining(["py-0.5", "pointer-coarse:py-2"]));
+});
+
 // ---------- touch sizes (#116) ----------
 // jsdom has no layout, so these pin the structure and the coarse-pointer classes; the sizes are measured in a browser.
 const classes = (el: Element) => el.className.split(/\s+/);
