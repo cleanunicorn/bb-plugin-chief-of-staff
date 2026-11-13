@@ -117,7 +117,7 @@ it("shows the view switch as icons, named by their text", async () => {
 it("scrolls the canvas and the overview as one column, with no footer until a step is selected", async () => {
   expect(classes(row())).toEqual(expect.arrayContaining(["flex-col", "overflow-y-auto", "overscroll-contain"]));
   expect(classes(row()).some((c) => c.startsWith("md:"))).toBe(false);
-  expect(classes(canvas())).toEqual(expect.arrayContaining(["h-[min(50dvh,24rem)]", "min-h-[16rem]", "flex-none"]));
+  expect(classes(canvas())).toEqual(expect.arrayContaining(["h-[min(45dvh,24rem)]", "min-h-[16rem]", "flex-none"]));
   expect(classes(canvas())).not.toContain("flex-1");
   expect(classes(aside()).some((c) => c.startsWith("max-h-") || c.startsWith("md:") || c === "overflow-y-auto")).toBe(false);
   expect(classes(aside())).toContain("shrink-0");
@@ -160,7 +160,7 @@ it("brings the step panel into view when a selection puts it below the visible p
 it("keeps the fill layout in Full screen, with only the phone header and no footer hint", async () => {
   await click(button("Full screen"));
   expect(classes(canvas())).toEqual(expect.arrayContaining(["flex-1", "min-h-[16rem]"]));
-  expect(classes(canvas())).not.toContain("h-[min(50dvh,24rem)]");
+  expect(classes(canvas())).not.toContain("h-[min(45dvh,24rem)]");
   expect(classes(row())).toEqual(expect.arrayContaining(["flex-col", "md:flex-row"]));
   expect(classes(row())).not.toContain("overflow-y-auto");
   expect(classes(aside())).toEqual(expect.arrayContaining(["max-h-[45%]", "overflow-y-auto"]));
@@ -168,5 +168,5 @@ it("keeps the fill layout in Full screen, with only the phone header and no foot
   expect(title().parentElement!.contains(button("Exit full screen"))).toBe(true);
   expect(footer()).toBeNull();
   await click(button("Exit full screen"));
-  expect(classes(canvas())).toContain("h-[min(50dvh,24rem)]");
+  expect(classes(canvas())).toContain("h-[min(45dvh,24rem)]");
 });

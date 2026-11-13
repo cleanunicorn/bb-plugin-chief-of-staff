@@ -298,7 +298,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
       {/* On a phone the row is the one scroller: the canvas at a set height, then the list or overview at natural height. */}
       {wf && data ? <div ref={column} className={cn("flex min-h-0 flex-1", phoneColumn ? "flex-col gap-2 overflow-y-auto overscroll-contain" : short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
         {mode === "canvas" ? (
-          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={phoneColumn ? "h-[min(50dvh,24rem)] min-h-[16rem] min-w-0 flex-none" : cn("h-auto min-w-0 flex-1", short ? "min-h-0" : "min-h-[16rem]")} />
+          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={phoneColumn ? "h-[min(45dvh,24rem)] min-h-[16rem] min-w-0 flex-none" : cn("h-auto min-w-0 flex-1", short ? "min-h-0" : "min-h-[16rem]")} />
         ) : (
           <ol aria-label="Workflow steps" className={cn("flex min-w-0 flex-col gap-1.5 p-px", phoneColumn ? "flex-none" : "min-h-0 flex-1 overflow-y-auto")}>
             {topoOrder(wf).map((stepId) => {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The task workflow view reads on phones.** Below 640 px the sheet header
+  gives the task's repository, number and title a full-width line, the
+  Canvas/List switch shows icons only, and the overview scrolls with the
+  canvas instead of in a small box, so the thread, issue and PR links are in
+  reach. The "Select a step…" footer hint is no longer repeated there.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
