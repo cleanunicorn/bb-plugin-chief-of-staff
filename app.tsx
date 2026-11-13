@@ -657,6 +657,7 @@ export function PipelineTab() {
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}
+              onShowTable={() => setThroughputTable(true)}
               rows={s.daily.map((d) => ({ date: d.date, done: d.done, failed: d.failed }))}
               xKey="date"
               formatX={fmtDay}

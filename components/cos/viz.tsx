@@ -5,6 +5,7 @@
 import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { Icon } from "@/components/ui/icon";
+import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
 import { cn } from "@/lib/utils";
 
 export type Mode = "light" | "dark";
@@ -224,8 +225,13 @@ export interface Series {
   icon?: string;
 }
 
-export function ColumnChart<Row extends Record<string, number | string>>({ rows, series, xKey, formatX, height = 120, label }: { rows: Row[]; series: Series[]; xKey: keyof Row; formatX: (v: string) => string; height?: number; label: string }) {
+/**
+ * A stacked column chart. On a fine pointer each column is a focusable button with a tooltip. On a coarse pointer the
+ * columns are too narrow to tap, so they are inert; with `onShowTable`, the whole plot becomes one button that calls it.
+ */
+export function ColumnChart<Row extends Record<string, number | string>>({ rows, series, xKey, formatX, height = 120, label, onShowTable }: { rows: Row[]; series: Series[]; xKey: keyof Row; formatX: (v: string) => string; height?: number; label: string; onShowTable?: () => void }) {
   const { tip, show, hide } = useTooltip();
+  const coarse = usePointerCoarse();
   const totals = rows.map((r) => series.reduce((a, s) => a + Number(r[s.key] ?? 0), 0));
   const rawMax = Math.max(1, ...totals);
   const step = rawMax <= 4 ? 1 : rawMax <= 10 ? 2 : rawMax <= 25 ? 5 : 10;
@@ -267,6 +273,17 @@ export function ColumnChart<Row extends Record<string, number | string>>({ rows,
                 </span>
               );
               const xPct = ((i + 0.5) / rows.length) * 100;
+              const bars = (
+                <span className="flex w-full max-w-6 flex-col-reverse gap-0.5">
+                  {series.map((s, si) => {
+                    const v = Number(r[s.key] ?? 0);
+                    if (!v) return null;
+                    const isTop = series.slice(si + 1).every((n) => !Number(r[n.key] ?? 0));
+                    return <span key={s.key} className={cn("block w-full", isTop && "rounded-t-[4px]")} style={{ height: (v / max) * height - 2, minHeight: 2, background: s.color }} />;
+                  })}
+                </span>
+              );
+              if (coarse) return <span key={x} className="flex h-full flex-1 items-end justify-center">{bars}</span>;
               return (
                 <button
                   key={x}
@@ -278,14 +295,7 @@ export function ColumnChart<Row extends Record<string, number | string>>({ rows,
                   onMouseLeave={hide}
                   onBlur={hide}
                 >
-                  <span className="flex w-full max-w-6 flex-col-reverse gap-0.5">
-                    {series.map((s, si) => {
-                      const v = Number(r[s.key] ?? 0);
-                      if (!v) return null;
-                      const isTop = series.slice(si + 1).every((n) => !Number(r[n.key] ?? 0));
-                      return <span key={s.key} className={cn("block w-full", isTop && "rounded-t-[4px]")} style={{ height: (v / max) * height - 2, minHeight: 2, background: s.color }} />;
-                    })}
-                  </span>
+                  {bars}
                 </button>
               );
             })}
@@ -297,6 +307,9 @@ export function ColumnChart<Row extends Record<string, number | string>>({ rows,
               </span>
             ))}
           </div>
+          {coarse && onShowTable ? (
+            <button type="button" aria-label="Show throughput as a table" className="absolute inset-0 z-10 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" onClick={onShowTable} />
+          ) : null}
         </div>
       </div>
       <Legend items={series.map((s) => ({ label: s.label, color: s.color, icon: s.icon }))} />
@@ -337,7 +350,7 @@ export function DataTable({ columns, rows }: { columns: string[]; rows: (string 
 
 export function ViewToggle({ table, onChange }: { table: boolean; onChange: (table: boolean) => void }) {
   return (
-    <div className="flex rounded-md border border-border p-0.5" role="group" aria-label="View">
+    <div className="flex rounded-md border border-border p-0.5 pointer-coarse:gap-1" role="group" aria-label="View">
       {([false, true] as const).map((t) => (
         <button
           key={String(t)}
@@ -345,7 +358,7 @@ export function ViewToggle({ table, onChange }: { table: boolean; onChange: (tab
           aria-pressed={table === t}
           title={t ? "Table view" : "Chart view"}
           onClick={() => onChange(t)}
-          className={cn("rounded-[5px] p-1 text-muted-foreground hover:text-foreground", table === t && "bg-state-active text-foreground")}
+          className={cn("rounded-[5px] p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:p-2.5", table === t && "bg-state-active text-foreground")}
         >
           <Icon name={t ? "Table" : "ChartColumn"} fallback={t ? "List" : "BarChart3"} className="size-3.5" aria-label={t ? "Table view" : "Chart view"} />
         </button>

@@ -7,7 +7,7 @@ import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
@@ -18,7 +18,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     return {
-      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -40,7 +40,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.daily = []; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -130,6 +130,16 @@ it("keeps Resume and Retry step at touch height", async () => {
   await mount();
   const retry = Array.from(container.querySelectorAll("article button")).find((b) => b.textContent?.trim() === "Retry step")!;
   expect(classes(retry)).toContain("pointer-coarse:h-10");
+});
+
+it("opens the Throughput table when the chart is tapped on a coarse pointer", async () => {
+  mocks.entries = [];
+  mocks.daily = Array.from({ length: 14 }, (_, i) => ({ date: `2026-11-${String(i + 1).padStart(2, "0")}`, started: 1, done: 1, failed: 0 }));
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)", media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+  await mount();
+  expect(container.querySelector("table")).toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Show throughput as a table"]')!.click());
+  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed"]);
 });
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
