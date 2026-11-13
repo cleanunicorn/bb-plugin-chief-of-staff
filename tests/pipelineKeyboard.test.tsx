@@ -7,7 +7,7 @@ import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 import { act } from "react";
-import { container, mount, tabbables, unmount } from "./dom";
+import { click, container, mount, tabbables, tabbablesAfter, unmount } from "./dom";
 
 const DAYS = Array.from({ length: 14 }, (_, i) => ({ date: `2026-11-${String(i + 1).padStart(2, "0")}`, started: 1, done: i % 3, failed: i === 2 ? 1 : 0 }));
 
@@ -41,6 +41,7 @@ function tasks(count: number): RosterEntry[] {
 }
 
 const page = () => mount(<><PipelineTab /><ActivityFeed /></>);
+const heading = (text: string) => Array.from(container.querySelectorAll("h2")).find((h) => h.textContent?.trim() === text)!;
 
 afterEach(async () => {
   await unmount();
@@ -88,4 +89,37 @@ it("names the chart and table view toggles on the buttons themselves", async () 
   await page();
   const toggles = Array.from(container.querySelectorAll('[role="group"][aria-label="View"] button'));
   expect(toggles.map((b) => b.getAttribute("aria-label"))).toEqual(["Chart view", "Table view"]);
+});
+
+// ---------- M2: skip link past the task grid ----------
+
+const LOGS: LogEntry[] = [
+  { id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review", actor: "event", repo: "acme/app", workItemId: "t0" },
+  { id: 2, at: new Date().toISOString(), level: "error", kind: "check", message: "Build failed", actor: "job", repo: "acme/app", workItemId: "t1" },
+];
+
+it("skips from Work overview past 50 tasks to Throughput, then reaches Activity in three tabs", async () => {
+  mocks.entries = tasks(50);
+  mocks.logs = LOGS;
+  await page();
+  const [skip] = tabbablesAfter(heading("Work overview"));
+  expect(skip?.tagName).toBe("A");
+  expect(skip!.textContent?.trim()).toBe("Skip to throughput and activity");
+  const target = document.getElementById(skip!.getAttribute("href")!.slice(1));
+  expect(target?.tagName).toBe("SECTION");
+  expect(target!.contains(heading("Throughput · last 14 days"))).toBe(true);
+
+  await click(skip!);
+  expect(document.activeElement).toBe(heading("Throughput · last 14 days"));
+
+  const next = tabbablesAfter(document.activeElement!).slice(0, 3);
+  expect(next.map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim())).toEqual(["Chart view", "Table view", "Problems only"]);
+});
+
+it("keeps the skip link when there are no tasks", async () => {
+  await page();
+  const [skip] = tabbablesAfter(heading("Work overview"));
+  expect(skip?.textContent?.trim()).toBe("Skip to throughput and activity");
+  await click(skip!);
+  expect(document.activeElement).toBe(heading("Throughput · last 14 days"));
 });

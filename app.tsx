@@ -491,6 +491,9 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
 
 // ---------- pipeline tab ----------
 
+/** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
+const THROUGHPUT_ID = "cos-throughput";
+
 export function PipelineTab() {
   const rpc = useRpc<Contract>();
   const now = useNow();
@@ -513,6 +516,7 @@ export function PipelineTab() {
   const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
+  const throughputHeading = useRef<HTMLHeadingElement>(null);
   const act = useCallback(
     async (id: string, action: ItemAction) => {
       setBusy((ids) => new Set(ids).add(id));
@@ -556,8 +560,21 @@ export function PipelineTab() {
   return (
     <div className="flex flex-col gap-4">
       <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="relative flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
+        {/* The first tab stop after the heading: past the filters and every task card (issue #115).
+            Focus moves by script; the hash is a fallback and must not reach the host's routing.
+            Visible on focus, positioned so it does not push the heading row around. */}
+        <a
+          href={`#${THROUGHPUT_ID}`}
+          onClick={(event) => {
+            event.preventDefault();
+            throughputHeading.current?.focus();
+          }}
+          className="sr-only rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-foreground shadow-sm focus:not-sr-only focus:absolute focus:top-full focus:left-0 focus:z-10 focus:mt-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          Skip to throughput and activity
+        </a>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="outline" aria-describedby="automation-scope" disabled={pausing || !overview.data} onClick={async () => {
             setPausing(true);
@@ -642,7 +659,7 @@ export function PipelineTab() {
       </Panel>
 
       <div className="grid gap-4 lg:grid-cols-5">
-        <Panel className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
+        <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
           {s ? <p className="mb-4 text-sm text-muted-foreground">
             {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
