@@ -33,7 +33,7 @@ function setup(opts: { gate?: boolean } = {}) {
   /** Thread id → its reply; default: tokens 1, cost 0.01. */
   const replies = new Map<string, Handler>();
   const statuses = new Map<string, string>();
-  const threadsList = vi.fn(async ({ threadIds }: { threadIds: string[] }) => threadIds.map((id) => ({ id, status: statuses.get(id) ?? "idle", title: id })));
+  const threadsList = vi.fn(async ({ threadIds }: { threadIds: string[] }) => threadIds.map((id) => ({ id, status: "active", runtime: { displayStatus: statuses.get(id) ?? "idle" }, title: id })));
   const eventsList = vi.fn(async (query: EventsQuery) => {
     calls.push(query);
     inFlight++;
