@@ -233,9 +233,10 @@ async function archiveItemThreads(cos: Cos, item: WorkItem, actor: string): Prom
 
 /** The stored patch for a transition: step states plus the status derived from them. */
 export function applyTransition(item: WorkItem, nodes: Nodes, patch: Partial<WorkItem>): Partial<WorkItem> {
+  // Closed stays closed (failed, or done by the workflow or by hand) unless the patch reopens it (retry, revive, rerun).
   const explicit = "status" in patch ? patch.status : item.status;
   const derived = deriveStatus({ status: explicit === "failed" ? "failed" : "queued", workflow: item.workflow }, nodes);
-  const status = explicit === "failed" ? "failed" : patch.status === "done" ? "done" : derived.status;
+  const status = explicit === "failed" || explicit === "done" ? explicit : derived.status;
   const fixAttempts = Object.values(nodes).reduce((sum, n) => sum + n.attempts, 0);
   const finished = status === "done" || status === "failed";
   return {
