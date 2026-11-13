@@ -22,6 +22,16 @@ export interface GitHubComment {
   created_at: string;
 }
 
+/** An issue timeline event; only the fields intake reads. */
+export interface GitHubIssueEvent {
+  event: string;
+  created_at: string;
+  /** For `labeled` and `unlabeled`. */
+  label?: { name: string };
+  /** For `assigned` and `unassigned`. */
+  assignee?: { login: string } | null;
+}
+
 export interface GitHubPull {
   number: number;
   title: string;
@@ -329,20 +339,37 @@ export class GitHubClient {
   async listIssueComments(owner: string, repo: string, number: number, opts: { newest?: number } = {}): Promise<GitHubComment[]> {
     if (opts.newest === undefined) return this.paginate(`/repos/${owner}/${repo}/issues/${number}/comments`, 3);
     const newest = Math.max(1, Math.min(100, opts.newest));
-    const first = await this.#send("GET", `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`);
-    const pages = [JSON.parse(first.text) as GitHubComment[]];
+    return (await this.#newestPages<GitHubComment>(`/repos/${owner}/${repo}/issues/${number}/comments`, newest)).slice(-newest);
+  }
+
+  /**
+   * The issue's latest events (labelled, assigned, ...), oldest first, in at
+   * most three requests: page 1, the last page, and the one before it when
+   * the last is not full. Older events of a long history are left out.
+   */
+  listIssueEvents(owner: string, repo: string, number: number): Promise<GitHubIssueEvent[]> {
+    return this.#newestPages(`/repos/${owner}/${repo}/issues/${number}/events`, 100);
+  }
+
+  /**
+   * The tail of an oldest-first list: page 1, the last page, and the page
+   * before it when the last holds fewer than `newest` entries. At most three requests.
+   */
+  async #newestPages<T>(path: string, newest: number): Promise<T[]> {
+    const first = await this.#send("GET", `${path}?per_page=100`);
+    const pages = [JSON.parse(first.text) as T[]];
     const last = linkUrl(first.headers, "last");
     const lastPage = last ? Number(new URL(last).searchParams.get("page")) : 1;
     if (last && lastPage > 1) {
-      const tail = JSON.parse((await this.#send("GET", last)).text) as GitHubComment[];
+      const tail = JSON.parse((await this.#send("GET", last)).text) as T[];
       if (tail.length < newest && lastPage > 2) {
         const before = new URL(last);
         before.searchParams.set("page", String(lastPage - 1));
-        pages[0] = JSON.parse((await this.#send("GET", before.toString())).text) as GitHubComment[];
+        pages[0] = JSON.parse((await this.#send("GET", before.toString())).text) as T[];
       }
       pages.push(tail);
     }
-    return pages.flat().slice(-newest);
+    return pages.flat();
   }
 
   createIssueComment(owner: string, repo: string, number: number, body: string): Promise<GitHubComment> {

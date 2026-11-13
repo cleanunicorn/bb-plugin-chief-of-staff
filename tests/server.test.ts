@@ -956,6 +956,125 @@ describe("chief-of-staff server", () => {
       await expectNotRestarted(FAILED);
       expect(listed()).toBe(before);
     });
+
+    describe("until a person relabels or reassigns the issue", () => {
+      const T0 = Date.parse("2026-11-06T10:00:00Z");
+      const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+      const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+      const MARKER = "intake:relabelChecked:acme/app#12";
+      const builderSpawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").filter(([args]) => String((args as { title?: string }).title).startsWith("cos/")).length;
+      const eventCalls = (n = 12) => ghCalls.filter((c) => c.method === "GET" && c.path === `/repos/acme/app/issues/${n}/events`).length;
+      const markLatestFailed = () => host.harness.behavior.callRpc("cos_item_action", { id: new StateStore(host.bb.storage.database()).latestForIssue("acme/app", 12)!.id, action: "mark_failed" });
+      /** The issue as listed now: `updatedAt` minutes after T0, with these events. */
+      const issueNow = (updatedAt: number, events: unknown[] | (() => { status?: number; body?: unknown; headers?: Record<string, string> }), more: unknown[] = []) => {
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(updatedAt) }, ...more] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = typeof events === "function" ? events : () => ({ body: events });
+      };
+      const labeled = (minutes: number, name = "agent-ready") => ({ event: "labeled", created_at: iso(minutes), label: { name } });
+      beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        // A restart edits the issue's status comment rather than post another.
+        ghRoutes["PATCH /repos/acme/app/issues/comments/2"] = () => ({ body: { id: 2, body: "", user: null, created_at: "" } });
+        let serial = 0;
+        host.harness.inspection.sdk.stub("threads.spawn", async (args: { title?: string }) => makeThreadResponse({ id: `${String(args.title).startsWith("cos/") ? "builder" : "step"}_${++serial}`, environmentId: "env_1" }));
+        // The first task starts at T0 and fails a minute later.
+        at(0);
+        await intake();
+        at(1);
+        await markLatestFailed();
+      });
+      afterEach(() => vi.useRealTimers());
+
+      it("starts again once after a filter label is added, then stays stopped", async () => {
+        issueNow(2, [{ event: "commented", created_at: iso(0) }, labeled(2)]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        expect(builderSpawns()).toBe(2);
+        expect(statusWrites()).toBe(2);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "active thread exists" }] });
+        at(4);
+        await markLatestFailed();
+        const calls = eventCalls();
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+        expect(eventCalls()).toBe(calls);
+        expect(builderSpawns()).toBe(2);
+      });
+
+      it.each([
+        ["the issue changed without a label event", [{ event: "referenced", created_at: iso(2) }]],
+        ["the label was added before the task finished", [labeled(0.5)]],
+        ["the label added is not one of the filter's", [labeled(2, "bug")]],
+      ])("stays stopped when %s, and asks GitHub once per issue update", async (_name, events) => {
+        issueNow(2, events);
+        at(3);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+        expect(eventCalls()).toBe(1);
+        expect(await host.bb.storage.kv.get(MARKER)).toEqual({ itemId: new StateStore(host.bb.storage.database()).latestForIssue("acme/app", 12)!.id, updatedAt: iso(2) });
+        await intake();
+        expect(eventCalls()).toBe(1);
+        // A later update is looked at again.
+        issueNow(2.5, events);
+        await intake();
+        expect(eventCalls()).toBe(2);
+        expect(builderSpawns()).toBe(1);
+      });
+
+      it("matches the label name regardless of case", async () => {
+        issueNow(2, [labeled(2, "Agent-Ready")]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("starts again after the filter's assignee is assigned again", async () => {
+        await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [], assignee: "dan" }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }) });
+        issueNow(2, [{ event: "assigned", created_at: iso(2), assignee: { login: "someone-else" } }]);
+        at(3);
+        expect((await intake()).started).toEqual([]);
+        issueNow(2.5, [{ event: "assigned", created_at: iso(2.5), assignee: { login: "Dan" } }]);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("makes no events request while the issue has not changed since the task finished", async () => {
+        issueNow(0.5, [labeled(0.5)]);
+        at(3);
+        expect(await intake()).toMatchObject({ skipped: [{ issue: 12, reason: FAILED }] });
+        await intake();
+        expect(eventCalls()).toBe(0);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+      });
+
+      it.each([500, 404])("skips only that issue when the events request fails with %i, and asks again next time", async (status) => {
+        const other = { ...issue, number: 13, title: "Other", html_url: "https://github.com/acme/app/issues/13" };
+        issueNow(2, () => ({ status, body: { message: "nope" } }), [other]);
+        at(3);
+        const result = await intake();
+        expect(result.skipped).toEqual([{ issue: 12, reason: FAILED }]);
+        expect(result.started.map((s) => s.issue)).toEqual([13]);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+        issueNow(2, [labeled(2)], [other]);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("stops the repository on a rate limit while reading the events", async () => {
+        const other = { ...issue, number: 13, title: "Other", html_url: "https://github.com/acme/app/issues/13" };
+        issueNow(2, () => ({ status: 429, headers: { "retry-after": "600" }, body: { message: "API rate limit exceeded" } }), [other]);
+        at(3);
+        const result = (await host.harness.behavior.callRpc("cos_intake_now", {}) as { results: { started: unknown[]; error?: string }[] }).results[0]!;
+        expect(result.error).toMatch(/rate limit/);
+        expect(result.started).toEqual([]);
+      });
+
+      it("reports a relabelled issue as a start in a dry run, and writes nothing", async () => {
+        issueNow(2, [labeled(2)]);
+        at(3);
+        expect((await intake(true)).started).toEqual([{ issue: 12, threadId: "(dry-run)" }]);
+        expect(items()).toHaveLength(1);
+        issueNow(2, []);
+        expect((await intake(true)).skipped).toEqual([{ issue: 12, reason: FAILED }]);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+        expect(items()).toHaveLength(1);
+      });
+    });
   });
 
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
