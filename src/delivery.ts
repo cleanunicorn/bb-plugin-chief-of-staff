@@ -692,8 +692,10 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
         if (runId) log += `\n\n${await github.getJobLogsForRun(repo.owner, repo.repo, runId).catch(unlessRateLimited(() => "(log download failed)"))}`;
         await cos.bb.storage.kv.set(CI_MARKER(item.id), pr.head.sha);
         await dispatch(cos, item.id, { type: "ci_failing", log: await cos.safe(log) }, actor);
-      } else if (ci.state === "passing" || (ci.state === "no_checks" && await noChecksSettled(cos, item.id, pr.head.sha))) {
-        if (item.nodes[ship.id]?.phase === "ci" || ship.action === "merge") await dispatch(cos, item.id, { type: "ci_passing" }, actor);
+      } else {
+        // No checks yet may be CI that has not registered: held pending until the grace runs out.
+        const green = ci.state === "passing" || (ci.state === "no_checks" && await noChecksSettled(cos, item.id, pr.head.sha));
+        if (green && (item.nodes[ship.id]?.phase === "ci" || ship.action === "merge")) await dispatch(cos, item.id, { type: "ci_passing" }, actor);
       }
     } catch (error) {
       // Every later request would be refused too; the sweep resumes after the reset.

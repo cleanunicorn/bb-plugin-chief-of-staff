@@ -381,8 +381,10 @@ export class GitHubClient {
 
   /**
    * Every check run on a ref, up to `maxPages` pages of 100. `complete` is
-   * false when the list stopped at the cap or holds fewer runs than GitHub
-   * counts, so a caller never takes a partial list for the whole.
+   * false when the list stopped at the cap, or is empty while GitHub counts
+   * runs, so a caller never takes a partial list for the whole. A last page
+   * that lists fewer runs than GitHub counts (re-runs, runs the token cannot
+   * see) is all there is to read: it is logged, not held pending for good.
    */
   async listCheckRuns(owner: string, repo: string, ref: string, maxPages = 10): Promise<{ runs: CheckRun[]; total: number; complete: boolean }> {
     const path = `/repos/${owner}/${repo}/commits/${ref}/check-runs`;
@@ -400,7 +402,7 @@ export class GitHubClient {
     }
     if (url) this.#log(`GitHub list ${path} truncated at ${maxPages} page${maxPages === 1 ? "" : "s"}`);
     else if (runs.length < total) this.#log(`GitHub list ${path} returned ${runs.length} of ${total} check runs`);
-    return { runs, total: Math.max(total, runs.length), complete: !url && runs.length >= total };
+    return { runs, total: Math.max(total, runs.length), complete: !url && (runs.length > 0 || total === 0) };
   }
 
   getCombinedStatus(owner: string, repo: string, ref: string): Promise<CombinedStatus> {

@@ -274,10 +274,17 @@ describe("CI summary over every page of check runs (#50)", () => {
     expect(await summary(checksFetch(1500, { 5: { conclusion: "failure" } }))).toMatchObject({ state: "failing", failed: [{ name: "check 5" }] });
   });
 
-  it("never passes a list shorter than the total GitHub reports", async () => {
+  // GitHub's count can exceed what it lists (re-runs, runs the token cannot see):
+  // holding the merge on it would hold it for good.
+  it("judges a list shorter than the total GitHub reports by the runs it lists, and logs it", async () => {
     const log = vi.fn();
-    expect(await summary(checksFetch(150, {}, 100), log)).toMatchObject({ state: "pending" });
+    expect(await summary(checksFetch(150, {}, 100), log)).toEqual({ state: "passing", failed: [], total: 150 });
     expect(log).toHaveBeenCalledWith("GitHub list /repos/acme/app/commits/abc/check-runs returned 100 of 150 check runs");
+    expect(await summary(checksFetch(150, { 90: { conclusion: "failure" } }, 100))).toMatchObject({ state: "failing" });
+  });
+
+  it("never passes an empty list GitHub counts runs for", async () => {
+    expect(await summary(checksFetch(2, {}, 0))).toMatchObject({ state: "pending", total: 2 });
   });
 
   // GitHub's combined status of a commit with no statuses is "pending" (checked on a real Actions-only head).
