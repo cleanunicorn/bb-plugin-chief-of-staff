@@ -341,8 +341,9 @@ function cardConfirm(kind: Confirmable, title: string, failed: boolean): { title
     case "restart":
       return {
         title: `Restart ‘${title}’ on a new thread?`,
-        // Server `retry` on a failed item only starts a writing step that was unfinished; otherwise it just reopens the task.
-        description: "This reopens the task. If a writing step was unfinished, an agent starts on it on a new thread and takes one of the task slots while it runs. The old thread is left as it is.",
+        // Server `retry` on a failed item reopens it, which usually takes a slot whether or not an agent starts. It
+        // restarts an unfinished writing step on a fresh thread; steps not yet started then run through the scheduler.
+        description: "This reopens the task, so it usually takes one of the task slots again. Chief of Staff carries on from where it stopped: an unfinished writing step restarts on a new thread, and steps that had not started run as usual. The old thread is left as it is.",
         confirmLabel: "Restart",
         action: "retry",
       };
@@ -368,15 +369,16 @@ function cardConfirm(kind: Confirmable, title: string, failed: boolean): { title
 
 function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; now: number }) {
   const navigate = useBbNavigate();
-  // The kind outlives the opening, so the dialog keeps its text while it animates closed.
-  const [confirming, setConfirming] = useState<{ kind: Confirmable; open: boolean }>({ kind: "mark_done", open: false });
-  const ask = (kind: Confirmable) => setConfirming({ kind, open: true });
+  // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
+  // refetch has changed the task's outcome under it.
+  const [confirming, setConfirming] = useState<{ kind: Confirmable; failed: boolean; open: boolean }>({ kind: "mark_done", failed: false, open: false });
+  const ask = (kind: Confirmable) => setConfirming({ kind, failed: entry.detail === "failed", open: true });
   const closeConfirm = () => setConfirming((c) => ({ ...c, open: false }));
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
-  const confirm = cardConfirm(confirming.kind, title, entry.detail === "failed");
+  const confirm = cardConfirm(confirming.kind, title, confirming.failed);
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);

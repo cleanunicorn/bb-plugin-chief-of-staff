@@ -416,3 +416,16 @@ it("still opens the workflow on the canvas from the Workflow button", async () =
   expect(toggle("Canvas").getAttribute("aria-pressed")).toBe("true");
   expect(sheet.querySelector('ol[aria-label="Workflow steps"]')).toBeNull();
 });
+
+it("keeps a failed task's Mark done text while the roster changes under the open confirm", async () => {
+  mocks.entries = [failed()];
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Mark done").click());
+  await tick();
+  // The same card, re-rendered from a refetched roster in which the task is no longer failed.
+  mocks.entries = [entry({ detail: "agent", status: "running" })];
+  await act(async () => { root.render(<PipelineTab />); });
+  expect(container.querySelector("article")!.textContent).not.toContain("failed");
+  expect(confirmDialog()!.textContent).toContain("recorded as done instead of failed");
+});
