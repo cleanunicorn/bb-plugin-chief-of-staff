@@ -4,8 +4,8 @@ import { migrationsForDatabase, StateStore, type NewWorkItem } from "../src/stat
 import { DEFAULT_POLICY, freshNode } from "../src/machine";
 import { workflowSchema } from "../src/workflow";
 import { settleJobs } from "../src/delivery";
-import { syncThreads } from "../src/sync";
-import { buildRoster } from "../src/roster";
+import { syncThreads, tickItems } from "../src/sync";
+import { buildRoster, detectStalls } from "../src/roster";
 import type { Cos } from "../src/context";
 
 // The engine loops (sync, tick, stall detection) must reach every active item,
@@ -121,7 +121,25 @@ describe("thread sync beyond the 200 newest items", () => {
   });
 });
 
-describe("roster cap", () => {
+describe("engine loops beyond the 200 newest items", () => {
+  it("restarts a lost job of an item older than the 200 newest", async () => {
+    const { cos, store, add, fill, advance, nowIso } = setup();
+    add("old");
+    store.updateWorkItem("old", { jobStartedAt: nowIso() });
+    fill(201);
+    advance(60 * 60_000);
+    await tickItems(cos, "test");
+    expect(store.listLog({ workItemId: "old" }).some((e) => e.kind === "job" && /not running/.test(e.message))).toBe(true);
+  });
+
+  it("flags a stalled item older than the 200 newest", async () => {
+    const { cos, add, fill, advance } = setup();
+    add("old");
+    advance(60 * 60_000);
+    fill(201);
+    expect(await detectStalls(cos, "test")).toEqual(["old"]);
+  });
+
   it("keeps the roster at 200 entries", async () => {
     const { cos, fill } = setup();
     fill(250);
