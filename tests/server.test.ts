@@ -1564,6 +1564,14 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ detail: "done", outcome: "marked_done", finishedAt: expect.any(String), activity: "Marked done" });
   });
 
+  it("reads a task marked failed by hand from its log, even with an error stored", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const { id } = await roster();
+    new StateStore(host.bb.storage.database()).updateWorkItem(id, { lastError: "push rejected" });
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+    expect(await roster()).toMatchObject({ detail: "failed", outcome: "marked_failed", lastError: "push rejected", activity: "Marked failed: push rejected" });
+  });
+
   it.each([
     { phase: "ci", merged: false, state: "open", expected: "done" },
     { phase: "ready", merged: true, state: "closed", expected: "done" },
