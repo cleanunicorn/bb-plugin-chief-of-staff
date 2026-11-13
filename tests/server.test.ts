@@ -957,6 +957,37 @@ describe("chief-of-staff server", () => {
       expect(listed()).toBe(before);
     });
 
+    describe("when the PR closes on GitHub before Chief of Staff notices", () => {
+      const T0 = Date.parse("2026-11-06T10:00:00Z");
+      const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+      const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+      beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
+      afterEach(() => vi.useRealTimers());
+
+      it.each([
+        ["closed", { state: "closed", closed_at: iso(1) }, "failed"],
+        ["merged", { state: "closed", merged: true, merged_at: iso(1), closed_at: iso(1) }, "done"],
+      ] as const)("counts a relabel made after the PR was %s, before the CI watch saw it", async (_name, closed, status) => {
+        await host.harness.behavior.setSettings({ workflow: merging });
+        ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+        ghRoutes["PATCH /repos/acme/app/issues/comments/2"] = () => ({ body: { id: 2, body: "", user: null, created_at: "" } });
+        at(0);
+        await intake();
+        await report("build"); await idle(); await sweep();
+        expect(items()[0]).toMatchObject({ status: "ready" });
+        // Closed on GitHub at 1, relabelled at 2; the CI watch notices at 3.
+        currentPull = { ...pull, ...closed };
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(2) }] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = () => ({ body: [{ event: "labeled", created_at: iso(2), label: { name: "agent-ready" } }] });
+        at(3);
+        await sweep();
+        expect(items()[0]).toMatchObject({ status, finishedAt: iso(3), prState: { closedAt: iso(1) } });
+        at(4);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        expect(items()).toHaveLength(2);
+      });
+    });
+
     describe("until a person relabels or reassigns the issue", () => {
       const T0 = Date.parse("2026-11-06T10:00:00Z");
       const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();

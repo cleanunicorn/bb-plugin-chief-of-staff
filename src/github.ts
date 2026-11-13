@@ -40,6 +40,7 @@ export interface GitHubPull {
   draft: boolean;
   merged: boolean;
   merged_at: string | null;
+  closed_at?: string | null;
   html_url: string;
   head: { ref: string; sha: string };
   base: { ref: string };
@@ -103,9 +104,10 @@ export function reduceReviews(reviews: readonly Review[]): ReviewVerdict {
  * verdict when they were read (they are kept for open PRs only). List
  * endpoints can omit `merged`, so a merge time also counts.
  */
-export function prStateFrom(pr: Pick<GitHubPull, "number" | "state" | "draft" | "merged" | "merged_at">, now: Date, ci?: CiSummary, review?: ReviewVerdict): PrState {
+export function prStateFrom(pr: Pick<GitHubPull, "number" | "state" | "draft" | "merged" | "merged_at" | "closed_at">, now: Date, ci?: CiSummary, review?: ReviewVerdict): PrState {
   const state = pr.merged || pr.merged_at ? "merged" : pr.state === "closed" ? "closed" : "open";
   const open = state === "open";
+  const closedAt = open ? null : (pr.merged_at ?? pr.closed_at ?? null);
   return {
     number: pr.number,
     state,
@@ -113,6 +115,7 @@ export function prStateFrom(pr: Pick<GitHubPull, "number" | "state" | "draft" | 
     checks: open && ci ? (ci.state === "no_checks" ? "none" : ci.state) : null,
     review: open ? (review ?? null) : null,
     checkedAt: now.toISOString(),
+    ...(closedAt ? { closedAt } : {}),
   };
 }
 

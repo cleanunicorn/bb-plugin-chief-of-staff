@@ -211,7 +211,16 @@ function finishedReason(latest: WorkItem | null): string | null {
   return "previous task failed; retry it or relabel the issue";
 }
 
-const finishTime = (item: WorkItem) => Date.parse(item.finishedAt ?? item.updatedAt);
+/**
+ * When the task ended, for telling a later relabel from an earlier one. A PR
+ * closed or merged on GitHub ended it then, even though Chief of Staff only
+ * noticed (and set finishedAt) at its next CI watch.
+ */
+function finishTime(item: WorkItem): number {
+  const finished = Date.parse(item.finishedAt ?? item.updatedAt);
+  const closed = item.prState?.closedAt ? Date.parse(item.prState.closedAt) : NaN;
+  return Number.isNaN(closed) ? finished : Math.min(finished, closed);
+}
 
 /** KV key recording that an issue's events were read for its finished task, at an issue update. */
 const relabelKey = (repo: string, issueNumber: number) => `intake:relabelChecked:${repo}#${issueNumber}`;

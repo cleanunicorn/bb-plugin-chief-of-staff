@@ -191,6 +191,15 @@ describe("cached pull request state", () => {
     expect(store.listWorkItems()[0]!.prState?.state).toBe("open");
   });
 
+  it("keeps when GitHub closed the PR", () => {
+    const { store, add } = storeSetup();
+    add("x", { prNumber: 7, status: "failed" });
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z", { state: "closed", checks: null, review: null, closedAt: "2026-11-12T10:30:00Z" }));
+    expect(store.getWorkItem("x")!.prState).toMatchObject({ state: "closed", closedAt: "2026-11-12T10:30:00Z" });
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z"));
+    expect(store.getWorkItem("x")!.prState).not.toHaveProperty("closedAt");
+  });
+
   it("drops details it cannot read", () => {
     const { store, add, db } = storeSetup();
     add("x", { prNumber: 7 });

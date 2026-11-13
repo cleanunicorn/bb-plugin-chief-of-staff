@@ -350,6 +350,13 @@ describe("prStateFrom", () => {
     expect(prStateFrom(pr({ state: "closed" }), at)).toMatchObject({ state: "closed" });
   });
 
+  it("records when GitHub merged or closed the PR, and nothing for an open one", () => {
+    expect(prStateFrom(pr({ state: "closed", merged: true, merged_at: "2026-11-13T09:00:00Z", closed_at: "2026-11-13T09:00:00Z" }), at).closedAt).toBe("2026-11-13T09:00:00Z");
+    expect(prStateFrom(pr({ state: "closed", closed_at: "2026-11-13T08:00:00Z" }), at).closedAt).toBe("2026-11-13T08:00:00Z");
+    expect(prStateFrom(pr({ closed_at: "2026-11-13T08:00:00Z" }), at)).not.toHaveProperty("closedAt");
+    expect(prStateFrom(pr({ state: "closed" }), at)).not.toHaveProperty("closedAt");
+  });
+
   it("treats a merge time as merged when the list endpoint omits `merged`", () => {
     const listed = { number: 7, state: "closed", draft: false, merged_at: "2026-11-13T09:00:00Z" } as unknown as GitHubPull;
     expect(prStateFrom(listed, at).state).toBe("merged");
