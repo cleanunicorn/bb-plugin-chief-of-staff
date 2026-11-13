@@ -3,7 +3,8 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { occupiesCapacity, ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX, type WaitingKind, type WorkItem } from "./state";
+import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
+import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";

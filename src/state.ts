@@ -8,6 +8,7 @@
 // removed a finished item's step details; cleared when the item is active again).
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { ROSTER_FINISHED_LIMIT } from "../rpcContract";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
 import { normalizeWorkflow, type Workflow } from "./workflow";
 
@@ -263,10 +264,6 @@ const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", 
 const activeIn = (expr: string) => `${expr} IN (${ACTIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`;
 const ACTIVE_IN = activeIn("status");
 const FINISHED_IN = "status IN ('done', 'failed')";
-/** Finished items per roster page when the caller does not say. */
-export const ROSTER_FINISHED_LIMIT = 50;
-/** Most finished items one roster page may ask for. */
-export const ROSTER_FINISHED_MAX = 500;
 
 /** Opaque roster cursor: the last finished item's sort key and id. */
 function encodeRosterCursor(at: string, id: string): string {
@@ -544,8 +541,10 @@ export class StateStore {
    * The roster's items: every active item (newest created first), then one
    * page of finished items (most recently finished first). A `before` cursor
    * from an earlier page returns only the next finished page. Finished items
-   * are keyed by COALESCE(finished_at, updated_at), as indexed, with the id as
-   * the tie-break so items finished in the same tick are neither skipped nor repeated.
+   * are keyed by COALESCE(finished_at, updated_at), with the id as the
+   * tie-break so items finished in the same tick are neither skipped nor
+   * repeated. SQLite filters by the status index and sorts the finished rows
+   * for each page; a (status, key, id) index would avoid that if history grows large.
    */
   listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
     const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before);

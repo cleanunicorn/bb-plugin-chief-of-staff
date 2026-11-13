@@ -3,6 +3,11 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+/** Finished roster items per page: the default and the most one page may ask for. */
+export const ROSTER_FINISHED_LIMIT = 50;
+export const ROSTER_FINISHED_MAX = 500;
+export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_MAX).default(ROSTER_FINISHED_LIMIT);
+
 const rosterEntry = z.object({
   occupiesCapacity: z.boolean(),
   id: z.string(),
@@ -193,7 +198,7 @@ export const rpcContract = defineRpcContract({
       repo: z.string().optional(),
       includeDone: z.boolean().default(false),
       /** Finished items per page. */
-      finishedLimit: z.number().int().min(1).max(500).default(50),
+      finishedLimit: finishedLimitSchema,
       /** An earlier page's nextBefore: return only the next page of finished items. */
       before: z.string().min(1).max(1000).optional(),
       withUsage: z.boolean().default(false),
