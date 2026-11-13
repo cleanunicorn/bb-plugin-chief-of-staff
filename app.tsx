@@ -371,7 +371,8 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       {entry.steps.length ? <details className="group text-xs">
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
-          <span className="shrink-0">Workflow</span>
+          {/* The sr-only text keeps the accessible name spaced: "Workflow progress: 3/6 steps complete". */}
+          <span className="shrink-0">Workflow<span className="sr-only"> progress: </span></span>
           <StepProgress steps={entry.steps} />
           <span className="shrink-0 tabular-nums">
             {entry.steps.filter((step) => step.status === "done").length}/{entry.steps.length}
