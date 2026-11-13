@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type WorkItem } from "../src/state";
+import { migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type PrState, type WorkItem } from "../src/state";
 import { freshNode, type Nodes } from "../src/machine";
 import { normalizeWorkflow, workflowSchema } from "../src/workflow";
 import { computeStats, statsWindowStart } from "../src/stats";
@@ -168,5 +168,72 @@ describe("bounded log and journal", () => {
     expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBe(30);
     new StateStore(db, undefined, { ...caps, pruneEvery: 1_000 }).log({ level: "info", kind: "test", repo: null, workItemId: null, message: "after", actor: "test" });
     expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBe(caps.logMaxRows);
+  });
+});
+
+describe("cached pull request state", () => {
+  const open = (number: number, at: string, over: Partial<PrState> = {}): PrState => ({ number, state: "open", draft: false, checks: "failing", review: "changes_requested", checkedAt: at, ...over });
+
+  it("round-trips through reads and survives full-row writes without moving updated_at", () => {
+    const { store, add, setClock } = storeSetup();
+    add("x", { prNumber: 7, status: "done" });
+    expect(store.getWorkItem("x")!.prState).toBeNull();
+    const before = store.getWorkItem("x")!.updatedAt;
+    setClock("2026-11-12T11:00:00Z");
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z"));
+    expect(store.getWorkItem("x")!.prState).toEqual(open(7, "2026-11-12T11:00:00.000Z"));
+    expect(store.getWorkItem("x")!.updatedAt).toBe(before);
+    store.touchPrChecked("x", "2026-11-12T11:05:00.000Z");
+    expect(store.getWorkItem("x")!.updatedAt).toBe(before);
+    // A full-row write keeps the state, and the last successful read time.
+    store.updateWorkItem("x", { lastError: "boom" });
+    expect(store.getWorkItem("x")!.prState).toEqual(open(7, "2026-11-12T11:00:00.000Z"));
+    expect(store.listWorkItems()[0]!.prState?.state).toBe("open");
+  });
+
+  it("drops details it cannot read", () => {
+    const { store, add, db } = storeSetup();
+    add("x", { prNumber: 7 });
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z"));
+    db.prepare("UPDATE work_items SET pr_state_json = '{broken' WHERE id = 'x'").run();
+    expect(store.getWorkItem("x")!.prState).toBeNull();
+  });
+
+  it("keeps the state when retention compacts a finished item", () => {
+    const { store, add } = storeSetup();
+    add("x", { prNumber: 7, status: "done", finishedAt: "2026-01-01T00:00:00.000Z" });
+    store.setPrState("x", open(7, "2026-01-01T00:00:00.000Z", { state: "merged", checks: null, review: null }));
+    expect(store.compactFinished("2026-11-01T00:00:00.000Z")).toEqual(["x"]);
+    expect(store.getWorkItem("x")!.prState?.state).toBe("merged");
+  });
+
+  it("lists the PRs due for a refresh, never-attempted first and failures last", () => {
+    const { store, add } = storeSetup();
+    const stale = "2026-11-12T09:00:00.000Z";
+    const fresh = "2026-11-12T09:55:00.000Z";
+    const staleBefore = "2026-11-12T09:50:00.000Z";
+    add("no-pr");
+    add("never", { prNumber: 1 });
+    add("open-stale", { prNumber: 2 });
+    store.setPrState("open-stale", open(2, stale));
+    add("open-fresh", { prNumber: 3 });
+    store.setPrState("open-fresh", open(3, fresh));
+    add("merged", { prNumber: 4 });
+    store.setPrState("merged", open(4, stale, { state: "merged", checks: null, review: null }));
+    add("closed", { prNumber: 5 });
+    store.setPrState("closed", open(5, stale, { state: "closed", checks: null, review: null }));
+    // Re-shipped with a new PR: the recorded state belongs to the old one.
+    add("reshipped", { prNumber: 9 });
+    store.setPrState("reshipped", open(6, "2026-11-12T09:01:00.000Z", { state: "merged", checks: null, review: null }));
+    add("paused", { repo: "p/q", prNumber: 7 });
+    store.setRepoPaused("p/q", true);
+    const due = () => store.listPrItemsDue(staleBefore).map((r) => r.id);
+    expect(due()).toEqual(["never", "open-stale", "reshipped"]);
+    expect(store.listPrItemsDue(staleBefore)[0]).toEqual({ id: "never", repo: "a/b", prNumber: 1, prState: null });
+    // An attempt that read nothing sends the row behind the others.
+    store.touchPrChecked("never", "2026-11-12T09:40:00.000Z");
+    expect(due()).toEqual(["open-stale", "reshipped", "never"]);
+    store.touchPrChecked("open-stale", "2026-11-12T09:51:00.000Z");
+    expect(due()).toEqual(["reshipped", "never"]);
   });
 });

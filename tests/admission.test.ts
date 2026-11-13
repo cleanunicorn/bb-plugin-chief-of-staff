@@ -120,7 +120,7 @@ describe("shipping repair admission", () => {
     store.deferEvent("existing", { type: "retry" }, "test");
     expect(store.nextDeferredEvent()).toMatchObject({ item_id: "existing", event_json: '{"type":"retry"}' });
     expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "queued_event_json" })]));
-    expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining(["occupies_capacity", "detail_pruned_at"].map((name) => expect.objectContaining({ name }))));
+    expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining(["occupies_capacity", "detail_pruned_at", "pr_state", "pr_state_number", "pr_state_json", "pr_checked_at"].map((name) => expect.objectContaining({ name }))));
     expect(db.prepare("PRAGMA index_list(work_items)").all()).toEqual(expect.arrayContaining(["work_items_status", "work_items_created"].map((name) => expect.objectContaining({ name }))));
     // Per-project pause: a paused repo's deferred events wait while others replay.
     store.setPaused(false);
