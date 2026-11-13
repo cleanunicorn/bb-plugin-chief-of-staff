@@ -5,9 +5,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { clickOutside, tick } from "./dom";
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, workflow: undefined as unknown, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
@@ -18,7 +19,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     return {
-      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_item_workflow" && mocks.workflow ? mocks.workflow : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -38,7 +39,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.failing = {}; mocks.workflow = undefined; mocks.call.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -376,4 +377,44 @@ it("says what Mark done changes for a failed task", async () => {
   await act(async () => bodyButton("Mark done").click());
   await tick(5);
   expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "mark_done" }]]);
+});
+
+const done = () => entry({ detail: "done", status: "done", occupiesCapacity: false });
+/** The workflow sheet's Canvas / List toggle (the throughput panel has its own "View" group). */
+const viewToggle = (label: "Canvas" | "List") => Array.from(confirmDialog()!.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="View"] button')).find((b) => b.textContent?.trim() === label)!;
+
+it("offers a done card only a way to run a step again", async () => {
+  mocks.entries = [done()];
+  await mount();
+  await openMenu();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Run a step again…"]);
+});
+
+it("opens the workflow at its step list from a done card, and returns focus to More actions on close", async () => {
+  mocks.entries = [done()];
+  mocks.workflow = { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {} };
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Run a step again").click());
+  await tick();
+  expect(confirmDialog()!.contains(document.activeElement)).toBe(true);
+  expect(viewToggle("List").getAttribute("aria-pressed")).toBe("true");
+  expect(viewToggle("Canvas").getAttribute("aria-pressed")).toBe("false");
+  expect(document.body.querySelector('ol[aria-label="Workflow steps"]')).not.toBeNull();
+  expect(mocks.call).not.toHaveBeenCalled();
+  await act(async () => document.body.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close"]')!.click());
+  await tick(5);
+  expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.body.style.pointerEvents).not.toBe("none");
+  expect(document.activeElement).toBe(moreActions());
+});
+
+it("still opens the workflow on its canvas from the Workflow button", async () => {
+  mocks.entries = [done()];
+  mocks.workflow = { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {} };
+  await mount();
+  await act(async () => bodyButton("Workflow").click());
+  await tick();
+  expect(viewToggle("Canvas").getAttribute("aria-pressed")).toBe("true");
+  expect(document.body.querySelector('ol[aria-label="Workflow steps"]')).toBeNull();
 });

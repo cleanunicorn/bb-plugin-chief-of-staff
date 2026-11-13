@@ -158,14 +158,17 @@ function rerunEffect(wf: Workflow, stepId: string, name: string): string {
  */
 export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)";
 
+/** How the workflow sheet shows the steps. "list" is the step picker that "Run a step again…" opens. */
+type WorkflowView = "canvas" | "list";
+
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
-function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
+function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restoreFocus }: { id: string; initialMode?: WorkflowView; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [mode, setMode] = useState<"canvas" | "list">("canvas");
+  const [mode, setMode] = useState<WorkflowView>(initialMode);
   const [busy, setBusy] = useState(false);
   const [confirmRerun, setConfirmRerun] = useState(false);
   const rerunButton = useRef<HTMLButtonElement>(null);
@@ -357,7 +360,7 @@ function cardConfirm(kind: CardConfirm, title: string, failed: boolean): { title
   return { title: `Mark ‘${title}’ failed?`, description: stops, confirmLabel: "Mark failed", tone: "destructive", action: "mark_failed" };
 }
 
-function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
+function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement | null, mode?: WorkflowView) => void; now: number }) {
   const navigate = useBbNavigate();
   // The kind outlives `open`, so the dialog keeps its text while it closes.
   const [confirm, setConfirm] = useState<{ kind: CardConfirm; open: boolean }>({ kind: "mark_done", open: false });
@@ -366,8 +369,9 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
-  const finished = entry.detail === "done" || entry.detail === "failed";
+  const done = entry.detail === "done";
   const failed = entry.detail === "failed";
+  const finished = done || failed;
   const confirmCopy = cardConfirm(confirm.kind, title, failed);
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
@@ -475,39 +479,45 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
             <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
           </Button>
         ) : null}
-        {!finished || failed ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
-                <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            {/* The items fit how the task ended. Confirms live on the card, not in the menu: the menu closes when an item is chosen. */}
-            <DropdownMenuContent align="end" side="top">
-              {failed ? (
-                <DropdownMenuItem onSelect={() => ask("restart")}>
-                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Restart on a new thread…
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
-                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Retry the stuck step
-                </DropdownMenuItem>
-              )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
+              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          {/* The items fit how the task ended. Confirms live on the card, not in the menu: the menu closes when an item is chosen. */}
+          <DropdownMenuContent align="end" side="top">
+            {done ? (
+              // The sheet's "Run again from here" reopens a done task. The menu item unmounts as the menu closes, so the sheet returns focus to More actions.
+              <DropdownMenuItem onSelect={() => onWorkflow(entry.id, menuTrigger.current, "list")}>
+                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Run a step again…
+              </DropdownMenuItem>
+            ) : failed ? (
+              <DropdownMenuItem onSelect={() => ask("restart")}>
+                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Restart on a new thread…
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
+                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Retry the stuck step
+              </DropdownMenuItem>
+            )}
+            {done ? null : (
               <DropdownMenuItem onSelect={() => ask("mark_done")}>
                 <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
                 Mark done…
               </DropdownMenuItem>
-              {failed ? null : (
-                <DropdownMenuItem onSelect={() => ask("mark_failed")}>
-                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark failed…
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
+            )}
+            {finished ? null : (
+              <DropdownMenuItem onSelect={() => ask("mark_failed")}>
+                <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Mark failed…
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <ConfirmDialog
         open={confirm.open}
@@ -548,7 +558,7 @@ export function PipelineTab() {
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
-  const [viewing, setViewing] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ id: string; mode: WorkflowView } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
@@ -675,7 +685,7 @@ export function PipelineTab() {
         ) : null}
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+            <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} />
           ))}
         </div>
       </Panel>
@@ -732,7 +742,7 @@ export function PipelineTab() {
       </div>
 
       {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
-      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
+      {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }

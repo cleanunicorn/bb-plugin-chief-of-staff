@@ -7,6 +7,7 @@ import { DEFAULT_POLICY, freshNode } from "../src/machine";
 import { workflowSchema } from "../src/workflow";
 import { dispatch, settleJobs, watchCi } from "../src/delivery";
 import { tickItems } from "../src/sync";
+import { itemAction } from "../src/rpc";
 import type { Cos } from "../src/context";
 
 const workflow = workflowSchema.parse({ id: "t", name: "Test", steps: [
@@ -95,6 +96,18 @@ describe("shipping repair admission", () => {
     await tickItems(cos, "test");
     expect(store.getWorkItem("a")!.status).toBe("agent");
     expect(JSON.stringify(host.harness.inspection.sdk.callsTo("threads.send"))).toContain("retry manually");
+  });
+
+  it("reopens a done task when one of its steps is run again", async () => {
+    // The done card's "Run a step again…" leads to this call (#108): no separate re-open action is needed.
+    const { cos, store, add } = setup();
+    const a = add("a");
+    store.updateWorkItem(a.id, { status: "done", finishedAt: new Date().toISOString(), nodes: {
+      build: { ...freshNode(), round: 1, status: "done" },
+      ship: { ...freshNode(), round: 1, status: "done" },
+    } });
+    await itemAction(cos, a.id, "rerun_step", "test", { step: "ship" });
+    expect(store.getWorkItem(a.id)).toMatchObject({ status: "cos", finishedAt: null, nodes: { build: { status: "done" }, ship: { status: "running" } } });
   });
 
   it.each([
