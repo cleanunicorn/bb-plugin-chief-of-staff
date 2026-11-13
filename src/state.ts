@@ -549,14 +549,16 @@ export class StateStore {
    */
   listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
     const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before);
+    // Bind exactly the parameters each statement names.
     const repo = opts.repo ? " AND repo = @repo" : "";
-    const active = cursor ? [] : (this.db.prepare(`SELECT * FROM work_items WHERE ${ACTIVE_IN}${repo} ORDER BY created_at DESC`).all({ repo: opts.repo }) as Row[]).map(rowToWorkItem);
+    const repoParams = opts.repo ? { repo: opts.repo } : {};
+    const active = cursor ? [] : (this.db.prepare(`SELECT * FROM work_items WHERE ${ACTIVE_IN}${repo} ORDER BY created_at DESC`).all(repoParams) as Row[]).map(rowToWorkItem);
     if (!cursor && !opts.includeDone) return { active, finished: [], nextBefore: null };
     const limit = Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT));
     const key = "COALESCE(finished_at, updated_at)";
     const after = cursor ? ` AND (${key} < @at OR (${key} = @at AND id < @id))` : "";
     const rows = this.db.prepare(`SELECT *, ${key} AS finished_key FROM work_items WHERE ${FINISHED_IN}${repo}${after} ORDER BY ${key} DESC, id DESC LIMIT @limit`)
-      .all({ repo: opts.repo, at: cursor?.[0], id: cursor?.[1], limit: limit + 1 }) as Row[];
+      .all({ ...repoParams, ...(cursor ? { at: cursor[0], id: cursor[1] } : {}), limit: limit + 1 }) as Row[];
     const page = rows.slice(0, limit);
     const last = page.at(-1);
     const nextBefore = rows.length > limit && last ? encodeRosterCursor(last.finished_key as string, last.id as string) : null;
