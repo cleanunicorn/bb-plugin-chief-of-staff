@@ -27,6 +27,15 @@
   on the server before the page limit. Show older pages through retained entries;
   each page displays its time range and offers a return to the newest activity.
 
+- **Keyboard users can skip the task grid.** The first Tab after “Work
+  overview” is a “Skip to throughput and activity” link, shown on focus.
+  Only one task card's actions are in the tab order; arrow keys move between
+  cards, and Home and End jump to the first and last. With 54 tasks, “Problems
+  only” in Activity is about 20 Tab presses away instead of 235, or 5 key
+  presses through the skip link. The task list, Throughput, Capacity and
+  Activity are named regions. Throughput chart days are no longer buttons
+  that did nothing; use the table view for daily numbers by keyboard.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are

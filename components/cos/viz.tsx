@@ -128,12 +128,22 @@ export function compact(n: number): string {
 
 // ---------- chrome ----------
 
-/** `headingRef` makes the heading a programmatic focus target, e.g. where focus lands when a sheet's opener is gone. */
-export function Panel({ title, icon, actions, children, className, dim, headingRef }: { title: string; icon?: string; actions?: ReactNode; children: ReactNode; className?: string; dim?: boolean; headingRef?: Ref<HTMLHeadingElement> }) {
+/**
+ * A titled region: the <section> is named by its h2, so it is a landmark. Pass `headingRef`
+ * to make the heading a focus target (a skip link lands there, or focus when a sheet's opener is gone);
+ * `id` names the section for links.
+ */
+export function Panel({ title, icon, actions, children, className, dim, id, headingRef }: { title: string; icon?: string; actions?: ReactNode; children: ReactNode; className?: string; dim?: boolean; id?: string; headingRef?: Ref<HTMLHeadingElement> }) {
+  const headingId = useId();
   return (
-    <section className={cn("flex min-w-0 flex-col rounded-xl border border-border bg-card", className)}>
+    <section id={id} aria-labelledby={headingId} className={cn("flex min-w-0 flex-col rounded-xl border border-border bg-card", className)}>
       <header className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3.5 pb-2">
-        <h2 ref={headingRef} tabIndex={headingRef ? -1 : undefined} className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground", headingRef && "rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring")}>
+        <h2
+          id={headingId}
+          ref={headingRef}
+          tabIndex={headingRef ? -1 : undefined}
+          className={cn("flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground", headingRef && "rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring")}
+        >
           {icon ? <Icon name={icon} fallback="Circle" className="size-4 text-muted-foreground" aria-hidden /> : null}
           {title}
         </h2>
@@ -269,15 +279,15 @@ export function ColumnChart<Row extends Record<string, number | string>>({ rows,
               );
               const xPct = ((i + 0.5) / rows.length) * 100;
               return (
-                <button
+                // A day is an image named with its numbers, not a button: activating it would do nothing.
+                // Keyboard users read the same numbers in the table view (issue #115).
+                <div
                   key={x}
-                  type="button"
+                  role="img"
                   aria-label={`${formatX(x)}: ${series.map((s) => `${s.label} ${Number(r[s.key] ?? 0)}`).join(", ")}`}
-                  className="group flex h-full flex-1 cursor-default items-end justify-center rounded-sm hover:bg-state-hover focus-visible:bg-state-hover focus-visible:outline-none"
+                  className="group flex h-full flex-1 items-end justify-center rounded-sm hover:bg-state-hover"
                   onMouseEnter={() => show(xPct, content)}
-                  onFocus={() => show(xPct, content)}
                   onMouseLeave={hide}
-                  onBlur={hide}
                 >
                   <span className="flex w-full max-w-6 flex-col-reverse gap-0.5">
                     {series.map((s, si) => {
@@ -287,7 +297,7 @@ export function ColumnChart<Row extends Record<string, number | string>>({ rows,
                       return <span key={s.key} className={cn("block w-full", isTop && "rounded-t-[4px]")} style={{ height: (v / max) * height - 2, minHeight: 2, background: s.color }} />;
                     })}
                   </span>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -344,11 +354,12 @@ export function ViewToggle({ table, onChange }: { table: boolean; onChange: (tab
           key={String(t)}
           type="button"
           aria-pressed={table === t}
+          aria-label={t ? "Table view" : "Chart view"}
           title={t ? "Table view" : "Chart view"}
           onClick={() => onChange(t)}
           className={cn("rounded-[5px] p-1 text-muted-foreground hover:text-foreground", table === t && "bg-state-active text-foreground")}
         >
-          <Icon name={t ? "Table" : "ChartColumn"} fallback={t ? "List" : "BarChart3"} className="size-3.5" aria-label={t ? "Table view" : "Chart view"} />
+          <Icon name={t ? "Table" : "ChartColumn"} fallback={t ? "List" : "BarChart3"} className="size-3.5" aria-hidden />
         </button>
       ))}
     </div>

@@ -74,3 +74,39 @@ export async function clickOutside(target: Element = document.body): Promise<voi
   });
   await tick();
 }
+
+const FOCUSABLE = "a[href], button, input, select, textarea, summary, [tabindex]";
+
+/** `el` is the first <summary> child of its <details>, the one the browser makes focusable. */
+function isDetailsSummary(el: Element): boolean {
+  const details = el.parentElement;
+  return el.tagName === "SUMMARY" && details instanceof HTMLDetailsElement && details.querySelector(":scope > summary") === el;
+}
+
+/**
+ * The elements Tab visits inside `root`, in order. jsdom does not move focus on Tab, so the
+ * order is computed from the DOM: focusable elements without a negative tabindex, skipping
+ * disabled ones, anything under [inert] or [hidden], and the contents of a closed <details>
+ * other than its summary. Positive tabindex values are not used in this app and not ordered.
+ */
+export function tabbables(root: ParentNode = container): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => {
+    if ((el as HTMLButtonElement).disabled) return false;
+    if (el.closest("[inert], [hidden]")) return false;
+    if (el.tagName === "SUMMARY") {
+      // jsdom's default tabIndex for a summary may not be 0, so read the attribute.
+      if (!isDetailsSummary(el)) return false;
+      const attr = el.getAttribute("tabindex");
+      if (attr !== null && Number(attr) < 0) return false;
+    } else if (el.tabIndex < 0) return false;
+    for (let details = el.parentElement?.closest("details"); details; details = details.parentElement?.closest("details")) {
+      if (!details.open && !(isDetailsSummary(el) && el.parentElement === details)) return false;
+    }
+    return true;
+  });
+}
+
+/** The tab stops after `from` in document order. */
+export function tabbablesAfter(from: Element, root: ParentNode = container): HTMLElement[] {
+  return tabbables(root).filter((el) => from.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
