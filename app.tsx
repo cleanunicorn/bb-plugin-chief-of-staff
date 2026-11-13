@@ -26,6 +26,7 @@ import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
+import { PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 
 type Contract = typeof rpcContract;
@@ -881,29 +882,13 @@ export function ReposTab() {
         </Panel>
       ) : null}
       <Panel title="Pull requests" icon="GitPullRequest" dim={roster.isFetching && !roster.isLoading}>
-        {!prs.length ? (
-          roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
-        ) : (
-          <ul className="divide-y divide-border">
-            {prs.map((e) => (
-              <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm">
-                <StagePill entry={e} />
-                <span className="inline-flex items-center gap-1 font-medium tabular-nums">{e.prUrl ? <UrlLink href={e.prUrl}>#{e.prNumber}</UrlLink> : `#${e.prNumber}`}</span>
-                {e.issueTitle ? <span className="line-clamp-2 min-w-0 basis-full text-foreground sm:line-clamp-1 sm:flex-1 sm:basis-0" title={e.issueTitle}>{e.issueTitle}</span> : null}
-                {e.fixAttempts ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={`${e.fixAttempts} CI fix cycles`}>
-                    <Icon name="Wrench" fallback="Circle" className="size-3.5" aria-hidden />
-                    {e.fixAttempts}
-                  </span>
-                ) : null}
-                <span className="text-xs text-muted-foreground">
-                  {e.repo.split("/")[1]}
-                  {e.issueNumber ? ` · closes #${e.issueNumber}` : ""} · {relative(e.lastActivityAt ?? e.startedAt, now)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+        <PullRequestList
+          entries={prs}
+          now={now}
+          authOk={authOk}
+          stage={(e) => <StagePill entry={e} />}
+          empty={roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their state, checks and review.</Empty>}
+        />
       </Panel>
     </div>
   );
