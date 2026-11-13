@@ -11,6 +11,7 @@
 import { acknowledgeReport, deliveryWait, reportMatches, recoverSpawn } from "./deliveryReport";
 import type { Cos } from "./context";
 import { resumeQueued, dispatchLocked, jobRunning, withItemLock } from "./delivery";
+import { MARKED_FAILED } from "./machine";
 import { runningWriter } from "./prompts";
 import { parseTextReport } from "./report";
 import type { ItemThread, WorkItem } from "./state";
@@ -295,8 +296,8 @@ export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> 
       const fresh = cos.store.getWorkItem(item.id) ?? item;
       try {
         if (fresh.status === "failed") {
-          // A resumed builder revives a failed item.
-          if (id === fresh.threadId && BUSY.has(snapshot.status)) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "revive" }, actor));
+          // A resumed builder revives a failed item, unless the operator marked it failed.
+          if (id === fresh.threadId && BUSY.has(snapshot.status) && fresh.lastError !== MARKED_FAILED) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "revive" }, actor));
           continue;
         }
         await syncThread(cos, fresh, snapshot, actor);

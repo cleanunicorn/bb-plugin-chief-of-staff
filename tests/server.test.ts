@@ -1250,6 +1250,15 @@ describe("chief-of-staff server", () => {
       expect(await roster()).toMatchObject({ status: "done", lastError: null });
     });
 
+    it("stays failed while the builder is still working", async () => {
+      threadStatus = "active";
+      await intakeOnce();
+      await host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_failed" });
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "failed", lastError: "Marked failed" });
+      expect(archivedIds).toEqual([]);
+    });
+
     it("keeps the threads when archiving is turned off", async () => {
       await host.harness.behavior.setSettings({ archiveThreadsOnDone: false });
       await host.harness.behavior.callRpc("cos_intake_now", {});
