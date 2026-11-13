@@ -8,6 +8,7 @@
 // step's `onFail` target and everything downstream of it, and the work re-runs
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
+import { PR_CLOSED_ERROR } from "./outcome";
 import type { WaitingKind, WorkItem } from "./state";
 import { agentWork, chosenModel, descendants, finalSteps, isWriter, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
 
@@ -708,9 +709,6 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
   return { nodes, patch, effects, journal };
 }
-
-/** Why a task failed when its pull request was closed without merging. */
-export const PR_CLOSED_ERROR = "PR closed without merge";
 
 /** How an error thrown by `transition` itself starts in lastError (see delivery). */
 export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";

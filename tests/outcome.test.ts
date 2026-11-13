@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { freshNode, PR_CLOSED_ERROR, type Nodes } from "../src/machine";
-import { finishedOutcome, OUTCOME_META, OUTCOMES } from "../src/outcome";
+import { freshNode, type Nodes } from "../src/machine";
+import { finishedOutcome, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
 import { describeActivity, describeOutcome } from "../src/roster";
 import type { WorkItem } from "../src/state";
 import { workflowSchema, type Workflow } from "../src/workflow";

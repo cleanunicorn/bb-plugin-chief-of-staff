@@ -3,9 +3,11 @@
 // survive retention), with the newest manual log row as a tiebreaker (it can
 // be pruned, so every fallback reads true without it). Pure; the dashboard
 // imports the labels and icons too.
-import { PR_CLOSED_ERROR } from "./machine";
 import type { WorkItem } from "./state";
 import { finalSteps } from "./workflow";
+
+/** Why a task failed when its pull request was closed without merging (set by the engine on pr_closed). */
+export const PR_CLOSED_ERROR = "PR closed without merge";
 
 export const OUTCOMES = ["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"] as const;
 export type Outcome = (typeof OUTCOMES)[number];

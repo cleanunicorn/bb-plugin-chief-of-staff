@@ -12,6 +12,7 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
+import { FAILED_OUTCOMES, OUTCOME_META } from "./src/outcome";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
@@ -104,7 +105,9 @@ const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
 };
 
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
-  if (e.detail === "done") return { tone: "good", label: e.lastError ? "Closed" : "Shipped", icon: "CircleCheck" };
+  // A finished task reads by how it ended, never by whether an old error is still stored.
+  if (e.outcome) return OUTCOME_META[e.outcome];
+  if (e.detail === "done") return { tone: "good", label: "Done", icon: "CircleCheck" };
   if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
   if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
   if (e.detail === "waiting_on_human") {
@@ -342,6 +345,8 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
+  // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
+  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) ? entry.lastError : null;
   return (
     <article className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
@@ -368,6 +373,13 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
+      {endReason ? (
+        <p className="flex items-start gap-1.5 text-sm text-foreground">
+          {/* Muted: a failed run is history, not an alarm (#22). */}
+          <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">Why it ended:</span> {endReason}</span>
+        </p>
+      ) : null}
       {entry.steps.length ? <details className="group text-xs">
         <summary className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />

@@ -8,7 +8,7 @@ export type IconProps = ExperimentalIconProps;
 
 // The host has its own icon catalog, not the full Lucide catalog. Translate
 // names used by our UI so missing artwork doesn't become a Circle fallback.
-const HOST_ICON_NAMES: Record<string, string> = {
+export const HOST_ICON_NAMES: Record<string, string> = {
   Activity: "ChartColumn",
   BarChart3: "ChartColumn",
   Bell: "BellDot",
@@ -50,6 +50,9 @@ const HOST_ICON_NAMES: Record<string, string> = {
   Timer: "Clock",
   TriangleAlert: "AlertTriangle",
   Undo2: "ArrowTurnBackward",
+  // Hand-marked outcomes: the host's only person icon (UserRound) already stands for "Your call".
+  UserCheck: "chief-of-staff/user-check",
+  UserX: "chief-of-staff/user-x",
   Wrench: "Toolbox",
 };
 
