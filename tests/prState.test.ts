@@ -132,6 +132,21 @@ it("reads a PR again when the task re-ships with a new one", async () => {
   expect(t.state(id)).toMatchObject({ number: 5, state: "open" });
 });
 
+it("logs a PR merged or closed outside Chief of Staff, but not when only an earlier PR was open", async () => {
+  const t = setup();
+  const seen = t.add(1); t.pull(1);
+  const reshipped = t.add(2); t.pull(2);
+  await t.run();
+  t.pull(1, { state: "closed", merged: true, merged_at: "x" });
+  // Re-shipped: the open state on record is PR #2's, and the new PR #6 is already merged.
+  t.store.updateWorkItem(reshipped, { prNumber: 6 });
+  t.pull(6, { state: "closed", merged: true, merged_at: "x" });
+  t.advance(PR_STALE_MS + 60_000);
+  await t.run();
+  const logged = t.store.listLog({ onlyProblems: false }).filter((e) => e.kind === "pr").map((e) => [e.workItemId, e.message]);
+  expect(logged).toEqual([[seen, "PR #1 was merged"]]);
+});
+
 it("covers active tasks CI watching tracks, without dispatching anything", async () => {
   const t = setup();
   const id = t.add(1, { status: "ci", nodes: { build: { ...freshNode(), status: "done" }, ship: { ...freshNode(), status: "running", phase: "ci" } } });

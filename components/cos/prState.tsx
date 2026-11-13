@@ -175,7 +175,7 @@ export function PullRequestList<E extends PrListEntry>({ entries, now, authOk, s
                 </span>
               ) : null}
               <span className="text-xs text-muted-foreground">
-                {e.repo.split("/")[1]}
+                {e.repo.split("/")[1] ?? e.repo}
                 {e.issueUrl ? <> · closes <UrlLink href={e.issueUrl}><span className="sr-only">issue </span>#{e.issueNumber}</UrlLink></> : e.issueNumber ? ` · closes #${e.issueNumber}` : ""} · {relative(e.lastActivityAt ?? e.startedAt, now)}
               </span>
               {action ? action(e) : null}

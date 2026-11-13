@@ -57,7 +57,7 @@ export async function refreshPrStates(cos: Cos, actor: string, opts: { deadline?
         if (!differs(item.prState, next)) continue;
         changed = true;
         // A PR merged or closed outside Chief of Staff; a first read (backfill) is not news.
-        if (item.prState?.state === "open" && next.state !== "open") {
+        if (item.prState?.state === "open" && item.prState.number === next.number && next.state !== "open") {
           cos.store.log({ level: "info", kind: "pr", repo: item.repo, workItemId: item.id, message: `PR #${item.prNumber} was ${next.state}`, actor });
         }
       } catch (error) {
