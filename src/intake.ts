@@ -160,8 +160,9 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
             result.started.push({ issue: issue.number, threadId: "(dry-run)" });
             continue;
           }
-          const item = await startIssue(cos, repo, issue, opts.actor);
-          result.started.push({ issue: issue.number, threadId: item?.threadId ?? "?" });
+          const outcome = await startIssue(cos, repo, issue, opts.actor, config.values.maxConcurrentTotal);
+          if ("skipped" in outcome) result.skipped.push({ issue: issue.number, reason: outcome.skipped });
+          else result.started.push({ issue: issue.number, threadId: outcome.item?.threadId ?? "?" });
         } finally {
           if (resumable) await kv.set(issueCursorKey, issues[(issueIndex + 1) % issues.length]!.number);
         }
@@ -211,10 +212,21 @@ async function newItem(cos: Cos, repo: RepoConfig, fields: { issueNumber: number
   };
 }
 
-export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue, actor: string): Promise<WorkItem | null> {
-  const item = cos.store.insertWorkItem(await newItem(cos, repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(issue.number, issue.title), source: "intake" }));
+/**
+ * Start an issue, or say why not: the item dispatched (null when dispatch
+ * returned none), or the reason it was skipped after all.
+ */
+export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue, actor: string, maxTotal: number): Promise<{ item: WorkItem | null } | { skipped: string }> {
+  const fresh = await newItem(cos, repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(issue.number, issue.title), source: "intake" });
+  // Checked again after the awaits since the caller's check, with none from
+  // here to the insert: something else may have started the issue, or filled
+  // the capacity, in the meantime.
+  if (cos.store.findActiveForIssue(fresh.repo, issue.number)) return { skipped: "active thread exists" };
+  const capacity = capacityProblem(cos, repo, maxTotal);
+  if (capacity) return { skipped: capacity };
+  const item = cos.store.insertWorkItem(fresh);
   cos.store.log({ level: "info", kind: "intake", repo: item.repo, workItemId: item.id, message: `picked up issue #${issue.number}: ${issue.title}`, actor });
-  return dispatch(cos, item.id, { type: "start" }, actor);
+  return { item: await dispatch(cos, item.id, { type: "start" }, actor) };
 }
 
 /** Start a task the operator described, without a GitHub issue. */

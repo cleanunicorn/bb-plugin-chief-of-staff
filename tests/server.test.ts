@@ -3,7 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
-import { REMOVED_SUMMARY, StateStore } from "../src/state";
+import { REMOVED_SUMMARY, StateStore, isActiveStatus, type NewWorkItem } from "../src/state";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { settleJobs } from "../src/delivery";
 import { SETTLED_IDLE_MS } from "../src/sync";
 
@@ -861,6 +862,52 @@ describe("chief-of-staff server", () => {
       const real = await intake();
       expect(real.results[0].started.map((s) => s.issue)).toEqual(dry.results[0].started.map((s) => s.issue));
       expect(real.results[0].skipped).toEqual(dry.results[0].skipped);
+    });
+  });
+
+  describe("overlapping intake runs (#49)", () => {
+    type Intake = { results: { started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
+    const activeFor12 = () => new StateStore(host.bb.storage.database()).listWorkItems().filter((item) => item.issueNumber === 12 && isActiveStatus(item.status));
+    /** An item something else started: active, occupying capacity, with no thread to spawn. */
+    const otherItem = (id: string, issueNumber: number): NewWorkItem => ({ id, repo: "acme/app", status: "agent", issueTitle: "other", issueNumber, branch: null, threadId: null, environmentId: null, prNumber: null, prUrl: null, providerId: null, model: null, lastError: null, source: "intake", lastActivityAt: null, finishedAt: null, workflow: DEFAULT_WORKFLOW, nodes: {} });
+    /** While intake lists the open PRs (after its first check, before its insert), run `during` once. */
+    const duringPrLookup = (during: () => void) => {
+      const original = ghRoutes["GET /repos/acme/app/pulls"]!;
+      let done = false;
+      ghRoutes["GET /repos/acme/app/pulls"] = (url, init) => {
+        if (!done && !url.searchParams.get("head")) { done = true; during(); }
+        return original(url, init);
+      };
+    };
+    const statusComments = () => ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/issues/12/comments");
+
+    it("starts an issue once when two manual intakes overlap", async () => {
+      const [a, b] = (await Promise.all([host.harness.behavior.callRpc("cos_intake_now", {}), host.harness.behavior.callRpc("cos_intake_now", {})])) as Intake[];
+      await settleJobs();
+      expect(activeFor12()).toHaveLength(1);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+      expect(statusComments()).toHaveLength(1);
+      expect([...a.results[0].started, ...b.results[0].started]).toEqual([{ issue: 12, threadId: "thr_1" }]);
+      expect([...a.results[0].skipped, ...b.results[0].skipped]).toEqual([{ issue: 12, reason: "active thread exists" }]);
+    });
+
+    it("skips an issue started by something else after its first check, without spawning or commenting", async () => {
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).insertWorkItem(otherItem("other", 12)));
+      const result = (await host.harness.behavior.callRpc("cos_intake_now", {})) as Intake;
+      await settleJobs();
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "active thread exists" }] });
+      expect(activeFor12().map((item) => item.id)).toEqual(["other"]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(statusComments()).toHaveLength(0);
+    });
+
+    it("skips an issue when the repository filled up after its first check", async () => {
+      await host.harness.behavior.setSettings({ repos: repos.replace('"maxConcurrent":2', '"maxConcurrent":1') });
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).insertWorkItem(otherItem("other", 99)));
+      const result = (await host.harness.behavior.callRpc("cos_intake_now", {})) as Intake;
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "repo at max concurrency (1)" }] });
+      expect(activeFor12()).toHaveLength(0);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
     });
   });
 
