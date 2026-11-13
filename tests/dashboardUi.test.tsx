@@ -13,12 +13,12 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useBbNavigate: () => mocks.navigate,
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
-  experimental_useRpcQuery: ({ method }: { method: string }) => {
+  experimental_useRpcQuery: ({ method, input }: { method: string; input: { onlyProblems?: boolean; before?: number; limit?: number } }) => {
     const failure = mocks.failing[method];
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     return {
-      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -315,4 +315,24 @@ it("does not pull focus back to More actions if it moved on while the action ran
   elsewhere.focus();
   await act(async () => finish());
   expect(document.activeElement).toBe(elsewhere);
+});
+
+
+it("pages older activity and resets the cursor when changing the server filter", async () => {
+  mocks.logs = Array.from({ length: 201 }, (_, i) => ({ id: 201 - i, at: "2026-11-13T10:00:00Z", level: i === 200 ? "error" as const : "info" as const, kind: "test", message: `entry ${201 - i}`, actor: "test", repo: null, workItemId: null }));
+  await mount(<ActivityFeed />);
+  const click = async (label: string) => { await act(async () => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === label)!.click()); };
+  expect(container.querySelectorAll("li")).toHaveLength(60);
+  await click("Show older");
+  expect(container.textContent).toContain("entry 141");
+  await click("Show older");
+  await click("Show older");
+  expect(container.querySelectorAll("li")).toHaveLength(21);
+  expect(container.textContent).toContain("End of retained activity");
+  expect(container.textContent).not.toContain("Show older");
+  await click("Back to newest");
+  await click("Problems only");
+  expect(container.querySelectorAll("li")).toHaveLength(1);
+  expect(container.textContent).toContain("entry 1");
+  expect(container.textContent).not.toContain("Back to newest");
 });
