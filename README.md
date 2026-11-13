@@ -309,6 +309,11 @@ the skill; anything else stays plain text.
 `requireApproval` controls the approving-review gate in merge mode (on by
 default). Steps configured after shipping still run.
 
+Merge mode waits for CI to register its checks: a pushed head with no checks
+reported counts as green only after about 5 minutes without any, so a
+repository with no CI merges about 6 minutes after each push. Every check run
+is read, beyond the first 100.
+
 <details>
 <summary>Capacity, dashboard counts and upgrade behavior</summary>
 
