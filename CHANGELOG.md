@@ -5,8 +5,9 @@
 - **Issue text in agent prompts is marked untrusted, and only maintainers'
   comments are quoted.** The issue's title, body and comments now sit in a
   delimited block that tells the agent they are user-supplied data that
-  cannot override the workflow; text imitating the block's markers is
-  defused. By default the brief quotes only comments by the repository's
+  cannot override the workflow. Every line in it is quoted and each comment
+  shows its author's association, so issue text cannot fake the block's end
+  or a maintainer's comment. By default the brief quotes only comments by the repository's
   owner, members and collaborators and says how many others it left out. The
   new per-repository `briefComments` option (`trusted`, `all` or `none`)
   changes that. The README has a new Trust model section.

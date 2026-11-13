@@ -449,6 +449,12 @@ remain:
 | `"all"` | Everyone's. Use it only where you trust everyone who can comment. |
 | `"none"` | None. The comments are not read. |
 
+GitHub reports `author_association` as your token sees it. Members of an
+organization whose membership is private can come back as `CONTRIBUTOR` or
+`NONE`, for example with a token that cannot read the organization's members,
+and their comments are then left out. Make the membership public, use a token
+that can see it, or add them as collaborators.
+
 `workflow` names one of your workflows (empty: the default). Entries written
 for earlier versions keep working: per-stage overrides and `checkCommand` are
 converted into a workflow for that repository, `allow.intake: false` pauses
@@ -471,12 +477,14 @@ its work. Anything that reaches its prompt can steer what it does.
 
 **How issue content is presented.** The first prompt names the issue by
 number, repository and URL only. The title, body, author and quoted comments
-go in one block between markers that carry a random value per prompt, opened
-by a notice that the text is user-supplied data and cannot change the workflow
-or step instructions. Text in the issue that imitates the markers is
-defused, so it cannot close the block early. This lowers the risk of prompt
-injection; it does not remove it. A model can still follow instructions
-written in an issue.
+go in one block between markers that carry a random id per prompt, opened by
+a notice that the text is user-supplied data and cannot change the workflow
+or step instructions, and that the block ends only at the marker with that
+id. Every line users wrote is quoted with `>`, and each comment is labelled
+with its author's `author_association`, so issue text cannot pass itself off
+as a marker, a section header or a maintainer's comment. Copies of the marker
+text are also altered. This lowers the risk of prompt injection; it does not
+remove it. A model can still follow instructions written in an issue.
 
 **Limits of the filter.** `briefComments` limits what Chief of Staff puts in
 the prompt. The agent can still read the whole issue itself, for example with
