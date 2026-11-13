@@ -22,7 +22,9 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
       error: null, refetch: vi.fn(),
     };
   },
-  ThreadTitle: () => null, UrlLink: () => null,
+  ThreadTitle: () => null,
+  // Like the host's UrlLink: a plain anchor that passes its props through.
+  UrlLink: ({ href, children, ...rest }: { href: string; children?: ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
@@ -90,6 +92,44 @@ it("names the workflow summary as a spaced sentence for screen readers", async (
   await mount();
   const summary = container.querySelector("article details > summary")!;
   expect(summary.textContent!.replace(/\s+/g, " ").trim()).toBe("Workflow progress: 1/3 steps complete");
+});
+
+// ---------- touch sizes (#116) ----------
+// jsdom has no layout, so these pin the structure and the coarse-pointer classes; the sizes are measured in a browser.
+const classes = (el: Element) => el.className.split(/\s+/);
+
+it("makes the PR link the chip itself, sized for touch", async () => {
+  mocks.entries = [entry({ prNumber: 42, prUrl: "https://github.com/acme/app/pull/42" })];
+  await mount();
+  const link = container.querySelector<HTMLAnchorElement>('article a[href="https://github.com/acme/app/pull/42"]')!;
+  expect(link.getAttribute("aria-label")).toBe("Pull request #42");
+  expect(link.textContent).toBe("#42");
+  expect(link.querySelector('[data-icon="GitPullRequest"]')).not.toBeNull();
+  expect(classes(link)).toEqual(expect.arrayContaining(["inline-flex", "h-7", "border", "pointer-coarse:h-10", "focus-visible:ring-1"]));
+  expect(link.parentElement!.tagName).not.toBe("SPAN");
+});
+
+it("gives the card actions touch heights and keeps More actions out of the wrapping group", async () => {
+  mocks.entries = [entry({ prNumber: 42, prUrl: "https://github.com/acme/app/pull/42", waitingKind: "approval", status: "waiting on human" })];
+  await mount();
+  const card = container.querySelector("article")!;
+  const button = (label: string) => Array.from(card.querySelectorAll("button")).find((b) => b.textContent?.trim() === label)!;
+  for (const label of ["Open thread", "Workflow", "Approve"]) expect(classes(button(label))).toEqual(expect.arrayContaining(["h-7", "pointer-coarse:h-10"]));
+  const more = card.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  expect(classes(more)).toEqual(expect.arrayContaining(["h-7", "w-7", "pointer-coarse:size-10", "shrink-0"]));
+  expect(classes(more)).not.toContain("ml-auto");
+  const group = button("Open thread").parentElement!;
+  expect(classes(group)).toEqual(expect.arrayContaining(["flex-1", "flex-wrap"]));
+  expect(group.contains(more)).toBe(false);
+  expect(more.parentElement).toBe(group.parentElement);
+  expect(classes(more.parentElement!)).not.toContain("flex-wrap");
+});
+
+it("keeps Resume and Retry step at touch height", async () => {
+  mocks.entries = [entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error" })];
+  await mount();
+  const retry = Array.from(container.querySelectorAll("article button")).find((b) => b.textContent?.trim() === "Retry step")!;
+  expect(classes(retry)).toContain("pointer-coarse:h-10");
 });
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {

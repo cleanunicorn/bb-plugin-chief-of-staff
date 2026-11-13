@@ -421,34 +421,37 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
           <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
         </div> : null}
       </dl>
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
-        {entry.threadId ? (
-          <Button size="sm" className="h-7 px-2" onClick={() => navigate.toThread(entry.threadId!)}>
-            <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+      {/* More actions sits outside the wrapping group, so it stays at the end of the first row instead of wrapping onto a line of its own. */}
+      <div className="flex items-start gap-1.5 border-t border-border pt-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          {entry.threadId ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" onClick={() => navigate.toThread(entry.threadId!)}>
+              <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+            </Button>
+          ) : null}
+          <Button size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
+            <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
           </Button>
-        ) : null}
-        <Button size="sm" variant="outline" className="h-7 px-2" onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
-          <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
-        </Button>
-        {entry.prUrl ? (
-          <span className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium">
-            <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
-            <UrlLink href={entry.prUrl}>#{entry.prNumber}</UrlLink>
-          </span>
-        ) : null}
-        {entry.waitingKind === "approval" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
-            <Icon name="Check" fallback="Circle" aria-hidden /> Approve
-          </Button>
-        ) : needsHuman && entry.waitingKind !== "question" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
-            <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
-          </Button>
-        ) : null}
+          {entry.prUrl ? (
+            <UrlLink href={entry.prUrl} aria-label={`Pull request #${entry.prNumber}`} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
+              <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
+              #{entry.prNumber}
+            </UrlLink>
+          ) : null}
+          {entry.waitingKind === "approval" ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
+              <Icon name="Check" fallback="Circle" aria-hidden /> Approve
+            </Button>
+          ) : needsHuman && entry.waitingKind !== "question" ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
+              <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
+            </Button>
+          ) : null}
+        </div>
         {!finished || entry.detail === "failed" ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
+              <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" disabled={busy}>
                 <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
