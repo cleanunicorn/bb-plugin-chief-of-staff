@@ -343,7 +343,7 @@ function cardConfirm(kind: Confirmable, title: string, failed: boolean): { title
         title: `Restart ‘${title}’ on a new thread?`,
         // Server `retry` on a failed item reopens it, which usually takes a slot whether or not an agent starts. It
         // restarts an unfinished writing step on a fresh thread; steps not yet started then run through the scheduler.
-        description: "This reopens the task, so it usually takes one of the task slots again. Chief of Staff carries on from where it stopped: an unfinished writing step restarts on a new thread, and steps that had not started run as usual. The old thread is left as it is.",
+        description: "This reopens the task, so it usually takes one of the task slots again, or waits for one to free up. Chief of Staff carries on from where it stopped: an unfinished writing step restarts on a new thread, and steps that had not started run as usual. The old thread is left as it is.",
         confirmLabel: "Restart",
         action: "retry",
       };
@@ -378,7 +378,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
-  const confirm = cardConfirm(confirming.kind, title, confirming.failed);
+  const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed);
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
@@ -532,12 +532,12 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       </div>
       <ConfirmDialog
         open={confirming.open}
-        title={confirm.title}
-        description={confirm.description}
-        confirmLabel={confirm.confirmLabel}
-        tone={confirm.tone}
+        title={confirmCopy.title}
+        description={confirmCopy.description}
+        confirmLabel={confirmCopy.confirmLabel}
+        tone={confirmCopy.tone}
         onConfirm={() => {
-          onAction(entry.id, confirm.action);
+          onAction(entry.id, confirmCopy.action);
           closeConfirm();
         }}
         onCancel={closeConfirm}
