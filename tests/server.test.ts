@@ -1259,6 +1259,34 @@ describe("chief-of-staff server", () => {
       expect(archivedIds).toEqual([]);
     });
 
+    const question = { id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1, payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database should I use?", allowFreeText: true, multiSelect: false, required: true }] } };
+    const notifications = () => host.harness.inspection.sdk.callsTo("plugins.callRpc").length;
+
+    it("ignores questions, resumed turns and late reports on a done task", async () => {
+      await intakeOnce();
+      await markDone();
+      const before = notifications();
+      pending = [question];
+      await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+      await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) } as never);
+      expect(await roster()).toMatchObject({ status: "done", waitingKind: null, current: [] });
+      expect(notifications()).toBe(before);
+      expect(await report("build")).toBe("This task is already finished.");
+    });
+
+    it("does not read the turns or questions of a task marked failed", async () => {
+      await intakeOnce();
+      await host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_failed" });
+      const reads = () => host.harness.inspection.sdk.callsTo("threads.interactions.list").length;
+      const before = [reads(), notifications()];
+      await idle("I made some changes.");
+      pending = [question];
+      await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+      expect([reads(), notifications()]).toEqual(before);
+      expect(await roster()).toMatchObject({ status: "failed", waitingKind: null });
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    });
+
     it("keeps the threads when archiving is turned off", async () => {
       await host.harness.behavior.setSettings({ archiveThreadsOnDone: false });
       await host.harness.behavior.callRpc("cos_intake_now", {});
