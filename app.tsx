@@ -27,6 +27,7 @@ import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
+import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -40,12 +41,6 @@ const TABS = [
 type Tab = (typeof TABS)[number]["id"];
 
 const WINDOW_DAYS = 14;
-
-function useLiveRefresh(refetch: () => Promise<void>) {
-  useRealtime("cos-changed", () => {
-    void refetch();
-  });
-}
 
 function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
