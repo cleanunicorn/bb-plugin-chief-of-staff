@@ -577,7 +577,7 @@ export function PipelineTab() {
             event.preventDefault();
             throughputHeading.current?.focus();
           }}
-          className="sr-only rounded-md border border-border bg-card px-2 py-1 text-xs font-medium text-foreground shadow-sm focus:not-sr-only focus:absolute focus:top-full focus:left-0 focus:z-10 focus:mt-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="sr-only rounded-md border border-border bg-card text-xs font-medium text-foreground focus:not-sr-only focus:absolute focus:top-full focus:left-0 focus:z-10 focus:mt-1 focus:px-2 focus:py-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           Skip to throughput and activity
         </a>
