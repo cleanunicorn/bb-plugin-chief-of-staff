@@ -50,7 +50,7 @@ describe("StepFlow", () => {
   it("preserves retry, phase and failure details as readable text", () => {
     const html = renderToStaticMarkup(<StepFlow entry={{ workflowName: "Delivery", steps: [step("Ship", 0, "running", { retrying: true, phase: "ci", attempts: 2 })] }} />);
     expect(html).toContain("Retrying");
-    expect(html).toContain("ci");
+    expect(html).toContain("Waiting for CI");
     expect(html).toContain("failed 2×");
   });
 });

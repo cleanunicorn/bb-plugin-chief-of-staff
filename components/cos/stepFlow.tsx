@@ -16,6 +16,11 @@ function stateOf(step: Pick<FlowStep, "status" | "retrying">): StepState {
 
 const LABEL: Record<StepState, string> = { done: "Done", running: "Running", retrying: "Retrying", waiting: "Waiting", pending: "Pending" };
 
+const PHASE_LABEL: Record<NonNullable<FlowStep["phase"]>, string> = { pushing: "Pushing", ci: "Waiting for CI", ready: "Ready to merge", merging: "Merging" };
+
+/** Pending marks: muted but above the 3:1 non-text contrast floor, unlike the hairline border token. */
+const PENDING_MARK = "var(--muted-foreground)";
+
 function stepColor(step: Pick<FlowStep, "status" | "retrying" | "waitingKind">, palette: Palette): string {
   const state = stateOf(step);
   if (state === "done") return STATUS.good;
@@ -28,7 +33,7 @@ function stepColor(step: Pick<FlowStep, "status" | "retrying" | "waitingKind">, 
 /** Status node: the glyph, not only the color, tells the states apart. */
 function StepNode({ step, color }: { step: FlowStep; color: string }) {
   const state = stateOf(step);
-  if (state === "pending") return <span aria-hidden className="size-4 shrink-0 rounded-full border-[1.5px] border-dashed bg-card" style={{ borderColor: "var(--muted-foreground)", opacity: 0.6 }} />;
+  if (state === "pending") return <span aria-hidden className="size-4 shrink-0 rounded-full border-[1.5px] border-dashed bg-card" style={{ borderColor: PENDING_MARK }} />;
   if (state === "done") return <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full text-white" style={{ background: color }}>
     <Icon name="Check" fallback="Circle" className="size-2.5" />
   </span>;
@@ -45,7 +50,7 @@ function StepRow({ step, palette }: { step: FlowStep; palette: Palette }) {
   const state = stateOf(step);
   const live = state === "running" || state === "retrying" || state === "waiting";
   const details = [
-    step.phase,
+    step.phase ? PHASE_LABEL[step.phase] : null,
     step.agents > 1 && live ? `${step.reported}/${step.agents} agents` : null,
     step.attempts ? `failed ${step.attempts}×` : null,
   ].filter(Boolean);
@@ -96,7 +101,7 @@ export function StepFlow({ entry }: { entry: { workflowName: string; steps: (Flo
 /** Segment fill per state. Shape, not only hue, tells the states apart. */
 function segmentStyle(state: StepState, color: string): CSSProperties {
   // Pending: hollow outline.
-  if (state === "pending") return { boxShadow: "inset 0 0 0 1px var(--border)" };
+  if (state === "pending") return { boxShadow: `inset 0 0 0 1px ${PENDING_MARK}` };
   // Waiting and retrying need attention: diagonal stripes.
   if (state === "waiting" || state === "retrying") return { background: `repeating-linear-gradient(-45deg, ${color} 0 3px, color-mix(in srgb, ${color} 35%, transparent) 3px 5px)` };
   return { background: color };
