@@ -1182,6 +1182,50 @@ describe("chief-of-staff server", () => {
     });
   });
 
+  describe("closing a task by hand (#47)", () => {
+    const markDone = async () => host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_done" });
+    /** The issue is no longer offered, so a sweep only syncs the task's threads. */
+    const intakeOnce = async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [] });
+    };
+
+    it("stays done when the agent's turn ends afterwards: no nudge, threads archived", async () => {
+      await intakeOnce();
+      expect(await roster()).toMatchObject({ detail: "agent", current: ["Build"] });
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", detail: "done", current: [], lastError: "Marked done" });
+      expect(archivedIds).toEqual(["thr_1"]);
+      await idle("I made some changes.");
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+      expect(ranChecks()).toBe(0);
+      const log = (await host.harness.behavior.runCli(["log", "--limit", "20"])).stdout;
+      expect(log.match(/marked done/g)).toHaveLength(1);
+      // Marking it done again changes and logs nothing.
+      await markDone();
+      expect((await host.harness.behavior.runCli(["log", "--limit", "20"])).stdout.match(/marked done/g)).toHaveLength(1);
+    });
+
+    it("keeps the threads when archiving is turned off", async () => {
+      await host.harness.behavior.setSettings({ archiveThreadsOnDone: false });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done" });
+      expect(archivedIds).toEqual([]);
+    });
+
+    it("archives the threads of a failed task marked done", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
+      expect((await roster()).detail).toBe("failed");
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      expect(archivedIds).toEqual(["thr_1"]);
+    });
+  });
+
   it("handles a turn end once even when the event and the sweep both see it", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await report("build");

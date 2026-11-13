@@ -198,13 +198,17 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
       if (!opts.feedback?.trim()) throw new Error("revise needs feedback for the agent");
       return dispatch(cos, id, { type: "revise", step: opts.step, feedback: opts.feedback }, actor);
     case "mark_done":
-      cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked done", actor });
-      cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "done", queuedEvent: null, finishedAt: cos.now().toISOString() });
-    case "mark_failed":
-      cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked failed", actor });
-      cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "failed", queuedEvent: null, finishedAt: cos.now().toISOString() });
+    case "mark_failed": {
+      // Through the engine, under the item's lock: live steps settle, a running job's result is dropped, and done archives the threads.
+      const outcome = action === "mark_done" ? "done" : "failed";
+      if (item.status === outcome) return item;
+      const updated = await dispatch(cos, id, { type: "close", outcome }, actor);
+      if (updated?.status === outcome) {
+        cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `marked ${outcome}`, actor });
+        cos.invalidate();
+      }
+      return updated;
+    }
   }
 }
 
