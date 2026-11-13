@@ -8,7 +8,7 @@ import { describeActivity } from "../src/roster";
 import { workflowSchema } from "../src/workflow";
 import { dispatch, settleJobs, watchCi } from "../src/delivery";
 import { tickItems } from "../src/sync";
-import type { Cos } from "../src/context";
+import { liveWarnings, type Cos } from "../src/context";
 
 const workflow = workflowSchema.parse({ id: "t", name: "Test", steps: [
   { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
@@ -90,6 +90,34 @@ describe("admission when the repository is not configured (#52)", () => {
     expect(queued).toMatchObject({ status: "queued", waitingReason: "Waiting for task capacity" });
     expect(describeActivity(queued)).toBe("Waiting for task capacity");
     expect(warns(store, "a")).toHaveLength(0);
+  });
+});
+
+describe("overview warning for tasks whose repository is not configured (#52)", () => {
+  const cosOf = (store: StateStore) => ({ store, githubLimit: () => null, now: () => new Date() });
+  const config = (warnings: string[], repos: object[]) => ({ warnings, repos }) as unknown as Parameters<typeof liveWarnings>[1];
+
+  it("names active tasks of an unconfigured repository, caps the list, and skips finished tasks", () => {
+    const { store, add, addQueued, repo } = setup();
+    expect(liveWarnings(cosOf(store), config([], [repo]))).toEqual([]);
+    addQueued("q");
+    add("running");
+    store.updateWorkItem("running", { issueTitle: "Fix login" });
+    add("done"); store.updateWorkItem("done", { status: "done" });
+    add("failed"); store.updateWorkItem("failed", { status: "failed" });
+    // Configured: no warning.
+    expect(liveWarnings(cosOf(store), config(["config"], [repo]))).toEqual(["config"]);
+    const [warning] = liveWarnings(cosOf(store), config([], []));
+    expect(warning).toContain("a/b#3");
+    expect(warning).toContain("a/b: Fix login");
+    expect(warning).not.toContain("done");
+    expect(warning).not.toContain("failed");
+    expect(warning).toMatch(/repos setting/);
+    expect(warning).toMatch(/close/);
+    for (const id of ["c", "d", "e", "f", "g"]) add(id);
+    const [capped] = liveWarnings(cosOf(store), config([], []));
+    expect(capped).toContain("and 2 more");
+    expect(capped.match(/a\/b/g)).toHaveLength(5);
   });
 });
 
