@@ -236,7 +236,7 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
         </Section>
       ) : null}
       <LoopList workflow={workflow} loops={loops} />
-      <Timeline itemId={itemId} workflow={workflow} entries={journal} now={now} empty="No history yet. Steps are recorded as they start, report, pass, fail or get sent back." />
+      <Timeline itemId={itemId} workflow={workflow} entries={journal} now={now} empty={task?.status === "done" || task?.status === "failed" ? "No step history was recorded for this task." : "No history yet. Steps are recorded as they start, report, pass, fail or get sent back."} />
       {loops.approximate && journal.length ? <p className="text-[11px] text-muted-foreground">History recorded from {new Date(journal[0]!.at).toLocaleString()}; earlier steps of this task are not in it.</p> : null}
     </div>
   );
