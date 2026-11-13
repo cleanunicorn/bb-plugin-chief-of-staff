@@ -1004,7 +1004,7 @@ export function ActivityFeed() {
   // Phones get no nested scroll box: show the latest rows and expand in place.
   const [showAll, setShowAll] = useState(false);
   const [before, setBefore] = useState<number | undefined>(undefined);
-  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, before } });
+  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, ...(before === undefined ? {} : { before }) } });
   useLiveRefresh(log.refetch);
   const entries = log.data?.entries ?? [];
   return (
