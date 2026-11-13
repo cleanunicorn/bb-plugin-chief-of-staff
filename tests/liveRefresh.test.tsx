@@ -7,7 +7,7 @@ const realtime = vi.hoisted(() => ({ handlers: new Map<string, () => void>() }))
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   useRealtime: (topic: string, handler: () => void) => { realtime.handlers.set(topic, handler); },
 }));
-import { LIVE_REFRESH_DEBOUNCE_MS, useLiveRefresh } from "../hooks/useLiveRefresh";
+import { LIVE_REFRESH_DEBOUNCE_MS, LIVE_REFRESH_MAX_WAIT_MS, useLiveRefresh } from "../hooks/useLiveRefresh";
 
 const refetch = vi.fn(async () => {});
 function Probe({ onChange }: { onChange: () => Promise<void> }) {
@@ -64,4 +64,16 @@ it("does not refetch after unmounting", async () => {
   await unmount();
   await advance(1_000);
   expect(refetch).not.toHaveBeenCalled();
+});
+
+it("refetches at least every 2 s while changes keep coming", async () => {
+  expect(LIVE_REFRESH_MAX_WAIT_MS).toBe(2_000);
+  for (let i = 0; i < 20; i++) {
+    await changed();
+    await advance(200);
+  }
+  // 4 s of changes 200 ms apart: one refetch at 2 s, one at 4 s (covering the last change).
+  expect(refetch).toHaveBeenCalledTimes(2);
+  await advance(1_000);
+  expect(refetch).toHaveBeenCalledTimes(2);
 });
