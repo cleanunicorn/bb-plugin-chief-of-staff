@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Activity rows name their task.** Each row that belongs to a task shows its
+  issue number and title, or a described task's title, also for finished
+  tasks; selecting it opens the task's workflow. Thread ids in messages and
+  actors open their threads. A Task menu next to Problems only narrows the
+  feed to one task, and so does Show activity in a task card's More actions,
+  including on finished cards; both filters combine. With a single
+  repository configured, rows no longer repeat its name. Message text is
+  unchanged.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are

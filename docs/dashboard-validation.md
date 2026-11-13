@@ -20,8 +20,21 @@ to the previous compact rows).
 - Activity uses the previous compact rows: severity icon, event type, repository,
   original message, actor and timestamp are visible together. Problems only
   retains the severity filter. Long messages wrap within their row.
+- Since #109 each row also names its task (`#N title`, or a described task's
+  title), as a truncated button that opens the task's workflow. Thread ids in
+  the message and actor are links. The repository is left out when only one
+  is configured. A Task menu, or Show activity on a card, narrows the feed to
+  one task; Problems only applies on top. Message text is unchanged.
 
 ## Validation
+
+Task context in Activity (#109): `npm run check` (lint, typecheck, all tests)
+and `npm run build` pass. Tests cover the `listLog` join (row id and repo kept,
+missing tasks unnamed), task labels, the workflow sheet opened from a row with
+focus returned, thread links in messages and actors, the Task menu and clear,
+Show activity from active and finished cards, the combined filters, and the
+repository prefix with one, two and unknown repositories. No live browser
+check was performed.
 
 Compact activity restoration: all 166 tests across 15 files, typecheck, plugin
 build and whitespace checks pass. The dashboard test verifies visible event
