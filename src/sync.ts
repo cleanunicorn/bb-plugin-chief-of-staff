@@ -22,6 +22,8 @@ const BUSY = new Set(["active", "starting", "pending", "provisioning", "waiting-
 export const isBusy = (status: string): boolean => BUSY.has(status);
 /** Failed items are still re-synced this long after failing, so a resumed thread revives them. */
 const FAILED_LOOKBACK_MS = 3 * 24 * 60 * 60_000;
+/** Thread ids read per threads.list call. */
+const THREADS_BATCH = 200;
 /** A prompt not picked up by the thread within this long is re-sent. */
 const PROMPT_PICKUP_MS = 10 * 60_000;
 /** A job whose start is older than this without a running job in this process was lost. */
@@ -241,12 +243,13 @@ function lostIdle(cos: Cos, item: WorkItem, ctx: ThreadContext, snapshot: Thread
 
 async function snapshots(cos: Cos, ids: string[]): Promise<Map<string, ThreadSnapshot>> {
   const map = new Map<string, ThreadSnapshot>();
-  if (!ids.length) return map;
-  try {
-    const list = await cos.bb.sdk.threads.list({ threadIds: ids.slice(0, 200), includeHidden: true, limit: 200 });
-    for (const t of list) map.set(t.id, snapshotOf(t as never));
-  } catch (error) {
-    cos.bb.log.debug(`threads.list failed: ${error instanceof Error ? error.message : String(error)}`);
+  for (let i = 0; i < ids.length; i += THREADS_BATCH) {
+    try {
+      const list = await cos.bb.sdk.threads.list({ threadIds: ids.slice(i, i + THREADS_BATCH), includeHidden: true, limit: THREADS_BATCH });
+      for (const t of list) map.set(t.id, snapshotOf(t as never));
+    } catch (error) {
+      cos.bb.log.debug(`threads.list failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   // Archived / deleted threads drop out of the list: read them one by one.
   for (const id of ids) {
@@ -269,12 +272,8 @@ function threadIdsOf(cos: Cos, item: WorkItem): string[] {
 
 /** Sync every tracked thread. Called from the per-minute sweep and at startup. */
 export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> {
-  const now = cos.now().getTime();
-  const items = cos.store.listWorkItems({ limit: 200 }).filter((item) => {
-    if (item.status === "done" || cos.store.isPaused(item.repo)) return false;
-    if (item.status === "failed") return item.finishedAt !== null && now - Date.parse(item.finishedAt) <= FAILED_LOOKBACK_MS;
-    return true;
-  });
+  const failedSince = new Date(cos.now().getTime() - FAILED_LOOKBACK_MS).toISOString();
+  const items = cos.store.listWorkItems({ activeOnly: true, failedSince }).filter((item) => !cos.store.isPaused(item.repo));
   if (items.some((item) => Object.values(item.nodes).some((node) => Object.values(node.deliveries ?? {}).some((attempt) => !attempt.threadId && attempt.round === node.round)))) {
     // Bounded discovery after a spawn response was lost. Metadata, never status,
     // identifies candidates. An undiscovered thread remains uncertain.
