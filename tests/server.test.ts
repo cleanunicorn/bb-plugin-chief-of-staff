@@ -1208,6 +1208,48 @@ describe("chief-of-staff server", () => {
       expect((await host.harness.behavior.runCli(["log", "--limit", "20"])).stdout.match(/marked done/g)).toHaveLength(1);
     });
 
+    /** Build reported; the Verify check is running and held until the returned release is called. */
+    const checkRunning = async () => {
+      await intakeOnce();
+      await report("build");
+      let release!: () => void;
+      checkBlocks = new Promise<void>((resolve) => (release = resolve));
+      const updatedAt = tick();
+      threadUpdatedAt = updatedAt;
+      await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText: "done" });
+      expect(await roster()).toMatchObject({ current: ["Verify"], detail: "cos" });
+      return release;
+    };
+    const pushes = () => hostCalls.filter((c) => (c.input as { args?: string[] }).args?.[0] === "push").length;
+
+    it("drops the result of a check still running when the task is marked done", async () => {
+      const release = await checkRunning();
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      release();
+      await settleJobs();
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "done", current: [], lastError: "Marked done" });
+      expect(ranChecks()).toBe(1);
+      expect(pushes()).toBe(0);
+      expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(0);
+    });
+
+    it("drops the result of a check still running when the task is marked failed, and retry runs it again", async () => {
+      const release = await checkRunning();
+      const { id } = await roster();
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+      expect(await roster()).toMatchObject({ status: "failed", current: [] });
+      release();
+      await settleJobs();
+      expect(await roster()).toMatchObject({ status: "failed" });
+      expect(pushes()).toBe(0);
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "retry" });
+      await settleJobs();
+      expect(ranChecks()).toBe(2);
+      expect(await roster()).toMatchObject({ status: "done", lastError: null });
+    });
+
     it("keeps the threads when archiving is turned off", async () => {
       await host.harness.behavior.setSettings({ archiveThreadsOnDone: false });
       await host.harness.behavior.callRpc("cos_intake_now", {});
