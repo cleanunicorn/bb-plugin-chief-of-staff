@@ -420,7 +420,7 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
       {entry.steps.length ? <details className="group text-xs">
-        <summary tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <summary tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
           {/* The sr-only text keeps the accessible name spaced: "Workflow progress: 3/6 steps complete". */}
           <span className="shrink-0">Workflow<span className="sr-only"> progress: </span></span>
@@ -473,35 +473,38 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
           <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
         </div> : null}
       </dl>
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
-        {entry.threadId ? (
-          <Button size="sm" className="h-7 px-2" tabIndex={tabIndex} onClick={() => navigate.toThread(entry.threadId!)}>
-            <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+      {/* More actions sits outside the wrapping group, so it stays at the end of the first row instead of wrapping onto a line of its own. */}
+      <div className="flex items-start gap-1.5 border-t border-border pt-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          {entry.threadId ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={() => navigate.toThread(entry.threadId!)}>
+              <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+            </Button>
+          ) : null}
+          <Button size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
+            <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
           </Button>
-        ) : null}
-        <Button size="sm" variant="outline" className="h-7 px-2" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
-          <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
-        </Button>
-        {entry.prUrl ? (
-          <span className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium">
-            <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
-            <UrlLink href={entry.prUrl} tabIndex={tabIndex}>PR #{entry.prNumber}</UrlLink>
-          </span>
-        ) : null}
-        {entry.prUrl && entry.pr ? <PrStatePill pr={entry.pr} compact /> : null}
-        {entry.waitingKind === "approval" ? (
-          <Button size="sm" className="h-7 px-2" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "approve")}>
-            <Icon name="Check" fallback="Circle" aria-hidden /> Approve
-          </Button>
-        ) : needsHuman && entry.waitingKind !== "question" ? (
-          <Button size="sm" className="h-7 px-2" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "retry")}>
-            <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
-          </Button>
-        ) : null}
+          {entry.prUrl ? (
+            <UrlLink href={entry.prUrl} tabIndex={tabIndex} aria-label={`Pull request #${entry.prNumber}`} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
+              <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
+              PR #{entry.prNumber}
+            </UrlLink>
+          ) : null}
+          {entry.prUrl && entry.pr ? <PrStatePill pr={entry.pr} compact /> : null}
+          {entry.waitingKind === "approval" ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "approve")}>
+              <Icon name="Check" fallback="Circle" aria-hidden /> Approve
+            </Button>
+          ) : needsHuman && entry.waitingKind !== "question" ? (
+            <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "retry")}>
+              <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
+            </Button>
+          ) : null}
+        </div>
         {!finished || entry.detail === "failed" ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
+              <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
                 <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
@@ -734,6 +737,7 @@ export function PipelineTab() {
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}
+              onShowTable={() => setThroughputTable(true)}
               rows={s.daily.map((d) => ({ date: d.date, done: d.done, failed: d.failed }))}
               xKey="date"
               formatX={fmtDay}

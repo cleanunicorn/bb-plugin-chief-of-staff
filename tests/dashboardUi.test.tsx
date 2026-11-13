@@ -7,7 +7,7 @@ import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
@@ -18,11 +18,12 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     return {
-      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
   ThreadTitle: () => null,
+  // Like the host's UrlLink: a plain anchor that passes its props through.
   UrlLink: ({ href, children, ...rest }: { href: string; children?: ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
@@ -39,7 +40,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.daily = []; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -91,6 +92,61 @@ it("names the workflow summary as a spaced sentence for screen readers", async (
   await mount();
   const summary = container.querySelector("article details > summary")!;
   expect(summary.textContent!.replace(/\s+/g, " ").trim()).toBe("Workflow progress: 1/3 steps complete");
+});
+
+it("pads the Workflow progress disclosure to a touch-sized hit area on a coarse pointer only", async () => {
+  const step = { id: "Plan", name: "Plan", depth: 0, status: "done" as const, type: "agent" as const, phase: null, agents: 1, reported: 0, nudged: 0, attempts: 0, round: 1, waitingKind: null, retrying: false };
+  mocks.entries = [entry({ steps: [step] })];
+  await mount();
+  expect(container.querySelector("article details > summary")!.className.split(/\s+/)).toEqual(expect.arrayContaining(["py-0.5", "pointer-coarse:py-2"]));
+});
+
+// ---------- touch sizes (#116) ----------
+// jsdom has no layout, so these pin the structure and the coarse-pointer classes; the sizes are measured in a browser.
+const classes = (el: Element) => el.className.split(/\s+/);
+
+it("makes the PR link the chip itself, sized for touch", async () => {
+  mocks.entries = [entry({ prNumber: 42, prUrl: "https://github.com/acme/app/pull/42" })];
+  await mount();
+  const link = container.querySelector<HTMLAnchorElement>('article a[href="https://github.com/acme/app/pull/42"]')!;
+  expect(link.getAttribute("aria-label")).toBe("Pull request #42");
+  expect(link.textContent).toBe("#42");
+  expect(link.querySelector('[data-icon="GitPullRequest"]')).not.toBeNull();
+  expect(classes(link)).toEqual(expect.arrayContaining(["inline-flex", "h-7", "border", "pointer-coarse:h-10", "focus-visible:ring-1"]));
+  expect(link.parentElement!.tagName).not.toBe("SPAN");
+});
+
+it("gives the card actions touch heights and keeps More actions out of the wrapping group", async () => {
+  mocks.entries = [entry({ prNumber: 42, prUrl: "https://github.com/acme/app/pull/42", waitingKind: "approval", status: "waiting on human" })];
+  await mount();
+  const card = container.querySelector("article")!;
+  const button = (label: string) => Array.from(card.querySelectorAll("button")).find((b) => b.textContent?.trim() === label)!;
+  for (const label of ["Open thread", "Workflow", "Approve"]) expect(classes(button(label))).toEqual(expect.arrayContaining(["h-7", "pointer-coarse:h-10"]));
+  const more = card.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  expect(classes(more)).toEqual(expect.arrayContaining(["h-7", "w-7", "pointer-coarse:size-10", "shrink-0"]));
+  expect(classes(more)).not.toContain("ml-auto");
+  const group = button("Open thread").parentElement!;
+  expect(classes(group)).toEqual(expect.arrayContaining(["flex-1", "flex-wrap"]));
+  expect(group.contains(more)).toBe(false);
+  expect(more.parentElement).toBe(group.parentElement);
+  expect(classes(more.parentElement!)).not.toContain("flex-wrap");
+});
+
+it("keeps Resume and Retry step at touch height", async () => {
+  mocks.entries = [entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error" })];
+  await mount();
+  const retry = Array.from(container.querySelectorAll("article button")).find((b) => b.textContent?.trim() === "Retry step")!;
+  expect(classes(retry)).toContain("pointer-coarse:h-10");
+});
+
+it("opens the Throughput table when the chart is tapped on a coarse pointer", async () => {
+  mocks.entries = [];
+  mocks.daily = Array.from({ length: 14 }, (_, i) => ({ date: `2026-11-${String(i + 1).padStart(2, "0")}`, started: 1, done: 1, failed: 0 }));
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(pointer: coarse)", media: query, addEventListener: () => {}, removeEventListener: () => {} }));
+  await mount();
+  expect(container.querySelector("table")).toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Show throughput as a table"]')!.click());
+  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed"]);
 });
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
