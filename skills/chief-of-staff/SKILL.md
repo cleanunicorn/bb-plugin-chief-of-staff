@@ -99,6 +99,11 @@ then `bb settings experiment pluginUpdates true` for automatic updates.
 - Issue intake never starts a second thread for an issue that already has an
   active thread or an open PR referencing it, and never picks up issues
   without a label or assignee filter.
+- An issue whose latest task failed or is done (merged PR included) is not
+  started again until a person re-adds a filter label, or re-assigns the
+  filter's assignee, after that task finished. To continue the same task
+  instead, `retry` it (not useful for a done task or one whose PR was closed).
+  Intake reports these issues under skipped with the reason.
 - Agents never push or open pull requests themselves; Chief of Staff does,
   in a Ship step.
 

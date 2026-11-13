@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Intake no longer restarts an issue whose task failed or finished.** A
+  failed task, a task marked done, a pushed or merged delivery and a PR closed
+  without merging used to start the issue again from scratch at the next
+  intake. The issue now stays stopped until someone relabels it (or assigns
+  the filter's user again) or retries the task, and the intake result shows
+  why it was skipped.
+
 - **Chief of Staff opens without crashing.** The activity feed omits its
   pagination cursor until viewing older entries, keeping query inputs valid JSON.
 
