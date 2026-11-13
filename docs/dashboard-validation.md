@@ -17,9 +17,11 @@ to the previous compact rows).
 - Missing usage fields disappear; zero tokens and zero cost remain visible.
   Open thread is primary when available, Workflow remains available without it,
   and existing approval, retry, PR, and overflow actions are retained.
-- Activity uses the previous compact rows: severity icon, event type, repository,
-  original message, actor and timestamp are visible together. Problems only
-  retains the severity filter. Long messages wrap within their row.
+- Activity uses the previous compact rows: severity icon, event type, task,
+  repository, original message, actor and timestamp are visible together.
+  Problems only retains the severity filter. Long messages wrap within their
+  row. Since #109 the task name opens the task, thread ids are links, and the
+  repository is omitted when it is the only one configured (see below).
 
 ## Validation
 
@@ -49,6 +51,45 @@ integration. The running plugin was not reinstalled or reloaded.
 
 BB reports installed SDK 0.6.132 versus the repository pin 0.6.104. Build succeeds
 with the existing pin; no SDK upgrade is included.
+
+## Activity task names and links (issue #109)
+
+What changed: each Activity row with a task names it ("#109 Title", or a
+described task's title) as a button that opens the task's workflow sheet.
+`thr_…` ids in the message and actor are thread links; the text around them is
+unchanged. A Task menu narrows the feed to one task, set from the feed or from
+"Show activity" on a task card. The repository name is dropped when exactly one
+repository is configured.
+
+Decisions worth knowing:
+
+- The task label comes from the server: `listLog` joins `work_items`, so rows
+  of finished tasks are named too (the Pipeline roster omits finished tasks by
+  default). No migration: work items are never deleted. A row whose task is not
+  found shows no name. The CLI `cos log` output is unchanged.
+- The feed opens its own workflow sheet; closing it returns focus to the task
+  name, or to the Activity heading. An action taken in that sheet refreshes
+  the feed at once and the Pipeline cards on the next live refresh.
+- While a task is chosen the feed asks the server for that task's rows, so
+  they are not lost behind newer rows of other tasks. "Problems only" applies
+  on top. The menu keeps every task seen while the dashboard is open, plus the
+  chosen one.
+- "Show activity" runs once the card's menu has closed, then focuses and
+  scrolls to the Activity heading; the menu does not take focus back.
+- The repository list is read once, not live-refreshed. A row from a
+  repository since removed, and every row while the list is unknown, keeps its
+  repository name.
+
+Checks: `npm run check` and `npm run build` pass. jsdom tests cover the task
+name and sheet with focus return, thread links, the task filter from the menu
+and from a card (finished cards included) with focus on the Activity heading,
+Problems only combined with it, clearing it, and the repository prefix with one,
+several and unknown repositories. Not checked in a real browser: the 390 px
+layout was reasoned from the classes (the task name sits in the message line,
+which wraps below the severity, event type and time on phones), and no live BB
+installation was used.
+
+Not in this change: grouping consecutive rows of the same task and minute.
 
 ## Keyboard and focus (issue #67)
 

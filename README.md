@@ -39,7 +39,8 @@ no GitHub issue: see [Install](#install).
 - **Knows where every agent is.** A live roster shows each task's status,
   repository, issue, PR, age, last activity and token usage (when the provider
   reports it), and who holds the ball: an agent, Chief of Staff, or you. Stalls
-  and failures are detected and notified.
+  and failures are detected and notified. The Activity feed names each event's
+  task and can be narrowed to one task.
 
 ## How it works
 
