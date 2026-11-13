@@ -40,6 +40,10 @@ const rosterEntry = z.object({
   prNumber: z.number().nullable(),
   prUrl: z.string().nullable(),
   startedAt: z.string(),
+  /** When a done or failed task finished; null while it runs (and on some legacy rows). */
+  finishedAt: z.string().nullable(),
+  /** How a finished task ended (src/outcome.ts); null while it runs. */
+  outcome: z.enum(["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"]).nullable(),
   lastActivityAt: z.string().nullable(),
   stalled: z.boolean(),
   fixAttempts: z.number(),

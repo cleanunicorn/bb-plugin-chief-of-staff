@@ -194,7 +194,7 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText });
     await settleJobs();
   };
-  type Entry = { id: string; status: string; detail: string; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; fixAttempts: number; counters: Record<string, number> };
+  type Entry = { id: string; status: string; detail: string; outcome: string | null; finishedAt: string | null; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; fixAttempts: number; counters: Record<string, number> };
   const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
   const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
   const sentTexts = () => (sent as { input: { text: string }[] }[]).map((s) => s.input[0].text);
@@ -1528,6 +1528,14 @@ describe("chief-of-staff server", () => {
     }
   });
 
+  it("says a task marked done by hand ended that way, and when", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const before = await roster();
+    expect(before).toMatchObject({ outcome: null, finishedAt: null });
+    await host.harness.behavior.callRpc("cos_item_action", { id: before.id, action: "mark_done" });
+    expect(await roster()).toMatchObject({ detail: "done", outcome: "marked_done", finishedAt: expect.any(String), activity: "Marked done" });
+  });
+
   it.each([
     { phase: "ci", merged: false, state: "open", expected: "done" },
     { phase: "ready", merged: true, state: "closed", expected: "done" },
@@ -1544,6 +1552,7 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     expect(await roster()).toMatchObject({ detail: expected, prNumber: 7, occupiesCapacity: false });
     if (expected === "failed") expect((await roster()).lastError).toBe("PR closed without merge");
+    expect(await roster()).toMatchObject({ outcome: expected === "failed" ? "pr_closed" : "pr_opened", finishedAt: expect.any(String) });
     expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(1);
     const count = archivedIds.length;
     await host.harness.behavior.runService("cos-reconcile").done;

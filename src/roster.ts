@@ -4,6 +4,7 @@
 import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
 import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
+import { FAILED_OUTCOMES, finishedOutcome, OUTCOME_META, type Outcome } from "./outcome";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
@@ -54,6 +55,10 @@ export interface RosterEntry {
   prNumber: number | null;
   prUrl: string | null;
   startedAt: string;
+  /** When a done or failed task finished; null while it runs. */
+  finishedAt: string | null;
+  /** How a finished task ended; null while it runs. */
+  outcome: Outcome | null;
   lastActivityAt: string | null;
   stalled: boolean;
   fixAttempts: number;
@@ -105,11 +110,13 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
   }
   const stallMs = Math.max(1, values.stallThresholdMinutes) * 60_000;
   const now = cos.now().getTime();
+  const manual = cos.store.latestManualActions(items.filter(isFinished).map((i) => i.id));
   const entries: RosterEntry[] = [];
   for (const item of items) {
     const thread = item.threadId ? threads.get(item.threadId) : undefined;
     const last = item.lastActivityAt ?? item.createdAt;
     const steps = rosterSteps(item);
+    const outcome = finishedOutcome(item, manual.get(item.id) ?? null);
     entries.push({
       id: item.id,
       occupiesCapacity: occupiesCapacity(item),
@@ -119,7 +126,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       steps,
       current: steps.filter((s) => s.status === "running" || s.status === "waiting").map((s) => s.name),
       actor: actorOf(item),
-      activity: describeActivity(item, steps),
+      activity: describeActivity(item, steps, outcome),
       waitingKind: item.waitingKind,
       repo: item.repo,
       issueNumber: item.issueNumber,
@@ -131,6 +138,8 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       prNumber: item.prNumber,
       prUrl: item.prUrl,
       startedAt: item.createdAt,
+      finishedAt: item.finishedAt,
+      outcome,
       lastActivityAt: item.lastActivityAt,
       stalled: item.status === "agent" && now - Date.parse(last) > stallMs,
       fixAttempts: item.fixAttempts,
@@ -199,13 +208,20 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
   };
 }
 
+const isFinished = (item: Pick<WorkItem, "status">) => item.status === "done" || item.status === "failed";
+
+/** How a finished task ended, with why when it did not deliver ("Failed: thread archived"). */
+export function describeOutcome(outcome: Outcome, lastError: string | null): string {
+  const label = OUTCOME_META[outcome].label;
+  if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return label;
+  // "PR closed without merge" already says it.
+  return lastError.toLowerCase().startsWith(label.toLowerCase()) ? lastError : `${label}: ${lastError}`;
+}
+
 /** One line on what is happening right now, for the roster. */
-export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSteps(item)): string {
+export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSteps(item), outcome: Outcome | null = finishedOutcome(item, null)): string {
+  if (outcome) return describeOutcome(outcome, item.lastError);
   switch (item.status) {
-    case "done":
-      return item.lastError ?? "Done";
-    case "failed":
-      return item.lastError ?? "Failed";
     case "queued":
       return item.queuedEvent?.type === "ci_failing" ? "CI repair waiting for task capacity" : item.queuedEvent ? "Waiting for task capacity" : "Waiting to start";
     case "waiting_on_human":

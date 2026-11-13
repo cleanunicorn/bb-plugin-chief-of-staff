@@ -478,7 +478,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (item.status === "done" || item.status === "failed") break;
       const ship = shipNode() ?? topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
       if (ship) note("stopped", ship, `Pull request${item.prNumber ? ` #${item.prNumber}` : ""} was closed without merging`);
-      patch.lastError = "PR closed without merge";
+      patch.lastError = PR_CLOSED_ERROR;
       patch.jobStartedAt = null;
       patch.status = "failed";
       patch.finishedAt = iso;
@@ -708,6 +708,9 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
   return { nodes, patch, effects, journal };
 }
+
+/** Why a task failed when its pull request was closed without merging. */
+export const PR_CLOSED_ERROR = "PR closed without merge";
 
 /** How an error thrown by `transition` itself starts in lastError (see delivery). */
 export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";

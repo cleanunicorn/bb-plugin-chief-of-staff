@@ -655,6 +655,17 @@ export class StateStore {
     this.prune("activity_log", 1, this.caps.logMaxRows);
   }
 
+  /** The newest manual action ("marked done", "marked failed") logged for each of these items. */
+  latestManualActions(ids: readonly string[]): Map<string, { message: string; at: string }> {
+    const found = new Map<string, { message: string; at: string }>();
+    if (!ids.length) return found;
+    const rows = this.db
+      .prepare(`SELECT work_item_id, message, at FROM activity_log WHERE id IN (SELECT MAX(id) FROM activity_log WHERE kind = 'manual' AND work_item_id IN (${ids.map(() => "?").join(", ")}) GROUP BY work_item_id)`)
+      .all(...ids) as { work_item_id: string; message: string; at: string }[];
+    for (const row of rows) found.set(row.work_item_id, { message: row.message, at: row.at });
+    return found;
+  }
+
   listLog(opts: { limit?: number; workItemId?: string } = {}): LogEntry[] {
     const rows = opts.workItemId
       ? (this.db.prepare(`SELECT * FROM activity_log WHERE work_item_id = ? ORDER BY id DESC LIMIT ?`).all(opts.workItemId, opts.limit ?? 100) as Row[])
