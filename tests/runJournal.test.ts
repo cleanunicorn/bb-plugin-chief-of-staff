@@ -13,7 +13,7 @@ const w = workflowSchema.parse({ id: "t", name: "Test", steps: [
   { id: "test", name: "Tests", type: "check", command: "npm test", onFail: "build", maxAttempts: 2, next: ["review"] },
   { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", maxRounds: 2, approval: true },
 ] });
-const item = (wf: Workflow): WorkItem => ({ id: "w1", repo: "acme/app", issueNumber: 12, issueTitle: "Fix login", threadId: null, environmentId: null, branch: null, prNumber: null, prUrl: null, status: "queued", providerId: null, model: null, fixAttempts: 0, retryCount: 0, lastError: null, source: "intake", createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), lastActivityAt: null, finishedAt: null, waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, workflow: wf, nodes: initialNodes(wf) });
+const item = (wf: Workflow): WorkItem => ({ id: "w1", repo: "acme/app", issueNumber: 12, issueTitle: "Fix login", threadId: null, environmentId: null, branch: null, prNumber: null, prUrl: null, status: "queued", providerId: null, model: null, fixAttempts: 0, retryCount: 0, lastError: null, source: "intake", createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), lastActivityAt: null, finishedAt: null, waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, workflow: wf, nodes: initialNodes(wf), prState: null });
 const report = (outcome: StepReport["outcome"], summary: string): StepReport => ({ outcome, summary, at: NOW.toISOString(), via: "tool" });
 
 /** Run events in order; returns every journal entry they produced. */

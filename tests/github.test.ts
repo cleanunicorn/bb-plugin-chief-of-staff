@@ -1,7 +1,7 @@
 // The GitHub client on its own: deadlines, error format, rate limits and the
 // newest-comments fetch, against a fake fetch.
 import { describe, expect, it, vi } from "vitest";
-import { GitHubClient, GitHubError, GitHubLimiter, GitHubRateLimitError, matchOpenPullForIssue, type GitHubPull } from "../src/github";
+import { GitHubClient, GitHubError, GitHubLimiter, GitHubRateLimitError, matchOpenPullForIssue, prStateFrom, reduceReviews, type GitHubPull, type Review } from "../src/github";
 
 const TOKEN = "ghp_secret_token";
 
@@ -283,5 +283,52 @@ describe("GitHubClient.listOpenPulls", () => {
     const pulls = await github.listOpenPulls("acme", "app");
     expect(urls).toHaveLength(5);
     expect(pulls).toHaveLength(5);
+  });
+});
+
+describe("reduceReviews", () => {
+  const review = (login: string, state: Review["state"], at: string): Review => ({ user: { login }, state, submitted_at: at });
+
+  it("keeps each reviewer's latest verdict", () => {
+    expect(reduceReviews([review("a", "CHANGES_REQUESTED", "1"), review("a", "APPROVED", "2")])).toBe("approved");
+    expect(reduceReviews([review("a", "APPROVED", "1"), review("a", "CHANGES_REQUESTED", "2")])).toBe("changes_requested");
+  });
+
+  it("lets a dismissal clear that reviewer's earlier verdict", () => {
+    expect(reduceReviews([review("a", "CHANGES_REQUESTED", "1"), review("a", "DISMISSED", "2")])).toBeNull();
+    expect(reduceReviews([review("a", "CHANGES_REQUESTED", "1"), review("a", "DISMISSED", "2"), review("b", "APPROVED", "3")])).toBe("approved");
+  });
+
+  it("ignores comments, pending reviews and reviews without a user", () => {
+    expect(reduceReviews([review("a", "APPROVED", "1"), review("a", "COMMENTED", "2"), review("a", "PENDING", "3")])).toBe("approved");
+    expect(reduceReviews([{ user: null, state: "CHANGES_REQUESTED", submitted_at: "1" }])).toBeNull();
+    expect(reduceReviews([review("a", "COMMENTED", "1")])).toBeNull();
+  });
+
+  it("lets requested changes outweigh another reviewer's approval", () => {
+    expect(reduceReviews([review("a", "APPROVED", "1"), review("b", "CHANGES_REQUESTED", "2")])).toBe("changes_requested");
+  });
+});
+
+describe("prStateFrom", () => {
+  const at = new Date("2026-11-13T10:00:00Z");
+  const pr = (over: Partial<GitHubPull> = {}) => ({ number: 7, state: "open", draft: false, merged: false, merged_at: null, ...over }) as GitHubPull;
+
+  it("reads open, draft, merged and closed", () => {
+    expect(prStateFrom(pr(), at)).toEqual({ number: 7, state: "open", draft: false, checks: null, review: null, checkedAt: at.toISOString() });
+    expect(prStateFrom(pr({ draft: true }), at)).toMatchObject({ state: "open", draft: true });
+    expect(prStateFrom(pr({ state: "closed", merged: true, merged_at: "x" }), at)).toMatchObject({ state: "merged", checks: null, review: null });
+    expect(prStateFrom(pr({ state: "closed" }), at)).toMatchObject({ state: "closed" });
+  });
+
+  it("treats a merge time as merged when the list endpoint omits `merged`", () => {
+    const listed = { number: 7, state: "closed", draft: false, merged_at: "2026-11-13T09:00:00Z" } as unknown as GitHubPull;
+    expect(prStateFrom(listed, at).state).toBe("merged");
+  });
+
+  it("carries checks and review for an open PR only", () => {
+    expect(prStateFrom(pr(), at, { state: "no_checks", failed: [], total: 0 }, "approved")).toMatchObject({ checks: "none", review: "approved" });
+    expect(prStateFrom(pr(), at, { state: "failing", failed: [], total: 1 }, null)).toMatchObject({ checks: "failing", review: null });
+    expect(prStateFrom(pr({ state: "closed", merged: true }), at, { state: "failing", failed: [], total: 1 }, "approved")).toMatchObject({ checks: null, review: null });
   });
 });

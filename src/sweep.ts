@@ -1,8 +1,10 @@
 // Per-minute sweep driven by one durable bb.background.schedule: issue
-// intake, CI watching, thread sync, retries, stall detection and daily retention.
+// intake, CI watching, PR state, thread sync, retries, stall detection and
+// daily retention.
 import type { Cos } from "./context";
 import { runIntake } from "./intake";
 import { watchCi } from "./delivery";
+import { refreshPrStates } from "./prState";
 import { detectStalls } from "./roster";
 import { syncThreads, tickItems } from "./sync";
 import { groupExistingThreads } from "./threadGroups";
@@ -60,6 +62,12 @@ export async function sweep(cos: Cos): Promise<void> {
       if (phase === "intake") await runIntake(cos, { actor: "schedule:intake", deadline }).catch(warn("intake"));
       else await watchCi(cos, "schedule:ci", { deadline }).catch(warn("ci watch"));
     }
+
+    if (cos.store.isPaused()) return;
+    // Last of the GitHub work, every sweep: intake and CI keep alternating
+    // first, and this pass only gets the budget they leave. Each PR's own
+    // staleness (PR_STALE_MS) is its throttle, so it is not stamped.
+    if (!limited() && !overBudget()) await refreshPrStates(cos, "schedule:pr-state", { deadline }).catch(warn("PR state refresh"));
 
     // Before stall detection, so a thread resumed or answered in BB is not
     // mistaken for a stalled one.

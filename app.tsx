@@ -26,6 +26,7 @@ import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
+import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 
 type Contract = typeof rpcContract;
@@ -445,6 +446,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
             <UrlLink href={entry.prUrl}>PR #{entry.prNumber}</UrlLink>
           </span>
         ) : null}
+        {entry.prUrl && entry.pr ? <PrStatePill pr={entry.pr} compact /> : null}
         {entry.waitingKind === "approval" ? (
           <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
             <Icon name="Check" fallback="Circle" aria-hidden /> Approve
@@ -893,32 +895,18 @@ export function ReposTab() {
         </Panel>
       ) : null}
       <Panel title="Pull requests" icon="GitPullRequest" headingRef={sheetFocus.fallback} dim={roster.isFetching && !roster.isLoading}>
-        {!prs.length ? (
-          roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their CI and review state.</Empty>
-        ) : (
-          <ul className="divide-y divide-border">
-            {prs.map((e) => (
-              <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-sm">
-                <StagePill entry={e} />
-                <span className="inline-flex items-center gap-1 font-medium tabular-nums">{e.prUrl ? <UrlLink href={e.prUrl}>PR #{e.prNumber}</UrlLink> : `PR #${e.prNumber}`}</span>
-                {e.issueTitle ? <span className="line-clamp-2 min-w-0 basis-full text-foreground sm:line-clamp-1 sm:flex-1 sm:basis-0" title={e.issueTitle}>{e.issueTitle}</span> : null}
-                {e.fixAttempts ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" title={`${e.fixAttempts} CI fix cycles`}>
-                    <Icon name="Wrench" fallback="Circle" className="size-3.5" aria-hidden />
-                    {e.fixAttempts}
-                  </span>
-                ) : null}
-                <span className="text-xs text-muted-foreground">
-                  {repoName(e.repo)}
-                  {e.issueUrl ? <> · closes <UrlLink href={e.issueUrl}><span className="sr-only">issue </span>#{e.issueNumber}</UrlLink></> : null} · {relative(e.lastActivityAt ?? e.startedAt, now)}
-                </span>
-                <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing(e.id); }}>
-                  <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
+        <PullRequestList
+          entries={prs}
+          now={now}
+          authOk={authOk}
+          stage={(e) => <StagePill entry={e} />}
+          action={(e) => (
+            <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing(e.id); }}>
+              <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
+            </Button>
+          )}
+          empty={roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their state, checks and review.</Empty>}
+        />
       </Panel>
       {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>

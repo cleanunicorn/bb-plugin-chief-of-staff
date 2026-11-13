@@ -37,6 +37,7 @@ function itemFor(workflow: Workflow, over: Partial<WorkItem> = {}): WorkItem {
     taskBody: null,
     workflow,
     nodes: initialNodes(workflow),
+    prState: null,
     ...over,
   };
 }

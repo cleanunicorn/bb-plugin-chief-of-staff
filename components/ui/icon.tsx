@@ -53,12 +53,17 @@ const HOST_ICON_NAMES: Record<string, string> = {
   Wrench: "Toolbox",
 };
 
+/** The host catalog's name for an icon name used by our UI. */
+export function hostIconName(name: string): string {
+  return HOST_ICON_NAMES[name] ?? name;
+}
+
 export function Icon({ name, fallback, ...props }: IconProps) {
   const HostIcon = experimental_Icon;
   return (
     <HostIcon
-      name={HOST_ICON_NAMES[name] ?? name}
-      fallback={fallback ? (HOST_ICON_NAMES[fallback] ?? fallback) : undefined}
+      name={hostIconName(name)}
+      fallback={fallback ? hostIconName(fallback) : undefined}
       {...props}
     />
   );

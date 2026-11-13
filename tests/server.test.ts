@@ -662,6 +662,72 @@ describe("chief-of-staff server", () => {
     expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(failure === "merge rejected" ? 1 : 0);
   });
 
+  describe("pull request state (#114)", () => {
+    const stored = () => new StateStore(host.bb.storage.database()).listWorkItems()[0]!;
+    const merges = () => ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge")).length;
+
+    it("records an open PR as soon as it opens one", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      expect(ghCalls.some((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toBe(true);
+      expect(stored().prState).toMatchObject({ number: 7, state: "open", draft: false, checks: null, review: null });
+    });
+
+    it("serves the recorded state on the roster only for the task's current PR", async () => {
+      const pr = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { pr: unknown }[] }).entries[0]!.pr;
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      expect(await pr()).toEqual({ state: "open", draft: false, checks: null, review: null, checkedAt: expect.any(String) });
+      const db = host.bb.storage.database();
+      const store = new StateStore(db);
+      // Re-shipped with another PR: the recorded state is the old one's.
+      store.updateWorkItem(stored().id, { prNumber: 8 });
+      expect(await pr()).toBeNull();
+      store.updateWorkItem(stored().id, { prNumber: 7 });
+      db.prepare("UPDATE work_items SET pr_state = NULL, pr_state_number = NULL, pr_state_json = NULL").run();
+      expect(await pr()).toBeNull();
+    });
+
+    it("records the state of a PR it finds already open", async () => {
+      prCreated = true;
+      currentPull = { ...pull, draft: true };
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      expect(ghCalls.some((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toBe(false);
+      expect(stored().prState).toMatchObject({ number: 7, state: "open", draft: true });
+    });
+
+    it.each([
+      { name: "an approval", reviews: [{ state: "APPROVED", user: { login: "alice" } }], merged: true },
+      { name: "requested changes after an approval", reviews: [{ state: "APPROVED", user: { login: "alice" } }, { state: "CHANGES_REQUESTED", user: { login: "alice" } }], merged: false },
+      // A pending review is a draft the reviewer has not submitted: it does not withdraw the approval.
+      { name: "an approval, then a pending review", reviews: [{ state: "APPROVED", user: { login: "alice" } }, { state: "PENDING", user: { login: "alice" } }], merged: true },
+    ])("merges only on approval: $name", async ({ reviews, merged }) => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }) });
+      ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: reviews.map((r) => ({ ...r, submitted_at: "" })) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle(); await sweep();
+      expect(merges()).toBe(merged ? 1 : 0);
+      if (merged) expect(stored()).toMatchObject({ status: "done", prState: { number: 7, state: "merged", checks: null, review: null } });
+      else expect(stored()).toMatchObject({ status: "ready", waitingReason: null, prState: { state: "open" } });
+    });
+
+    it("records a PR merged outside Chief of Staff when it comes to merge it", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      const store = new StateStore(host.bb.storage.database());
+      const item = stored();
+      store.updateWorkItem(item.id, { status: "cos", nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase: "merging" } } });
+      currentPull = { ...pull, state: "closed", merged: true, merged_at: "2026-11-05T02:00:00Z" };
+      host = await host.harness.lifecycle.reload(plugin);
+      await host.harness.behavior.runService("cos-reconcile").done;
+      await settleJobs();
+      expect(merges()).toBe(0);
+      expect(stored()).toMatchObject({ status: "done", prState: { state: "merged" } });
+    });
+  });
+
   it("releases capacity at PR creation and starts the next task", async () => {
     await host.harness.behavior.setSettings({ maxConcurrentTotal: 1 });
     await host.harness.behavior.callRpc("cos_intake_now", {});
@@ -1544,6 +1610,8 @@ describe("chief-of-staff server", () => {
     await settleJobs();
     expect(await roster()).toMatchObject({ detail: expected, prNumber: 7, occupiesCapacity: false });
     if (expected === "failed") expect((await roster()).lastError).toBe("PR closed without merge");
+    // CI watching records what it saw on its merged and closed exits.
+    if (state === "closed") expect(new StateStore(host.bb.storage.database()).getWorkItem(item.id)!.prState).toMatchObject({ number: 7, state: merged ? "merged" : "closed" });
     expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(1);
     const count = archivedIds.length;
     await host.harness.behavior.runService("cos-reconcile").done;

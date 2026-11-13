@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 // block on a 30-minute test run; a job's result is dropped if the item moved on.
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
-import { GitHubError, GitHubRateLimitError, unlessRateLimited } from "./github";
+import { GitHubError, GitHubRateLimitError, prStateFrom, reduceReviews, unlessRateLimited } from "./github";
 import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
@@ -492,6 +492,7 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, step: ShipStep, 
     // Back from a fix: forget the CI failure we already reacted to, so the same
     // head failing again (a fix with no new commit) counts against the limit.
     await cos.bb.storage.kv.delete(CI_MARKER(item.id));
+    cos.store.setPrState(item.id, prStateFrom(existing, cos.now()));
     await report({ type: "pr_opened", step: step.id, prNumber: existing.number, prUrl: existing.html_url });
     return;
   }
@@ -502,6 +503,8 @@ async function ship(cos: Cos, item: WorkItem, repo: RepoConfig, step: ShipStep, 
   const body = await buildPrBody(cos, fresh, written?.title ? written.body : null);
   const pr = await github.createPull(repo.owner, repo.repo, { title: title.slice(0, 250), body, head: ws.branch, base: info.default_branch, ...(step.draft ? { draft: true } : {}) });
   cos.store.log({ level: "info", kind: "pr", repo: item.repo, workItemId: item.id, message: `opened PR #${pr.number} ${pr.html_url}`, actor });
+  // Recorded before the report: the state names its PR, and the roster shows it only once prNumber matches.
+  cos.store.setPrState(item.id, prStateFrom(pr, cos.now()));
   if (repo.reviewers.length) {
     await github.requestReviewers(repo.owner, repo.repo, pr.number, repo.reviewers, []).catch((error) => cos.bb.log.warn(`request reviewers failed: ${error instanceof Error ? error.message : String(error)}`));
   }
@@ -527,14 +530,13 @@ async function merge(cos: Cos, item: WorkItem, repo: RepoConfig, step: ShipStep,
   const github = await cos.github();
   const pr = await github.getPull(repo.owner, repo.repo, item.prNumber);
   if (pr.merged) {
+    cos.store.setPrState(item.id, prStateFrom(pr, cos.now()));
     await report({ type: "pr_merged" });
     return;
   }
+  // The same verdict the PR state shows: a pending review does not withdraw an approval.
   if (step.requireApproval) {
-    const latest = new Map<string, string>();
-    for (const review of await github.listReviews(repo.owner, repo.repo, item.prNumber)) if (review.user && review.state !== "COMMENTED") latest.set(review.user.login, review.state);
-    const states = [...latest.values()];
-    if (!states.includes("APPROVED") || states.includes("CHANGES_REQUESTED")) {
+    if (reduceReviews(await github.listReviews(repo.owner, repo.repo, item.prNumber)) !== "approved") {
       await report({ type: "merge_waiting", reason: "Waiting for an approving review before merging." });
       return;
     }
@@ -554,6 +556,8 @@ async function merge(cos: Cos, item: WorkItem, repo: RepoConfig, step: ShipStep,
     throw error;
   }
   cos.store.log({ level: "info", kind: "merge", repo: item.repo, workItemId: item.id, message: `merged PR #${item.prNumber} (${repo.mergeStrategy})`, actor });
+  // `pr` was read before the merge and still says open.
+  cos.store.setPrState(item.id, prStateFrom({ ...pr, merged: true }, cos.now()));
   await report({ type: "pr_merged" });
 }
 
@@ -639,6 +643,8 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
       const repo = await cos.repo(item.repo);
       if (!repo) continue;
       const pr = await github.getPull(repo.owner, repo.repo, item.prNumber!);
+      // Open PRs' state is left to refreshPrStates, which also reads checks and reviews.
+      if (pr.merged || pr.state === "closed") cos.store.setPrState(item.id, prStateFrom(pr, cos.now()));
       if (pr.merged) {
         await dispatch(cos, item.id, { type: "pr_merged" }, actor);
         continue;

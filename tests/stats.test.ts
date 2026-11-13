@@ -10,7 +10,7 @@ function item(over: Partial<WorkItem>): WorkItem {
     id: Math.random().toString(36).slice(2), repo: "o/r", issueNumber: 1, issueTitle: "t", threadId: null, environmentId: null,
     branch: null, prNumber: null, prUrl: null, status: "agent", providerId: null, model: null, fixAttempts: 0, retryCount: 0,
     lastError: null, source: "intake", createdAt: "2026-11-04T10:00:00Z", updatedAt: "2026-11-04T10:00:00Z",
-    lastActivityAt: null, finishedAt: null, waitingReason: null, ...over,
+    lastActivityAt: null, finishedAt: null, waitingReason: null, prState: null, ...over,
   };
 }
 
