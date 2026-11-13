@@ -38,7 +38,7 @@ const nodes = (build: Partial<Nodes[string]>, ship: Partial<Nodes[string]> = {})
 
 describe("capacity reservations counted in SQL", () => {
   function jsCount(store: StateStore, repo?: string, excludeId?: string) {
-    return store.listWorkItems({ limit: 1e6 }).filter((i) => (!repo || i.repo === repo) && i.id !== excludeId && occupiesCapacity(i)).length;
+    return store.listWorkItems().filter((i) => (!repo || i.repo === repo) && i.id !== excludeId && occupiesCapacity(i)).length;
   }
   function expectSame(store: StateStore) {
     for (const [repo, exclude] of [[undefined, undefined], ["a/b", undefined], ["c/d", undefined], [undefined, "x"], ["a/b", "x"]] as const) {
@@ -128,7 +128,7 @@ describe("stats from scalar columns", () => {
     for (const windowDays of [undefined, 1, 14, 90]) {
       const since = statsWindowStart(now, windowDays);
       const rows = store.statsRows(since);
-      expect(computeStats(rows, now, windowDays, store.countWorkItems())).toEqual(computeStats(store.listWorkItems({ limit: 1e6 }), now, windowDays));
+      expect(computeStats(rows, now, windowDays, store.countWorkItems())).toEqual(computeStats(store.listWorkItems(), now, windowDays));
     }
     expect(statsWindowStart(now, 14)).toBe("2026-10-30T00:00:00.000Z");
     expect(store.statsRows(statsWindowStart(now, 14)).length).toBe(6);
