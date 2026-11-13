@@ -140,10 +140,27 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       providerId: item.providerId,
       model: item.model,
       source: item.source,
-      usage: opts.withUsage && item.threadId ? await readThreadUsage(cos, item.threadId) : null,
+      usage: null,
+    });
+  }
+  if (opts.withUsage) {
+    await mapLimit(entries, USAGE_CONCURRENCY, async (entry) => {
+      if (entry.threadId) entry.usage = (await readThreadUsage(cos, entry.threadId)).usage;
     });
   }
   return entries;
+}
+
+/** Threads whose usage the roster reads at once (each read makes two SDK calls). */
+export const USAGE_CONCURRENCY = 4;
+
+/** Run `fn` over `items`, at most `limit` at a time. */
+async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 const OUTPUT_MAX = 6_000;
