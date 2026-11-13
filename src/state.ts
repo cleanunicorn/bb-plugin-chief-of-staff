@@ -114,7 +114,14 @@ export interface LogEntry {
   workItemId: string | null;
   message: string;
   actor: string;
+  /** From the row's work item, read at list time; null when the row has no work item or it is not found. */
+  issueNumber: number | null;
+  /** The work item's title ("" when it has none); null when the row has no work item or it is not found. */
+  issueTitle: string | null;
 }
+
+/** What a caller writes; the store adds `id` and `at`, and joins the task fields on read. */
+export type LogInput = Omit<LogEntry, "id" | "at" | "issueNumber" | "issueTitle">;
 
 // Append only: BB records each statement hash by index, including whitespace.
 export const MIGRATIONS = [
@@ -648,7 +655,7 @@ export class StateStore {
   }
 
   // ---- activity log ----
-  log(entry: Omit<LogEntry, "id" | "at">): void {
+  log(entry: LogInput): void {
     this.db
       .prepare(`INSERT INTO activity_log (at, level, kind, repo, work_item_id, message, actor) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(this.now().toISOString(), entry.level, entry.kind, entry.repo ?? null, entry.workItemId ?? null, entry.message, entry.actor);
@@ -656,9 +663,12 @@ export class StateStore {
   }
 
   listLog(opts: { limit?: number; workItemId?: string } = {}): LogEntry[] {
+    // Both tables have `id` and `repo`: every column is qualified so the log row's own values win.
+    const select = `SELECT a.id, a.at, a.level, a.kind, a.repo, a.work_item_id, a.message, a.actor, w.issue_number, w.issue_title
+      FROM activity_log a LEFT JOIN work_items w ON w.id = a.work_item_id`;
     const rows = opts.workItemId
-      ? (this.db.prepare(`SELECT * FROM activity_log WHERE work_item_id = ? ORDER BY id DESC LIMIT ?`).all(opts.workItemId, opts.limit ?? 100) as Row[])
-      : (this.db.prepare(`SELECT * FROM activity_log ORDER BY id DESC LIMIT ?`).all(opts.limit ?? 100) as Row[]);
+      ? (this.db.prepare(`${select} WHERE a.work_item_id = ? ORDER BY a.id DESC LIMIT ?`).all(opts.workItemId, opts.limit ?? 100) as Row[])
+      : (this.db.prepare(`${select} ORDER BY a.id DESC LIMIT ?`).all(opts.limit ?? 100) as Row[]);
     return rows.map((row) => ({
       id: row.id as number,
       at: row.at as string,
@@ -668,6 +678,8 @@ export class StateStore {
       workItemId: (row.work_item_id as string | null) ?? null,
       message: row.message as string,
       actor: row.actor as string,
+      issueNumber: (row.issue_number as number | null) ?? null,
+      issueTitle: (row.issue_title as string | null) ?? null,
     }));
   }
 }

@@ -6,22 +6,27 @@ import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
+type Query = { method: string; input: unknown };
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], repos: [] as { key: string }[], workflow: {} as Record<string, unknown>, queries: [] as Query[], paused: false, failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
-  experimental_useRpcQuery: ({ method }: { method: string }) => {
+  experimental_useRpcQuery: ({ method, input }: { method: string; input: unknown }) => {
+    mocks.queries.push({ method, input });
     const failure = mocks.failing[method];
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
+    const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
-      data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+      data: method === "cos_log" ? { entries: mocks.logs.filter((e) => !workItemId || e.workItemId === workItemId) } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_item_workflow" ? mocks.workflow : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: [] } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
+  Markdown: ({ content }: { content: string }) => <span>{content}</span>,
   ThreadTitle: () => null, UrlLink: () => null,
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
@@ -38,7 +43,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.failing = {}; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.failing = {}; mocks.logs = []; mocks.entries = []; mocks.repos = []; mocks.workflow = {}; mocks.queries = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -92,10 +97,15 @@ it("names the workflow summary as a spaced sentence for screen readers", async (
   expect(summary.textContent!.replace(/\s+/g, " ").trim()).toBe("Workflow progress: 1/3 steps complete");
 });
 
+/** A log row of acme/app whose work item was not found (no task label), unless the test names one. */
+const log = (over: Partial<LogEntry> & { id: number }): LogEntry => ({ at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned", actor: "event", repo: "acme/app", workItemId: null, issueNumber: null, issueTitle: null, ...over });
+const taskButton = (name: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="Open task ${name}"]`);
+const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
+
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
   mocks.logs = [
-    { id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one" },
-    { id: 2, at: new Date().toISOString(), level: "error", kind: "check", message: "Build failed (exit 1)", actor: "job", repo: "acme/app", workItemId: "two" },
+    log({ id: 1, kind: "spawn", message: "spawned Review thr_abc", actor: "event", workItemId: "one" }),
+    log({ id: 2, level: "error", kind: "check", message: "Build failed (exit 1)", actor: "job", workItemId: "two" }),
   ];
   await mount(<ActivityFeed />);
   const row = container.querySelector("li")!;
@@ -315,4 +325,39 @@ it("does not pull focus back to More actions if it moved on while the action ran
   elsewhere.focus();
   await act(async () => finish());
   expect(document.activeElement).toBe(elsewhere);
+});
+
+// ---------- Activity rows: task names, thread links, task filter (#109) ----------
+
+it("names each row's task and opens its workflow sheet, returning focus to the name", async () => {
+  mocks.logs = [
+    log({ id: 3, message: "Review agent 1 reported done", actor: "event", workItemId: "one", issueNumber: 7, issueTitle: "Fix login" }),
+    log({ id: 2, message: "marked done", actor: "rpc:client", workItemId: "solo", issueTitle: "Tidy the README" }),
+    log({ id: 1, kind: "control", message: "paused", actor: "rpc:client", repo: null }),
+  ];
+  mocks.workflow = { title: "acme/app#7 Fix login", workflow: DEFAULT_WORKFLOW, live: {} };
+  await mount(<ActivityFeed />);
+  const [issueRow, soloRow, controlRow] = Array.from(container.querySelectorAll("li"));
+  const issue = taskButton("#7 Fix login")!;
+  expect(issueRow!.contains(issue)).toBe(true);
+  expect(issue.textContent).toBe("#7 Fix login");
+  expect(issue.title).toBe("#7 Fix login");
+  expect(issueRow!.textContent).toContain("#7 Fix login app Review agent 1 reported done · event");
+  expect(soloRow!.contains(taskButton("Tidy the README"))).toBe(true);
+  // Severity, kind, time and actor are still on the row.
+  expect(soloRow!.querySelector('[data-icon="Info"]')).not.toBeNull();
+  expect(soloRow!.querySelector("time")).not.toBeNull();
+  expect(soloRow!.textContent).toContain("spawn");
+  expect(soloRow!.textContent).toContain("· rpc:client");
+  expect(controlRow!.querySelector('button[aria-label^="Open task"]')).toBeNull();
+  expect(controlRow!.querySelector("span:last-child")!.textContent).toBe("paused · rpc:client");
+
+  issue.focus();
+  await act(async () => issue.click());
+  expect(mocks.queries).toContainEqual({ method: "cos_item_workflow", input: { id: "one" } });
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Where this task is");
+  await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')).find((b) => b.getAttribute("aria-label") === "Close")!.click());
+  await settle();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.activeElement).toBe(taskButton("#7 Fix login"));
 });

@@ -17,3 +17,16 @@ export function matchesTaskFilter(entry: TaskState, filter: TaskFilter): boolean
   if (filter === "failures" || filter === "stalled") return attentionKind(entry) === filter;
   return stageOf(entry)?.key === filter;
 }
+
+/** A task the Activity feed can name, open and filter by. */
+export type TaskRef = { id: string; label: string };
+
+/**
+ * The label for a log row's task: "#109 Title" for an issue, the title alone for a standalone task, the short id
+ * for a task with no title. Null when the row has no task or its task was not found (`issueTitle` is null only then).
+ */
+export function taskLabel(row: { workItemId: string | null; issueNumber: number | null; issueTitle: string | null }): TaskRef | null {
+  if (!row.workItemId || row.issueTitle === null) return null;
+  const label = row.issueNumber ? `#${row.issueNumber}${row.issueTitle ? ` ${row.issueTitle}` : ""}` : row.issueTitle || row.workItemId.slice(0, 8);
+  return { id: row.workItemId, label };
+}

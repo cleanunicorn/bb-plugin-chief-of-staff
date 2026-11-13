@@ -1705,8 +1705,12 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ detail: "agent" });
 
     // The activity log records who answered, never what they typed.
-    const log = (await host.harness.behavior.callRpc("cos_log", { workItemId: id })) as { entries: { kind: string; message: string; actor: string }[] };
+    const log = (await host.harness.behavior.callRpc("cos_log", { workItemId: id })) as { entries: { kind: string; message: string; actor: string; issueNumber: number | null; issueTitle: string | null }[] };
     const answers = log.entries.filter((e) => e.kind === "answer");
+    // Each row carries its task's label through the contract, for the dashboard's Activity feed.
+    const item = (await roster()) as unknown as { issueNumber: number | null; issueTitle: string };
+    expect(answers[0]).toMatchObject({ issueNumber: item.issueNumber, issueTitle: item.issueTitle });
+    expect(typeof answers[0]!.issueTitle).toBe("string");
     expect(answers.map((e) => e.actor)).toEqual(["rpc:client", "rpc:client", "rpc:client"]);
     expect(JSON.stringify(answers)).not.toMatch(/docker image|Fix them now/);
   });

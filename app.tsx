@@ -24,7 +24,7 @@ import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, taskLabel, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 
@@ -928,10 +928,15 @@ export function ActivityFeed() {
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60 } });
   useLiveRefresh(log.refetch);
   const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
+  // The feed sits beside the Pipeline tab, not inside it, so it opens its own sheet. Closing returns focus to the
+  // task name that opened it, or to the Activity heading when that row has scrolled out of the latest 60.
+  const [viewing, setViewing] = useState<string | null>(null);
+  const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   return (
     <Panel
       title="Activity"
       icon="Activity"
+      headingRef={sheetFocus.fallback}
       dim={log.isFetching && !log.isLoading}
       actions={
         <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => setOnlyProblems((v) => !v)}>
@@ -944,6 +949,7 @@ export function ActivityFeed() {
       <ol className="sm:max-h-80 sm:overflow-auto">
         {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
+          const task = taskLabel(e);
           return (
             <li key={e.id} className={cn("flex-wrap items-start gap-x-2.5 gap-y-0.5 py-1.5 text-xs sm:flex-nowrap", !showAll && i >= MOBILE_ACTIVITY_ROWS ? "hidden sm:flex" : "flex")}>
               <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
@@ -952,6 +958,22 @@ export function ActivityFeed() {
                 {relative(e.at, now)}
               </time>
               <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
+                {task ? (
+                  <>
+                    <button
+                      type="button"
+                      className="inline-block max-w-[min(16rem,100%)] truncate rounded align-bottom font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      title={task.label}
+                      aria-label={`Open task ${task.label}`}
+                      onClick={(event) => {
+                        sheetFocus.remember(event.currentTarget);
+                        setViewing(task.id);
+                      }}
+                    >
+                      {task.label}
+                    </button>{" "}
+                  </>
+                ) : null}
                 {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
                 {e.message}
                 <span className="text-muted-foreground"> · {e.actor}</span>
@@ -965,6 +987,8 @@ export function ActivityFeed() {
           Show {entries.length - MOBILE_ACTIVITY_ROWS} more
         </Button>
       ) : null}
+      {/* An action taken here (e.g. run a step again) refreshes the feed now; the Pipeline cards catch up on the next live refresh. */}
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void log.refetch()} restoreFocus={sheetFocus.restore} /> : null}
     </Panel>
   );
 }

@@ -136,6 +136,28 @@ describe("stats from scalar columns", () => {
   });
 });
 
+describe("activity log task labels", () => {
+  it("names each row's task from its work item, keeping the row's own id and repo", () => {
+    const { store, add } = storeSetup();
+    add("issue-item", { repo: "acme/app", issueNumber: 109, issueTitle: "Activity rows do not name their task" });
+    add("standalone", { repo: "acme/app", issueTitle: "Tidy the README" });
+    add("untitled", { repo: "acme/app", issueTitle: "" });
+    store.log({ level: "info", kind: "spawn", repo: "other/repo", workItemId: "issue-item", message: "spawned", actor: "event" });
+    store.log({ level: "info", kind: "spawn", repo: "acme/app", workItemId: "standalone", message: "spawned", actor: "event" });
+    store.log({ level: "info", kind: "spawn", repo: "acme/app", workItemId: "untitled", message: "spawned", actor: "event" });
+    store.log({ level: "info", kind: "control", repo: null, workItemId: null, message: "paused", actor: "rpc:client" });
+    store.log({ level: "info", kind: "spawn", repo: "acme/app", workItemId: "gone", message: "spawned", actor: "event" });
+    const [gone, control, untitled, standalone, issue] = store.listLog();
+    expect(issue).toMatchObject({ id: 1, repo: "other/repo", workItemId: "issue-item", issueNumber: 109, issueTitle: "Activity rows do not name their task" });
+    expect(standalone).toMatchObject({ id: 2, issueNumber: null, issueTitle: "Tidy the README" });
+    // Found with an empty title: "" (not null), so the dashboard still labels it.
+    expect(untitled).toMatchObject({ id: 3, issueNumber: null, issueTitle: "" });
+    expect(control).toMatchObject({ id: 4, repo: null, workItemId: null, issueNumber: null, issueTitle: null });
+    expect(gone).toMatchObject({ id: 5, workItemId: "gone", issueNumber: null, issueTitle: null });
+    expect(store.listLog({ workItemId: "standalone" }).map((e) => e.id)).toEqual([2]);
+  });
+});
+
 describe("bounded log and journal", () => {
   const caps = { logMaxRows: 10, journalMaxRows: 12, pruneEvery: 4 };
 
