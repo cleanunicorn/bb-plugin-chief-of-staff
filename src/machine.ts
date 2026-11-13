@@ -183,7 +183,8 @@ export function initialNodes(wf: Workflow): Nodes {
 
 const agentsOf = (step: Step) => agentWork(step)?.agents ?? 1;
 const limitOf = (step: Step) => agentWork(step)?.maxRounds ?? (step.type === "check" || step.type === "ship" ? step.maxAttempts : 0);
-const label = (item: WorkItem) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
+/** How notifications and warnings name a task: `owner/repo#N`, or `owner/repo: title`. */
+export const label = (item: Pick<WorkItem, "repo" | "issueNumber" | "issueTitle" | "id">) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
 
 const WAIT_TITLE: Record<WaitingKind, string> = {
   question: "Agent needs input",
@@ -710,6 +711,16 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 }
 
 /** How an error thrown by `transition` itself starts in lastError (see delivery). */
+/** Why a queued task waits while its repository is missing from the `repos` setting. */
+export function repoNotConfiguredReason(repo: string): string {
+  return `Repository ${repo} is not in the repos setting (or the setting has an error). The task starts once ${repo} is configured again, or close the task.`;
+}
+
+/** Whether a waiting reason is repoNotConfiguredReason's (not the capacity one). */
+export function isRepoNotConfiguredReason(reason: string | null | undefined): boolean {
+  return !!reason?.startsWith("Repository ") && reason.includes(" is not in the repos setting");
+}
+
 export const ENGINE_ERROR_PREFIX = "Chief of Staff could not handle ";
 
 /** The step still has an effect error to retry or to show the operator. */

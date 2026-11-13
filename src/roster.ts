@@ -2,7 +2,7 @@
 // state, stall detection, and reconciliation after a restart (including
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
-import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
+import { actorOf, freshNode, initialNodes, isRepoNotConfiguredReason, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
 import { occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
@@ -225,6 +225,7 @@ export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSte
     case "failed":
       return item.lastError ?? "Failed";
     case "queued":
+      if (item.queuedEvent && isRepoNotConfiguredReason(item.waitingReason)) return item.waitingReason!;
       return item.queuedEvent?.type === "ci_failing" ? "CI repair waiting for task capacity" : item.queuedEvent ? "Waiting for task capacity" : "Waiting to start";
     case "waiting_on_human":
     case "blocked":
