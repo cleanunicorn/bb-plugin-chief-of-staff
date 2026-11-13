@@ -7,7 +7,7 @@ import type { LogEntry } from "../src/state";
 import type { RosterEntry } from "../src/roster";
 import { entry } from "./helpers/roster";
 import { act } from "react";
-import { click, container, mount, tabbables, tabbablesAfter, unmount } from "./dom";
+import { click, container, mount, tabbables, tabbablesAfter, tick, unmount } from "./dom";
 
 const DAYS = Array.from({ length: 14 }, (_, i) => ({ date: `2026-11-${String(i + 1).padStart(2, "0")}`, started: 1, done: i % 3, failed: i === 2 ? 1 : 0 }));
 
@@ -122,4 +122,111 @@ it("keeps the skip link when there are no tasks", async () => {
   expect(skip?.textContent?.trim()).toBe("Skip to throughput and activity");
   await click(skip!);
   expect(document.activeElement).toBe(heading("Throughput · last 14 days"));
+});
+
+// ---------- M4: the task grid is one tab stop group ----------
+
+const group = () => container.querySelector<HTMLElement>('[role="group"][aria-label="Tasks"]')!;
+const cards = () => Array.from(group().querySelectorAll("article"));
+const cardOf = (el: Element | null) => cards().indexOf(el?.closest("article") as HTMLElement);
+const press = (target: Element, key: string, init: KeyboardEventInit = {}) => act(async () => { target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })); });
+/** The card whose controls are in the tab order; every tab stop in the grid must belong to it. */
+const currentCard = () => {
+  const owners = new Set(tabbables(group()).map(cardOf));
+  expect(owners.size).toBe(1);
+  return [...owners][0];
+};
+
+/** An approval-waiting card shows all seven controls: progress, Answer, Open thread, Workflow, PR, Approve, More actions. */
+function withApprovalFirst(list: RosterEntry[]): RosterEntry[] {
+  list[0] = { ...list[0]!, detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Review the plan" };
+  return list;
+}
+
+it("keeps the task grid to one card's tab stops, whether it shows 5 tasks or 50", async () => {
+  mocks.entries = withApprovalFirst(tasks(5));
+  await page();
+  const five = tabbables(group()).length;
+  expect(five).toBe(tabbables(cards()[0]!).length);
+  expect(five).toBe(7);
+  expect(cards().slice(1).every((card) => tabbables(card).length === 0)).toBe(true);
+
+  mocks.entries = withApprovalFirst(tasks(50));
+  await page();
+  expect(cards()).toHaveLength(50);
+  expect(tabbables(group())).toHaveLength(five);
+  expect(currentCard()).toBe(0);
+});
+
+it("describes the arrow keys on the task group", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  const hint = document.getElementById(group().getAttribute("aria-describedby")!);
+  expect(hint?.textContent).toBe("Arrow keys move between tasks.");
+});
+
+it("moves between cards with the arrow keys, Home and End", async () => {
+  mocks.entries = tasks(6);
+  await page();
+  const first = (index: number) => cards()[index]!.querySelector("summary")!;
+  first(0).focus();
+  await press(document.activeElement!, "ArrowRight");
+  expect(document.activeElement).toBe(first(1));
+  expect(currentCard()).toBe(1);
+  await press(document.activeElement!, "ArrowDown");
+  expect(document.activeElement).toBe(first(2));
+  await press(document.activeElement!, "ArrowUp");
+  await press(document.activeElement!, "ArrowLeft");
+  expect(document.activeElement).toBe(first(0));
+  await press(document.activeElement!, "ArrowLeft");
+  expect(document.activeElement).toBe(first(0));
+  await press(document.activeElement!, "End");
+  expect(document.activeElement).toBe(first(5));
+  expect(currentCard()).toBe(5);
+  await press(document.activeElement!, "Home");
+  expect(document.activeElement).toBe(first(0));
+  expect(currentCard()).toBe(0);
+});
+
+it("moves from any control of a card, and ignores arrows with modifier keys", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  const workflow = Array.from(cards()[1]!.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Workflow")!;
+  workflow.focus();
+  await act(async () => {});
+  expect(currentCard()).toBe(1);
+  await press(workflow, "ArrowRight", { altKey: true });
+  expect(document.activeElement).toBe(workflow);
+  await press(workflow, "ArrowRight");
+  expect(document.activeElement).toBe(cards()[2]!.querySelector("summary"));
+});
+
+it("lets ArrowDown open More actions instead of moving to the next card", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  const more = cards()[0]!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  more.focus();
+  await press(more, "ArrowDown");
+  await tick();
+  expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+  expect(currentCard()).toBe(0);
+  await press(document.activeElement!, "ArrowDown");
+  await tick();
+  expect(document.activeElement?.getAttribute("role")).toBe("menuitem");
+  expect(currentCard()).toBe(0);
+  await press(document.activeElement!, "Escape");
+  await tick();
+  expect(document.activeElement).toBe(more);
+});
+
+it("falls back to the first card when the current one leaves the list", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  cards()[1]!.querySelector("summary")!.focus();
+  await act(async () => {});
+  expect(currentCard()).toBe(1);
+  mocks.entries = tasks(3).filter((e) => e.id !== "t1");
+  await page();
+  expect(cards()).toHaveLength(2);
+  expect(currentCard()).toBe(0);
 });

@@ -27,6 +27,7 @@ import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
+import { CARD_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -332,7 +333,8 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
 
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
-function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
+/** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
+function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
   const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
@@ -342,8 +344,9 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
+  const tabIndex = tabbable ? undefined : -1;
   return (
-    <article className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
+    <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
         <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
@@ -369,7 +372,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
       {entry.steps.length ? <details className="group text-xs">
-        <summary className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <summary tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
           {/* The sr-only text keeps the accessible name spaced: "Workflow progress: 3/6 steps complete". */}
           <span className="shrink-0">Workflow<span className="sr-only"> progress: </span></span>
@@ -384,6 +387,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
         <button
           type="button"
+          tabIndex={tabIndex}
           onClick={(event) => onAnswer(entry.id, event.currentTarget)}
           className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
           aria-label={entry.waitingKind === "approval" ? "Open the report to approve it" : "Open the question to answer it"}
@@ -423,32 +427,32 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
       </dl>
       <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
         {entry.threadId ? (
-          <Button size="sm" className="h-7 px-2" onClick={() => navigate.toThread(entry.threadId!)}>
+          <Button size="sm" className="h-7 px-2" tabIndex={tabIndex} onClick={() => navigate.toThread(entry.threadId!)}>
             <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
           </Button>
         ) : null}
-        <Button size="sm" variant="outline" className="h-7 px-2" onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
+        <Button size="sm" variant="outline" className="h-7 px-2" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
           <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
         </Button>
         {entry.prUrl ? (
           <span className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium">
             <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
-            <UrlLink href={entry.prUrl}>#{entry.prNumber}</UrlLink>
+            <UrlLink href={entry.prUrl} tabIndex={tabIndex}>#{entry.prNumber}</UrlLink>
           </span>
         ) : null}
         {entry.waitingKind === "approval" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "approve")}>
+          <Button size="sm" className="h-7 px-2" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "approve")}>
             <Icon name="Check" fallback="Circle" aria-hidden /> Approve
           </Button>
         ) : needsHuman && entry.waitingKind !== "question" ? (
-          <Button size="sm" className="h-7 px-2" disabled={busy} onClick={() => onAction(entry.id, "retry")}>
+          <Button size="sm" className="h-7 px-2" tabIndex={tabIndex} disabled={busy} onClick={() => onAction(entry.id, "retry")}>
             <Icon name={entry.waitingKind === "cos_error" ? "RotateCcw" : "Play"} fallback="Circle" aria-hidden /> {entry.waitingKind === "cos_error" ? "Retry step" : "Resume"}
           </Button>
         ) : null}
         {!finished || entry.detail === "failed" ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" disabled={busy}>
+              <Button ref={menuTrigger} size="sm" variant="ghost" className="ml-auto h-7 w-7 p-0" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
                 <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
@@ -493,6 +497,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
 
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
+const TASK_KEYS_HINT_ID = "cos-task-keys";
 
 export function PipelineTab() {
   const rpc = useRpc<Contract>();
@@ -554,6 +559,7 @@ export function PipelineTab() {
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
   const visible = entries.filter((e) => matchesTaskFilter(e, filter));
+  const roving = useRovingCards(visible.map((e) => e.id));
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
@@ -651,11 +657,18 @@ export function PipelineTab() {
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
           </Empty>
         ) : null}
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {visible.map((e) => (
-            <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
-          ))}
-        </div>
+        {visible.length ? (
+          // One tab stop group: Tab visits the current card's controls only, arrows move between cards (issue #115).
+          <div role="group" aria-label="Tasks" aria-describedby={TASK_KEYS_HINT_ID} className="group/tasks flex flex-col gap-1.5" {...roving.groupProps}>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {visible.map((e) => (
+                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+              ))}
+            </div>
+            {/* Shown while focus is in the group; always the group's description for screen readers. */}
+            <p id={TASK_KEYS_HINT_ID} className="hidden text-xs text-muted-foreground group-focus-within/tasks:block">Arrow keys move between tasks.</p>
+          </div>
+        ) : null}
       </Panel>
 
       <div className="grid gap-4 lg:grid-cols-5">
