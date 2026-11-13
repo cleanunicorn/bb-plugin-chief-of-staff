@@ -984,6 +984,11 @@ export function ActivityFeed({ task: heldTask, onTaskChange, headingRef }: { tas
   // One task's rows come from the server, so its older rows are not lost behind other tasks' newer ones.
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: task ? { limit: 60, workItemId: task.id } : { limit: 60 } });
   useLiveRefresh(log.refetch);
+  // Only to know whether one repository is configured; not live-refreshed (it is costly and rarely changes).
+  // Its errors show on the Pipeline tab, not here.
+  const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  const repos = overview.data?.repos;
+  const onlyRepo = repos?.length === 1 ? repos[0]!.key : null;
   const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
   // Tasks seen in the unfiltered feed while it is open, so the menu still lists them while one is chosen.
   const [seen, setSeen] = useState<readonly TaskRef[]>([]);
@@ -1076,7 +1081,8 @@ export function ActivityFeed({ task: heldTask, onTaskChange, headingRef }: { tas
                     </button>{" "}
                   </>
                 ) : null}
-                {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
+                {/* With one repository the name says nothing; rows from a repository since removed keep it. */}
+                {e.repo && e.repo !== onlyRepo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
                 <ThreadLinkedText text={e.message} onThread={openThread} />
                 <span className="text-muted-foreground"> · <ThreadLinkedText text={e.actor} onThread={openThread} /></span>
               </span>

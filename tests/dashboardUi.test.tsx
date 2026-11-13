@@ -460,3 +460,26 @@ it("keeps the active card's actions and adds Show activity last", async () => {
   await openMenu();
   expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…", "Mark failed…", "Show activity"]);
 });
+
+it("drops the repository prefix when it is the only configured repository", async () => {
+  mocks.repos = [{ key: "acme/app" }];
+  mocks.logs = [log({ id: 2, message: "spawned Build" }), log({ id: 1, message: "old run", repo: "acme/removed" })];
+  await mount(<ActivityFeed />);
+  const [current, removed] = Array.from(container.querySelectorAll("li"));
+  expect(current!.querySelector("span:last-child")!.textContent).toBe("spawned Build · event");
+  // A row from a repository no longer configured keeps its name.
+  expect(removed!.querySelector("span:last-child")!.textContent).toBe("removed old run · event");
+  expect(mocks.queries).toContainEqual({ method: "cos_overview", input: null });
+});
+
+it("keeps the repository prefix with several repositories, or while they are unknown", async () => {
+  mocks.repos = [{ key: "acme/app" }, { key: "acme/api" }];
+  mocks.logs = [log({ id: 1, message: "spawned Build" })];
+  await mount(<ActivityFeed />);
+  expect(container.querySelector("li span:last-child")!.textContent).toBe("app spawned Build · event");
+  mocks.repos = [{ key: "acme/app" }];
+  mocks.failing = { cos_overview: "overview unavailable" };
+  await act(async () => { root.render(<ActivityFeed key="again" />); });
+  expect(container.querySelector("li span:last-child")!.textContent).toBe("app spawned Build · event");
+  expect(container.textContent).not.toContain("overview unavailable");
+});
