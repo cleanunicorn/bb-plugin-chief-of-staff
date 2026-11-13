@@ -109,8 +109,9 @@ it("makes the PR link the chip itself, sized for touch", async () => {
   mocks.entries = [entry({ prNumber: 42, prUrl: "https://github.com/acme/app/pull/42" })];
   await mount();
   const link = container.querySelector<HTMLAnchorElement>('article a[href="https://github.com/acme/app/pull/42"]')!;
-  expect(link.getAttribute("aria-label")).toBe("Pull request #42");
-  expect(link.textContent).toBe("#42");
+  // The visible text is the link's name: no aria-label that would differ from it (WCAG 2.5.3).
+  expect(link.hasAttribute("aria-label")).toBe(false);
+  expect(link.textContent).toBe("PR #42");
   expect(link.querySelector('[data-icon="GitPullRequest"]')).not.toBeNull();
   expect(classes(link)).toEqual(expect.arrayContaining(["inline-flex", "h-7", "border", "pointer-coarse:h-10", "focus-visible:ring-1"]));
   expect(link.parentElement!.tagName).not.toBe("SPAN");

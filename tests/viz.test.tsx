@@ -61,12 +61,15 @@ it("on a coarse pointer, drops the hover and cursor styles from the inert column
   expect(plot.querySelector(".hover\\:bg-state-hover, .cursor-default")).toBeNull();
 });
 
-it("on a fine pointer, keeps one focusable column per day with its tooltip", async () => {
+it("on a fine pointer, keeps one named image per day with its hover tooltip", async () => {
   await mount(vi.fn());
-  expect(dayButtons()).toHaveLength(14);
-  expect(dayButtons()[0]!.getAttribute("aria-label")).toBe("11-01: Done 0, Failed 0");
+  // Days are images, not buttons: activating one would do nothing (#115). The table view has the same numbers.
+  expect(dayButtons()).toHaveLength(0);
+  const days = Array.from(container.querySelectorAll('[role="img"]')).filter((d) => /^\d\d-\d\d: /.test(d.getAttribute("aria-label") ?? ""));
+  expect(days).toHaveLength(14);
+  expect(days[0]!.getAttribute("aria-label")).toBe("11-01: Done 0, Failed 0");
   expect(showTable()).toBeNull();
-  await act(async () => dayButtons()[1]!.focus());
+  await act(async () => { days[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
   expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("11-02");
 });
 

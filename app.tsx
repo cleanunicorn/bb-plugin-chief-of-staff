@@ -28,7 +28,7 @@ import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
-import { CARD_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
+import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -420,7 +420,7 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
       {entry.steps.length ? <details className="group text-xs">
-        <summary tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <summary {...{ [ENTRY_ATTRIBUTE]: "" }} tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
           {/* The sr-only text keeps the accessible name spaced: "Workflow progress: 3/6 steps complete". */}
           <span className="shrink-0">Workflow<span className="sr-only"> progress: </span></span>
@@ -485,7 +485,7 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
             <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
           </Button>
           {entry.prUrl ? (
-            <UrlLink href={entry.prUrl} tabIndex={tabIndex} aria-label={`Pull request #${entry.prNumber}`} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
+            <UrlLink href={entry.prUrl} tabIndex={tabIndex} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
               <Icon name="GitPullRequest" fallback="Circle" className="size-3.5" aria-hidden />
               PR #{entry.prNumber}
             </UrlLink>

@@ -137,7 +137,7 @@ const currentCard = () => {
   return [...owners][0];
 };
 
-/** An approval-waiting card shows all seven controls: progress, Answer, Open thread, Workflow, PR, Approve, More actions. */
+/** An approval-waiting card shows all eight controls: issue, progress, Answer, Open thread, Workflow, PR, Approve, More actions. */
 function withApprovalFirst(list: RosterEntry[]): RosterEntry[] {
   list[0] = { ...list[0]!, detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Review the plan" };
   return list;
@@ -148,7 +148,7 @@ it("keeps the task grid to one card's tab stops, whether it shows 5 tasks or 50"
   await page();
   const five = tabbables(group()).length;
   expect(five).toBe(tabbables(cards()[0]!).length);
-  expect(five).toBe(7);
+  expect(five).toBe(8);
   expect(cards().slice(1).every((card) => tabbables(card).length === 0)).toBe(true);
 
   mocks.entries = withApprovalFirst(tasks(50));

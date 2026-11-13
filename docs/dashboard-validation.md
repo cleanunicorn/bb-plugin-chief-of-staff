@@ -126,10 +126,14 @@ Decisions worth knowing:
   (open that day's finished tasks) belongs to #105. The view toggle buttons
   are named on the button (“Chart view”, “Table view”), not on the icon.
 - Only the current card's controls have `tabIndex` 0; the others get -1,
-  including the PR link (`UrlLink` passes `tabIndex` to its anchor). The first
+  including the issue and PR links (`UrlLink` passes `tabIndex` to its anchor). The first
   card is current until focus lands on another by any route: arrow key, click,
   or a sheet returning focus to its opener. If the current card leaves the
   list (refetch, filter, Show/Hide finished), the first card is current again.
+- Arrow keys land on the card's “Workflow progress” row (marked with
+  `data-roving-entry`), or on its first control when it has no workflow
+  steps. The issue link comes first in the card, but it leaves the plugin,
+  so it is not where arrows land.
 - Arrow movement is linear in DOM order, one card per key, so Up and Down in
   the three-column layout move one card, not one row. Left and Up stop at the
   first card, Right and Down at the last; nothing wraps.
@@ -151,7 +155,8 @@ Checks:
   view toggles are named; the skip link is the first tab stop after the
   heading, also with no tasks, and moves focus to Throughput, three tab stops
   before “Problems only”; the grid's tab stops are the same for 5 and 50
-  tasks and equal the current card's (7 for an approval card); arrows, Home,
+  tasks and equal the current card's (8 for an approval card, counting the
+  issue link added in #113; 7 when this was measured); arrows, Home,
   End, no wrap; modifiers ignored; focus makes a card current; ArrowDown on
   More actions opens the menu without moving cards; fallback to the first
   card. `tests/dom.tsx` gains `tabbables()`, which computes tab order (jsdom
@@ -160,7 +165,8 @@ Checks:
 - Real browser (BetterWright, Chromium, 1440×1000): the actual `PipelineTab`
   and `ActivityFeed` with the built plugin CSS and fixture data of 54 tasks
   (each with workflow steps, a thread and a PR). From “Work overview”:
-  21 Tab presses to “Problems only” with an approval card current (the issue measured 235 in a live install); with the skip
+  21 Tab presses to “Problems only” with an approval card current (measured
+  before #113 added the issue link to each card, which adds one) (the issue measured 235 in a live install); with the skip
   link, Tab, Enter, Tab ×3 (5 key presses). The skip link appears on focus
   with the focus ring and does not move the heading row. Enter scrolls to and
   focuses the Throughput heading. ArrowRight, ArrowDown, End and Home move

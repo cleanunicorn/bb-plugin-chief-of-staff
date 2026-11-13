@@ -7,6 +7,9 @@ import type { FocusEvent, KeyboardEvent } from "react";
 /** Put this attribute, set to the card's id, on each card element inside the group. */
 export const CARD_ATTRIBUTE = "data-roving-card";
 
+/** Put this attribute on the control the arrow keys should land on in a card; without one, they land on its first control. */
+export const ENTRY_ATTRIBUTE = "data-roving-entry";
+
 const CONTROLS = "summary, a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])";
 
 const STEP: Record<string, (from: number, last: number) => number> = {
@@ -48,7 +51,7 @@ export function useRovingCards(ids: readonly string[]) {
     if (from < 0) return;
     event.preventDefault();
     const to = Math.max(0, Math.min(cards.length - 1, step(from, cards.length - 1)));
-    if (to !== from) cards[to]!.querySelector<HTMLElement>(CONTROLS)?.focus();
+    if (to !== from) (cards[to]!.querySelector<HTMLElement>(`[${ENTRY_ATTRIBUTE}]`) ?? cards[to]!.querySelector<HTMLElement>(CONTROLS))?.focus();
   }, []);
 
   return { current: active, groupProps: { onFocus, onKeyDown } };
