@@ -49,3 +49,19 @@ export function splitThreadIds(text: string): TextPart[] {
   if (last < text.length || !parts.length) parts.push({ text: text.slice(last) });
   return parts;
 }
+
+/**
+ * Tasks to offer in the Activity feed's task filter: those named in `rows` (newest first), then those offered before,
+ * so a task stays on offer after its rows leave the latest page. Returns `previous` itself when nothing changed.
+ */
+export function recentTasks(rows: readonly Parameters<typeof taskLabel>[0][], previous: readonly TaskRef[], max = 20): readonly TaskRef[] {
+  const byId = new Map<string, TaskRef>();
+  for (const row of rows) {
+    const task = taskLabel(row);
+    if (task && !byId.has(task.id)) byId.set(task.id, task);
+  }
+  for (const task of previous) if (!byId.has(task.id)) byId.set(task.id, task);
+  const next = [...byId.values()].slice(0, max);
+  const same = next.length === previous.length && next.every((task, i) => task.id === previous[i]!.id && task.label === previous[i]!.label);
+  return same ? previous : next;
+}

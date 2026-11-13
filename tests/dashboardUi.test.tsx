@@ -33,7 +33,7 @@ vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => 
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
 vi.mock("../components/cos/question", () => ({ QuestionSheet: () => null }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
-import { PipelineTab, ReposTab, ActivityFeed } from "../app";
+import { PipelineTab, ReposTab, ActivityFeed, Dashboard } from "../app";
 
 const container = document.createElement("div");
 let root: ReturnType<typeof createRoot>;
@@ -371,4 +371,92 @@ it("links every thread id in a row's message and actor, leaving the text as it w
   expect(links.map((b) => b.textContent)).toEqual(["thr_a", "thr_b", "thr_c"]);
   for (const link of links) await act(async () => link.click());
   expect(mocks.navigate.toThread.mock.calls).toEqual([["thr_a"], ["thr_b"], ["thr_c"]]);
+});
+
+const logQueries = () => mocks.queries.filter((q) => q.method === "cos_log").map((q) => q.input);
+const taskFilterTrigger = () => container.querySelector<HTMLButtonElement>('button[aria-label^="Filter activity by task"]')!;
+const openTaskFilter = async () => {
+  taskFilterTrigger().focus();
+  await keydown(taskFilterTrigger(), "Enter");
+  await tick();
+};
+const twoTaskLogs = () => [
+  log({ id: 4, level: "error", kind: "check", message: "Deploy failed", workItemId: "two", issueNumber: 9, issueTitle: "Repair deploy" }),
+  log({ id: 3, message: "Review agent 1 reported done", workItemId: "one", issueNumber: 7, issueTitle: "Fix login" }),
+  log({ id: 2, message: "spawned Build", workItemId: "two", issueNumber: 9, issueTitle: "Repair deploy" }),
+  log({ id: 1, kind: "control", message: "paused", actor: "rpc:client", repo: null }),
+];
+
+it("narrows the feed to one task from its task menu, combines with Problems only, and clears again", async () => {
+  mocks.logs = twoTaskLogs();
+  await mount(<ActivityFeed />);
+  await openTaskFilter();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["#9 Repair deploy", "#7 Fix login"]);
+  await act(async () => menuItem("#9 Repair deploy").click());
+  await tick();
+  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "two" });
+  expect(container.querySelectorAll("li")).toHaveLength(2);
+  expect(container.textContent).toContain("Deploy failed");
+  expect(container.textContent).toContain("spawned Build");
+  expect(container.textContent).not.toContain("Review agent 1 reported done");
+  expect(taskFilterTrigger().textContent).toContain("Task: #9 Repair deploy");
+
+  await act(async () => buttonLabelled("Problems only").click());
+  expect(container.textContent).toContain("Deploy failed");
+  expect(container.textContent).not.toContain("spawned Build");
+
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Clear task filter"]')!.click());
+  expect(logQueries().at(-1)).toEqual({ limit: 60 });
+  expect(taskFilterTrigger().textContent?.trim()).toBe("Task");
+  expect(document.activeElement).toBe(taskFilterTrigger());
+  await act(async () => buttonLabelled("Problems only").click());
+  expect(container.textContent).toContain("Review agent 1 reported done");
+  expect(container.textContent).toContain("paused");
+});
+
+it("names the chosen task even when it has no activity, and offers it in the task menu", async () => {
+  mocks.logs = twoTaskLogs();
+  const onTaskChange = vi.fn();
+  await mount(<ActivityFeed task={{ id: "quiet", label: "#5 Quiet task" }} onTaskChange={onTaskChange} />);
+  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "quiet" });
+  expect(container.textContent).toContain("No activity for this task.");
+  expect(taskFilterTrigger().textContent).toContain("Task: #5 Quiet task");
+  await openTaskFilter();
+  expect(menuItems().map((el) => el.textContent?.trim())).toContain("#5 Quiet task, selected");
+  await keydown(document.activeElement!, "Escape");
+  await tick();
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Clear task filter"]')!.click());
+  expect(onTaskChange).toHaveBeenCalledWith(null);
+});
+
+it("shows a card's activity from its menu, finished cards included, and moves focus to the Activity panel", async () => {
+  mocks.entries = [entry(), entry({ id: "done-one", issueNumber: 3, issueTitle: "Old work", detail: "done", status: "done", threadId: null })];
+  mocks.logs = [log({ id: 1, message: "marked done", workItemId: "done-one", issueNumber: 3, issueTitle: "Old work" }), log({ id: 2, message: "spawned Build", workItemId: "one", issueNumber: 1, issueTitle: "Fix login" })];
+  const scrollIntoView = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scrollIntoView;
+  await mount(<Dashboard subPath="agents" />);
+  const done = Array.from(container.querySelectorAll("article")).find((a) => a.textContent?.includes("Old work"))!;
+  const more = done.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  more.focus();
+  await keydown(more, "Enter");
+  await tick();
+  // A finished task offers only Show activity.
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Show activity"]);
+  await act(async () => menuItem("Show activity").click());
+  await tick(5);
+  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "done-one" });
+  expect(taskFilterTrigger().textContent).toContain("Task: #3 Old work");
+  expect(container.textContent).toContain("marked done");
+  expect(container.textContent).not.toContain("spawned Build");
+  const heading = Array.from(container.querySelectorAll("h2")).find((h) => h.textContent?.trim() === "Activity")!;
+  expect(document.activeElement).toBe(heading);
+  expect(scrollIntoView).toHaveBeenCalled();
+  Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+});
+
+it("keeps the active card's actions and adds Show activity last", async () => {
+  mocks.entries = [entry()];
+  await mount(<Dashboard subPath="agents" />);
+  await openMenu();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…", "Mark failed…", "Show activity"]);
 });

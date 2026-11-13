@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attentionKind, matchesTaskFilter, splitThreadIds, taskLabel } from "../components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel } from "../components/cos/dashboardModel";
 
 const task = (detail: string, waitingKind: string | null = null, stalled = false) => ({ detail, waitingKind, stalled });
 
@@ -55,5 +55,20 @@ describe("thread ids in activity text", () => {
   ])("splits %j into text and thread ids, keeping the text verbatim", (text, parts) => {
     expect(splitThreadIds(text)).toEqual(parts);
     expect(join(splitThreadIds(text))).toBe(text);
+  });
+});
+
+describe("tasks offered by the activity filter", () => {
+  const row = (workItemId: string | null, issueNumber: number | null, issueTitle: string | null) => ({ workItemId, issueNumber, issueTitle });
+  it("lists each named task once, newest first, then the ones seen before", () => {
+    const previous = [{ id: "old", label: "Old task" }, { id: "a", label: "#1 Stale title" }];
+    const list = recentTasks([row("a", 1, "Fix login"), row(null, null, null), row("b", null, "Tidy"), row("a", 1, "Fix login"), row("gone", null, null)], previous);
+    expect(list).toEqual([{ id: "a", label: "#1 Fix login" }, { id: "b", label: "Tidy" }, { id: "old", label: "Old task" }]);
+  });
+  it("keeps the previous list when nothing changed, and caps its length", () => {
+    const previous = [{ id: "a", label: "#1 Fix login" }];
+    expect(recentTasks([row("a", 1, "Fix login")], previous)).toBe(previous);
+    const many = Array.from({ length: 30 }, (_, i) => row(`t${i}`, i + 1, "T"));
+    expect(recentTasks(many, [], 20)).toHaveLength(20);
   });
 });
