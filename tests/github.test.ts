@@ -231,9 +231,9 @@ describe("CI summary over every page of check runs (#50)", () => {
    * GitHub's check-run pages for a head with `total` runs, 100 per page, all
    * green but for `odd`. `served` caps the runs GitHub actually lists.
    */
-  function checksFetch(total: number, odd: Record<number, Partial<Run>> = {}, served = total) {
+  function checksFetch(total: number, odd: Record<number, Partial<Run>> = {}, served = total, status: { state: string; total_count: number } = { state: "success", total_count: 0 }) {
     return fakeFetch((url) => {
-      if (url.pathname.endsWith("/status")) return { body: { state: "success", total_count: 0 } };
+      if (url.pathname.endsWith("/status")) return { body: status };
       const page = Number(url.searchParams.get("page") ?? "1");
       const pages = Math.max(1, Math.ceil(served / 100));
       const ids = Array.from({ length: Math.max(0, Math.min(100, served - (page - 1) * 100)) }, (_, i) => (page - 1) * 100 + i + 1);
@@ -278,6 +278,15 @@ describe("CI summary over every page of check runs (#50)", () => {
     const log = vi.fn();
     expect(await summary(checksFetch(150, {}, 100), log)).toMatchObject({ state: "pending" });
     expect(log).toHaveBeenCalledWith("GitHub list /repos/acme/app/commits/abc/check-runs returned 100 of 150 check runs");
+  });
+
+  // GitHub's combined status of a commit with no statuses is "pending" (checked on a real Actions-only head).
+  it("passes green check runs on a commit with no commit statuses", async () => {
+    expect(await summary(checksFetch(3, {}, 3, { state: "pending", total_count: 0 }))).toEqual({ state: "passing", failed: [], total: 3 });
+  });
+
+  it("waits for a commit status that is pending", async () => {
+    expect(await summary(checksFetch(3, {}, 3, { state: "pending", total_count: 1 }))).toMatchObject({ state: "pending", total: 4 });
   });
 
   it("reads a single page with one request", async () => {

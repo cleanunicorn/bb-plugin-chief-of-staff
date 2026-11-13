@@ -414,7 +414,8 @@ export class GitHubClient {
       .filter((c) => c.status === "completed" && c.conclusion && ["failure", "timed_out", "cancelled", "action_required"].includes(c.conclusion))
       .map((c) => ({ name: c.name, url: c.html_url, runId: runIdFromUrl(c.html_url ?? c.details_url ?? "") }));
     // A run past the pages read may still be running or red: never call a partial list green.
-    const pending = !list.complete || checks.some((c) => c.status !== "completed") || status.state === "pending";
+    // A commit with no statuses has the combined state "pending": only real statuses can be pending.
+    const pending = !list.complete || checks.some((c) => c.status !== "completed") || (status.total_count > 0 && status.state === "pending");
     const total = list.total + status.total_count;
     if (total === 0) return { state: "no_checks", failed: [], total: 0 };
     if (failed.length || status.state === "failure" || status.state === "error") return { state: "failing", failed, total };

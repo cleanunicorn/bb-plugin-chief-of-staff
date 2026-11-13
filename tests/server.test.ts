@@ -726,6 +726,25 @@ describe("chief-of-staff server", () => {
       } finally { vi.useRealTimers(); }
     });
 
+    it("merges an Actions-only repository once its check runs pass", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval: false } } }) });
+      noChecks();
+      // What GitHub reports for a commit with no commit statuses.
+      ghRoutes["GET /repos/acme/app/commits/abc/status"] = () => ({ body: { state: "pending", total_count: 0 } });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "success" }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(1);
+        expect(status()).toBe("done");
+      } finally { vi.useRealTimers(); }
+    });
+
     it("sends a failure that appears during the grace back to build", async () => {
       await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval: false } } }) });
       ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
