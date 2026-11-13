@@ -7,7 +7,7 @@
   refreshes reuse it, so **Show finished** costs about the same as active work.
   Usage of unfinished tasks is read concurrently instead of one task at a
   time. The dashboard's own refresh after a burst of updates now runs once,
-  500 ms after the burst ends.
+  500 ms after the burst ends, or every 2 s while updates keep coming.
 
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
