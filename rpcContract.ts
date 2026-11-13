@@ -188,7 +188,18 @@ export const rpcContract = defineRpcContract({
   },
   cos_set_paused: { input: z.object({ paused: z.boolean() }), output: z.object({ paused: z.boolean() }) },
   cos_set_repo_paused: { input: z.object({ repo: z.string().max(200), paused: z.boolean() }), output: z.object({ repo: z.string(), paused: z.boolean() }) },
-  cos_roster: { input: z.object({ repo: z.string().optional(), includeDone: z.boolean().default(false), withUsage: z.boolean().default(false) }), output: z.object({ entries: z.array(rosterEntry) }) },
+  cos_roster: {
+    input: z.object({
+      repo: z.string().optional(),
+      includeDone: z.boolean().default(false),
+      /** Finished items per page. */
+      finishedLimit: z.number().int().min(1).max(500).default(50),
+      /** An earlier page's nextBefore: return only the next page of finished items. */
+      before: z.string().min(1).max(1000).optional(),
+      withUsage: z.boolean().default(false),
+    }),
+    output: z.object({ entries: z.array(rosterEntry), nextBefore: z.string().nullable() }),
+  },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: {
     input: z.object({ id: z.string(), action: z.enum(["retry", "rerun_step", "approve", "mark_done", "mark_failed"]), step: z.string().max(40).optional(), feedback: z.string().max(20000).optional() }),

@@ -3,7 +3,7 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
+import { occupiesCapacity, ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
@@ -90,14 +90,38 @@ export function rosterSteps(item: WorkItem): RosterStep[] {
   });
 }
 
-export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?: boolean; withUsage?: boolean } = {}): Promise<RosterEntry[]> {
+/** Thread ids per threads.list call. */
+const THREAD_BATCH = 200;
+
+export interface RosterOptions {
+  repo?: string;
+  /** Add a page of finished items after the active ones. */
+  includeDone?: boolean;
+  /** Finished items per page (default 50, at most 500). */
+  finishedLimit?: number;
+  /** Cursor from an earlier page's `nextBefore`: return only the next page of finished items. */
+  before?: string;
+  withUsage?: boolean;
+}
+
+export interface Roster {
+  entries: RosterEntry[];
+  /** Pass as `before` for the next page of finished items; null when there are no more. */
+  nextBefore: string | null;
+}
+
+/** Every active item (newest first), then one page of finished items (most recently finished first). */
+export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<Roster> {
   const { values } = await cos.config();
-  const items = cos.store.listWorkItems({ repo: opts.repo, activeOnly: !opts.includeDone, limit: 200 });
-  const threadIds = items.map((i) => i.threadId).filter((id): id is string => Boolean(id));
+  const finishedLimit = Math.min(ROSTER_FINISHED_MAX, Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT)));
+  const page = cos.store.listRosterItems({ repo: opts.repo, includeDone: opts.includeDone, finishedLimit, before: opts.before });
+  const items = [...page.active, ...page.finished];
+  const threadIds = [...new Set(items.map((i) => i.threadId).filter((id): id is string => Boolean(id)))];
   const threads = new Map<string, { status: string; title: string | null }>();
-  if (threadIds.length) {
+  for (let i = 0; i < threadIds.length; i += THREAD_BATCH) {
+    const batch = threadIds.slice(i, i + THREAD_BATCH);
     try {
-      const list = await cos.bb.sdk.threads.list({ threadIds: threadIds.slice(0, 200), includeHidden: true, limit: 200 });
+      const list = await cos.bb.sdk.threads.list({ threadIds: batch, includeHidden: true, limit: batch.length });
       for (const t of list) threads.set(t.id, { status: t.runtime?.displayStatus ?? t.status, title: t.title ?? t.titleFallback ?? null });
     } catch (error) {
       cos.bb.log.debug(`threads.list failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -143,7 +167,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       usage: opts.withUsage && item.threadId ? await readThreadUsage(cos, item.threadId) : null,
     });
   }
-  return entries;
+  return { entries, nextBefore: page.nextBefore };
 }
 
 const OUTPUT_MAX = 6_000;

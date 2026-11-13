@@ -37,17 +37,31 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
           summary: "Show the agent roster",
           options: {
             repo: { type: "string", description: "Limit to owner/repo" },
-            all: { type: "boolean", description: "Include finished items" },
+            all: { type: "boolean", description: "Add the most recently finished items after the active ones" },
+            "finished-limit": { type: "integer", description: "Finished items per page with --all (default 50)", min: 1, max: 500 },
+            before: { type: "string", description: "Cursor from an earlier page: list only the next page of finished items (implies --all)" },
             usage: { type: "boolean", description: "Include token usage / cost when the provider reports it" },
             json: { type: "boolean", description: "JSON output" },
           },
           async run(input) {
-            const entries = await buildRoster(cos, { repo: input.options.repo, includeDone: input.options.all, withUsage: input.options.usage });
+            const { repo, all, before, usage } = input.options;
+            const finishedLimit = input.options["finished-limit"];
+            let roster;
+            try {
+              roster = await buildRoster(cos, { repo, includeDone: all || before !== undefined, finishedLimit, before, withUsage: usage });
+            } catch (error) {
+              if (error instanceof Error && error.message === "invalid cursor") throw new PluginCliError("invalid --before cursor", { hint: "Use the cursor printed by an earlier bb cos status --all" });
+              throw error;
+            }
+            const { entries, nextBefore } = roster;
             const overview = await cos.config();
             const warnings = liveWarnings(cos, overview);
-            if (input.options.json) return json({ entries, errors: overview.errors, warnings });
+            if (input.options.json) return json({ entries, nextBefore, errors: overview.errors, warnings });
             const notes = [...overview.errors.map((e) => `config error: ${e}`), ...warnings.map((w) => `warning: ${w}`)];
-            return out(formatRoster(entries) + (notes.length ? "\n" + notes.join("\n") + "\n" : ""));
+            const result = out(formatRoster(entries) + (notes.length ? "\n" + notes.join("\n") + "\n" : ""));
+            // After truncation, so the cursor always shows.
+            if (nextBefore) result.stdout += `\nMore finished: bb cos status --all${repo ? ` --repo ${repo}` : ""}${finishedLimit ? ` --finished-limit ${finishedLimit}` : ""} --before ${nextBefore}\n`;
+            return result;
           },
         }),
         intake: cliCommand({
