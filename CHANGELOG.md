@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Cleaner workflow progress on task cards.** The collapsed row shows one
+  segmented bar, one segment per step, with a done count; states differ by
+  shape as well as color. Expanded, steps are
+  listed top to bottom in workflow order, each with a status mark; steps that
+  run in parallel are boxed together. Chips no longer wrap across lines with
+  dangling arrows.
+
 - **Intake and CI polling share sweep time fairly.** When a slow phase uses
   the budget, the other overdue phase gets the first turn on the next sweep,
   including after errors, rate limits and reloads. Frequent intake cannot

@@ -84,6 +84,13 @@ it("shows real zero usage and keeps task actions available without a thread", as
   expect(card.textContent).toContain("Workflow");
 });
 
+it("names the workflow summary as a spaced sentence for screen readers", async () => {
+  const step = (id: string, depth: number, status: "done" | "running" | "pending") => ({ id, name: id, depth, status, type: "agent" as const, phase: null, agents: 1, reported: 0, nudged: 0, attempts: 0, round: 1, waitingKind: null, retrying: false });
+  mocks.entries = [entry({ steps: [step("Plan", 0, "done"), step("Build", 1, "running"), step("Ship", 2, "pending")] })];
+  await mount();
+  const summary = container.querySelector("article details > summary")!;
+  expect(summary.textContent!.replace(/\s+/g, " ").trim()).toBe("Workflow progress: 1/3 steps complete");
+});
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
   mocks.logs = [

@@ -16,7 +16,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/pipeline-dark.png">
-  <img src="docs/images/pipeline-light.png" alt="The Pipeline tab: six active tasks, each showing its current step, workflow progress, token usage and actions; one task is waiting for plan approval.">
+  <img src="docs/images/pipeline-light.png" alt="The Pipeline tab: six active tasks, each with its current step, a segmented workflow progress bar, token usage and actions. The top three cards are expanded to list their steps: two running in parallel, one waiting for plan approval, and one waiting for CI after earlier retries.">
 </picture>
 
 <p align="center"><sub>The Pipeline tab. Screenshots in this README use demo data.</sub></p>
@@ -95,6 +95,17 @@ Every task has one status, derived from its steps:
 | `waiting_on_human` | You | A question, an approval or a decision. |
 | `blocked` | You | Stalled: no activity past the stall threshold. |
 | `done` / `failed` | Nobody | Finished. Shown with **Show finished**. |
+
+### Read a task card
+
+Each card shows the task's workflow as a bar with one segment per step, in
+workflow order, and the number of steps done. Done steps are thin and solid,
+the steps in progress stand taller (striped when they are waiting on you or
+retrying), and steps still to come are hollow. Click **Workflow** on the bar
+to list every step with its status. Steps that run at the same time are
+grouped under **In parallel**, and a step's line also notes its agents
+(`1/2 agents`), its shipping phase (`Waiting for CI`) and earlier failures
+(`failed 1×`).
 
 ### See a task on its workflow
 

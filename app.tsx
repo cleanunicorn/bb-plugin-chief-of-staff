@@ -22,8 +22,8 @@ import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
-import { StepFlow } from "@/components/cos/stepFlow";
-import { StateMark, StepMiniMap, QueueIllustration } from "./components/cos/taskVisuals";
+import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
+import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
@@ -368,12 +368,18 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
-      {entry.steps.length ? <details className="text-xs">
-        <summary className="cursor-pointer rounded text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-          Workflow progress · {entry.steps.filter((step) => step.status === "done").length}/{entry.steps.length} complete{" "}
-          <StepMiniMap steps={entry.steps} />
+      {entry.steps.length ? <details className="group text-xs">
+        <summary className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
+          {/* The sr-only text keeps the accessible name spaced: "Workflow progress: 3/6 steps complete". */}
+          <span className="shrink-0">Workflow<span className="sr-only"> progress: </span></span>
+          <StepProgress steps={entry.steps} />
+          <span className="shrink-0 tabular-nums">
+            {entry.steps.filter((step) => step.status === "done").length}/{entry.steps.length}
+            <span className="sr-only"> steps complete</span>
+          </span>
         </summary>
-        <div className="pt-2"><StepFlow entry={entry} /></div>
+        <div className="pt-2 pb-1"><StepFlow entry={entry} /></div>
       </details> : null}
       {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
         <button
