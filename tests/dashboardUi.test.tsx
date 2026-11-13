@@ -324,7 +324,7 @@ it("sends nothing when marking failed is cancelled", async () => {
 });
 
 it.each([
-  ["Mark done", true, "Chief of Staff stops working on this task and its workflow ends. Its threads are archived."],
+  ["Mark done", true, "Chief of Staff stops working on this task and its workflow ends. Its threads are archived and their workspace is removed: changes not pushed are lost."],
   ["Mark done", false, "Chief of Staff stops working on this task and its workflow ends. Its threads are left as they are."],
   ["Mark failed", true, "Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is."],
 ])("says what %s does to the threads (archiving on done: %s)", async (label, archive, description) => {
@@ -335,6 +335,13 @@ it.each([
   await act(async () => menuItem(label).click());
   await tick();
   expect(confirmDialog()?.textContent).toContain(description);
+});
+
+it("offers no Mark failed on a task that has already failed", async () => {
+  mocks.entries = [entry({ detail: "failed", status: "failed" })];
+  await mount();
+  await openMenu();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…"]);
 });
 
 it("retries the stuck step from the menu at once, without asking", async () => {

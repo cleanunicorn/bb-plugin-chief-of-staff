@@ -520,10 +520,12 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
                 <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
                 Mark done…
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
-                <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Mark failed…
-              </DropdownMenuItem>
+              {entry.detail === "failed" ? null : (
+                <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
+                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Mark failed…
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
@@ -531,7 +533,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
       <ConfirmDialog
         open={confirming !== null}
         title={`Mark ‘${title}’ ${confirming === "mark_failed" ? "failed" : "done"}?`}
-        description={`Chief of Staff stops working on this task and its workflow ends. ${confirming === "mark_failed" ? "The agent's thread is left as it is." : archivesOnDone ? "Its threads are archived." : "Its threads are left as they are."}`}
+        description={`Chief of Staff stops working on this task and its workflow ends. ${confirming === "mark_failed" ? "The agent's thread is left as it is." : archivesOnDone ? "Its threads are archived and their workspace is removed: changes not pushed are lost." : "Its threads are left as they are."}`}
         confirmLabel={confirming === "mark_failed" ? "Mark failed" : "Mark done"}
         tone={confirming === "mark_failed" ? "destructive" : undefined}
         onConfirm={() => {

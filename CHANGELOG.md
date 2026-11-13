@@ -4,12 +4,15 @@
 
 - **Mark done sticks.** A task marked done while its agent was still working
   went back to active, and the agent was nudged, when its turn ended. Now the
-  task stays done: its threads are archived (unless "Archive threads when a
-  task is done" is off), its agents get no more prompts, and the result of a
-  check, push or merge still running is ignored (a push or merge already under
-  way still completes on GitHub). **Mark failed** also sticks
-  while the agent is still working, and a check it interrupts runs again on
-  retry. A task marked done reads "Closed" rather than "Shipped".
+  task stays done: its agents get no more prompts, and the result of a check,
+  push or merge still running is ignored (a push or merge already under way
+  still completes on GitHub). Its threads are archived unless "Archive threads
+  when a task is done" is off, which removes their workspace, so changes not
+  pushed are lost; the confirmation says so. **Run again from here** on a done
+  task unarchives its threads first. **Mark failed** also sticks while the
+  agent is still working, a check it interrupts runs again on retry, and it is
+  no longer offered on a task that has already failed. A task marked done
+  reads "Closed" rather than "Shipped".
 
 - **Chief of Staff opens without crashing.** The activity feed omits its
   pagination cursor until viewing older entries, keeping query inputs valid JSON.
