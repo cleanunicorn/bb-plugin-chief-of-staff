@@ -7,7 +7,8 @@ import { itemAction } from "./rpc";
 
 const MAX_OUT = 60_000;
 const out = (text: string) => ({ exitCode: 0, stdout: text.length > MAX_OUT ? text.slice(0, MAX_OUT) + "\n…(truncated)\n" : text });
-const json = (value: unknown) => out(JSON.stringify(value, null, 2) + "\n");
+// Never truncated: cut JSON cannot be parsed, and paging cursors would be lost.
+const json = (value: unknown) => ({ exitCode: 0, stdout: JSON.stringify(value, null, 2) + "\n" });
 
 export function formatRoster(entries: RosterEntry[]): string {
   if (!entries.length) return "No agents tracked.\n";
@@ -56,7 +57,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
             const { entries, nextBefore } = roster;
             const overview = await cos.config();
             const warnings = liveWarnings(cos, overview);
-            if (input.options.json) return json({ entries, nextBefore, errors: overview.errors, warnings });
+            if (input.options.json) return json({ nextBefore, errors: overview.errors, warnings, entries });
             const notes = [...overview.errors.map((e) => `config error: ${e}`), ...warnings.map((w) => `warning: ${w}`)];
             const result = out(formatRoster(entries) + (notes.length ? "\n" + notes.join("\n") + "\n" : ""));
             // After truncation, so the cursor always shows.

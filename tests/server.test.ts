@@ -1779,6 +1779,12 @@ describe("chief-of-staff server", () => {
     const json = JSON.parse((await host.harness.behavior.runCli(["status", "--all", "--finished-limit", "2", "--json"])).stdout) as Page;
     expect(json.entries.map((e) => e.id)).toEqual(["old-active", "done-250", "done-249"]);
     expect(json.nextBefore).toEqual(expect.any(String));
+    // A page larger than the text output limit is still whole, parseable JSON with its cursor.
+    const bigJson = (await host.harness.behavior.runCli(["status", "--all", "--finished-limit", "200", "--json"])).stdout;
+    expect(bigJson.length).toBeGreaterThan(60_000);
+    const parsed = JSON.parse(bigJson) as Page;
+    expect(parsed.entries).toHaveLength(201);
+    expect(parsed.nextBefore).toEqual(expect.any(String));
     const next = await host.harness.behavior.runCli(["status", "--before", json.nextBefore!, "--finished-limit", "2"]);
     expect(next.exitCode).toBe(0);
     expect(next.stdout).toContain("acme/app#1248");

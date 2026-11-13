@@ -12,7 +12,8 @@
   recently finished. `bb cos status --all` takes `--finished-limit` and
   `--before <cursor>` and prints the command for the next page;
   `cos_roster` and `chief_of_staff_status` take `finishedLimit` and `before`
-  and return the next cursor (`nextBefore`).
+  and return the next cursor (`nextBefore`). `bb cos` JSON output is no
+  longer cut off at 60,000 characters, so it always parses.
 
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
