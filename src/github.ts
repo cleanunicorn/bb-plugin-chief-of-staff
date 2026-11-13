@@ -21,6 +21,8 @@ export interface GitHubComment {
   body: string;
   user: { login: string } | null;
   created_at: string;
+  /** The author's relation to the repository; see `GitHubIssue.author_association`. */
+  author_association?: string;
 }
 
 export interface GitHubPull {

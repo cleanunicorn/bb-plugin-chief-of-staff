@@ -101,7 +101,7 @@ describe("chief-of-staff server", () => {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
         "GET /repos/acme/app/issues": () => ({ body: [issue] }),
         "GET /repos/acme/app/issues/12": () => ({ body: issue }),
-        "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z" }] }),
+        "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z", author_association: "MEMBER" }] }),
         "GET /repos/acme/app/contents/AGENTS.md": () => ({ body: { content: Buffer.from("# Conventions\nUse pnpm").toString("base64") } }),
         "POST /repos/acme/app/issues/12/comments": () => ({ status: 201, body: { id: 2, body: "", user: null, created_at: "" } }),
         "GET /repos/acme/app/pulls": (url) => ({ body: url.searchParams.get("head") ? (prCreated ? [currentPull] : []) : openPulls }),
@@ -1900,18 +1900,21 @@ describe("chief-of-staff server", () => {
     });
   });
 
-  it("quotes the newest comments of a long issue in the brief", async () => {
+  it("quotes the newest maintainer comments of a long issue in the brief", async () => {
     ghRoutes["GET /repos/acme/app/issues/12/comments"] = (url) => {
       const page = Number(url.searchParams.get("page") ?? "1");
       const base = "https://api.github.com/repos/acme/app/issues/12/comments?per_page=100";
       const ids = Array.from({ length: page === 3 ? 50 : 100 }, (_, i) => (page - 1) * 100 + i + 1);
-      return { body: ids.map((id) => ({ id, body: `comment ${id}`, user: { login: "dan" }, created_at: "" })), headers: page < 3 ? { link: `<${base}&page=${page + 1}>; rel="next", <${base}&page=3>; rel="last"` } : ({} as Record<string, string>) };
+      // The newest five come from outsiders and must not push maintainers' comments out.
+      return { body: ids.map((id) => ({ id, body: `comment ${id}`, user: { login: "dan" }, created_at: "", author_association: id > 245 ? "NONE" : "MEMBER" })), headers: page < 3 ? { link: `<${base}&page=${page + 1}>; rel="next", <${base}&page=3>; rel="last"` } : ({} as Record<string, string>) };
     };
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const { prompt } = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
-    expect(prompt).toContain("comment 241");
-    expect(prompt).toContain("comment 250");
-    expect(prompt).not.toContain("comment 240");
+    expect(prompt).toContain("comment 236");
+    expect(prompt).toContain("comment 245");
+    expect(prompt).not.toContain("comment 235");
+    expect(prompt).not.toContain("comment 246");
+    expect(prompt).toContain("5 of the latest 100 comments were left out");
   });
 
   it("validates and stores the workflow from the configurator", async () => {

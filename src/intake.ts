@@ -23,6 +23,13 @@ const MAX_COMMENT = 2_000;
 const MAX_CONVENTIONS = 8_000;
 /** The newest issue comments the brief quotes. */
 const BRIEF_COMMENTS = 10;
+/** How many of the newest comments are checked for ones to quote (one page). */
+const BRIEF_COMMENT_WINDOW = 100;
+/** Comment authors whose text is quoted by default: people the repository gave a role. */
+const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+/** Fail closed: a missing or unknown association is not trusted. */
+const isTrustedComment = (comment: GitHubComment) => TRUSTED_ASSOCIATIONS.has(comment.author_association ?? "");
 
 export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Promise<GitHubIssue[]> {
   const filter = repo.issueFilter;
@@ -50,6 +57,14 @@ function untrustedBlock(content: string[]): string[] {
   return [UNTRUSTED_MARKER("BEGIN", nonce), UNTRUSTED_NOTICE, ``, ...content.map(quoteUntrusted), UNTRUSTED_MARKER("END", nonce)];
 }
 
+/** Says how many comments the brief left out, without quoting them. */
+function omittedNote(omitted: number, checked: number): string {
+  const latest = `the latest ${checked} comment${checked === 1 ? "" : "s"}`;
+  return omitted === 1
+    ? `(1 of ${latest} was left out: its author is not the repository's owner, a member or a collaborator.)`
+    : `(${omitted} of ${latest} were left out: their authors are not the repository's owner, members or collaborators.)`;
+}
+
 /** A single line: GitHub titles and logins should not span lines, but nothing here relies on it. */
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
@@ -69,7 +84,10 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
   const issue = item.issueNumber && github ? await github.getIssue(repo.owner, repo.repo, item.issueNumber).catch(unlessRateLimited(() => null)) : null;
   if (issue && github) {
     // Chief of Staff's own status comment tells the agent nothing it does not already know.
-    const comments = (await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENTS }).catch(unlessRateLimited((): GitHubComment[] => []))).filter((c) => !isStatusComment(c.body));
+    // Filter before keeping the newest few, so outsiders' comments cannot push a maintainer's out.
+    const checked = (await github.listIssueComments(repo.owner, repo.repo, issue.number, { newest: BRIEF_COMMENT_WINDOW }).catch(unlessRateLimited((): GitHubComment[] => []))).filter((c) => !isStatusComment(c.body));
+    const comments = checked.filter(isTrustedComment);
+    const omitted = checked.length - comments.length;
     const content = [
       `Title: ${oneLine(issue.title)}`,
       `Author: ${issue.user?.login ?? "unknown"} (${issue.author_association ?? "unknown"})`,
@@ -81,6 +99,7 @@ export async function taskBrief(cos: Cos, repo: RepoConfig, item: WorkItem): Pro
       for (const comment of comments.slice(-BRIEF_COMMENTS)) content.push(`- ${comment.user?.login ?? "unknown"} (${comment.created_at}): ${comment.body.slice(0, MAX_COMMENT)}`);
     }
     lines.push(`You are working on GitHub issue #${issue.number} in ${repo.owner}/${repo.repo}: ${issue.html_url}`, ``, ...untrustedBlock(content));
+    if (omitted) lines.push(``, omittedNote(omitted, checked.length));
   } else if (item.issueNumber) {
     lines.push(
       `You are working on GitHub issue #${item.issueNumber} in ${repo.owner}/${repo.repo}.`,
