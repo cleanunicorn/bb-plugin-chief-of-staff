@@ -735,10 +735,14 @@ export class StateStore {
     this.prune("activity_log", 1, this.caps.logMaxRows);
   }
 
-  listLog(opts: { limit?: number; workItemId?: string } = {}): LogEntry[] {
-    const rows = opts.workItemId
-      ? (this.db.prepare(`SELECT * FROM activity_log WHERE work_item_id = ? ORDER BY id DESC LIMIT ?`).all(opts.workItemId, opts.limit ?? 100) as Row[])
-      : (this.db.prepare(`SELECT * FROM activity_log ORDER BY id DESC LIMIT ?`).all(opts.limit ?? 100) as Row[]);
+  listLog(opts: { limit?: number; workItemId?: string; onlyProblems?: boolean; before?: number } = {}): LogEntry[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (opts.workItemId !== undefined) { where.push("work_item_id = ?"); params.push(opts.workItemId); }
+    if (opts.onlyProblems) where.push("level IN ('warn', 'error')");
+    if (opts.before !== undefined) { where.push("id < ?"); params.push(opts.before); }
+    params.push(opts.limit ?? 100);
+    const rows = this.db.prepare(`SELECT * FROM activity_log ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`).all(...params) as Row[];
     return rows.map((row) => ({
       id: row.id as number,
       at: row.at as string,

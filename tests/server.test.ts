@@ -210,6 +210,18 @@ describe("chief-of-staff server", () => {
     await host.harness.lifecycle.dispose();
   });
 
+  it("pages filtered activity through the RPC and exposes an exclusive next cursor", async () => {
+    const store = new StateStore(host.bb.storage.database());
+    for (let i = 0; i < 3; i++) store.log({ level: "error", kind: "test", repo: null, workItemId: "paging-test", message: `error ${i}`, actor: "test" });
+    for (let i = 0; i < 200; i++) store.log({ level: "info", kind: "test", repo: null, workItemId: "paging-test", message: `info ${i}`, actor: "test" });
+    const first = await host.harness.behavior.callRpc("cos_log", { limit: 2, onlyProblems: true, workItemId: "paging-test" }) as { entries: { id: number; message: string }[]; nextCursor: number | null };
+    expect(first.entries.map(e => e.message)).toEqual(["error 2", "error 1"]);
+    expect(first.nextCursor).toBe(first.entries.at(-1)!.id);
+    const last = await host.harness.behavior.callRpc("cos_log", { limit: 2, onlyProblems: true, workItemId: "paging-test", before: first.nextCursor });
+    expect(last).toMatchObject({ entries: [{ message: "error 0" }], nextCursor: null });
+    await expect(host.harness.behavior.callRpc("cos_log", { before: -1 })).rejects.toThrow();
+  });
+
   it("groups older workflow threads on sweep and silences result notifications", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const state = new StateStore(host.bb.storage.database());

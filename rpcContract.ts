@@ -237,7 +237,7 @@ export const rpcContract = defineRpcContract({
       totalTracked: z.number(),
     }),
   },
-  cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional() }), output: z.object({ entries: z.array(logEntry) }) },
+  cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional(), onlyProblems: z.boolean().default(false), before: z.number().int().positive().optional() }), output: z.object({ entries: z.array(logEntry), nextCursor: z.number().int().nullable() }) },
   cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), workflow: z.string() }) },
   cos_set_config: { input: z.object({ repos: z.string().optional(), workflow: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },
   cos_get_settings: {

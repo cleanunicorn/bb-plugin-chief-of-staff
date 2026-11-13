@@ -585,3 +585,11 @@ by [docs/images/demo-data.js](docs/images/demo-data.js).
 ## License
 
 This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+
+### Activity history
+
+The Activity panel shows 60 entries per page with their time range. **Show older**
+continues through retained history; **Back to newest** returns to live recent
+activity. **Problems only** selects warnings and errors on the server, including
+those older than the newest 60 entries. Changing the filter returns to its newest
+page. Retention still applies: paging cannot recover pruned entries.

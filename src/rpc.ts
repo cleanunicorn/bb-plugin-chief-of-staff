@@ -113,7 +113,9 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return computeStats(cos.store.statsRows(statsWindowStart(now, input.windowDays)), now, input.windowDays, cos.store.countWorkItems());
       },
       async cos_log(input) {
-        return { entries: cos.store.listLog(input) };
+        const rows = cos.store.listLog({ ...input, limit: input.limit + 1 });
+        const entries = rows.slice(0, input.limit);
+        return { entries, nextCursor: rows.length > input.limit ? entries.at(-1)!.id : null };
       },
       async cos_get_config() {
         const values = await cos.settings.get();

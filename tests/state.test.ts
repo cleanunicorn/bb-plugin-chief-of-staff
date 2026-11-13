@@ -237,3 +237,24 @@ describe("cached pull request state", () => {
     expect(due()).toEqual(["reshipped", "never"]);
   });
 });
+
+describe("activity log filtering and cursor", () => {
+  it("finds an old problem before applying the page limit", () => {
+    const { store } = storeSetup();
+    store.log({ level: "error", kind: "test", repo: null, workItemId: "old", message: "old failure", actor: "test" });
+    for (let i = 0; i < 200; i++) store.log({ level: "info", kind: "test", repo: null, workItemId: null, message: `info ${i}`, actor: "test" });
+    expect(store.listLog({ limit: 60, onlyProblems: true }).map(e => e.message)).toEqual(["old failure"]);
+  });
+
+  it("pages by exclusive id despite equal timestamps and concurrent new rows", () => {
+    const { store } = storeSetup();
+    for (let i = 0; i < 5; i++) store.log({ level: i % 2 ? "warn" : "error", kind: "test", repo: null, workItemId: "a", message: `m${i}`, actor: "test" });
+    const first = store.listLog({ limit: 2, onlyProblems: true, workItemId: "a" });
+    store.log({ level: "error", kind: "test", repo: null, workItemId: "a", message: "new", actor: "test" });
+    const second = store.listLog({ limit: 2, before: first.at(-1)!.id, onlyProblems: true, workItemId: "a" });
+    const third = store.listLog({ limit: 2, before: second.at(-1)!.id, onlyProblems: true, workItemId: "a" });
+    expect([...first, ...second, ...third].map(e => e.message)).toEqual(["m4", "m3", "m2", "m1", "m0"]);
+    expect(store.listLog({ before: third[0]!.id })).toEqual([]);
+    expect(store.listLog({ workItemId: "other", onlyProblems: true })).toEqual([]);
+  });
+});

@@ -929,22 +929,26 @@ export function ActivityFeed() {
   const [onlyProblems, setOnlyProblems] = useState(false);
   // Phones get no nested scroll box: show the latest rows and expand in place.
   const [showAll, setShowAll] = useState(false);
-  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60 } });
+  const [before, setBefore] = useState<number | undefined>(undefined);
+  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, before } });
   useLiveRefresh(log.refetch);
-  const entries = (log.data?.entries ?? []).filter((e) => !onlyProblems || e.level !== "info");
+  const entries = log.data?.entries ?? [];
   return (
     <Panel
       title="Activity"
       icon="Activity"
       dim={log.isFetching && !log.isLoading}
       actions={
-        <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => setOnlyProblems((v) => !v)}>
+        <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => { setOnlyProblems((v) => !v); setBefore(undefined); setShowAll(false); }}>
           <Icon name="TriangleAlert" fallback="Circle" aria-hidden /> Problems only
         </Button>
       }
     >
       <ErrorLine error={log.error} />
-      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{onlyProblems ? "No warnings or errors." : "No activity yet."}</p> : null}
+      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : "No activity yet."}</p> : null}
+      {entries.length > 0 ? <p className="mb-2 text-xs text-muted-foreground">
+        {entries.length} entries · {new Date(entries.at(-1)!.at).toLocaleString()} – {new Date(entries[0]!.at).toLocaleString()}
+      </p> : null}
       <ol className="sm:max-h-80 sm:overflow-auto">
         {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
@@ -964,6 +968,11 @@ export function ActivityFeed() {
           );
         })}
       </ol>
+      <div className="mt-2 flex gap-2">
+        {before !== undefined ? <Button size="sm" variant="ghost" onClick={() => { setBefore(undefined); setShowAll(false); }}>Back to newest</Button> : null}
+        {log.data?.nextCursor != null ? <Button size="sm" variant="ghost" disabled={log.isFetching} onClick={() => { setBefore(log.data!.nextCursor!); setShowAll(false); }}>Show older</Button> : null}
+        {log.data && log.data.nextCursor === null && entries.length > 0 ? <span className="text-xs text-muted-foreground">End of retained activity</span> : null}
+      </div>
       {!showAll && entries.length > MOBILE_ACTIVITY_ROWS ? (
         <Button size="sm" variant="ghost" className="mt-1 w-full sm:hidden" onClick={() => setShowAll(true)}>
           Show {entries.length - MOBILE_ACTIVITY_ROWS} more

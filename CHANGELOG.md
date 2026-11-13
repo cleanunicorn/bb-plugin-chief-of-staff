@@ -23,6 +23,10 @@
   unsubmitted (pending) review no longer overrides their earlier verdict, an
   approval or requested changes.
 
+- **Browse retained activity without losing older problems.** Problems only filters
+  on the server before the page limit. Show older pages through retained entries;
+  each page displays its time range and offers a return to the newest activity.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
