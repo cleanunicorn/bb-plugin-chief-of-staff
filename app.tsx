@@ -158,6 +158,13 @@ function rerunEffect(wf: Workflow, stepId: string, name: string): string {
  */
 export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)";
 
+/**
+ * Portrait phones: narrower than Tailwind's `sm`. The exact complement of SHORT_VIEWPORT_QUERY's width condition,
+ * so the two never match together. The workflow sheet then gives the task line its own row, shows the view switch
+ * as icons, and scrolls the canvas and the overview as one column instead of squeezing the overview into a box (#118).
+ */
+export const PHONE_VIEWPORT_QUERY = "not all and (min-width: 40rem)";
+
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
 function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
@@ -173,6 +180,11 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
   const [error, setError] = useState<string | null>(null);
   // One class set or the other, never both: `md:` and a height query both match at 844×390.
   const short = useMediaQuery(SHORT_VIEWPORT_QUERY);
+  const phone = useMediaQuery(PHONE_VIEWPORT_QUERY) && !short;
+  // Full screen keeps the fill layout on a phone too: only the header (and the footer hint) differ there.
+  const phoneColumn = phone && !expanded;
+  const column = useRef<HTMLDivElement>(null);
+  const aside = useRef<HTMLElement>(null);
   const data = view.data;
   const wf = data?.workflow as Workflow | undefined;
   const live = useMemo(() => (data?.live ?? {}) as Record<string, LiveStatus>, [data?.live]);
@@ -196,6 +208,47 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
       setBusy(false);
     }
   };
+  // On a phone the step panel follows the canvas or a long list; bring its top into view when a selection puts it below the fold.
+  useEffect(() => {
+    if (!phoneColumn || !selected || !column.current || !aside.current) return;
+    if (aside.current.getBoundingClientRect().top >= column.current.getBoundingClientRect().bottom) {
+      aside.current.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [phoneColumn, selected]);
+  const taskLine = data ? `${data.title} · workflow “${wf?.name}”` : undefined;
+  const controls = (
+    <div className={cn("flex shrink-0 items-center gap-1.5", phone && "ml-auto")}>
+      {expanded ? (
+        <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2" onClick={() => setExpanded(false)}>
+          <ShrinkGlyph /> Exit full screen
+        </Button>
+      ) : null}
+      <div role="group" aria-label="View" className="flex rounded-md border border-border p-0.5">
+        {(["canvas", "list"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            aria-pressed={mode === v}
+            onClick={() => {
+              setMode(v);
+              // The full-screen control lives on the canvas.
+              if (v === "list") setExpanded(false);
+            }}
+            className={cn("flex items-center rounded text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", phone ? "size-9 justify-center" : "gap-1 px-2 py-1", mode === v ? "bg-state-active text-foreground" : "text-muted-foreground")}
+          >
+            <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />
+            {/* Icons only on a phone; the text stays as the button's name. */}
+            <span className={phone ? "sr-only" : undefined}>{v === "canvas" ? "Canvas" : "List"}</span>
+          </button>
+        ))}
+      </div>
+      <DialogClose asChild>
+        <Button size="sm" variant="ghost" className="size-9 shrink-0 p-0 sm:size-7" aria-label="Close">
+          <Icon name="X" fallback="Circle" aria-hidden />
+        </Button>
+      </DialogClose>
+    </div>
+  );
   return (
     <Sheet
       onClose={onClose}
@@ -215,55 +268,39 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
         }
       }}
       className={cn(
-        short ? "gap-2 p-3" : "gap-3 p-4",
+        short || phone ? "gap-2 p-3" : "gap-3 p-4",
         expanded
           ? "h-dvh max-w-none rounded-none sm:rounded-none"
           : cn(short ? "h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)]" : "h-[90dvh] max-h-[calc(100dvh-2rem)]", "w-[calc(100%-2rem)] max-w-[96rem] rounded-xl sm:rounded-xl"),
       )}
     >
-      <header className="flex shrink-0 items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className={cn(short ? "line-clamp-1" : "line-clamp-2", "text-xs text-muted-foreground")} title={data ? `${data.title} · workflow “${wf?.name}”` : undefined}>{data ? `${data.title} · workflow “${wf?.name}”` : "Loading…"}</p>
-          <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {expanded ? (
-            <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2" onClick={() => setExpanded(false)}>
-              <ShrinkGlyph /> Exit full screen
-            </Button>
-          ) : null}
-          <div role="group" aria-label="View" className="flex rounded-md border border-border p-0.5">
-            {(["canvas", "list"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={mode === v}
-                onClick={() => {
-                  setMode(v);
-                  // The full-screen control lives on the canvas.
-                  if (v === "list") setExpanded(false);
-                }}
-                className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring", mode === v ? "bg-state-active text-foreground" : "text-muted-foreground")}
-              >
-                <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />
-                {v === "canvas" ? "Canvas" : "List"}
-              </button>
-            ))}
+      {phone ? (
+        // The task line gets the full width: beside the controls it kept only part of the repository's name.
+        <header className="flex shrink-0 flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Basis auto, not 0: the controls drop to a second line before the title is squeezed. */}
+            <DialogTitle className="min-w-0 flex-auto leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+            {controls}
           </div>
-          <DialogClose asChild>
-            <Button size="sm" variant="ghost" className="size-9 shrink-0 p-0 sm:size-7" aria-label="Close">
-              <Icon name="X" fallback="Circle" aria-hidden />
-            </Button>
-          </DialogClose>
-        </div>
-      </header>
+          <p className="line-clamp-3 text-xs text-muted-foreground [overflow-wrap:anywhere]" title={taskLine}>{taskLine ?? "Loading…"}</p>
+        </header>
+      ) : (
+        <header className="flex shrink-0 items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className={cn(short ? "line-clamp-1" : "line-clamp-2", "text-xs text-muted-foreground")} title={taskLine}>{taskLine ?? "Loading…"}</p>
+            <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+          </div>
+          {controls}
+        </header>
+      )}
       {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} oneLine={short} /> : null}
       <ErrorLine error={view.error ?? error} />
-      {wf && data ? <div className={cn("flex min-h-0 flex-1", short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
+      {/* On a phone the row is the one scroller: the canvas at a set height, then the list or overview at natural height. */}
+      {wf && data ? <div ref={column} className={cn("flex min-h-0 flex-1", phoneColumn ? "flex-col gap-2 overflow-y-auto overscroll-contain" : short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
         {mode === "canvas" ? (
-          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={cn("h-auto min-w-0 flex-1", short ? "min-h-0" : "min-h-[16rem]")} />
+          <WorkflowCanvas workflow={wf} live={live} edgeCounts={counts} selected={selected} onSelect={setSelected} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={phoneColumn ? "h-[min(50dvh,24rem)] min-h-[16rem] min-w-0 flex-none" : cn("h-auto min-w-0 flex-1", short ? "min-h-0" : "min-h-[16rem]")} />
         ) : (
-          <ol aria-label="Workflow steps" className="flex min-h-0 min-w-0 flex-1 flex-col gap-1.5 overflow-y-auto p-px">
+          <ol aria-label="Workflow steps" className={cn("flex min-w-0 flex-col gap-1.5 p-px", phoneColumn ? "flex-none" : "min-h-0 flex-1 overflow-y-auto")}>
             {topoOrder(wf).map((stepId) => {
               const s = wf.steps.find((x) => x.id === stepId)!;
               const tone = liveTone(live[stepId]);
@@ -290,7 +327,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
             })}
           </ol>
         )}
-        <aside aria-label={step ? "Step details" : "Task overview"} className={cn("min-h-0 overflow-y-auto rounded-lg border border-border text-sm", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0")}>
+        <aside ref={aside} aria-label={step ? "Step details" : "Task overview"} className={cn("rounded-lg border border-border text-sm", phoneColumn ? "shrink-0 p-3" : cn("min-h-0 overflow-y-auto", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0"))}>
           {step ? (
             <StepPanel itemId={id} workflow={wf} step={step} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
           ) : (
@@ -298,7 +335,8 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
           )}
         </aside>
       </div> : null}
-      <footer className="flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      {/* On a phone the overview already says "Select a step…"; the hint would only take two more lines. */}
+      {step || !phone ? <footer className="flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {step ? (
           <>
             <span>
@@ -323,7 +361,7 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
         ) : (
           <span>Select a step to run it (and everything after it) again.</span>
         )}
-      </footer>
+      </footer> : null}
     </Sheet>
   );
 }
