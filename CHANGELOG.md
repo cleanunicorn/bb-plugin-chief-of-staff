@@ -6,7 +6,8 @@
   went back to active, and the agent was nudged, when its turn ended. Now the
   task stays done: its threads are archived (unless "Archive threads when a
   task is done" is off), its agents get no more prompts, and the result of a
-  check, push or merge still running is ignored. **Mark failed** also sticks
+  check, push or merge still running is ignored (a push or merge already under
+  way still completes on GitHub). **Mark failed** also sticks
   while the agent is still working, and a check it interrupts runs again on
   retry. A task marked done reads "Closed" rather than "Shipped".
 
