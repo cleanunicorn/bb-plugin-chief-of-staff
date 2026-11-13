@@ -3,7 +3,7 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
+import { occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
@@ -53,6 +53,8 @@ export interface RosterEntry {
   branch: string | null;
   prNumber: number | null;
   prUrl: string | null;
+  /** The pull request's last read state, when it was read for this prNumber. */
+  pr: Omit<PrState, "number"> | null;
   startedAt: string;
   lastActivityAt: string | null;
   stalled: boolean;
@@ -88,6 +90,13 @@ export function rosterSteps(item: WorkItem): RosterStep[] {
       picked: agentWork(s)?.picksModel ? describePick(pickedModel(n)) : null,
     };
   });
+}
+
+/** The item's PR state, unless it belongs to an earlier PR than the one it has now. */
+function rosterPr(item: WorkItem): RosterEntry["pr"] {
+  if (!item.prState || item.prState.number !== item.prNumber) return null;
+  const { number: _number, ...pr } = item.prState;
+  return pr;
 }
 
 export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?: boolean; withUsage?: boolean } = {}): Promise<RosterEntry[]> {
@@ -130,6 +139,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       branch: item.branch,
       prNumber: item.prNumber,
       prUrl: item.prUrl,
+      pr: rosterPr(item),
       startedAt: item.createdAt,
       lastActivityAt: item.lastActivityAt,
       stalled: item.status === "agent" && now - Date.parse(last) > stallMs,

@@ -673,6 +673,21 @@ describe("chief-of-staff server", () => {
       expect(stored().prState).toMatchObject({ number: 7, state: "open", draft: false, checks: null, review: null });
     });
 
+    it("serves the recorded state on the roster only for the task's current PR", async () => {
+      const pr = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { pr: unknown }[] }).entries[0]!.pr;
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      expect(await pr()).toEqual({ state: "open", draft: false, checks: null, review: null, checkedAt: expect.any(String) });
+      const db = host.bb.storage.database();
+      const store = new StateStore(db);
+      // Re-shipped with another PR: the recorded state is the old one's.
+      store.updateWorkItem(stored().id, { prNumber: 8 });
+      expect(await pr()).toBeNull();
+      store.updateWorkItem(stored().id, { prNumber: 7 });
+      db.prepare("UPDATE work_items SET pr_state = NULL, pr_state_number = NULL, pr_state_json = NULL").run();
+      expect(await pr()).toBeNull();
+    });
+
     it("records the state of a PR it finds already open", async () => {
       prCreated = true;
       currentPull = { ...pull, draft: true };

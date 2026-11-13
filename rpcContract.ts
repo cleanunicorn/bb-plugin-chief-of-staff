@@ -39,6 +39,16 @@ const rosterEntry = z.object({
   branch: z.string().nullable(),
   prNumber: z.number().nullable(),
   prUrl: z.string().nullable(),
+  /** The pull request's last read state (see PrState); null when not read yet. */
+  pr: z
+    .object({
+      state: z.enum(["open", "merged", "closed"]),
+      draft: z.boolean(),
+      checks: z.enum(["passing", "failing", "pending", "none"]).nullable(),
+      review: z.enum(["approved", "changes_requested"]).nullable(),
+      checkedAt: z.string(),
+    })
+    .nullable(),
   startedAt: z.string(),
   lastActivityAt: z.string().nullable(),
   stalled: z.boolean(),
