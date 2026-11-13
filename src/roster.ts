@@ -3,7 +3,7 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
+import { isActiveStatus, occupiesCapacity, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
@@ -95,10 +95,13 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
   const items = cos.store.listWorkItems({ repo: opts.repo, activeOnly: !opts.includeDone, limit: 200 });
   const threadIds = items.map((i) => i.threadId).filter((id): id is string => Boolean(id));
   const threads = new Map<string, { status: string; title: string | null }>();
+  /** The thread states were read; without them a finished item's thread may still be running. */
+  let threadsKnown = !threadIds.length;
   if (threadIds.length) {
     try {
       const list = await cos.bb.sdk.threads.list({ threadIds: threadIds.slice(0, 200), includeHidden: true, limit: 200 });
       for (const t of list) threads.set(t.id, { status: t.runtime?.displayStatus ?? t.status, title: t.title ?? t.titleFallback ?? null });
+      threadsKnown = true;
     } catch (error) {
       cos.bb.log.debug(`threads.list failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -144,8 +147,26 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
     });
   }
   if (opts.withUsage) {
-    await mapLimit(entries, USAGE_CONCURRENCY, async (entry) => {
-      if (entry.threadId) entry.usage = (await readThreadUsage(cos, entry.threadId)).usage;
+    const toRead: { entry: RosterEntry; item: WorkItem }[] = [];
+    items.forEach((item, i) => {
+      const entry = entries[i]!;
+      if (!item.threadId) return;
+      // A finished item's usage no longer changes: once stored, it is not read again.
+      if (item.finalUsage && !isActiveStatus(item.status)) entry.usage = item.finalUsage;
+      else toRead.push({ entry, item });
+    });
+    await mapLimit(toRead, USAGE_CONCURRENCY, async ({ entry, item }) => {
+      const threadId = item.threadId!;
+      const { usage, complete } = await readThreadUsage(cos, threadId);
+      entry.usage = usage;
+      // Store it once final: the item finished, both queries answered, and the
+      // thread is not running (an item can be marked done while it still is).
+      if (isActiveStatus(item.status) || !complete || !threadsKnown || isBusy(threads.get(threadId)?.status ?? "")) return;
+      try {
+        cos.store.setFinalUsage(item.id, threadId, usage);
+      } catch (error) {
+        cos.bb.log.warn(`storing usage of ${item.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     });
   }
   return entries;

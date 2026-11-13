@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type WorkItem } from "../src/state";
-import { freshNode, type Nodes } from "../src/machine";
+import { freshNode, transition, type Nodes } from "../src/machine";
+import { applyTransition } from "../src/delivery";
 import { normalizeWorkflow, workflowSchema } from "../src/workflow";
 import { computeStats, statsWindowStart } from "../src/stats";
 
@@ -168,5 +169,60 @@ describe("bounded log and journal", () => {
     expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBe(30);
     new StateStore(db, undefined, { ...caps, pruneEvery: 1_000 }).log({ level: "info", kind: "test", repo: null, workItemId: null, message: "after", actor: "test" });
     expect((db.prepare("SELECT COUNT(*) AS n FROM activity_log").get() as { n: number }).n).toBe(caps.logMaxRows);
+  });
+});
+
+describe("final usage of finished items", () => {
+  const usage = { inputTokens: 10, outputTokens: 20, totalTokens: 30, cost: { amount: 0.5, currency: "USD" } };
+  const nothing = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null };
+  const updatedAt = (db: ReturnType<typeof storeSetup>["db"], id: string) => (db.prepare("SELECT updated_at FROM work_items WHERE id = ?").get(id) as { updated_at: string }).updated_at;
+
+  it("is unknown until stored, and an all-null value counts as known", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "done", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+    expect(store.setFinalUsage("a", "t-a", nothing)).toBe(true);
+    expect(store.getWorkItem("a")!.finalUsage).toEqual(nothing);
+    expect(store.setFinalUsage("a", "t-a", usage)).toBe(true);
+    expect(store.listWorkItems()[0]!.finalUsage).toEqual(usage);
+  });
+
+  it("does not touch updated_at, and only stores for a finished item on the same thread", () => {
+    const { db, store, add, setClock } = storeSetup();
+    add("done", { status: "done", threadId: "t-done", finishedAt: "2026-11-12T09:00:00Z" });
+    add("active", { status: "agent", threadId: "t-active" });
+    const before = updatedAt(db, "done");
+    setClock("2026-11-12T11:00:00Z");
+    store.setFinalUsage("done", "t-done", usage);
+    expect(updatedAt(db, "done")).toBe(before);
+    expect(store.setFinalUsage("done", "t-other", nothing)).toBe(false);
+    expect(store.getWorkItem("done")!.finalUsage).toEqual(usage);
+    expect(store.setFinalUsage("active", "t-active", usage)).toBe(false);
+    expect(store.getWorkItem("active")!.finalUsage).toBeNull();
+  });
+
+  it("is kept when a finished item is saved, and cleared when it is reopened", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "failed", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
+    store.setFinalUsage("a", "t-a", usage);
+    expect(store.updateWorkItem("a", { lastError: "boom" })!.finalUsage).toEqual(usage);
+    expect(store.getWorkItem("a")!.finalUsage).toEqual(usage);
+    const reopened = store.updateWorkItem("a", { status: "agent", finishedAt: null });
+    expect(reopened!.finalUsage).toBeNull();
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+    // Finishing again does not bring the old value back.
+    store.updateWorkItem("a", { status: "done", finishedAt: "2026-11-12T10:00:00Z" });
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+  });
+
+  it("is cleared when a failed item is revived through the machine", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "failed", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z", nodes: nodes({ status: "running", round: 1, reports: [null], nudges: [0] }) });
+    store.setFinalUsage("a", "t-a", usage);
+    const item = store.getWorkItem("a")!;
+    const t = transition(item, { type: "revive" });
+    const after = store.updateWorkItem("a", applyTransition(item, t.nodes, t.patch))!;
+    expect(after.status).not.toBe("failed");
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
   });
 });

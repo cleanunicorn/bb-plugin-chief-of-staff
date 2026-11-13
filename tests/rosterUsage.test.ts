@@ -131,3 +131,105 @@ describe("reading usage for the roster", () => {
     expect(await readThreadUsage(t.cos, "t-half")).toEqual({ usage: { inputTokens: 5, outputTokens: 10, totalTokens: 15, cost: null }, complete: false });
   });
 });
+
+describe("final usage of finished items", () => {
+  const done = (over: Partial<NewWorkItem> = {}): Partial<NewWorkItem> => ({ status: "done", finishedAt: "2026-11-13T09:00:00.000Z", ...over });
+  const nothing = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null };
+
+  it("reads a finished item once, stores it, and makes no calls for it afterwards", async () => {
+    const t = setup();
+    for (let i = 0; i < 55; i++) t.add(`d${i}`, done());
+    t.add("live");
+    t.replies.set("t-d3", reported(3));
+    const first = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.calls).toHaveLength(2 * 56);
+    expect(t.store.getWorkItem("d3")!.finalUsage).toEqual({ inputTokens: 3, outputTokens: 6, totalTokens: 9, cost: { amount: 0.03, currency: "USD" } });
+    t.calls.length = 0;
+    const second = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    // Only the unfinished item is read again.
+    expect(t.calls.map((c) => c.threadId)).toEqual(["t-live", "t-live"]);
+    expect(second.map((e) => e.usage)).toEqual(first.map((e) => e.usage));
+    expect(t.store.getWorkItem("live")!.finalUsage).toBeNull();
+  });
+
+  it("stores a provider that reports nothing as known, and still shows no usage", async () => {
+    const t = setup();
+    t.add("quiet", done());
+    t.replies.set("t-quiet", () => []);
+    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.store.getWorkItem("quiet")!.finalUsage).toEqual(nothing);
+    t.calls.length = 0;
+    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.calls).toHaveLength(0);
+    expect(e!.usage).toEqual(nothing);
+  });
+
+  it("does not store a read that failed, and reads it again next time", async () => {
+    const t = setup();
+    t.add("flaky", done());
+    t.replies.set("t-flaky", (q) => {
+      if (q.types[0] === "thread/tokenUsage/updated") throw new Error("down");
+      return reported(1)(q);
+    });
+    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(e!.usage!.cost).toEqual({ amount: 0.01, currency: "USD" });
+    expect(t.store.getWorkItem("flaky")!.finalUsage).toBeNull();
+    t.replies.delete("t-flaky");
+    t.calls.length = 0;
+    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.calls).toHaveLength(2);
+    expect(t.store.getWorkItem("flaky")!.finalUsage).not.toBeNull();
+  });
+
+  it("does not store usage while the thread is still busy", async () => {
+    const t = setup();
+    t.add("manual", done());
+    t.statuses.set("t-manual", "active");
+    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.store.getWorkItem("manual")!.finalUsage).toBeNull();
+    t.statuses.set("t-manual", "idle");
+    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.store.getWorkItem("manual")!.finalUsage).not.toBeNull();
+  });
+
+  it("does not store usage when the thread states could not be listed", async () => {
+    const t = setup();
+    t.add("a", done());
+    t.threadsList.mockRejectedValueOnce(new Error("down"));
+    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(e!.usage).not.toBeNull();
+    expect(t.store.getWorkItem("a")!.finalUsage).toBeNull();
+  });
+
+  it("reads usage again after a reopened item finishes", async () => {
+    const t = setup();
+    t.add("a", done());
+    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.store.getWorkItem("a")!.finalUsage).not.toBeNull();
+    t.store.updateWorkItem("a", { status: "agent", finishedAt: null });
+    t.store.updateWorkItem("a", { status: "done", finishedAt: NOW });
+    t.replies.set("t-a", reported(7));
+    t.calls.length = 0;
+    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(t.calls).toHaveLength(2);
+    expect(e!.usage!.totalTokens).toBe(21);
+    expect(t.store.getWorkItem("a")!.finalUsage!.totalTokens).toBe(21);
+  });
+
+  it("keeps the roster when storing usage fails", async () => {
+    const t = setup();
+    t.add("a", done());
+    vi.spyOn(t.store, "setFinalUsage").mockImplementation(() => { throw new Error("disk full"); });
+    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    expect(e!.usage!.totalTokens).toBe(3);
+  });
+
+  it("leaves usage out without withUsage, even when it is stored", async () => {
+    const t = setup();
+    t.add("a", done());
+    t.store.setFinalUsage("a", "t-a", nothing);
+    const [e] = await buildRoster(t.cos, { includeDone: true });
+    expect(e!.usage).toBeNull();
+  });
+});
+
