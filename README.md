@@ -573,3 +573,7 @@ by [docs/images/demo-data.js](docs/images/demo-data.js).
 ## License
 
 This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+
+The icons in [assets/user-check.svg](assets/user-check.svg) and
+[assets/user-x.svg](assets/user-x.svg) come from [Lucide](https://lucide.dev)
+(ISC License, Copyright (c) Lucide Contributors).

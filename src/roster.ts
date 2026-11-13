@@ -182,6 +182,8 @@ function previewEntry<E extends { kind: string; detail: string | null }>(e: E): 
 /** The task, each step's current inputs and outputs, and its journal, for the task's workflow view. */
 export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
   const threads = cos.store.listThreads(item.id);
+  // Nobody waits on a finished task: its stopped steps keep no "needs you" reason.
+  const finished = isFinished(item);
   const steps = Object.fromEntries(item.workflow.steps.map((s) => {
     const n = item.nodes[s.id] ?? freshNode();
     const own = threads.filter((t) => t.role === "step" ? t.stepId === s.id : agentWork(s)?.writes).map((t) => ({ threadId: t.threadId, agent: t.role === "step" ? t.agent : 0 }));
@@ -192,7 +194,7 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
       finishedAt: n.finishedAt,
       feedback: tail(n.feedback),
       output: tail(n.output),
-      waitingReason: n.waiting?.reason ?? null,
+      waitingReason: finished ? null : (n.waiting?.reason ?? null),
       reports: n.reports.flatMap((r, agent) => (r ? [{ agent, outcome: r.outcome, summary: tail(r.summary)!, at: r.at }] : [])),
       threads: own,
     }];
@@ -208,7 +210,7 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
       prNumber: item.prNumber,
       prUrl: item.prUrl,
       threadId: item.threadId,
-      waitingReason: item.waitingReason,
+      waitingReason: finished ? null : item.waitingReason,
       lastError: item.lastError,
       createdAt: item.createdAt,
       lastActivityAt: item.lastActivityAt,
@@ -223,6 +225,8 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
 export function describeOutcome(outcome: Outcome, lastError: string | null): string {
   const label = OUTCOME_META[outcome].label;
   if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return label;
+  // A person ended it: mark_failed writes no error, so a stored one is only the last seen, not the cause.
+  if (outcome === "marked_failed") return `${label} (last error: ${lastError})`;
   // "PR closed without merge" already says it.
   return lastError.toLowerCase().startsWith(label.toLowerCase()) ? lastError : `${label}: ${lastError}`;
 }

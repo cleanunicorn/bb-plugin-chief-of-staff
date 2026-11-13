@@ -64,6 +64,11 @@ describe("finishedOutcome", () => {
     expect(finishedOutcome(item({ prNumber: 7 }), marker("marked done"))).toBe("marked_done");
   });
 
+  it("falls back to Failed for a hand-failed task once its log row is pruned", () => {
+    // Not wrong (the task did fail), just less specific.
+    expect(finishedOutcome(item({ status: "failed", lastError: "push rejected" }), null)).toBe("failed");
+  });
+
   it("tells the failure outcomes apart", () => {
     expect(finishedOutcome(item({ status: "failed", lastError: "thread archived" }), null)).toBe("failed");
     expect(finishedOutcome(item({ status: "failed", lastError: PR_CLOSED_ERROR, prNumber: 7 }), null)).toBe("pr_closed");
@@ -96,6 +101,7 @@ describe("describeActivity on finished items", () => {
     expect(describeActivity(full({ status: "failed", lastError: "thread archived" }))).toBe("Failed: thread archived");
     expect(describeActivity(full({ status: "failed", lastError: PR_CLOSED_ERROR }))).toBe(PR_CLOSED_ERROR);
     expect(describeActivity(full({ status: "failed", lastError: null }))).toBe("Marked failed");
-    expect(describeOutcome("marked_failed", "no longer needed")).toBe("Marked failed: no longer needed");
+    // A person ended it: a stored error is only the last one seen, not the cause.
+    expect(describeOutcome("marked_failed", "Cannot read properties of undefined (reading 'length')")).toBe("Marked failed (last error: Cannot read properties of undefined (reading 'length'))");
   });
 });

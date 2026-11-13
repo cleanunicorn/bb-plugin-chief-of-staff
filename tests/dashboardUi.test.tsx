@@ -353,13 +353,22 @@ it("never calls a delivered task Closed and hides its stale error", async () => 
 it.each([
   { outcome: "failed", reason: "thread archived" },
   { outcome: "pr_closed", reason: "PR closed without merge" },
-  { outcome: "marked_failed", reason: "no longer needed" },
 ] as const)("shows why a $outcome task ended without opening the workflow", async ({ outcome, reason }) => {
   mocks.entries = [finishedCard({ outcome, detail: "failed", status: "failed", lastError: reason })];
   await mount();
   const line = Array.from(container.querySelectorAll("article p")).find((p) => p.textContent?.startsWith("Why it ended:"))!;
   expect(line.textContent).toBe(`Why it ended: ${reason}`);
   expect(line.querySelector("[title]")!.getAttribute("title")).toBe(reason);
+});
+
+it("does not present an old error as the cause of a task marked failed by hand", async () => {
+  const stale = "Cannot read properties of undefined (reading 'length')";
+  mocks.entries = [finishedCard({ outcome: "marked_failed", detail: "failed", status: "failed", lastError: stale })];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.textContent).not.toContain("Why it ended");
+  const line = Array.from(card.querySelectorAll("p")).find((p) => p.textContent?.startsWith("Last error:"))!;
+  expect(line.textContent).toBe(`Last error: ${stale}`);
 });
 
 it("labels finished pull requests by how they ended", async () => {

@@ -1541,12 +1541,15 @@ describe("chief-of-staff server", () => {
       build: { ...item.nodes.build!, status: "waiting" as const, waiting: { kind: "question" as const, reason: "Which login?" } },
       ship: { ...item.nodes.ship!, status: "running" as const, phase: "ci" as const, retry: { effect: { type: "merge", step: "ship" }, at: new Date().toISOString(), count: 1 } },
     } as typeof item.nodes;
-    store.updateWorkItem(item.id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString(), nodes });
+    store.updateWorkItem(item.id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString(), nodes, waitingReason: "Build: Which login?" });
     const settled = { status: "stopped", phase: null, retrying: false, waitingKind: null };
     expect(await roster()).toMatchObject({ current: [], outcome: "failed", activity: "Failed: thread archived" });
     expect((await steps()).find((st) => st.id === "ship")).toMatchObject(settled);
     expect((await steps()).find((st) => st.id === "build")).toMatchObject(settled);
-    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id: item.id }) as { live: Record<string, Step> };
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id: item.id }) as { live: Record<string, Step>; task: { waitingReason: string | null }; steps: Record<string, { waitingReason: string | null }> };
+    // Nobody is waiting on a finished task: no "needs you" callouts in the sheet.
+    expect(view.task.waitingReason).toBeNull();
+    expect(view.steps.build!.waitingReason).toBeNull();
     expect(view.live.ship).toMatchObject(settled);
     expect(view.live.build).toMatchObject(settled);
     // Pending steps never ran: they stay pending.
@@ -1569,7 +1572,7 @@ describe("chief-of-staff server", () => {
     const { id } = await roster();
     new StateStore(host.bb.storage.database()).updateWorkItem(id, { lastError: "push rejected" });
     await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
-    expect(await roster()).toMatchObject({ detail: "failed", outcome: "marked_failed", lastError: "push rejected", activity: "Marked failed: push rejected" });
+    expect(await roster()).toMatchObject({ detail: "failed", outcome: "marked_failed", lastError: "push rejected", activity: "Marked failed (last error: push rejected)" });
   });
 
   it.each([

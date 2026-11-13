@@ -48,6 +48,9 @@ export function finishedOutcome(item: Pick<WorkItem, "status" | "lastError" | "p
     if (Object.keys(item.nodes).length && finalSteps(item.workflow).some((id) => item.nodes[id]?.status !== "done")) return "marked_done";
     // A merge step completes on pr_merged; approved past a refusal it has no PR.
     if (item.prNumber && item.workflow.steps.some((s) => s.type === "ship" && s.action === "merge" && item.nodes[s.id]?.status === "done")) return "merged";
+    // Known limit: a PR-action workflow finishes when the PR opens, and a merge
+    // seen later leaves no durable trace (complete() clears the phase), so it
+    // reads "PR opened". Live PR state is #114's.
     if (item.prNumber) return "pr_opened";
     return "completed";
   }

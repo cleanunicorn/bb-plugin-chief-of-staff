@@ -364,6 +364,8 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
   const timer = cardTimer(entry, finished, now);
   // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
   const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) ? entry.lastError : null;
+  // mark_failed writes no error: on a hand-failed task the stored one is the last seen, not the cause.
+  const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   return (
     <article className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
@@ -394,7 +396,7 @@ function AgentCard({ entry, busy, onAction, onAnswer, onWorkflow, now }: { entry
         <p className="flex items-start gap-1.5 text-sm text-foreground">
           {/* Muted: a failed run is history, not an alarm (#22). */}
           <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">Why it ended:</span> {endReason}</span>
+          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">{reasonLead}</span> {endReason}</span>
         </p>
       ) : null}
       {entry.steps.length ? <details className="group text-xs">
