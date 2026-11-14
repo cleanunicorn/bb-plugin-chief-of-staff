@@ -25,8 +25,12 @@ export function Field({ label, hint, children, className, error }: { label: stri
   );
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean }) {
-  return <input id={id} type={type} autoFocus={autoFocus} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
+/**
+ * `list`: the id of a `<datalist>` whose options the input suggests as you type (any text is still accepted).
+ * Such an input leaves autocomplete on: Firefox hides a datalist's suggestions on `autocomplete="off"`.
+ */
+export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus, list }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean; list?: string }) {
+  return <input id={id} type={type} autoFocus={autoFocus} list={list} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete={list ? undefined : "off"} onChange={(e) => onChange(e.target.value)} />;
 }
 
 /**

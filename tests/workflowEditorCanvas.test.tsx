@@ -7,7 +7,14 @@ import { DEFAULT_DOCUMENT, workflowProblems, type WorkflowsDocument } from "../s
 import { button, container, field, mount, setValue, unmount } from "./dom";
 import { stubReactFlowDom } from "./helpers/reactFlow";
 
-vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ data: { skills: [] }, error: null, refetch: vi.fn() }) }));
+vi.mock("@get-bb/plugin-sdk/app", () => ({
+  experimental_useRpcQuery: ({ method }: { method: string }) => ({
+    data: method === "cos_get_settings" ? { values: { defaultProviderId: "" }, providers: [] } : method === "cos_provider_models" ? { models: [], error: null } : { skills: [] },
+    error: null,
+    isLoading: false,
+    refetch: vi.fn(),
+  }),
+}));
 vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
 vi.mock("@xyflow/react/dist/style.css", () => ({}));
 import { WorkflowsEditor } from "../components/cos/workflowEditor";

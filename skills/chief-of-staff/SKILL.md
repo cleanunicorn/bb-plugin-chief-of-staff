@@ -68,16 +68,17 @@ has `id`, `name`, `type`, `instructions` and `next` (step ids after it). Types:
 `agent` (`writes`, `agents` for parallel read-only agents, `approval`,
 `verdict`, `onFail`, `maxRounds`), `check` (`command`, `timeoutMinutes`,
 `onFail`, `maxAttempts`), `ship` (`action`: push / pr / merge, `draft`,
-`requireApproval`, `onFail` for red CI, `maxAttempts`). An agent step's
+`watchCi` for pr, `requireApproval`, `onFail` for red CI, `maxAttempts`). An agent step's
 `instructions` may reference agent skills as `/skill-name`; Chief of Staff sends
 each reference to a skill installed in the workspace as a skill mention (the
 `cos_skills` RPC lists them). A repo picks one with
 `"workflow": "<id>"`; a task keeps the workflow it started with.
 
 Ship completion depends on `action`: `push` finishes after the branch push;
-`pr` finishes when a new or existing open PR is confirmed; `merge` finishes only
-when GitHub confirms a merge. PR-only delivery stops watching and repairing CI
-when finished. Use merge mode when the assignment includes merging, and preserve
+`pr` finishes when a new or existing open PR is confirmed, or with `watchCi: true`
+when its CI is green (red CI goes back to `onFail` to be fixed); `merge` finishes
+only when GitHub confirms a merge. PR-only delivery without `watchCi` stops
+watching and repairing CI when finished. Use merge mode when the assignment includes merging, and preserve
 `requireApproval` unless the user configured otherwise.
 
 While shipping waits on CI, review or a person, the task holds no capacity

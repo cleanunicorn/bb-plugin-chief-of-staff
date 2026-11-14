@@ -6,7 +6,8 @@
 //   agent: an agent works on the instructions (optionally read-only and in
 //          parallel, gated by a human approval or by its own pass/fail verdict)
 //   check: Chief of Staff runs a command in the worktree
-//   ship:  push, open a pull request, or merge it when CI is green
+//   ship:  push, open a pull request (optionally waiting for green CI, sending
+//          red CI back to be fixed), or merge it when CI is green
 //   model: sets the provider, model and reasoning level for the agent steps
 //          after it, until another model step changes them. "auto" (the
 //          default) runs a read-only agent that reads the task and picks the
@@ -77,9 +78,14 @@ export const shipStepSchema = z.object({
   type: z.literal("ship"),
   action: z.enum(["push", "pr", "merge"]).default("pr"),
   draft: z.boolean().default(false),
+  /**
+   * With action "pr": finish only when the PR's CI is green. Red CI fails the
+   * step, so the work goes back to `onFail` to be fixed, like a merge's.
+   */
+  watchCi: z.boolean().default(false),
   /** With action "merge": wait for an approving review on GitHub. */
   requireApproval: z.boolean().default(true),
-  /** Where to go back to when CI is red. */
+  /** Where to go back to when CI is red (action "merge", or "pr" with `watchCi`). */
   onFail: stepId.optional(),
   maxAttempts: attempts.default(2),
 });
@@ -113,6 +119,11 @@ export type AgentStep = z.output<typeof agentStepSchema>;
 export type CheckStep = z.output<typeof checkStepSchema>;
 export type ShipStep = z.output<typeof shipStepSchema>;
 export type ModelStep = z.output<typeof modelStepSchema>;
+
+/** Whether a ship step waits for the PR's CI (and so can fail on red CI). */
+export function watchesCi(step: ShipStep): boolean {
+  return step.action === "merge" || (step.action === "pr" && step.watchCi);
+}
 
 /** Instructions an automatic model step starts with. */
 export const DEFAULT_MODEL_INSTRUCTIONS = "Read the task and choose the best model for the job from the ones available: strong enough to do it well, no more expensive than it needs.";
@@ -211,7 +222,7 @@ export const DEFAULT_WORKFLOW: Workflow = workflowSchema.parse({
     { id: "plan", name: "Plan", type: "agent", instructions: DEFAULT_INSTRUCTIONS.plan, approval: true, next: ["build"] },
     { id: "build", name: "Build", type: "agent", writes: true, instructions: DEFAULT_INSTRUCTIONS.build, next: ["review"] },
     { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", instructions: DEFAULT_INSTRUCTIONS.review, next: ["ship"] },
-    { id: "ship", name: "Ship", type: "ship", action: "pr", onFail: "build" },
+    { id: "ship", name: "Ship", type: "ship", action: "pr", watchCi: true, onFail: "build" },
   ],
 });
 
