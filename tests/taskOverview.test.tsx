@@ -70,8 +70,15 @@ describe("how a finished task ended", () => {
     expect(container.textContent).toContain(`last activity 23h ago · finished ${at(FINISHED)}`);
   });
 
-  it("says no finish time on a legacy row that has none", async () => {
-    await render(task("failed", null, { outcome: "failed", lastError: "thread archived", lastActivityAt: "2026-11-05T11:00:00.000Z" }));
+  it("takes the last activity as the end of a legacy row without a finish time", async () => {
+    const last = "2026-11-05T11:00:00.000Z";
+    await render(task("failed", null, { outcome: "failed", lastError: "thread archived", lastActivityAt: last }));
+    expect(ending("Failed")).toBe(`Failed · ended ${at(last)}Why it ended: thread archived`);
+    expect(container.textContent).toContain(`finished ${at(last)}`);
+  });
+
+  it("says no end time when neither is known", async () => {
+    await render(task("failed", null, { outcome: "failed", lastError: "thread archived" }));
     expect(ending("Failed")).toBe("FailedWhy it ended: thread archived");
     expect(container.textContent).not.toContain("finished ");
   });

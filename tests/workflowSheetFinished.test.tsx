@@ -113,7 +113,7 @@ describe("a failed task with a step it stopped in", () => {
     expect(text).toContain(`finished ${at(FINISHED)}`);
     expect(text).toContain("Took3.0h");
     expect(text).toContain("Select a step to reopen this task and run it (and everything after it) again.");
-    expect(text).not.toMatch(/Where this task is|Working on it|Running for/);
+    expect(text).not.toMatch(/Where this task is|Working on it|Running for|\byet\b/);
   });
 
   it("stops the stopped step's timer at the task's end, and keeps it there", async () => {
@@ -145,7 +145,7 @@ describe("a done task", () => {
     const text = sheet().textContent!;
     expect(text).toContain(`Merged · ended ${at(FINISHED)}`);
     expect(text).not.toContain("Why it ended");
-    expect(text).not.toMatch(/Where this task is|Working on it|Running for/);
+    expect(text).not.toMatch(/Where this task is|Working on it|Running for|\byet\b/);
   });
 
   it("keeps the time each step took, and says rerunning reopens the task", async () => {

@@ -219,7 +219,7 @@ function LoopList({ workflow, loops }: { workflow: Workflow; loops: LoopSummary 
  * How a finished task ended: the outcome, when, and (when it did not deliver) why. A delivered task's stale error stays
  * hidden, and MARKED_FAILED would only repeat the label. Worded like the card's end reason.
  */
-function EndCallout({ task }: { task: TaskDetail & { outcome: NonNullable<TaskDetail["outcome"]> } }) {
+function EndCallout({ task, end }: { task: TaskDetail & { outcome: NonNullable<TaskDetail["outcome"]> }; end: string | null }) {
   const meta = OUTCOME_META[task.outcome];
   const failed = FAILED_OUTCOMES.includes(task.outcome);
   const reason = failed && task.lastError !== MARKED_FAILED ? task.lastError : null;
@@ -229,8 +229,7 @@ function EndCallout({ task }: { task: TaskDetail & { outcome: NonNullable<TaskDe
   return (
     <Callout icon={meta.icon} color={color}>
       <span className="font-medium">{meta.label}</span>
-      {/* Only a recorded finish time: a legacy row's last activity is already on the line below. */}
-      {task.finishedAt ? ` · ended ${new Date(task.finishedAt).toLocaleString()}` : ""}
+      {end ? ` · ended ${new Date(end).toLocaleString()}` : ""}
       {reason ? <span className="block">{lead} {reason}</span> : null}
     </Callout>
   );
@@ -238,7 +237,7 @@ function EndCallout({ task }: { task: TaskDetail & { outcome: NonNullable<TaskDe
 
 /** With no step selected: the task, why it waits, where work went back, and what happened. */
 export function TaskOverview({ itemId, title, workflow, task, loops, journal, now }: { itemId: string; title: string; workflow: Workflow; task: TaskDetail | undefined; loops: LoopSummary; journal: readonly JournalRecord[]; now: number }) {
-  const { finished } = taskEnd(task);
+  const { finished, end } = taskEnd(task);
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -246,7 +245,7 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
         <p className="mt-0.5 text-xs text-muted-foreground">Select a step to see what it received and produced.</p>
       </div>
       {task?.waitingReason ? <Callout icon="Hand" color={STATUS.warning}>{task.waitingReason}</Callout> : null}
-      {finished && task?.outcome ? <EndCallout task={{ ...task, outcome: task.outcome }} /> : task?.lastError && !finished ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
+      {finished && task?.outcome ? <EndCallout task={{ ...task, outcome: task.outcome }} end={end} /> : task?.lastError && !finished ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
       {task ? (
         <Section title="Task" icon="FileText">
           {task.body?.trim() ? <TextBlock>{task.body}</TextBlock> : <p className="text-xs text-muted-foreground">{task.issueNumber ? `GitHub issue #${task.issueNumber}.` : "No description."}</p>}
@@ -258,7 +257,7 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
           <p className="text-[11px] text-muted-foreground">
             {task.repo} · started {relative(task.createdAt, now)}
             {task.lastActivityAt ? ` · last activity ${relative(task.lastActivityAt, now)}` : ""}
-            {finished && task.finishedAt ? ` · finished ${new Date(task.finishedAt).toLocaleString()}` : ""}
+            {end ? ` · finished ${new Date(end).toLocaleString()}` : ""}
           </p>
         </Section>
       ) : null}

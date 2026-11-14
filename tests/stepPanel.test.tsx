@@ -76,6 +76,8 @@ it("keeps the time a finished step took, and says it produced nothing when it di
   const done = task("done", FINISHED, { outcome: "pr_opened", prNumber: 7 });
   const text = await render({ stepId: "ship", t: done, l: live("done"), d: detail({ startedAt: "2026-11-05T11:00:00.000Z", finishedAt: "2026-11-05T11:20:00.000Z" }) });
   expect(fact("Took")).toBe("20m");
+  const produced = Array.from(container.querySelectorAll("section")).find((sec) => sec.querySelector("h4")?.textContent === "Produced")!;
+  expect(produced.textContent).toBe("ProducedNothing.");
   expect(text).not.toContain("Did not finish.");
   expect(text).not.toMatch(/Working on it|Running for|\byet\b/);
 });
