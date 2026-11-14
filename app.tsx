@@ -30,6 +30,7 @@ import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, usageNote, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
+import { ATTENTION_ICON, CARD_ACTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
@@ -102,15 +103,6 @@ function Empty({ icon, title, children, illustration = false }: { icon: string; 
 
 // ---------- status helpers ----------
 
-const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
-  approval: { label: "Approve", icon: "ClipboardCheck" },
-  stalled: { label: "Stalled", icon: "Hourglass" },
-  question: { label: "Question", icon: "MessageCircleQuestion" },
-  escalation: { label: "Your call", icon: "Hand" },
-  no_report: { label: "No report", icon: "MessageSquareWarning" },
-  cos_error: { label: "CoS stuck", icon: "OctagonAlert" },
-};
-
 /** "acme/app" → "app". */
 function repoName(repo: string): string {
   return repo.split("/")[1] ?? repo;
@@ -119,19 +111,19 @@ function repoName(repo: string): string {
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
   // A finished task reads by how it ended, never by whether an old error is still stored.
   if (e.outcome) return OUTCOME_META[e.outcome];
-  if (e.detail === "done") return { tone: "good", label: "Done", icon: "CircleCheck" };
-  if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
-  if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
+  if (e.detail === "done") return { tone: "good", label: "Done", icon: DETAIL_ICON.done };
+  if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: DETAIL_ICON.failed };
+  if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: DETAIL_ICON.blocked };
   if (e.detail === "waiting_on_human") {
     const w = WAITING_LABEL[e.waitingKind ?? "question"] ?? WAITING_LABEL.question!;
     return { tone: e.waitingKind === "cos_error" ? "serious" : "warning", ...w };
   }
-  if (e.detail === "retrying") return { tone: "serious", label: `${e.current[0] ?? "Step"} · retrying`, icon: "RefreshCw" };
-  if (e.detail === "agent" && e.current.length) return { tone: "info", label: e.current.join(" + "), icon: "Bot" };
-  if (e.detail === "ready") return { tone: "good", label: "Ready to merge", icon: "GitMerge" };
-  if (e.detail === "ci") return { tone: "info", label: "CI running", icon: "GitPullRequest" };
+  if (e.detail === "retrying") return { tone: "serious", label: `${e.current[0] ?? "Step"} · retrying`, icon: DETAIL_ICON.retrying };
+  if (e.detail === "agent" && e.current.length) return { tone: "info", label: e.current.join(" + "), icon: DETAIL_ICON.agent };
+  if (e.detail === "ready") return { tone: "good", label: "Ready to merge", icon: DETAIL_ICON.ready };
+  if (e.detail === "ci") return { tone: "info", label: "CI running", icon: DETAIL_ICON.ci };
   const stage = stageOf(e);
-  if (!stage) return { tone: "neutral", label: e.detail, icon: "Circle" };
+  if (!stage) return { tone: "neutral", label: e.detail, icon: DETAIL_ICON.unknown };
   return { tone: stage.tone ?? "info", label: stage.label, icon: stage.icon };
 }
 
@@ -503,7 +495,7 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
   return (
     <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
-        <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
+        <StateMark icon={entry.stalled ? STALLED_ICON : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
           <h3 className="text-sm font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{title}</h3>
           <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
@@ -522,10 +514,10 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
       <div className={cn("flex items-start justify-between gap-2", finished && "flex-wrap gap-y-1")}>
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
-          {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
+          {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon={STALLED_ICON} /> : null}
         </div>
         <span className={cn("flex items-center gap-1 text-xs text-muted-foreground tabular-nums", finished ? "min-w-0" : "shrink-0")} title={timer.title} aria-label={timer.label}>
-          <Icon name={finished ? "CalendarCheck" : "Timer"} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
+          <Icon name={finished ? CARD_ICON.finishedAge : CARD_ICON.age} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
           {timer.text}
         </span>
       </div>
@@ -569,18 +561,18 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
       ) : null}
       {entry.lastError && !finished && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
         <p className="flex items-start gap-1.5 text-sm text-foreground">
-          <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
+          <Icon name={CARD_ICON.error} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
           <span className="line-clamp-2">{entry.lastError}</span>
         </p>
       ) : null}
       <dl className="mt-auto flex flex-wrap gap-x-3 gap-y-1 text-xs [&>div]:flex [&>div]:items-center [&>div]:gap-1.5">
         <div className="min-w-0">
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Activity" className="size-3.5" aria-hidden />Last activity</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.lastActivity} className="size-3.5" aria-hidden />Last activity</dt>
           <dd className="font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
         </div>
         {/* Usage covers every agent thread of the task (planner, reviewers, replaced builders), and says so. */}
         {usage && (!usage.counted || usage.totalTokens != null) ? <div title={usageNote(usage)}>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />{finished ? "Tokens" : "Tokens so far"} · all threads</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.tokens} className="size-3.5" aria-hidden />{finished ? "Tokens" : "Tokens so far"} · all threads</dt>
           <dd className="font-medium text-foreground tabular-nums">{usage.totalTokens != null ? compact(usage.totalTokens) : "counting…"}</dd>
         </div> : null}
         {share ? <div title={`${share} of finished tasks' tokens`}>
@@ -588,11 +580,11 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
           <dd className="font-medium text-foreground tabular-nums">{share}<span className="sr-only"> of finished tasks' tokens</span></dd>
         </div> : null}
         {usage?.cost != null ? <div title={usageNote(usage)}>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Cost</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.cost} className="size-3.5" aria-hidden />Cost</dt>
           <dd className="font-medium text-foreground tabular-nums">{usage.cost.amount.toFixed(2)} {usage.cost.currency}</dd>
         </div> : null}
         {entry.fixAttempts > 0 ? <div>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="RefreshCw" className="size-3.5" aria-hidden />Fix cycles</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.fixCycles} className="size-3.5" aria-hidden />Fix cycles</dt>
           <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
         </div> : null}
       </dl>
@@ -601,12 +593,12 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           {entry.threadId ? (
             <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={() => navigate.toThread(entry.threadId!)}>
-              <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+              <Icon name={CARD_ACTION_ICON.openThread} fallback="Circle" aria-hidden /> Open thread
             </Button>
           ) : null}
           {/* Without a Workflow progress row, the arrow keys land here rather than on the issue link, which leaves the plugin. */}
           <Button {...(entry.steps.length ? {} : { [ENTRY_ATTRIBUTE]: "" })} size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
-            <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
+            <Icon name={CARD_ACTION_ICON.workflow} fallback="Workflow" aria-hidden /> Workflow
           </Button>
           {entry.prUrl ? (
             <UrlLink href={entry.prUrl} tabIndex={tabIndex} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
@@ -628,7 +620,7 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
-              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+              <Icon name={CARD_ACTION_ICON.moreActions} fallback="MoreHorizontal" aria-hidden />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -644,7 +636,7 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
           >
             {onShowActivity ? (
               <DropdownMenuItem onSelect={() => { showingActivity.current = true; }}>
-                <Icon name="Activity" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                <Icon name={SHOW_ACTIVITY_ICON} fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
                 Show activity
               </DropdownMenuItem>
             ) : null}
@@ -909,30 +901,30 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       ) : null}
       {failures + stalled + humanInput > 0 ? (
         <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
-          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
+          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon={ATTENTION_ICON.title} tone="warning" />Needs attention</span>
           {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
-            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
+            <Icon name={ATTENTION_ICON.failures} style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
           </Button> : null}
           {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
-            <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
+            <Icon name={ATTENTION_ICON.stalled} style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
           </Button> : null}
           {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => setFilter("input")}>
-            <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
+            <Icon name={ATTENTION_ICON.input} style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
           </Button> : null}
         </section>
       ) : null}
       <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-xs">
-        <Button size="sm" variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name="LayoutGrid" aria-hidden />All tasks</Button>
+        <Button size="sm" variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name={FILTER_ICON.all} aria-hidden />All tasks</Button>
         {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
           <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
         </Button>)}
-        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal !== undefined ? ` / ${maxTotal}` : ""}</span>
+        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name={FILTER_ICON.taskSlots} className="size-4" aria-hidden />Task slots: {running}{maxTotal !== undefined ? ` / ${maxTotal}` : ""}</span>
       </nav>
       {/* Agents */}
       <Panel
         className="border-0 bg-transparent [&>header]:px-0 [&>header]:flex-wrap [&>div]:px-0"
         title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
-        icon="Bot"
+        icon={PANEL_ICON.tasks}
         dim={roster.isFetching && !roster.isLoading}
         actions={
           <>
@@ -952,7 +944,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
               </div>
             ) : null}
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
-              <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
+              <Icon name={includeDone ? FILTER_ICON.hideFinished : FILTER_ICON.showFinished} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
             </Button>
           </>
@@ -988,7 +980,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       </Panel>
 
       <div className="grid gap-4 lg:grid-cols-5">
-        <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
+        <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon={PANEL_ICON.throughput} dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
           {s ? <p className="mb-4 text-sm text-muted-foreground">
             {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
@@ -1012,7 +1004,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             />
           )}
         </Panel>
-        <Panel className="lg:col-span-2" title="Capacity" icon="Gauge" dim={overview.isFetching && !overview.isLoading}>
+        <Panel className="lg:col-span-2" title="Capacity" icon={PANEL_ICON.capacity} dim={overview.isFetching && !overview.isLoading}>
           <div className="flex flex-col gap-3">
             {maxTotal !== undefined ? (
               <div className="flex flex-col gap-1.5">
@@ -1156,7 +1148,7 @@ export function ReposTab() {
       ) : null}
       <Panel
         title="Repositories"
-        icon="FolderGit2"
+        icon={PANEL_ICON.repositories}
         dim={overview.isFetching && !overview.isLoading}
         actions={
           <>
@@ -1227,11 +1219,11 @@ export function ReposTab() {
         </div>
       </Panel>
       {intake ? (
-        <Panel title={intake.dryRun ? "Intake preview" : "Intake result"} icon="Inbox" actions={<Button size="sm" variant="ghost" onClick={() => setIntake(null)}><Icon name="X" fallback="Circle" aria-hidden /> Close</Button>}>
+        <Panel title={intake.dryRun ? "Intake preview" : "Intake result"} icon={PANEL_ICON.intake} actions={<Button size="sm" variant="ghost" onClick={() => setIntake(null)}><Icon name="X" fallback="Circle" aria-hidden /> Close</Button>}>
           <IntakeSummary results={intake.results} dryRun={intake.dryRun} />
         </Panel>
       ) : null}
-      <Panel title="Pull requests" icon="GitPullRequest" headingRef={sheetFocus.fallback} dim={roster.isFetching && !roster.isLoading}>
+      <Panel title="Pull requests" icon={PANEL_ICON.pullRequests} headingRef={sheetFocus.fallback} dim={roster.isFetching && !roster.isLoading}>
         <PullRequestList
           entries={prs}
           now={now}
@@ -1344,7 +1336,7 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
   return (
     <Panel
       title="Activity"
-      icon="Activity"
+      icon={PANEL_ICON.activity}
       headingRef={heading}
       dim={log.isFetching && !log.isLoading}
       actions={

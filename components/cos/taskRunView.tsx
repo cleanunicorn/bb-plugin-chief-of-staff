@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { STATUS, compact, duration, relative } from "./viz";
 import { usageNote } from "./dashboardModel";
+import { CARD_ICON, TASK_SECTION_ICON, TASK_SUMMARY_ICON } from "./dashboardIcons";
 import { STEP_TYPE_META, liveTone, type LiveStatus } from "./workflowCanvas";
 import { PIVOTAL_KINDS, journalLine, stepInputs, taskEnd, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail, type TaskUsage } from "./runModel";
 import { modelMode, stepById, type Step, type Workflow } from "../../src/workflow";
@@ -55,23 +56,23 @@ const who = (actor: string) => (actor === "rpc:client" ? "you" : null);
 export function TaskSummary({ task, workflow, live, loops, now, usage = null, oneLine = false }: { task: TaskDetail | undefined; workflow: Workflow; live: Record<string, LiveStatus>; loops: LoopSummary; now: number; usage?: TaskUsage | null; oneLine?: boolean }) {
   const done = workflow.steps.filter((s) => live[s.id]?.status === "done").length;
   const items: { icon: string; label: string; value: ReactNode; title?: string }[] = [];
-  if (task) items.push({ icon: "Activity", label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
+  if (task) items.push({ icon: TASK_SUMMARY_ICON.status, label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
   const { finished, end } = taskEnd(task);
-  if (task) items.push({ icon: "Timer", label: finished ? "Took" : "Running for", value: duration(finished ? minutesTo(task.createdAt, end) : minutesBetween(task.createdAt, null, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
-  items.push({ icon: "ListChecks", label: "Steps done", value: `${done}/${workflow.steps.length}` });
+  if (task) items.push({ icon: TASK_SUMMARY_ICON.elapsed, label: finished ? "Took" : "Running for", value: duration(finished ? minutesTo(task.createdAt, end) : minutesBetween(task.createdAt, null, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
+  items.push({ icon: TASK_SUMMARY_ICON.steps, label: "Steps done", value: `${done}/${workflow.steps.length}` });
   items.push({
-    icon: "Undo2",
+    icon: TASK_SUMMARY_ICON.loopBacks,
     label: "Loop-backs",
     value: `${loops.approximate && loops.total ? "≈" : ""}${loops.total}`,
     title: loops.loops.map((l) => `${l.from ? (stepById(workflow, l.from)?.name ?? l.from) : "You"} → ${stepById(workflow, l.to)?.name ?? l.to} ×${l.count}`).join("\n") || "Nothing was sent back",
   });
   // Before PR and Branch: on one line only the last fact gives up width.
   if (usage && (!usage.counted || usage.totalTokens != null)) {
-    items.push({ icon: "Coins", label: `${task?.status === "done" || task?.status === "failed" ? "Tokens" : "Tokens so far"} · all threads`, value: usage.totalTokens != null ? compact(usage.totalTokens) : "counting…", title: usageNote(usage) });
+    items.push({ icon: CARD_ICON.tokens, label: `${task?.status === "done" || task?.status === "failed" ? "Tokens" : "Tokens so far"} · all threads`, value: usage.totalTokens != null ? compact(usage.totalTokens) : "counting…", title: usageNote(usage) });
   }
-  if (usage?.cost) items.push({ icon: "Coins", label: "Cost", value: `${usage.cost.amount.toFixed(2)} ${usage.cost.currency}`, title: usageNote(usage) });
-  if (task?.prUrl) items.push({ icon: "GitPullRequest", label: "PR", value: <UrlLink href={task.prUrl}>#{task.prNumber}</UrlLink> });
-  if (task?.branch) items.push({ icon: "GitBranch", label: "Branch", value: <span className="font-mono">{task.branch}</span>, title: task.branch });
+  if (usage?.cost) items.push({ icon: CARD_ICON.cost, label: "Cost", value: `${usage.cost.amount.toFixed(2)} ${usage.cost.currency}`, title: usageNote(usage) });
+  if (task?.prUrl) items.push({ icon: TASK_SUMMARY_ICON.pr, label: "PR", value: <UrlLink href={task.prUrl}>#{task.prNumber}</UrlLink> });
+  if (task?.branch) items.push({ icon: TASK_SUMMARY_ICON.branch, label: "Branch", value: <span className="font-mono">{task.branch}</span>, title: task.branch });
   return (
     <dl aria-label="Task summary" className={cn("flex shrink-0 gap-x-4 gap-y-1 text-xs", oneLine ? "flex-nowrap overflow-x-auto [scrollbar-width:thin]" : "flex-wrap")}>
       {items.map((i, n) => (
@@ -162,7 +163,7 @@ function Timeline({ itemId, workflow, entries, now, empty }: { itemId: string; w
   return (
     <Section
       title="History"
-      icon="History"
+      icon={TASK_SECTION_ICON.history}
       aside={entries.length ? (
         <button type="button" aria-pressed={all} onClick={() => setAll((v) => !v)} className="rounded text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           {all ? "Key events only" : `Show all ${entries.length}`}
@@ -199,7 +200,7 @@ function Timeline({ itemId, workflow, entries, now, empty }: { itemId: string; w
 function LoopList({ workflow, loops }: { workflow: Workflow; loops: LoopSummary }) {
   const name = (id: string) => stepById(workflow, id)?.name ?? id;
   return (
-    <Section title="Loop-backs" icon="Undo2">
+    <Section title="Loop-backs" icon={TASK_SECTION_ICON.loopBacks}>
       {loops.loops.length ? (
         <ul className="flex flex-col gap-1.5">
           {loops.loops.map((l) => (
@@ -248,7 +249,7 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
       {task?.waitingReason ? <Callout icon="Hand" color={STATUS.warning}>{task.waitingReason}</Callout> : null}
       {finished && task?.outcome ? <EndCallout task={{ ...task, outcome: task.outcome }} end={end} /> : task?.lastError && !finished ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
       {task ? (
-        <Section title="Task" icon="FileText">
+        <Section title="Task" icon={TASK_SECTION_ICON.task}>
           {task.body?.trim() ? <TextBlock>{task.body}</TextBlock> : <p className="text-xs text-muted-foreground">{task.issueNumber ? `GitHub issue #${task.issueNumber}.` : "No description."}</p>}
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             {task.threadId ? <ThreadButton threadId={task.threadId} label="Open builder thread" /> : null}
@@ -351,11 +352,11 @@ export function StepPanel({ itemId, workflow, step, task, live, detail, steps, j
         </div>
       ) : null}
       {detail?.feedback ? (
-        <Section title="Sent back with" icon="Undo2">
+        <Section title="Sent back with" icon={TASK_SECTION_ICON.sentBack}>
           <TextBlock tone={STATUS.serious}>{detail.feedback}</TextBlock>
         </Section>
       ) : null}
-      <Section title="Received" icon="ArrowDownToLine">
+      <Section title="Received" icon={TASK_SECTION_ICON.received}>
         {inputs.length ? (
           inputs.map((i) => (
             <div key={i.from} className="flex flex-col gap-1">
@@ -367,7 +368,7 @@ export function StepPanel({ itemId, workflow, step, task, live, detail, steps, j
           <p className="text-xs text-muted-foreground">The task itself: this is where the workflow starts.</p>
         )}
       </Section>
-      <Section title="Produced" icon="ArrowUpFromLine">
+      <Section title="Produced" icon={TASK_SECTION_ICON.produced}>
         {detail?.reports.length ? (
           detail.reports.map((r) => (
             <div key={r.agent} className="flex flex-col gap-1">

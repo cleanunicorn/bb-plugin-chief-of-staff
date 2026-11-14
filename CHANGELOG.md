@@ -83,6 +83,20 @@
   open. Running a step again from a finished task says it reopens the task
   and starts agent work again.
 
+- **Different things on the dashboard no longer share an icon.** BB draws
+  plugin icons from its own, smaller catalog, and several icons used to turn
+  into the same picture there. A stalled task and a queued task both showed a
+  clock; "Last activity", the Activity panel, Throughput and Capacity all
+  showed a bar chart; Tokens, Cost and Task slots all showed layers. Now
+  Queued shows a list end, Stalled an hourglass, "CoS stuck" an octagon alert
+  and "No report" a file question mark. Last activity shows a pulse, Activity
+  a feed, Throughput a rising line and Capacity a gauge. Tokens, Cost and
+  Fix cycles each have their own icon, and the Throughput table switch and the
+  workflow canvas's Tidy button no longer look like "All tasks". Steps done,
+  Received, Produced and skill references, which drew a plain circle, now
+  have icons too, and the Needs attention row has a bell instead of
+  repeating the hand of its questions and approvals.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

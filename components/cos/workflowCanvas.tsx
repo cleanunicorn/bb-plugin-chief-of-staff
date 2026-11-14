@@ -401,7 +401,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
             </Button>
           ))}
           <Button size="sm" variant="ghost" className="h-7 px-2" aria-label="Arrange steps by order" onClick={relayout}>
-            <Icon name="LayoutGrid" fallback="Circle" aria-hidden /> Tidy
+            <Icon name="BrushCleaning" fallback="Circle" aria-hidden /> Tidy
           </Button>
           {onToggleExpanded && !expanded ? (
             <Button size="sm" variant="outline" className="ml-auto h-7 gap-1.5 px-2" onClick={onToggleExpanded}>
