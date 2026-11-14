@@ -291,7 +291,7 @@ What changed on the Pipeline tab:
   left alone. They also do nothing with a modifier, while composing, in
   `input, textarea, select, [contenteditable], [role=textbox]`, with a sheet
   open, or with an open `[role=dialog]`, `[role=alertdialog]` or `[role=menu]`
-  in the document. Closed overlays (`data-state=closed`, `inert` or
+  in the document. Closed overlays (`data-state=closed`, `inert`, `hidden` or
   `aria-hidden`) do not count: on phones the persistent drawer keeps a closed
   `role=dialog` mounted after its first opening. `/` is left out: #105, which
   adds the search field, is still open.

@@ -22,9 +22,9 @@ const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable=
 
 /**
  * An open dialog or menu. Some stay mounted when closed (the persistent phone drawer keeps a `role=dialog` in the
- * body, `data-state=closed`, inert and hidden), so closed, inert and hidden ones do not count.
+ * body, `data-state=closed`, inert and aria-hidden), so closed, inert and hidden ones, by either attribute, do not count.
  */
-const OPEN_OVERLAY = ["dialog", "alertdialog", "menu"].map((role) => `[role=${role}]:not([data-state=closed]):not([inert]):not([aria-hidden=true])`).join(", ");
+const OPEN_OVERLAY = ["dialog", "alertdialog", "menu"].map((role) => `[role=${role}]:not([data-state=closed]):not([inert]):not([aria-hidden=true]):not([hidden])`).join(", ");
 
 /**
  * Whether a single-letter shortcut (j, k) of the view in `root` must leave this key alone: focus is elsewhere in

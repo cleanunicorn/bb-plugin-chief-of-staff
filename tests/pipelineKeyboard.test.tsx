@@ -398,7 +398,11 @@ it("still moves with j and k when a closed dialog or menu stays in the document"
   const menu = document.createElement("div");
   menu.setAttribute("role", "menu");
   menu.setAttribute("data-state", "closed");
-  document.body.append(drawer, menu);
+  // An overlay hidden with the hidden attribute alone.
+  const hiddenDialog = document.createElement("div");
+  hiddenDialog.setAttribute("role", "alertdialog");
+  hiddenDialog.hidden = true;
+  document.body.append(drawer, menu, hiddenDialog);
   summaryOf(0).focus();
   expect(await pressed(document.activeElement!, "j")).toBe(true);
   expect(document.activeElement).toBe(summaryOf(1));
@@ -409,4 +413,5 @@ it("still moves with j and k when a closed dialog or menu stays in the document"
   expect(await pressed(document.activeElement!, "j")).toBe(false);
   drawer.remove();
   menu.remove();
+  hiddenDialog.remove();
 });
