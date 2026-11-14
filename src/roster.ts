@@ -4,7 +4,7 @@
 import type { Cos } from "./context";
 import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
 import { isActiveStatus, occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
-import { FAILED_OUTCOMES, finishedOutcome, OUTCOME_META, type Outcome } from "./outcome";
+import { FAILED_OUTCOMES, finishedOutcome, MARKED_FAILED, OUTCOME_META, type Outcome } from "./outcome";
 import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
@@ -309,8 +309,8 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
 export function describeOutcome(outcome: Outcome, lastError: string | null): string {
   const label = OUTCOME_META[outcome].label;
   if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return label;
-  // A person ended it: mark_failed writes no error, so a stored one is only the last seen, not the cause.
-  if (outcome === "marked_failed") return `${label} (last error: ${lastError})`;
+  // A person ended it: mark_failed stores MARKED_FAILED; any other stored error is only the last seen, not the cause.
+  if (outcome === "marked_failed") return lastError === MARKED_FAILED ? label : `${label} (last error: ${lastError})`;
   // "PR closed without merge" already says it.
   return lastError.toLowerCase().startsWith(label.toLowerCase()) ? lastError : `${label}: ${lastError}`;
 }

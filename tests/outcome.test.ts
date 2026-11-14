@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { freshNode, type Nodes } from "../src/machine";
-import { finishedOutcome, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
+import { finishedOutcome, MARKED_DONE, MARKED_FAILED, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
 import { describeActivity, describeOutcome } from "../src/roster";
 import type { WorkItem } from "../src/state";
 import { workflowSchema, type Workflow } from "../src/workflow";
@@ -23,6 +23,13 @@ function item(over: Partial<WorkItem> = {}): Pick<WorkItem, "status" | "lastErro
 const marker = (message: string, secondsBefore = 0) => ({ message, at: new Date(Date.parse(FINISHED) - secondsBefore * 1000).toISOString() });
 
 describe("finishedOutcome", () => {
+  // The engine stores these on a close, and logs the "marked …" row only after finishedAt is set.
+  it("reads a hand-closed task from its stored error, without a log row", () => {
+    expect(finishedOutcome(item({ prNumber: 7, lastError: MARKED_DONE }), null)).toBe("marked_done");
+    expect(finishedOutcome(item({ status: "failed", lastError: MARKED_FAILED }), null)).toBe("marked_failed");
+    expect(finishedOutcome(item({ status: "failed", lastError: MARKED_FAILED }), marker("marked failed", -1))).toBe("marked_failed");
+  });
+
   it("reads a delivered PR as PR opened, whatever stale error it holds", () => {
     expect(finishedOutcome(item({ prNumber: 7, lastError: "Cannot read properties of undefined (reading 'length')" }), null)).toBe("pr_opened");
   });

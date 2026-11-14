@@ -12,7 +12,7 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
-import { FAILED_OUTCOMES, OUTCOME_META } from "./src/outcome";
+import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
@@ -448,8 +448,9 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const tabIndex = tabbable ? undefined : -1;
   const timer = cardTimer(entry, finished, now);
   // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
-  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) ? entry.lastError : null;
-  // mark_failed writes no error: on a hand-failed task the stored one is the last seen, not the cause.
+  // MARKED_FAILED only repeats the outcome label.
+  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) && entry.lastError !== MARKED_FAILED ? entry.lastError : null;
+  // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
   const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   return (
     <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
@@ -1195,11 +1196,15 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
   const focusAfterClear = useRef(false);
   // Phones get no nested scroll box: show the latest rows and expand in place.
   const [showAll, setShowAll] = useState(false);
+  // A cursor belongs to the task filter it was read under: choosing or clearing a task (here or from a card)
+  // returns to that filter's newest page in the same render, so no request goes out with another filter's cursor.
+  const taskId = task?.id ?? null;
+  const [cursor, setCursor] = useState<{ taskId: string | null; before: number } | null>(null);
+  const before = cursor && cursor.taskId === taskId ? cursor.before : undefined;
+  const setBefore = (next: number | undefined) => setCursor(next === undefined ? null : { taskId, before: next });
   // A task's own rows come from the server, so its older rows are not lost behind the latest 60 of every task.
-  const [before, setBefore] = useState<number | undefined>(undefined);
   const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, ...(before === undefined ? {} : { before }), ...(task ? { workItemId: task.id } : {}) } });
-  // A cursor belongs to one task filter: choosing or clearing a task returns to its newest page.
-  useEffect(() => { setBefore(undefined); setShowAll(false); }, [task?.id]);
+  useEffect(() => setShowAll(false), [taskId]);
   useLiveRefresh(log.refetch);
   // With one repository its name on every row says nothing; rows of any other (removed) repository keep theirs.
   // Unknown or failed: keep every name (the tab beside the feed shows the error, and refreshes this query).

@@ -9,6 +9,10 @@ import { finalSteps } from "./workflow";
 /** Why a task failed when its pull request was closed without merging (set by the engine on pr_closed). */
 export const PR_CLOSED_ERROR = "PR closed without merge";
 
+/** lastError of a task closed by hand: tells it apart from a thread failure or a shipped task. */
+export const MARKED_DONE = "Marked done";
+export const MARKED_FAILED = "Marked failed";
+
 export const OUTCOMES = ["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 
@@ -42,7 +46,8 @@ function markerFor(item: Pick<WorkItem, "finishedAt">, manual: ManualMarker | nu
 export function finishedOutcome(item: Pick<WorkItem, "status" | "lastError" | "prNumber" | "finishedAt" | "workflow" | "nodes">, manual: ManualMarker | null): Outcome | null {
   const marked = markerFor(item, manual);
   if (item.status === "done") {
-    if (marked === "marked done") return "marked_done";
+    // The engine writes MARKED_DONE on a close; the log row is the fallback for rows closed before it did.
+    if (item.lastError === MARKED_DONE || marked === "marked done") return "marked_done";
     // The engine finishes only when every final step is done; mark_done is the
     // only other writer of "done". Legacy rows without step state are skipped.
     if (Object.keys(item.nodes).length && finalSteps(item.workflow).some((id) => item.nodes[id]?.status !== "done")) return "marked_done";
@@ -56,7 +61,7 @@ export function finishedOutcome(item: Pick<WorkItem, "status" | "lastError" | "p
   }
   if (item.status === "failed") {
     if (item.lastError === PR_CLOSED_ERROR) return "pr_closed";
-    if (marked === "marked failed") return "marked_failed";
+    if (item.lastError === MARKED_FAILED || marked === "marked failed") return "marked_failed";
     // Every engine failure (a dead builder thread, a closed PR) sets lastError.
     if (item.lastError === null) return "marked_failed";
     return "failed";

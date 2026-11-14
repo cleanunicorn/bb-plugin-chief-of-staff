@@ -140,9 +140,13 @@ describe("engine loops beyond the 200 newest items", () => {
     expect(await detectStalls(cos, "test")).toEqual(["old"]);
   });
 
-  it("keeps the roster at 200 entries", async () => {
-    const { cos, fill } = setup();
+  // The roster lists every active item (#139, issue #106), reading thread states in batches the SDK accepts.
+  it("lists every active item beyond the 200 newest, reading threads 200 at a time", async () => {
+    const { cos, host, fill } = setup();
     fill(250);
-    expect(await buildRoster(cos)).toHaveLength(200);
+    const before = host.harness.inspection.sdk.callsTo("threads.list").length;
+    expect((await buildRoster(cos)).entries).toHaveLength(250);
+    const batches = host.harness.inspection.sdk.callsTo("threads.list").slice(before).map(([args]) => (args as { threadIds: string[] }).threadIds.length);
+    expect(batches).toEqual([200, 50]);
   });
 });

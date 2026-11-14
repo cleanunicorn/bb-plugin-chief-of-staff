@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
 import { buildRoster, USAGE_CONCURRENCY } from "../src/roster";
+
+/** The roster's entries: buildRoster returns `{ entries, nextBefore }` since #139. */
+const roster = async (...args: Parameters<typeof buildRoster>) => (await buildRoster(...args)).entries;
 import { readThreadUsage } from "../src/threads";
 import { workflowSchema } from "../src/workflow";
 import type { Cos } from "../src/context";
@@ -73,7 +76,7 @@ describe("reading usage for the roster", () => {
     const t = setup({ gate: true });
     const n = 10;
     for (let i = 0; i < n; i++) t.add(`a${i}`);
-    const run = buildRoster(t.cos, { withUsage: true });
+    const run = roster(t.cos, { withUsage: true });
     await vi.waitFor(() => expect(t.inFlight()).toBe(2 * USAGE_CONCURRENCY));
     // No call gets past the cap while the first batch is held.
     await new Promise((resolve) => setImmediate(resolve));
@@ -91,7 +94,7 @@ describe("reading usage for the roster", () => {
       t.add(`a${i}`);
       t.replies.set(`t-a${i}`, reported(i));
     }
-    const entries = await buildRoster(t.cos, { withUsage: true });
+    const entries = await roster(t.cos, { withUsage: true });
     const ids = t.store.listWorkItems({ activeOnly: true }).map((i) => i.id);
     expect(entries.map((e) => e.id)).toEqual(ids);
     for (const e of entries) {
@@ -104,7 +107,7 @@ describe("reading usage for the roster", () => {
     const t = setup();
     t.add("quiet");
     t.replies.set("t-quiet", () => []);
-    const [e] = await buildRoster(t.cos, { withUsage: true });
+    const [e] = await roster(t.cos, { withUsage: true });
     expect(e!.usage).toEqual({ inputTokens: null, outputTokens: null, totalTokens: null, cost: null });
   });
 
@@ -112,10 +115,10 @@ describe("reading usage for the roster", () => {
     const t = setup();
     t.add("a");
     t.add("b", { threadId: null });
-    const plain = await buildRoster(t.cos);
+    const plain = await roster(t.cos);
     expect(plain.map((e) => e.usage)).toEqual([null, null]);
     expect(t.eventsList).not.toHaveBeenCalled();
-    const withUsage = await buildRoster(t.cos, { withUsage: true });
+    const withUsage = await roster(t.cos, { withUsage: true });
     expect(t.calls.map((c) => c.threadId)).toEqual(["t-a", "t-a"]);
     expect(withUsage.find((e) => e.id === "b")!.usage).toBeNull();
   });
@@ -141,11 +144,12 @@ describe("final usage of finished items", () => {
     for (let i = 0; i < 55; i++) t.add(`d${i}`, done());
     t.add("live");
     t.replies.set("t-d3", reported(3));
-    const first = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    // One page holds every finished item (#139 pages them, 50 by default).
+    const first = await roster(t.cos, { includeDone: true, finishedLimit: 100, withUsage: true });
     expect(t.calls).toHaveLength(2 * 56);
     expect(t.store.getWorkItem("d3")!.finalUsage).toEqual({ inputTokens: 3, outputTokens: 6, totalTokens: 9, cost: { amount: 0.03, currency: "USD" } });
     t.calls.length = 0;
-    const second = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    const second = await roster(t.cos, { includeDone: true, finishedLimit: 100, withUsage: true });
     // Only the unfinished item is read again.
     expect(t.calls.map((c) => c.threadId)).toEqual(["t-live", "t-live"]);
     expect(second.map((e) => e.usage)).toEqual(first.map((e) => e.usage));
@@ -156,10 +160,10 @@ describe("final usage of finished items", () => {
     const t = setup();
     t.add("quiet", done());
     t.replies.set("t-quiet", () => []);
-    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.store.getWorkItem("quiet")!.finalUsage).toEqual(nothing);
     t.calls.length = 0;
-    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    const [e] = await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.calls).toHaveLength(0);
     expect(e!.usage).toEqual(nothing);
   });
@@ -171,12 +175,12 @@ describe("final usage of finished items", () => {
       if (q.types[0] === "thread/tokenUsage/updated") throw new Error("down");
       return reported(1)(q);
     });
-    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    const [e] = await roster(t.cos, { includeDone: true, withUsage: true });
     expect(e!.usage!.cost).toEqual({ amount: 0.01, currency: "USD" });
     expect(t.store.getWorkItem("flaky")!.finalUsage).toBeNull();
     t.replies.delete("t-flaky");
     t.calls.length = 0;
-    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.calls).toHaveLength(2);
     expect(t.store.getWorkItem("flaky")!.finalUsage).not.toBeNull();
   });
@@ -185,11 +189,11 @@ describe("final usage of finished items", () => {
     const t = setup();
     t.add("gone", done());
     t.replies.set("t-gone", () => { throw Object.assign(new Error("Thread not found"), { status: 404 }); });
-    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    const [e] = await roster(t.cos, { includeDone: true, withUsage: true });
     expect(e!.usage).toEqual(nothing);
     expect(t.store.getWorkItem("gone")!.finalUsage).toEqual(nothing);
     t.calls.length = 0;
-    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.calls).toHaveLength(0);
   });
 
@@ -197,10 +201,10 @@ describe("final usage of finished items", () => {
     const t = setup();
     t.add("manual", done());
     t.statuses.set("t-manual", "active");
-    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.store.getWorkItem("manual")!.finalUsage).toBeNull();
     t.statuses.set("t-manual", "idle");
-    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.store.getWorkItem("manual")!.finalUsage).not.toBeNull();
   });
 
@@ -208,7 +212,7 @@ describe("final usage of finished items", () => {
     const t = setup();
     t.add("a", done());
     t.threadsList.mockRejectedValueOnce(new Error("down"));
-    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    const [e] = await roster(t.cos, { includeDone: true, withUsage: true });
     expect(e!.usage).not.toBeNull();
     expect(t.store.getWorkItem("a")!.finalUsage).toBeNull();
   });
@@ -216,13 +220,13 @@ describe("final usage of finished items", () => {
   it("reads usage again after a reopened item finishes", async () => {
     const t = setup();
     t.add("a", done());
-    await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.store.getWorkItem("a")!.finalUsage).not.toBeNull();
     t.store.updateWorkItem("a", { status: "agent", finishedAt: null });
     t.store.updateWorkItem("a", { status: "done", finishedAt: NOW });
     t.replies.set("t-a", reported(7));
     t.calls.length = 0;
-    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    const [e] = await roster(t.cos, { includeDone: true, withUsage: true });
     expect(t.calls).toHaveLength(2);
     expect(e!.usage!.totalTokens).toBe(21);
     expect(t.store.getWorkItem("a")!.finalUsage!.totalTokens).toBe(21);
@@ -232,7 +236,7 @@ describe("final usage of finished items", () => {
     const t = setup();
     t.add("a", done());
     vi.spyOn(t.store, "setFinalUsage").mockImplementation(() => { throw new Error("disk full"); });
-    const [e] = await buildRoster(t.cos, { includeDone: true, withUsage: true });
+    const [e] = await roster(t.cos, { includeDone: true, withUsage: true });
     expect(e!.usage!.totalTokens).toBe(3);
   });
 
@@ -240,7 +244,7 @@ describe("final usage of finished items", () => {
     const t = setup();
     t.add("a", done());
     t.store.setFinalUsage("a", "t-a", nothing);
-    const [e] = await buildRoster(t.cos, { includeDone: true });
+    const [e] = await roster(t.cos, { includeDone: true });
     expect(e!.usage).toBeNull();
   });
 });

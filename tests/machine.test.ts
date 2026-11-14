@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, MAX_RATE_LIMIT_DEFERRALS, deriveStatus, limitedNode, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, MAX_RATE_LIMIT_DEFERRALS, limitedNode, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
@@ -834,6 +834,16 @@ describe("usage limits", () => {
     [item] = run(item, limited("build"));
     expect([item.status, item.lastError, item.finishedAt]).toEqual(["retrying", null, null]);
     expect(item.nodes.build).toMatchObject({ status: "running", limits: { 0: { until: RESET } } });
+  });
+
+  it("does not revive a task marked failed by hand", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]), { threadId: "thr_1" });
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "close", outcome: "failed" });
+    expect(item.nodes.build!.status).toBe("running");
+    [item] = run(item, limited("build"));
+    expect([item.status, item.lastError]).toEqual(["failed", MARKED_FAILED]);
+    expect(limitedNode(item.nodes.build!)).toBe(false);
   });
 
   it("does not revive a task whose PR was closed", () => {

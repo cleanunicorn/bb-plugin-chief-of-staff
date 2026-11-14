@@ -2339,12 +2339,13 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ detail: "done", outcome: "marked_done", finishedAt: expect.any(String), activity: "Marked done" });
   });
 
-  it("reads a task marked failed by hand from its log, even with an error stored", async () => {
+  it("reads a task marked failed by hand, even with an error stored", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const { id } = await roster();
     new StateStore(host.bb.storage.database()).updateWorkItem(id, { lastError: "push rejected" });
     await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
-    expect(await roster()).toMatchObject({ detail: "failed", outcome: "marked_failed", lastError: "push rejected", activity: "Marked failed (last error: push rejected)" });
+    // Mark failed stores MARKED_FAILED over the earlier error (#146), so the activity is the label alone.
+    expect(await roster()).toMatchObject({ detail: "failed", outcome: "marked_failed", lastError: "Marked failed", activity: "Marked failed" });
   });
 
   it.each([

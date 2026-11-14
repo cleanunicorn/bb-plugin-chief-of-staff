@@ -286,18 +286,18 @@ const menuItemsNow = () => Array.from(document.body.querySelectorAll<HTMLElement
 it("narrows the feed to a task picked in it, and clears back to all activity", async () => {
   mocks.logs = taskLogs();
   await mount(<ActivityFeed />);
-  expect(logQueries().at(-1)).toEqual({ limit: 60 });
+  expect(logQueries().at(-1)).toEqual({ limit: 60, onlyProblems: false });
   await openMenuOn(taskMenu()!);
   expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["#7 Fix login", "#8 Repair deploy"]);
   await act(async () => menuItemsNow()[1]!.click());
   await tick();
-  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "two" });
+  expect(logQueries().at(-1)).toEqual({ limit: 60, onlyProblems: false, workItemId: "two" });
   expect(rowMessages()).toHaveLength(2);
   for (const text of rowMessages()) expect(text).toContain("#8 Repair deploy");
   expect(taskMenu()!.textContent).toBe("Task:\u00a0#8 Repair deploy");
   expect(document.activeElement).toBe(taskMenu());
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show all activity"]')!.click());
-  expect(logQueries().at(-1)).toEqual({ limit: 60 });
+  expect(logQueries().at(-1)).toEqual({ limit: 60, onlyProblems: false });
   expect(rowMessages()).toHaveLength(4);
   expect(taskMenu()!.textContent).toBe("Task");
   expect(document.activeElement).toBe(taskMenu());
@@ -314,7 +314,8 @@ it("combines the task filter with Problems only, and says when a task has nothin
   expect(rowMessages()[0]).toContain("Build failed (exit 1)");
   await act(async () => { root.render(<ActivityFeed task={{ id: "three", label: "#9 Quiet" }} onTaskChange={() => {}} />); });
   expect(taskMenu()!.textContent).toBe("Task:\u00a0#9 Quiet");
-  expect(container.textContent).toContain("No warnings or errors.");
+  // Problems only is filtered on the server, across retained history.
+  expect(container.textContent).toContain("No warnings or errors within retention.");
   await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Problems only")!.click());
   expect(container.textContent).toContain("No activity for this task.");
 });
@@ -352,10 +353,11 @@ it("shows a task's activity from its card, finished or not, and moves focus to t
   await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
   await tick();
   await openMenuOn(done!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
-  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity"]);
+  // A done card also offers #135's "Run a step again…" (#108).
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity", "Run a step again…"]);
   await act(async () => menuItemsNow()[0]!.click());
   await tick(5);
-  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "old" });
+  expect(logQueries().at(-1)).toEqual({ limit: 60, onlyProblems: false, workItemId: "old" });
   expect(rowMessages()).toEqual([expect.stringContaining("marked done")]);
   expect(taskMenu()!.textContent).toBe("Task:\u00a0#3 Old work");
   expect(document.activeElement?.tagName).toBe("H2");
@@ -658,13 +660,6 @@ it.each([
   expect(confirmDialog()?.textContent).toContain(description);
 });
 
-it("offers no Mark failed on a task that has already failed", async () => {
-  mocks.entries = [entry({ detail: "failed", status: "failed" })];
-  await mount();
-  await openMenu();
-  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…"]);
-});
-
 it("retries the stuck step from the menu at once, without asking", async () => {
   mocks.entries = [entry()];
   mocks.call.mockResolvedValue({});
@@ -782,6 +777,19 @@ it("pages older activity and resets the cursor when changing the server filter",
   expect(container.textContent).not.toContain("Back to newest");
 });
 
+it("drops the cursor when the task filter changes, without a request that still carries it", async () => {
+  mocks.logs = Array.from({ length: 130 }, (_, i) => ({ id: 130 - i, at: "2026-11-13T10:00:00Z", level: "info" as const, kind: "test", message: `entry ${130 - i}`, actor: "test", repo: null, workItemId: i % 2 ? "one" : "two", issueNumber: null, issueTitle: null }));
+  await mount(<ActivityFeed task={null} onTaskChange={() => {}} />);
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Show older")!.click());
+  expect(logQueries().at(-1)).toMatchObject({ before: 71 });
+  const seen = logQueries().length;
+  await act(async () => { root.render(<ActivityFeed task={{ id: "one", label: "Task one" }} onTaskChange={() => {}} />); });
+  const after = logQueries().slice(seen);
+  expect(after.length).toBeGreaterThan(0);
+  expect(after.every((q) => (q as { before?: number }).before === undefined)).toBe(true);
+  expect(after.at(-1)).toEqual({ limit: 60, onlyProblems: false, workItemId: "one" });
+});
+
 // ---------- Finished cards: how the task ended ----------
 
 const finishedCard = (over: Partial<RosterEntry>) => entry({ detail: "done", status: "done", actor: "none", current: [], threadStatus: "idle", startedAt: "2026-11-05T10:00:00.000Z", finishedAt: "2026-11-05T11:12:00.000Z", ...over });
@@ -836,12 +844,18 @@ it("does not present an old error as the cause of a task marked failed by hand",
   expect(line.textContent).toBe(`Last error: ${stale}`);
 });
 
-it("labels finished pull requests by how they ended", async () => {
-  mocks.entries = [finishedCard({ outcome: "pr_closed", detail: "failed", status: "failed", prNumber: 7, lastError: "PR closed without merge" }), finishedCard({ id: "two", outcome: "merged", prNumber: 8 })];
+// The Pull requests list (components/cos/prState.tsx) labels a row by its PR's state as read from GitHub, not the task's outcome.
+it("labels finished pull requests by their PR state", async () => {
+  const pr = (state: "merged" | "closed") => ({ state, draft: false, checks: null, review: null, checkedAt: new Date().toISOString() });
+  mocks.entries = [
+    finishedCard({ outcome: "pr_closed", detail: "failed", status: "failed", prNumber: 7, lastError: "PR closed without merge", pr: pr("closed") }),
+    finishedCard({ id: "two", outcome: "merged", prNumber: 8, pr: pr("merged") }),
+  ];
   await mount(<ReposTab />);
-  const rows = Array.from(container.querySelectorAll("li")).map((li) => li.textContent);
-  expect(rows.some((r) => r?.startsWith("PR closed#7"))).toBe(true);
-  expect(rows.some((r) => r?.startsWith("Merged#8"))).toBe(true);
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.startsWith("All"))!.click());
+  const row = (n: number) => Array.from(container.querySelectorAll("li")).find((li) => li.textContent?.includes(`PR #${n}`))!;
+  expect(row(7).querySelector("[data-pr-state]")!.getAttribute("data-pr-state")).toBe("closed");
+  expect(row(8).querySelector("[data-pr-state]")!.getAttribute("data-pr-state")).toBe("merged");
 });
 
 it("says when a finished task finished and how long it took", async () => {

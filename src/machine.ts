@@ -8,7 +8,7 @@
 // step's `onFail` target and everything downstream of it, and the work re-runs
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
-import { PR_CLOSED_ERROR } from "./outcome";
+import { MARKED_DONE, MARKED_FAILED, PR_CLOSED_ERROR } from "./outcome";
 import type { WaitingKind, WorkItem } from "./state";
 import { agentWork, chosenModel, descendants, finalSteps, isWriter, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
 
@@ -142,9 +142,8 @@ export type MachineEvent =
   /** The operator closed the task by hand (Mark done / Mark failed). */
   | { type: "close"; outcome: "done" | "failed" };
 
-/** lastError of a task closed by hand: tells it apart from a thread failure or a shipped task. */
-export const MARKED_DONE = "Marked done";
-export const MARKED_FAILED = "Marked failed";
+/** lastError of a task closed by hand (defined in ./outcome, which the dashboard also reads). */
+export { MARKED_DONE, MARKED_FAILED };
 
 /**
  * The only events a closed task takes. A done task can be closed as failed or
@@ -153,7 +152,8 @@ export const MARKED_FAILED = "Marked failed";
  */
 const CLOSED_EVENTS: Record<"done" | "failed", readonly MachineEvent["type"][]> = {
   done: ["close", "rerun"],
-  failed: ["close", "retry", "revive", "rerun", "approve", "revise"],
+  // usage_limited: a builder failure recorded just before BB reported a usage limit is taken back (not after Mark failed).
+  failed: ["close", "retry", "revive", "rerun", "approve", "revise", "usage_limited"],
 };
 
 export interface MachinePolicy {
@@ -460,7 +460,8 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!s || !n) break;
       if (item.status === "failed") {
         // The builder's failure was recorded first; a usage limit is not fatal.
-        if (!isWriter(s) || (n.status !== "running" && n.status !== "waiting") || item.lastError === "PR closed without merge") break;
+        // Marked failed by hand: agent steps keep their state then, so the status alone does not tell it apart.
+        if (!isWriter(s) || (n.status !== "running" && n.status !== "waiting") || item.lastError === PR_CLOSED_ERROR || item.lastError === MARKED_FAILED) break;
         patch.status = undefined;
         patch.lastError = null;
         patch.finishedAt = null;
