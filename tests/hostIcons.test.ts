@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_Icon: () => null }));
-import { HOST_ICON_CATALOG, HOST_ICON_NAMES, hostIconName } from "../components/ui/icon";
+import { HOST_ICON_BASE, HOST_ICON_CATALOG, HOST_ICON_FALLBACKS, HOST_ICON_NAMES, hostIconFallback, hostIconName } from "../components/ui/icon";
 import * as dashboardIcons from "../components/cos/dashboardIcons";
 import { STAGES } from "../components/cos/stages";
 import { TONE_ICON } from "../components/cos/viz";
@@ -237,5 +237,31 @@ describe("filter row and toggles", () => {
 
   it("keeps the table switch apart from All tasks", () => {
     expect(hostIconName(VIEW_ICON.table)).not.toBe(hostIconName(FILTER_ICON.all));
+  });
+});
+
+// ---------- older hosts ----------
+
+// Extended-catalog names the UI already used before #111, on hosts back to engines.bb >=0.48. Any other name outside
+// the base catalog needs a base stand-in in HOST_ICON_FALLBACKS, since only bb 0.49.0's catalog was checked.
+const EXTENDED_BEFORE_111 = new Set(
+  "ArrowReloadHorizontal ArrowRight ArrowTurnBackward ArrowUpRight Beaker BellDot CalendarCheckOut02 ChartColumn Clock EditFile Eye EyeOff FileText GitBranch GitMerge GitPullRequest GitPullRequestClosed GitPullRequestDraft Github GridView Layers ListView Lock Maximize2 Minimize2 Minus PackageReceive Pause Play Plus RotateCcw Sent Square Star TimeSchedule UserRound".split(" "),
+);
+
+describe("older hosts", () => {
+  it("gives every extended-catalog name new to the plugin a base-catalog stand-in", () => {
+    const hosts = new Set([...REQUESTED.keys()].map(hostIconName));
+    const bare = [...hosts].filter((h) => HOST_ICON_CATALOG.has(h) && !HOST_ICON_BASE.has(h) && !EXTENDED_BEFORE_111.has(h) && !HOST_ICON_FALLBACKS[h]);
+    expect(bare).toEqual([]);
+  });
+
+  it("only stands in with base-catalog names", () => {
+    for (const [host, fallback] of Object.entries(HOST_ICON_FALLBACKS)) expect(HOST_ICON_BASE.has(fallback), `${host} → ${fallback}`).toBe(true);
+  });
+
+  it("prefers the stand-in over a caller's generic fallback, and keeps the caller's otherwise", () => {
+    expect(hostIconFallback("Gauge", "Circle")).toBe(HOST_ICON_FALLBACKS.Limitation);
+    expect(hostIconFallback("Timer", "Clock")).toBe("Clock");
+    expect(hostIconFallback("Bot", undefined)).toBeUndefined();
   });
 });

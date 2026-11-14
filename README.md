@@ -696,6 +696,11 @@ activity. **Problems only** selects warnings and errors on the server, including
 those older than the newest 60 entries. Changing the filter returns to its newest
 page. Retention still applies: paging cannot recover pruned entries.
 
-The icons in [assets/user-check.svg](assets/user-check.svg) and
-[assets/user-x.svg](assets/user-x.svg) come from [Lucide](https://lucide.dev)
-(ISC License, Copyright (c) Lucide Contributors).
+The icons in [assets/user-check.svg](assets/user-check.svg),
+[assets/user-x.svg](assets/user-x.svg),
+[assets/hourglass.svg](assets/hourglass.svg),
+[assets/octagon-alert.svg](assets/octagon-alert.svg),
+[assets/coins.svg](assets/coins.svg),
+[assets/activity.svg](assets/activity.svg) and
+[assets/trending-up.svg](assets/trending-up.svg) come from
+[Lucide](https://lucide.dev) (ISC License, Copyright (c) Lucide Contributors).

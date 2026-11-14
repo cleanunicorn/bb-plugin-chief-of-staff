@@ -111,18 +111,32 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   Wrench: "Toolbox",
 };
 
+// Base-catalog stand-ins for the extended-catalog names #111 adopted, in case a host older than 0.49.0 lacks them
+// (engines.bb is >=0.48). They win over a caller's generic fallback, which is usually Circle.
+export const HOST_ICON_FALLBACKS: Record<string, string> = {
+  AiContentGenerator01: "Code", // Tokens
+  ArchiveRestore: "Archive", // Produced
+  Clean: "Workflow", // canvas Tidy
+  FileQuestion: "CircleQuestion", // No report
+  LayoutList: "ListTodo", // Steps done
+  Limitation: "SlidersHorizontal", // Capacity
+  ListEnd: "MoreHorizontal", // Queued
+  News01: "MessageSquare", // Activity
+  Puzzle: "Toolbox", // skill reference
+  Rows2: "ListTodo", // Throughput table view
+};
+
 /** The host catalog's name for an icon name used by our UI. */
 export function hostIconName(name: string): string {
   return HOST_ICON_NAMES[name] ?? name;
 }
 
+/** The host fallback for an icon: the base stand-in for a newer host name, else the caller's fallback, translated. */
+export function hostIconFallback(name: string, fallback: string | undefined): string | undefined {
+  return HOST_ICON_FALLBACKS[hostIconName(name)] ?? (fallback ? hostIconName(fallback) : undefined);
+}
+
 export function Icon({ name, fallback, ...props }: IconProps) {
   const HostIcon = experimental_Icon;
-  return (
-    <HostIcon
-      name={hostIconName(name)}
-      fallback={fallback ? hostIconName(fallback) : undefined}
-      {...props}
-    />
-  );
+  return <HostIcon name={hostIconName(name)} fallback={hostIconFallback(name, fallback)} {...props} />;
 }
