@@ -91,3 +91,13 @@ export const TASK_SUMMARY_ICON = {
   pr: "GitPullRequest",
   branch: "GitBranch",
 } as const;
+
+/** The section headings of a task's run view (taskRunView.tsx). */
+export const TASK_SECTION_ICON = {
+  history: "History",
+  loopBacks: "Undo2",
+  task: "FileText",
+  sentBack: "Undo2", // one step's loop-back, like Loop-backs
+  received: "ArrowDownToLine",
+  produced: "ArrowUpFromLine",
+} as const;

@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_Icon: () => null }));
 import { HOST_ICON_BASE, HOST_ICON_CATALOG, HOST_ICON_FALLBACKS, HOST_ICON_NAMES, hostIconFallback, hostIconName } from "../components/ui/icon";
 import * as dashboardIcons from "../components/cos/dashboardIcons";
+import { PR_STATE_META } from "../components/cos/prState";
 import { STAGES } from "../components/cos/stages";
 import { TONE_ICON } from "../components/cos/viz";
 import { OUTCOME_META } from "../src/outcome";
@@ -264,4 +265,20 @@ describe("older hosts", () => {
     expect(hostIconFallback("Timer", "Clock")).toBe("Clock");
     expect(hostIconFallback("Bot", undefined)).toBeUndefined();
   });
+});
+
+describe("task view", () => {
+  it("gives each section of a task's run view its own icon", () => {
+    // Loop-backs (the task) and Sent back with (one step) both show work sent back.
+    expect(collisions(prefixed("section", dashboardIcons.TASK_SECTION_ICON), [["section.loopBacks", "section.sentBack"]])).toEqual([]);
+  });
+});
+
+it("keeps a card's PR state chip apart from the card's rows", () => {
+  const rowHosts = new Set(Object.values(CARD_ICON).map(hostIconName));
+  expect(Object.entries(PR_STATE_META).filter(([, m]) => rowHosts.has(hostIconName(m.icon)))).toEqual([]);
+});
+
+it("checks the status pill tones against the catalog too", () => {
+  expect(Object.values(TONE_ICON).filter((name) => !drawable(hostIconName(name)))).toEqual([]);
 });

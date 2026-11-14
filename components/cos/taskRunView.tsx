@@ -9,7 +9,7 @@ import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { STATUS, duration, relative } from "./viz";
-import { TASK_SUMMARY_ICON } from "./dashboardIcons";
+import { TASK_SECTION_ICON, TASK_SUMMARY_ICON } from "./dashboardIcons";
 import { STEP_TYPE_META, liveTone, type LiveStatus } from "./workflowCanvas";
 import { PIVOTAL_KINDS, journalLine, stepInputs, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail } from "./runModel";
 import { modelMode, stepById, type Step, type Workflow } from "../../src/workflow";
@@ -152,7 +152,7 @@ function Timeline({ itemId, workflow, entries, now, empty }: { itemId: string; w
   return (
     <Section
       title="History"
-      icon="History"
+      icon={TASK_SECTION_ICON.history}
       aside={entries.length ? (
         <button type="button" aria-pressed={all} onClick={() => setAll((v) => !v)} className="rounded text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
           {all ? "Key events only" : `Show all ${entries.length}`}
@@ -189,7 +189,7 @@ function Timeline({ itemId, workflow, entries, now, empty }: { itemId: string; w
 function LoopList({ workflow, loops }: { workflow: Workflow; loops: LoopSummary }) {
   const name = (id: string) => stepById(workflow, id)?.name ?? id;
   return (
-    <Section title="Loop-backs" icon="Undo2">
+    <Section title="Loop-backs" icon={TASK_SECTION_ICON.loopBacks}>
       {loops.loops.length ? (
         <ul className="flex flex-col gap-1.5">
           {loops.loops.map((l) => (
@@ -223,7 +223,7 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
       {task?.waitingReason ? <Callout icon="Hand" color={STATUS.warning}>{task.waitingReason}</Callout> : null}
       {task?.lastError && task.status !== "done" ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
       {task ? (
-        <Section title="Task" icon="FileText">
+        <Section title="Task" icon={TASK_SECTION_ICON.task}>
           {task.body?.trim() ? <TextBlock>{task.body}</TextBlock> : <p className="text-xs text-muted-foreground">{task.issueNumber ? `GitHub issue #${task.issueNumber}.` : "No description."}</p>}
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             {task.threadId ? <ThreadButton threadId={task.threadId} label="Open builder thread" /> : null}
@@ -306,11 +306,11 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
         </div>
       ) : null}
       {detail?.feedback ? (
-        <Section title="Sent back with" icon="Undo2">
+        <Section title="Sent back with" icon={TASK_SECTION_ICON.sentBack}>
           <TextBlock tone={STATUS.serious}>{detail.feedback}</TextBlock>
         </Section>
       ) : null}
-      <Section title="Received" icon="ArrowDownToLine">
+      <Section title="Received" icon={TASK_SECTION_ICON.received}>
         {inputs.length ? (
           inputs.map((i) => (
             <div key={i.from} className="flex flex-col gap-1">
@@ -322,7 +322,7 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
           <p className="text-xs text-muted-foreground">The task itself: this is where the workflow starts.</p>
         )}
       </Section>
-      <Section title="Produced" icon="ArrowUpFromLine">
+      <Section title="Produced" icon={TASK_SECTION_ICON.produced}>
         {detail?.reports.length ? (
           detail.reports.map((r) => (
             <div key={r.agent} className="flex flex-col gap-1">
