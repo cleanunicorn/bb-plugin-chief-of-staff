@@ -24,8 +24,8 @@ export function Field({ label, hint, children, className, error }: { label: stri
   );
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, type = "text" }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string }) {
-  return <input id={id} type={type} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
+export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean }) {
+  return <input id={id} type={type} autoFocus={autoFocus} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
 }
 
 /**

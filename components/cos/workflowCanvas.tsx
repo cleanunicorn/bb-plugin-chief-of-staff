@@ -24,7 +24,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { blankStep, depths, modelMode, newStepId, topoOrder, type Step, type StepType, type Workflow } from "../../src/workflow";
+import { depths, insertStepAfter, modelMode, topoOrder, type Step, type StepType, type Workflow } from "../../src/workflow";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
@@ -55,6 +55,24 @@ export function layout(wf: Workflow, force = false): Map<string, { x: number; y:
     out.set(id, !force && s.position ? s.position : { x: column * COL, y: d * ROW });
   }
   return out;
+}
+
+/**
+ * Make room for step `id`, just inserted after another (`insertStepAfter`): every placed step below that one
+ * moves down a row, so the rows keep their arrangement, and the new step goes directly below it (or in the
+ * next free column to the right). When the step it follows has no stored position, the new step gets none
+ * either and `layout` places it by depth.
+ */
+export function placeNewStep(wf: Workflow, id: string): Workflow {
+  const anchor = wf.steps.find((s) => s.next.includes(id));
+  if (!anchor) return wf;
+  const from = layout(wf).get(anchor.id)!;
+  const moved = wf.steps.map((s) => (s.id !== id && s.position && s.position.y > from.y ? ({ ...s, position: { x: s.position.x, y: s.position.y + ROW } } as Step) : s));
+  if (!anchor.position) return { ...wf, steps: moved };
+  const taken = [...layout({ ...wf, steps: moved })].filter(([other]) => other !== id).map(([, p]) => p);
+  const spot = { x: anchor.position.x, y: anchor.position.y + ROW };
+  while (taken.some((p) => Math.abs(p.x - spot.x) < COL && Math.abs(p.y - spot.y) < ROW)) spot.x += COL;
+  return { ...wf, steps: moved.map((s) => (s.id === id ? ({ ...s, position: spot } as Step) : s)) };
 }
 
 function subtitle(s: Step): string {
@@ -155,11 +173,13 @@ export interface WorkflowCanvasProps {
   onToggleExpanded?: () => void;
   /** Read-only: how often each arrow was taken, by edge id (`next:a:b`, `fail:a:b`); shown from 1 for fail arrows, from 2 otherwise. */
   edgeCounts?: Record<string, number>;
+  /** Edit mode: a step was added from the toolbar (and selected). */
+  onAdd?: (id: string) => void;
 }
 
-function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts }: WorkflowCanvasProps) {
+function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts, onAdd }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
-  const { fitView } = useReactFlow();
+  const { fitView, setCenter, getZoom, getInternalNode } = useReactFlow();
   const fit = editable ? FIT_EDIT : FIT_VIEW;
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
@@ -272,14 +292,24 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     [editable, workflow, update],
   );
 
+  // A step just added from the toolbar, to centre once React Flow has rendered and measured it.
+  const pendingReveal = useRef<string | null>(null);
   const add = (type: StepType) => {
-    const name = `New ${STEP_TYPE_META[type].label.toLowerCase()}`;
-    const id = newStepId(workflow, name);
-    const maxY = Math.max(0, ...[...positions.values()].map((p) => p.y));
-    const step = { ...blankStep(type, id, name), position: { x: 0, y: maxY + ROW } } as Step;
-    update({ ...workflow, steps: [...workflow.steps, step] });
+    const { workflow: next, id } = insertStepAfter(workflow, type, selected);
+    pendingReveal.current = id;
+    update(placeNewStep(next, id));
     onSelect?.(id);
+    onAdd?.(id);
   };
+  // Measuring a step updates `nodes`, so this runs again until the new step has a size; the zoom stays as it is.
+  useEffect(() => {
+    const id = pendingReveal.current;
+    const node = id ? getInternalNode(id) : undefined;
+    if (!node?.measured.width || !node.measured.height) return;
+    pendingReveal.current = null;
+    const { x, y } = node.internals.positionAbsolute;
+    void setCenter(x + node.measured.width / 2, y + node.measured.height / 2, { zoom: getZoom(), duration: 200 });
+  }, [nodes, getInternalNode, setCenter, getZoom]);
 
   // The live view keeps the whole workflow in view as the sheet resizes (full screen, side panel, window).
   const frame = useRef<HTMLDivElement>(null);
@@ -309,7 +339,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
       {editable ? (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-border bg-card p-1 sm:absolute sm:top-2 sm:left-2 sm:z-10 sm:rounded-md sm:border sm:shadow-sm">
           {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
-            <Button key={t} size="sm" variant="ghost" className="h-7 px-2" aria-label={`Add ${STEP_TYPE_META[t].label} step: ${STEP_TYPE_META[t].hint}`} onClick={() => add(t)}>
+            <Button key={t} size="sm" variant="ghost" className="h-7 px-2" aria-label={`Add ${STEP_TYPE_META[t].label} step after the selected one (or at the end): ${STEP_TYPE_META[t].hint}`} onClick={() => add(t)}>
               <Icon name="Plus" fallback="Circle" aria-hidden /> {STEP_TYPE_META[t].label}
             </Button>
           ))}
