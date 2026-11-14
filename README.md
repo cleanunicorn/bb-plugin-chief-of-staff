@@ -335,6 +335,16 @@ separately. Terminal failed runs are historical outcomes, not unresolved
 incidents; they remain accessible with **Show finished**. Retrying work stays in
 Checks & shipping until it requires a decision.
 
+A task whose repository is not in the `repos` setting (removed, renamed, or the
+setting has an error, which leaves it empty) does not wait for capacity. If it
+has not started, or is waiting to reacquire capacity, it stays queued with
+"Repository owner/repo is not in the repos setting …", logs one warning, and
+starts on the next sweep after the repository is configured again. A task that
+was already running retries the step 3 times (after 1, 4 and 9 minutes), then
+waits on you with "repo owner/repo is no longer configured"; after fixing the
+setting, press **Retry**, or close the task. The overview and `bb cos status`
+name the open tasks of repositories that are not configured.
+
 **Upgrade behavior:** unfinished PR-only items in CI/ready finish after their PR
 is confirmed open or merged. Closed, unmerged PRs fail delivery; a GitHub error
 leaves completion unconfirmed for a later retry. Stored workflow choices remain

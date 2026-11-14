@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import { GitHubError, GitHubRateLimitError, prStateFrom, reduceReviews, unlessRateLimited } from "./github";
-import { ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
+import { CAPACITY_REASON, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, deriveStatus, repoNotConfiguredReason, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
@@ -111,15 +111,23 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   // items observe it before running their own admission check.
   if (!force && occupiesCapacity(proposed) && (!occupiesCapacity(item) || event.type === "start")) {
     const repo = repos.find((r) => `${r.owner}/${r.repo}` === item.repo);
+    // A missing repo is not "full": say so, so the operator can fix the setting
+    // or close the task. It stays queued with its event, and starts on the first
+    // sweep after the repo is back (a `repos` parse error empties the list).
     const full = !repo || cos.store.countOccupied(item.repo, item.id) >= repo.maxConcurrent || cos.store.countOccupied(undefined, item.id) >= values.maxConcurrentTotal;
     if (full) {
+      const waitingReason = repo ? CAPACITY_REASON : repoNotConfiguredReason(item.repo);
       const queued = cos.store.updateWorkItem(item.id, {
         queuedEvent: event, status: "queued", jobStartedAt: null,
-        waitingKind: null, waitingReason: "Waiting for task capacity",
+        waitingKind: null, waitingReason,
         ...(event.type === "pr_opened" ? { prNumber: event.prNumber, prUrl: event.prUrl } : {}),
       });
       if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
       if (item.status === "done") await reopenItemThreads(cos, item, actor);
+      // Every sweep re-dispatches queued items: log only when the reason changes.
+      if (!repo && item.waitingReason !== waitingReason) {
+        cos.store.log({ level: "warn", kind: "admission", repo: item.repo, workItemId: item.id, message: `waiting: repo ${item.repo} is not configured; the task starts once it is back in the repos setting`, actor });
+      }
       cos.invalidate();
       return queued;
     }

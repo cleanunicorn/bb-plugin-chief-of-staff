@@ -6,6 +6,7 @@ import plugin from "../server";
 import { REMOVED_SUMMARY, StateStore, isActiveStatus, type NewWorkItem } from "../src/state";
 import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { settleJobs } from "../src/delivery";
+import { initialNodes } from "../src/machine";
 import { SETTLED_IDLE_MS } from "../src/sync";
 
 /** Make the engine throw on the next event of this type (a bug in handling it). */
@@ -464,6 +465,33 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.callAgentTool("cos_report", { step: "review", outcome: "done", summary: "first passed", delivery }, { threadId: "thr_review-1" });
     await idle("done", "thr_review-1");
     expect(await roster()).toMatchObject({ detail: "done" });
+  });
+
+  it("names tasks whose repository left the repos setting, in the overview and status (#52)", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    // A task queued for capacity earlier (as admission leaves one), not started yet.
+    const running = store.listWorkItems()[0]!;
+    const { id: _id, createdAt: _c, updatedAt: _u, ...fields } = running;
+    const waiting = store.insertWorkItem({ ...fields, id: "queued-task", status: "queued", issueNumber: null, issueTitle: "Tidy logs", threadId: null, nodes: initialNodes(running.workflow) });
+    store.updateWorkItem(waiting.id, { queuedEvent: { type: "start" }, waitingReason: "Waiting for task capacity" });
+    expect(store.listWorkItems().map((i) => i.status).sort()).toEqual(["agent", "queued"]);
+    const overview = async () => ((await host.harness.behavior.callRpc("cos_overview", null)) as { warnings: string[] }).warnings;
+    expect((await overview()).filter((w) => w.includes("repos setting"))).toEqual([]);
+
+    await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "other", projectId: "proj_1" }] }) });
+    await sweep();
+    await sweep();
+    // Each sweep re-tries the queued task; it logs the cause once.
+    expect(store.listLog({ limit: 200 }).filter((e) => e.workItemId === "queued-task" && e.level === "warn")).toHaveLength(1);
+    const queued = store.listWorkItems().find((i) => i.status === "queued")!;
+    expect(queued.waitingReason).toMatch(/acme\/app is not in the repos setting/);
+    expect((await host.harness.behavior.callRpc("cos_roster", {}) as { entries: Entry[] }).entries.find((e) => e.id === queued.id)?.activity).toMatch(/acme\/app is not in the repos setting/);
+    const warning = (await overview()).find((w) => w.includes("repos setting"));
+    expect(warning).toContain("acme/app#12");
+    expect(warning).toContain("acme/app: Tidy logs");
+    expect(JSON.parse((await host.harness.behavior.runCli(["status", "--json"])).stdout).warnings).toContain(warning);
+    expect((await host.harness.behavior.runCli(["status"])).stdout).toContain(`warning: ${warning}`);
   });
 
   it("keeps four items isolated when one delivery becomes uncertain", async () => {

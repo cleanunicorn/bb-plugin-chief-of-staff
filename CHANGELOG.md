@@ -49,6 +49,16 @@
 - **Chief of Staff opens without crashing.** The activity feed omits its
   pagination cursor until viewing older entries, keeping query inputs valid JSON.
 
+- **A task whose repository is not configured says so.** When a task's
+  repository is missing from the `repos` setting (removed, renamed, or the
+  setting has an error), a task waiting to start now reads "Repository
+  owner/repo is not in the repos setting …" instead of "Waiting for task
+  capacity", with one warning in the activity log. It keeps its place and
+  starts on the next sweep after the repository is configured again. The
+  overview and `bb cos status` show a warning naming the open tasks of
+  repositories that are not configured, so you can fix the setting or close
+  them.
+
 - **Task cards and pull requests link to their GitHub issue.** A card's
   "repo #N" opens the issue in the browser, and its PR chip reads "PR #N" so
   the two numbers are no longer confused. Each row under Repos & PRs → Pull

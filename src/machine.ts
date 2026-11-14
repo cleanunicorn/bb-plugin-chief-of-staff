@@ -227,7 +227,8 @@ export function initialNodes(wf: Workflow): Nodes {
 
 const agentsOf = (step: Step) => agentWork(step)?.agents ?? 1;
 const limitOf = (step: Step) => agentWork(step)?.maxRounds ?? (step.type === "check" || step.type === "ship" ? step.maxAttempts : 0);
-const label = (item: WorkItem) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
+/** How notifications and warnings name a task: `owner/repo#N`, or `owner/repo: title`. */
+export const label = (item: Pick<WorkItem, "repo" | "issueNumber" | "issueTitle" | "id">) => (item.issueNumber ? `${item.repo}#${item.issueNumber}` : `${item.repo}: ${item.issueTitle || item.id.slice(0, 8)}`);
 
 const WAIT_TITLE: Record<WaitingKind, string> = {
   question: "Agent needs input",
@@ -813,6 +814,14 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
   }
 
   return { nodes, patch, effects, journal };
+}
+
+/** Why a queued task waits while its repo and the global limit leave no free slot. */
+export const CAPACITY_REASON = "Waiting for task capacity";
+
+/** Why a queued task waits while its repository is missing from the `repos` setting. */
+export function repoNotConfiguredReason(repo: string): string {
+  return `Repository ${repo} is not in the repos setting (or the setting has an error). The task starts once ${repo} is configured again, or close the task.`;
 }
 
 /** How an error thrown by `transition` itself starts in lastError (see delivery). */

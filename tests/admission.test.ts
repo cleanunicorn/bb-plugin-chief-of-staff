@@ -3,12 +3,13 @@ import previousMigrations from "./fixtures/migrations-before-pause.json";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { MIGRATIONS, NO_WORKFLOW, migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
-import { DEFAULT_POLICY, freshNode } from "../src/machine";
+import { DEFAULT_POLICY, freshNode, initialNodes, repoNotConfiguredReason } from "../src/machine";
+import { describeActivity } from "../src/roster";
 import { workflowSchema } from "../src/workflow";
 import { dispatch, replayDeferred, settleJobs, watchCi } from "../src/delivery";
 import { itemAction } from "../src/rpc";
 import { tickItems } from "../src/sync";
-import type { Cos } from "../src/context";
+import { liveWarnings, type Cos } from "../src/context";
 
 const workflow = workflowSchema.parse({ id: "t", name: "Test", steps: [
   { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
@@ -23,15 +24,106 @@ function setup() {
   host.bb.storage.migrate(db, migrationsForDatabase(db));
   const store = new StateStore(db);
   const repo = { owner: "a", repo: "b", maxConcurrent: 1 };
-  const cos = { bb: host.bb, store, now: () => new Date(), config: async () => ({ policy: DEFAULT_POLICY, repos: [repo], values: { maxConcurrentTotal: 1, archiveThreadsOnDone: false } }), repo: async () => repo, safe: async (s: string) => s, invalidate: () => {}, notify: async () => {} } as unknown as Cos;
+  // Mutable: admission reads config().repos, so a test can drop the repo and add it back.
+  const repos = [repo];
+  const cos = { bb: host.bb, store, now: () => new Date(), config: async () => ({ policy: DEFAULT_POLICY, repos, values: { maxConcurrentTotal: 1, archiveThreadsOnDone: false } }), repo: async () => repo, safe: async (s: string) => s, invalidate: () => {}, notify: async () => {} } as unknown as Cos;
   function add(id: string, waiting = false) {
     return store.insertWorkItem({ id, repo: "a/b", status: waiting ? "ci" : "agent", issueTitle: id, issueNumber: null, branch: id, threadId: `thread-${id}`, environmentId: null, prNumber: waiting ? 7 : null, prUrl: null, providerId: null, model: null, lastError: null, source: "task", lastActivityAt: null, finishedAt: null, workflow, nodes: {
       build: { ...freshNode(), round: 1, status: waiting ? "done" : "running" },
       ship: { ...freshNode(), round: 1, status: waiting ? "running" : "pending", phase: waiting ? "ci" : null },
     } } satisfies NewWorkItem);
   }
-  return { host, cos, store, add, db };
+  function addQueued(id: string) {
+    return store.insertWorkItem({ id, repo: "a/b", status: "queued", issueTitle: id, issueNumber: 3, branch: id, threadId: `thread-${id}`, environmentId: null, prNumber: null, prUrl: null, providerId: null, model: null, lastError: null, source: "task", lastActivityAt: null, finishedAt: null, workflow, nodes: initialNodes(workflow) } satisfies NewWorkItem);
+  }
+  return { host, cos, store, add, addQueued, db, repo, repos };
 }
+
+describe("admission when the repository is not configured (#52)", () => {
+  const warns = (store: StateStore, id: string) => store.listLog({ limit: 100 }).filter((e) => e.workItemId === id && e.level === "warn");
+
+  it("queues a fresh start with its own reason, logs it once, and starts once the repository is back", async () => {
+    const { cos, store, addQueued, host, repo, repos } = setup();
+    addQueued("a");
+    repos.splice(0);
+    await dispatch(cos, "a", { type: "start" }, "test");
+    const queued = store.getWorkItem("a")!;
+    expect(queued).toMatchObject({ status: "queued", queuedEvent: { type: "start" }, waitingReason: repoNotConfiguredReason("a/b") });
+    expect(queued.waitingReason).toMatch(/a\/b is not in the repos setting/);
+    expect(describeActivity(queued)).toBe(repoNotConfiguredReason("a/b"));
+    expect(describeActivity(queued)).not.toMatch(/capacity/);
+    expect(warns(store, "a")).toHaveLength(1);
+    expect(warns(store, "a")[0]!.message).toContain("a/b");
+    await tickItems(cos, "test");
+    await tickItems(cos, "test");
+    expect(warns(store, "a")).toHaveLength(1);
+    expect(store.getWorkItem("a")!.status).toBe("queued");
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    repos.push(repo);
+    await tickItems(cos, "test");
+    expect(store.getWorkItem("a")).toMatchObject({ status: "agent", queuedEvent: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+  });
+
+  it("keeps a CI repair queued while the repository is not configured, then runs it with the CI log", async () => {
+    const { cos, store, add, host, repo, repos } = setup();
+    add("a", true);
+    repos.splice(0);
+    await dispatch(cos, "a", { type: "ci_failing", log: "red check" }, "test");
+    const queued = store.getWorkItem("a")!;
+    expect(queued).toMatchObject({ status: "queued", queuedEvent: { type: "ci_failing", log: "red check" }, waitingReason: repoNotConfiguredReason("a/b") });
+    expect(describeActivity(queued)).toBe(repoNotConfiguredReason("a/b"));
+    await tickItems(cos, "test");
+    await tickItems(cos, "test");
+    expect(warns(store, "a")).toHaveLength(1);
+    repos.push(repo);
+    await tickItems(cos, "test");
+    expect(store.getWorkItem("a")).toMatchObject({ status: "agent", queuedEvent: null });
+    expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+    expect(JSON.stringify(host.harness.inspection.sdk.callsTo("threads.send"))).toContain("red check");
+  });
+
+  it("still says a configured repository at capacity is waiting for capacity", async () => {
+    const { cos, store, add, addQueued } = setup();
+    add("b"); addQueued("a");
+    await dispatch(cos, "a", { type: "start" }, "test");
+    const queued = store.getWorkItem("a")!;
+    expect(queued).toMatchObject({ status: "queued", waitingReason: "Waiting for task capacity" });
+    expect(describeActivity(queued)).toBe("Waiting for task capacity");
+    expect(warns(store, "a")).toHaveLength(0);
+  });
+});
+
+describe("overview warning for tasks whose repository is not configured (#52)", () => {
+  const cosOf = (store: StateStore) => ({ store, githubLimit: () => null, now: () => new Date() });
+  const config = (warnings: string[], repos: object[]) => ({ warnings, repos }) as unknown as Parameters<typeof liveWarnings>[1];
+
+  it("names active tasks of an unconfigured repository, caps the list, and skips finished tasks", () => {
+    const { store, add, addQueued, repo } = setup();
+    expect(liveWarnings(cosOf(store), config([], [repo]))).toEqual([]);
+    addQueued("q");
+    add("running");
+    store.updateWorkItem("running", { issueTitle: "Fix login" });
+    add("done"); store.updateWorkItem("done", { status: "done" });
+    add("failed"); store.updateWorkItem("failed", { status: "failed" });
+    // Configured: no warning.
+    expect(liveWarnings(cosOf(store), config(["config"], [repo]))).toEqual(["config"]);
+    const [warning] = liveWarnings(cosOf(store), config([], []));
+    expect(warning).toContain("a/b#3");
+    expect(warning).toContain("a/b: Fix login");
+    expect(warning).not.toContain("done");
+    expect(warning).not.toContain("failed");
+    expect(warning).toMatch(/repos setting/);
+    expect(warning).toMatch(/close/);
+    for (const id of ["c", "d", "e", "f", "g"]) add(id);
+    const [capped] = liveWarnings(cosOf(store), config([], []));
+    expect(capped).toContain("and 2 more");
+    expect(capped.match(/a\/b/g)).toHaveLength(5);
+    expect(capped).toMatch(/Add the repository back/);
+    store.updateWorkItem("c", { repo: "x/y" });
+    expect(liveWarnings(cosOf(store), config([], []))[0]).toMatch(/^Repositories .*Add the repositories back/);
+  });
+});
 
 describe("shipping repair admission", () => {
   it("persists a queued CI repair, deduplicates polls, and resumes once after capacity is released", async () => {
