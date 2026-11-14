@@ -205,3 +205,38 @@ for (const [label, wf, editable] of [
     expect(fitted.y).toBeCloseTo(opened.y, 1);
   });
 }
+
+// Toolbar and Full screen (#121). jsdom has no layout, so these check the structure that keeps them apart:
+// one in-flow bar above the React Flow frame, with Full screen as its last button.
+const toolbar = () => container.querySelector<HTMLElement>('[role="group"][aria-label="Canvas tools"]');
+const fullScreenButtons = () => Array.from(container.querySelectorAll("button")).filter((b) => b.textContent?.trim() === "Full screen");
+const renderWith = (props: { editable: boolean; expanded?: boolean }) =>
+  act(async () => {
+    root.render(<WorkflowCanvas workflow={DEFAULT_WORKFLOW} selected={null} onSelect={onSelect} onChange={props.editable ? vi.fn() : undefined} expanded={props.expanded} onToggleExpanded={vi.fn()} />);
+  });
+
+it("puts Full screen in the editor's toolbar, as its last button, above the canvas", async () => {
+  await renderWith({ editable: true });
+  const bar = toolbar()!;
+  expect(bar).toBeTruthy();
+  expect(fullScreenButtons()).toHaveLength(1);
+  expect(bar.lastElementChild).toBe(fullScreenButtons()[0]);
+  const labels = Array.from(bar.querySelectorAll("button")).map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim());
+  expect(labels).toEqual([...["Agent", "Check", "Ship", "Model"].map((t) => expect.stringMatching(new RegExp(`^Add ${t} step`))), "Arrange steps by order", "Full screen"]);
+  // In flow, outside the canvas, never floating over it.
+  expect(bar.closest(".react-flow")).toBeNull();
+  expect(bar.querySelector(".react-flow")).toBeNull();
+  expect(bar.className).not.toMatch(/(^|\s|:)absolute(\s|$)/);
+});
+
+it("has no Full screen button once the editor is full screen", async () => {
+  await renderWith({ editable: true, expanded: true });
+  expect(toolbar()).toBeTruthy();
+  expect(fullScreenButtons()).toHaveLength(0);
+});
+
+it("keeps the read-only canvas's own Full screen button and no toolbar", async () => {
+  await renderWith({ editable: false });
+  expect(toolbar()).toBeNull();
+  expect(fullScreenButtons()).toHaveLength(1);
+});
