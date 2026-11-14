@@ -2,7 +2,7 @@
 // default), and for the selected one a canvas and a list view of its steps.
 // Every step has a name, instructions and arrows to the steps after it; its
 // type (agent, check, ship) adds the rest.
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
@@ -68,7 +68,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
   const [view, setView] = useState<"canvas" | "list">("canvas");
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  // A step just added from the canvas toolbar: its panel focuses the Name field once.
+  // A step just added from the canvas toolbar: its panel opens with the Name field focused. Selecting a step clears it.
   const [focusNameOf, setFocusNameOf] = useState<string | null>(null);
   useEffect(() => {
     if (!expanded) return;
@@ -192,14 +192,14 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
             </div>
           ) : null}
           <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
-            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={setSelected} onAdd={setFocusNameOf} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
+            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setFocusNameOf(null); }} onAdd={setFocusNameOf} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
             <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
               {selectedStep ? (
-                <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow focusName={focusNameOf === selectedStep.id} onNameFocused={() => setFocusNameOf(null)} />
+                <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow focusName={focusNameOf === selectedStep.id} />
               ) : (
                 <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                   <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
-                  Select a step to edit it. Drag from a step's right edge to another step to run it after. Select an arrow and press Backspace to remove it, or change the links under Runs next.
+                  Select a step to edit it; a step added from the toolbar goes after the selected one. Drag from a step's right edge to another step to run it after. Select an arrow and press Backspace to remove it, or change the links under Runs next.
                 </div>
               )}
             </div>
@@ -234,8 +234,8 @@ function Row({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
 }
 
 /** Edit one step: the common fields, then its type's fields. `problems` are this step's, shown under their fields. */
-/** `focusName`: focus the Name field (a step just added), then `onNameFocused`. */
-export function StepPanel({ workflow, step, problems = [], onChange, onRemove, skills = null, collapsible = false, narrow = false, focusName = false, onNameFocused }: { workflow: Workflow; step: Step; problems?: WorkflowProblem[]; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean; focusName?: boolean; onNameFocused?: () => void }) {
+/** `focusName`: focus the Name field when the panel opens (a step just added). */
+export function StepPanel({ workflow, step, problems = [], onChange, onRemove, skills = null, collapsible = false, narrow = false, focusName = false }: { workflow: Workflow; step: Step; problems?: WorkflowProblem[]; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean; focusName?: boolean }) {
   const two = narrow ? "grid grid-cols-1 gap-2" : "grid grid-cols-1 gap-2 sm:grid-cols-2";
   const [open, setOpen] = useState(!collapsible);
   const choiceKeys = useRowKeys<ModelChoice>();
@@ -243,12 +243,6 @@ export function StepPanel({ workflow, step, problems = [], onChange, onRemove, s
   /** The problem with one of this step's fields (or of one of its model choices). */
   const error = (field: string, choice?: number) => problems.find((p) => p.field === field && p.choice === choice)?.message;
   const meta = STEP_TYPE_META[step.type];
-  const nameId = useId();
-  useEffect(() => {
-    if (!focusName) return;
-    document.getElementById(nameId)?.focus();
-    onNameFocused?.();
-  }, [focusName, nameId, onNameFocused]);
   const others = workflow.steps.filter((s) => s.id !== step.id);
   // Fail arrows may only go back: to this step or a step it comes after.
   const before = others.filter((s) => descendants(workflow, s.id).has(step.id));
@@ -270,7 +264,7 @@ export function StepPanel({ workflow, step, problems = [], onChange, onRemove, s
       {open ? (
         <>
           <Row narrow={narrow}>
-            <Field label="Name" id={nameId} error={error("name")}>{(id) => <TextInput id={id} value={step.name} onChange={(v) => set({ name: v })} />}</Field>
+            <Field label="Name" error={error("name")}>{(id) => <TextInput id={id} value={step.name} onChange={(v) => set({ name: v })} autoFocus={focusName} />}</Field>
             <Field label="Type" hint={meta.hint}>
               {(id) => (
                 <Select

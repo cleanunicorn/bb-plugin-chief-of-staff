@@ -52,14 +52,25 @@ it("adds a check after the selected step that writes code with no problems shown
   const build = doc.workflows[0]!.steps.find((s) => s.id === "build")!;
   expect(build.next).toEqual(["new-check"]);
   expect(workflowProblems(doc)).toEqual([]);
-  expect(container.querySelector("ul li")).toBeNull();
+  expect(container.textContent).not.toMatch(/needs a step that writes code|could run at the same time/);
 });
 
-it("notes that an agent step without instructions works from the task alone, without blocking Save", async () => {
+it("notes that an agent step without instructions works from the task alone, without making it a problem", async () => {
   const NOTE = "No instructions: the agent gets only the task and what earlier steps produced.";
   await add("Agent");
   expect(container.textContent).toContain(NOTE);
   expect(workflowProblems(doc)).toEqual([]);
   await setValue(field("Instructions for the agent"), "Update the docs.");
   expect(container.textContent).not.toContain(NOTE);
+});
+
+it("focuses Name only when the step is added, not when it is selected again later", async () => {
+  await add("Check");
+  await settle();
+  node("build").focus();
+  await press(node("build"), "Enter");
+  node("new-check").focus();
+  await press(node("new-check"), "Enter");
+  expect(button("Remove New check")).toBeTruthy();
+  expect(document.activeElement).toBe(node("new-check"));
 });

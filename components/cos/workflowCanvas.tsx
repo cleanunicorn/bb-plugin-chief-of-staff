@@ -339,7 +339,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
       {editable ? (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-border bg-card p-1 sm:absolute sm:top-2 sm:left-2 sm:z-10 sm:rounded-md sm:border sm:shadow-sm">
           {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
-            <Button key={t} size="sm" variant="ghost" className="h-7 px-2" aria-label={`Add ${STEP_TYPE_META[t].label} step: ${STEP_TYPE_META[t].hint}`} onClick={() => add(t)}>
+            <Button key={t} size="sm" variant="ghost" className="h-7 px-2" aria-label={`Add ${STEP_TYPE_META[t].label} step after the selected one (or at the end): ${STEP_TYPE_META[t].hint}`} onClick={() => add(t)}>
               <Icon name="Plus" fallback="Circle" aria-hidden /> {STEP_TYPE_META[t].label}
             </Button>
           ))}

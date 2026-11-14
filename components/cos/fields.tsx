@@ -11,9 +11,8 @@ import { STATUS } from "./viz";
 export const inputClass =
   "h-8 w-full min-w-0 rounded-md border border-input bg-transparent px-2.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
 
-export function Field({ label, hint, children, className, error, id: fixedId }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null; id?: string }) {
-  const generated = useId();
-  const id = fixedId ?? generated;
+export function Field({ label, hint, children, className, error }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null }) {
+  const id = useId();
   return (
     <div className={cn("flex min-w-0 flex-col gap-1", className)}>
       <label htmlFor={id} className="text-xs font-medium text-foreground">
@@ -25,8 +24,8 @@ export function Field({ label, hint, children, className, error, id: fixedId }: 
   );
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, type = "text" }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string }) {
-  return <input id={id} type={type} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
+export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean }) {
+  return <input id={id} type={type} autoFocus={autoFocus} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
 }
 
 /**

@@ -300,3 +300,33 @@ for (const [label, selected] of [["at the end", null], ["after the selected step
     expect(viewport().zoom).toBeCloseTo(zoom, 3);
   });
 }
+
+it("pans to a step added after a selected step that is out of view, keeping the zoom", async () => {
+  await act(async () => { root.render(<Editor workflow={SIX_STEPS} selected="ship" />); });
+  await settle();
+  for (let i = 0; i < 4; i++) {
+    await act(async () => { container.querySelector<HTMLButtonElement>(".react-flow__controls-zoomin")!.click(); });
+    await settle(400);
+  }
+  const zoom = viewport().zoom;
+  // Zoomed in on the middle of the flow: the step after Ship starts outside the pane.
+  const before = viewport();
+  const below = { x: 0, y: layout(SIX_STEPS).get("ship")!.y + 130 };
+  expect(before.y + below.y * zoom > PANE.height).toBe(true);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label^="Add Check step"]')!.click(); });
+  await settle(400);
+  expect(layout(current).get("new-check")).toEqual(below);
+  expectInView("new-check");
+  expect(viewport().zoom).toBeCloseTo(zoom, 3);
+});
+
+it("keeps steps apart when inserting among dragged, off-grid positions", () => {
+  const offsets: Record<string, { x: number; y: number }> = { model: { x: 13, y: -7 }, plan: { x: -40, y: 6 }, "review-plan": { x: 55, y: 9 }, build: { x: 7, y: 33 }, review: { x: -18, y: 41 }, ship: { x: 90, y: 57 } };
+  const base = tidied(SIX_STEPS);
+  const dragged = { ...base, steps: base.steps.map((s) => ({ ...s, position: { x: s.position!.x + offsets[s.id]!.x, y: s.position!.y + offsets[s.id]!.y } }) as Step) };
+  expectNoOverlap(dragged);
+  for (const after of ["plan", "build", "review", null]) {
+    const { workflow, id } = insertStepAfter(dragged, "agent", after);
+    expectNoOverlap(placeNewStep(workflow, id));
+  }
+});
