@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A step added from the workflow editor lands in the flow and in view.** The
+  toolbar's Agent, Check, Ship and Model buttons now put the new step after the
+  selected step (or after the last one), taking over that step's "Runs next"
+  links, so a check added after a code-writing step raises no problems. It
+  appears directly below that step, the steps after it move down to make room,
+  the canvas pans to it at the current zoom, and its Name field is focused. An
+  agent step with no instructions now says so under its Instructions field; it
+  still runs on the task and earlier reports, and Save is not blocked.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues
