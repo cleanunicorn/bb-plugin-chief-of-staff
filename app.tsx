@@ -177,8 +177,9 @@ type SheetMode = "canvas" | "list";
 /**
  * One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here".
  * A finished task's sheet reads as a record. `finishedHint`: the opener's view of whether the task has finished, used until the sheet's own data loads.
+ * Without one (the Activity feed does not know) the sheet says nothing about the task's state until then.
  */
-function WorkflowSheet({ id, initialMode = "canvas", finishedHint = false, onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; finishedHint?: boolean; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
+function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; finishedHint?: boolean; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
@@ -199,8 +200,9 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint = false, onClo
   const column = useRef<HTMLDivElement>(null);
   const aside = useRef<HTMLElement>(null);
   const data = view.data;
-  const finished = data?.task ? taskEnd(data.task).finished : finishedHint;
-  const sheetTitle = finished ? "How this task went" : "Where this task is";
+  // undefined: not known yet.
+  const finished = data ? taskEnd(data.task).finished : finishedHint;
+  const sheetTitle = finished === undefined ? "Task workflow" : finished ? "How this task went" : "Where this task is";
   const wf = data?.workflow as Workflow | undefined;
   const live = useMemo(() => (data?.live ?? {}) as Record<string, LiveStatus>, [data?.live]);
   const step = wf?.steps.find((s) => s.id === selected);
@@ -357,7 +359,7 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint = false, onClo
             <span>
               <b className="text-foreground">{step.name}</b> · {statusLabel(step.id)}
             </span>
-            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun({ open: true, finished })}>
+            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun({ open: true, finished: finished === true })}>
               <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
             </Button>
             <ConfirmDialog
@@ -374,7 +376,7 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint = false, onClo
             />
           </>
         ) : (
-          <span>{finished ? "Select a step to reopen this task and run it (and everything after it) again." : "Select a step to run it (and everything after it) again."}</span>
+          finished === undefined ? null : <span>{finished ? "Select a step to reopen this task and run it (and everything after it) again." : "Select a step to run it (and everything after it) again."}</span>
         )}
       </footer> : null}
     </Sheet>

@@ -12,7 +12,7 @@ import { clickOutside, tick } from "./dom";
 
 type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], /** cos_item_workflow has not answered yet. */ workflowLoading: false, /** The task cos_item_workflow returns. */ workflowTask: undefined as Record<string, unknown> | undefined, call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
   roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
   rosterInputs: [] as RosterInput[],
@@ -32,7 +32,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
-      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? (mocks.workflowLoading ? undefined : { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {}, task: mocks.workflowTask }) : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -55,7 +55,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.workflowLoading = false; mocks.workflowTask = undefined; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
 
 /** An activity row of task "one", #7 Fix login, in acme/app. */
 const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
@@ -207,6 +207,18 @@ it("names each row's task: number and title, a standalone title, or nothing with
   const rows = container.querySelectorAll("li");
   expect(rows[4]!.querySelector("button[aria-label^='Open task']")).toBeNull();
   expect(rows[5]!.querySelector("button[aria-label^='Open task']")).toBeNull();
+});
+
+it("does not guess whether a task opened from the feed has finished before its workflow loads", async () => {
+  // A log row does not say whether its task has finished: the title stays neutral until the sheet knows (#117).
+  mocks.workflowLoading = true;
+  mocks.logs = [logRow()];
+  await mount(<ActivityFeed />);
+  await act(async () => { taskButtons()[0]!.click(); });
+  await tick();
+  const sheet = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(document.getElementById(sheet.getAttribute("aria-labelledby")!)?.textContent).toBe("Task workflow");
+  expect(sheet.textContent).not.toMatch(/Where this task is|How this task went|Select a step/);
 });
 
 it("opens the task's workflow from its name, and returns focus to the name on close", async () => {
@@ -956,6 +968,7 @@ it("offers a done card only a step re-run", async () => {
 
 it("opens a done task's workflow at the step list, and returns focus to More actions on close", async () => {
   mocks.entries = [done()];
+  mocks.workflowTask = { repo: "acme/app", issueNumber: 1, issueUrl: null, body: null, status: "done", branch: null, prNumber: null, prUrl: null, threadId: null, waitingReason: null, lastError: null, createdAt: "2026-11-05T09:00:00.000Z", lastActivityAt: null, finishedAt: "2026-11-05T12:00:00.000Z", outcome: "completed" };
   await mount();
   await openMenu();
   await act(async () => menuItem("Run a step again").click());

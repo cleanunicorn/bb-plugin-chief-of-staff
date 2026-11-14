@@ -179,3 +179,15 @@ describe("an active task", () => {
     expect(buttonIn(confirm()!, "Run again")).toBeDefined();
   });
 });
+
+describe("before the sheet's data loads", () => {
+  it("titles a finished task from its card", async () => {
+    await open(undefined, finishedCard("failed", "failed", { lastError: "thread archived" }));
+    expect(title()).toBe("How this task went");
+  });
+
+  it("titles an active task from its card", async () => {
+    await open(undefined, {});
+    expect(title()).toBe("Where this task is");
+  });
+});
