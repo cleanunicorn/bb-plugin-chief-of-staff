@@ -9,6 +9,8 @@ export const ROSTER_FINISHED_MAX = 500;
 export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_MAX).default(ROSTER_FINISHED_LIMIT);
 /** An earlier roster page's opaque nextBefore cursor. */
 export const rosterCursorSchema = z.string().min(1).max(1000);
+/** How finished roster items are ordered: most recently finished, or most tokens, first. */
+export const finishedOrderSchema = z.enum(["recent", "tokens"]);
 
 const cost = z.object({ amount: z.number(), currency: z.string() });
 /**
@@ -232,7 +234,7 @@ export const rpcContract = defineRpcContract({
       /** An earlier page's nextBefore: return only the next page of finished items. */
       before: rosterCursorSchema.optional(),
       /** Finished items most recently finished first, or most tokens first. A cursor belongs to its order. */
-      finishedOrder: z.enum(["recent", "tokens"]).default("recent"),
+      finishedOrder: finishedOrderSchema.default("recent"),
       withUsage: z.boolean().default(false),
     }),
     output: z.object({
@@ -241,7 +243,7 @@ export const rpcContract = defineRpcContract({
       /** With finished items: tokens of every finished task in scope (all pages), for each task's share; null when none reported tokens. */
       finishedTokens: z.number().nullable(),
       /** The order the finished entries and `nextBefore` follow: a cursor only pages the order it came from. */
-      finishedOrder: z.enum(["recent", "tokens"]),
+      finishedOrder: finishedOrderSchema,
     }),
   },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
 import { buildRoster, itemRunDetail } from "../src/roster";
-import { countFinishedUsage, USAGE_BATCH, USAGE_RETRY_MS } from "../src/usage";
+import { countFinishedUsage, USAGE_BATCH, USAGE_BUSY_WAIT_MS, USAGE_RETRY_MS } from "../src/usage";
 
 /** The roster's entries: buildRoster returns `{ entries, nextBefore }` since #139. */
 const roster = async (...args: Parameters<typeof buildRoster>) => (await buildRoster(...args)).entries;
@@ -220,6 +220,33 @@ describe("counting finished tasks' usage", () => {
     t.advance(USAGE_RETRY_MS + 1);
     expect(await countFinishedUsage(t.cos)).toEqual(["a"]);
     expect(t.store.getWorkItem("a")!.taskUsage!.threads).toBe(2);
+  });
+
+  it("stops waiting for a thread stuck busy a day after the task finished, and stores what was reported", async () => {
+    const t = setup();
+    t.add("a", done());
+    t.threads("a", "host-gone");
+    t.statuses.set("host-gone", "waiting-for-host");
+    t.replies.set("host-gone", () => []);
+    expect(await countFinishedUsage(t.cos)).toEqual([]);
+    // The task finished an hour before the clock's start.
+    t.advance(USAGE_BUSY_WAIT_MS - 2 * 60 * 60_000);
+    expect(await countFinishedUsage(t.cos)).toEqual([]);
+    t.advance(60 * 60_000);
+    const listed = t.threadsList.mock.calls.length;
+    expect(await countFinishedUsage(t.cos)).toEqual(["a"]);
+    // Past the wait, the busy check is skipped altogether.
+    expect(t.threadsList.mock.calls.length).toBe(listed);
+    expect(t.store.getWorkItem("a")!.taskUsage).toMatchObject({ totalTokens: 3, threads: 2, reportedThreads: 1 });
+  });
+
+  it("starts no further items once the pass's time budget is spent", async () => {
+    const t = setup();
+    for (const id of ["a", "b", "c"]) t.add(id, done());
+    // Each item's two reads take a minute.
+    t.eventsList.mockImplementation(async (query: { threadId: string; types: string[] }) => { t.advance(30_000); return reported(1)(query); });
+    expect(await countFinishedUsage(t.cos, USAGE_BATCH, 90_000)).toHaveLength(2);
+    expect(t.store.listUsageDue(new Date(Date.parse(NOW) + 10 * 60 * 60_000).toISOString(), 10)).toHaveLength(1);
   });
 
   it("stores nothing when the thread states cannot be listed", async () => {

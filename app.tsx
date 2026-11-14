@@ -13,7 +13,7 @@ import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
 import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
-import { edgeCounts, loopBacks } from "@/components/cos/runModel";
+import { edgeCounts, loopBacks, type TaskUsage } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
@@ -36,8 +36,7 @@ type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
 type UsageStats = PluginRpcResult<Contract["cos_stats"]>["usage"];
-type TaskUsage = NonNullable<PluginRpcResult<Contract["cos_item_usage"]>["usage"]>;
-type FinishedOrder = "recent" | "tokens";
+type FinishedOrder = PluginRpcResult<Contract["cos_roster"]>["finishedOrder"];
 
 /** A task's share of all finished tasks' tokens: "12%", or "<1%" for a small non-zero share. */
 function sharePercent(tokens: number, of: number): string {
@@ -193,6 +192,8 @@ function useTaskUsage(id: string, task: { status: string; usage?: TaskUsage | nu
   const [live, setLive] = useState<TaskUsage | null>(null);
   const active = Boolean(task) && task!.status !== "done" && task!.status !== "failed";
   useEffect(() => {
+    // Another task's figure must not stand in for this one's while it loads.
+    setLive(null);
     if (!active) return;
     let current = true;
     client.current.call("cos_item_usage", { id }).then((r) => { if (current) setLive(r.usage); }, () => {});

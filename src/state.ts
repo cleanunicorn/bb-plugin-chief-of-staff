@@ -16,7 +16,8 @@
 // (see PrState); only setPrState and touchPrChecked write them.
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { ROSTER_FINISHED_LIMIT } from "../rpcContract";
+import type { z } from "zod";
+import { ROSTER_FINISHED_LIMIT, type finishedOrderSchema } from "../rpcContract";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
 import type { TaskUsage } from "./threads";
 import { normalizeWorkflow, type Workflow } from "./workflow";
@@ -328,7 +329,7 @@ const ACTIVE_IN = activeIn("status");
 const FINISHED_IN = "status IN ('done', 'failed')";
 
 /** How the roster orders finished items: most recently finished, or most tokens. */
-export type FinishedOrder = "recent" | "tokens";
+export type FinishedOrder = z.output<typeof finishedOrderSchema>;
 
 /**
  * Opaque roster cursor: the last finished item's sort key and id. A

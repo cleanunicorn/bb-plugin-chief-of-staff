@@ -42,6 +42,9 @@ describe("usage in the task summary", () => {
     await summary(task("agent", null), usage({ cost: null }));
     expect(facts()).toContain("Tokens so far · all threads4.2M");
     expect(facts().some((f) => f?.startsWith("Cost"))).toBe(false);
+    // A legacy finished row without a finish time is still finished.
+    await summary(task("done", null), usage());
+    expect(facts()).toContain("Tokens · all threads4.2M");
     await summary(task("done", "2026-11-05T12:00:00.000Z"), usage({ totalTokens: null, cost: null, counted: false, reportedThreads: 0 }));
     expect(facts()).toContain("Tokens · all threadscounting…");
     await summary(task("done", "2026-11-05T12:00:00.000Z"), usage({ inputTokens: null, outputTokens: null, totalTokens: null, cost: null, reportedThreads: 0 }));

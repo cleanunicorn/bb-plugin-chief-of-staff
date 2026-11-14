@@ -63,7 +63,7 @@ export function TaskSummary({ task, workflow, live, loops, now, usage = null, on
   });
   // Before PR and Branch: on one line only the last fact gives up width.
   if (usage && (!usage.counted || usage.totalTokens != null)) {
-    items.push({ icon: "Coins", label: `${task?.finishedAt ? "Tokens" : "Tokens so far"} · all threads`, value: usage.totalTokens != null ? compact(usage.totalTokens) : "counting…", title: usageNote(usage) });
+    items.push({ icon: "Coins", label: `${task?.status === "done" || task?.status === "failed" ? "Tokens" : "Tokens so far"} · all threads`, value: usage.totalTokens != null ? compact(usage.totalTokens) : "counting…", title: usageNote(usage) });
   }
   if (usage?.cost) items.push({ icon: "Coins", label: "Cost", value: `${usage.cost.amount.toFixed(2)} ${usage.cost.currency}`, title: usageNote(usage) });
   if (task?.prUrl) items.push({ icon: "GitPullRequest", label: "PR", value: <UrlLink href={task.prUrl}>#{task.prNumber}</UrlLink> });

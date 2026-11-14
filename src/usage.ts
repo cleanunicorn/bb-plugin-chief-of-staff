@@ -14,6 +14,14 @@ export type ItemUsage = TaskUsage & { counted: boolean };
 export const USAGE_BATCH = 10;
 /** An item whose count stored nothing (a thread busy, a read failed) is tried again after this long. */
 export const USAGE_RETRY_MS = 10 * 60_000;
+/**
+ * A finished task's threads are waited for this long after it finished; past
+ * it, a thread that still looks busy (its host gone for good, a stop that never
+ * completed) no longer holds the count back, and what the threads reported is stored.
+ */
+export const USAGE_BUSY_WAIT_MS = 24 * 60 * 60_000;
+/** Time one sweep's usage pass may take; items left over are counted by the next sweep. */
+export const USAGE_BUDGET_MS = 30_000;
 
 const NOTHING = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null } as const;
 
@@ -33,21 +41,24 @@ export async function itemsUsage(cos: Cos, items: readonly WorkItem[]): Promise<
 
 /**
  * Count the usage of up to `limit` finished items not counted yet, summed over
- * all their threads. An item is stored only when none of its threads is busy
- * (a task can be marked done while an agent still works) and every read
- * completed (a deleted thread counts as reporting nothing); otherwise the
- * attempt is stamped and retried after USAGE_RETRY_MS. Returns the ids stored.
+ * all their threads. An item is stored only when every read completed (a
+ * deleted thread counts as reporting nothing) and, within USAGE_BUSY_WAIT_MS
+ * of finishing, none of its threads is busy (a task can be marked done while
+ * an agent still works); otherwise the attempt is stamped and retried after
+ * USAGE_RETRY_MS. Stops starting items once `budgetMs` has passed. Returns the ids stored.
  */
-export async function countFinishedUsage(cos: Cos, limit = USAGE_BATCH): Promise<string[]> {
+export async function countFinishedUsage(cos: Cos, limit = USAGE_BATCH, budgetMs = USAGE_BUDGET_MS): Promise<string[]> {
   const now = cos.now();
+  const deadline = now.getTime() + budgetMs;
   const due = cos.store.listUsageDue(new Date(now.getTime() - USAGE_RETRY_MS).toISOString(), limit);
   const stored: string[] = [];
   for (const item of due) {
-    if (cos.store.isPaused()) break;
+    if (cos.store.isPaused() || cos.now().getTime() >= deadline) break;
     const at = cos.now().toISOString();
     const ids = itemThreadIds(cos, item);
+    const waitForBusy = cos.now().getTime() - Date.parse(item.finishedAt ?? item.updatedAt) < USAGE_BUSY_WAIT_MS;
     try {
-      if (ids.length && (await anyBusy(cos, ids))) {
+      if (ids.length && waitForBusy && (await anyBusy(cos, ids))) {
         cos.store.touchUsageChecked(item.id, at);
         continue;
       }

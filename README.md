@@ -353,12 +353,15 @@ chooser, planner, builder, reviewers and replaced builders. Its tooltip gives
 the thread count and how many threads reported usage. An active task's figure
 is read live and labelled "so far". A finished task is counted once by the
 background sweep (up to 10 tasks a minute), when none of its threads is still
-running. Until then its card says "counting…", and opening the dashboard makes
-no usage calls for finished tasks. A task whose provider reported nothing shows
+running, or a day after it finished if a thread still looks busy (its host
+gone, for example). Until then its card says "counting…", and opening the
+dashboard makes no usage calls for finished tasks. A task whose provider reported nothing shows
 no figure, rather than 0. Throughput adds the window's total, by the day each
 task finished, and the table view has a Tokens column. With **Show finished**,
 **Most tokens** orders finished tasks by usage (uncounted ones last), and each
-finished card shows its share of all finished tasks' tokens. The workflow
+finished card shows its share of all finished tasks' tokens. A task counted
+while older pages are open can move onto a page already loaded; it shows once
+the finished list is reloaded (switch the order, or hide and show finished). The workflow
 sheet's header shows Tokens and Cost too.
 
 A task whose repository is not in the `repos` setting (removed, renamed, or the
