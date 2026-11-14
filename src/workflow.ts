@@ -565,6 +565,21 @@ function schemaProblem(json: unknown, issue: LooseIssue): WorkflowProblem {
 }
 
 /**
+ * A problem as the editor of its own workflow lists it: without the workflow,
+ * after the step (and model choice) it is about. Problems with the whole
+ * document keep their `text`.
+ */
+export function problemLine(wf: Workflow, p: WorkflowProblem): string {
+  if (p.workflow === undefined) return p.text;
+  if (p.step === undefined) return upperFirst(p.message);
+  // A graph check (no field) names the steps or the id it is about. Schema
+  // problems are about one field; one about the whole step reads "<root>: …".
+  if (p.field === undefined && !p.message.startsWith("<root>")) return upperFirst(p.message);
+  const label = stepLabel(wf.steps[p.step], p.step, false);
+  return `${label}${p.choice === undefined ? "" : ` › model choice ${p.choice + 1}`}: ${lowerFirst(p.message)}`;
+}
+
+/**
  * Every reason `parseWorkflows` would reject this document, located for the
  * editor: the schema (on exactly the JSON that would be sent) and the graph and
  * document checks. Empty exactly when the server accepts it. Never throws.

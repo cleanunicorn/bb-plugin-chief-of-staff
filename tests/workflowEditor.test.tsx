@@ -4,15 +4,17 @@
 // a button that selects a step; its own handlers are not covered here.
 import { act, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, type Step, type WorkflowsDocument } from "../src/workflow";
+import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, blankStep, type Step, type WorkflowsDocument } from "../src/workflow";
 import { button, click, container, fields, mount, setValue, unmount } from "./dom";
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ data: { skills: [] }, error: null, refetch: vi.fn() }) }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({
   ...(await original<typeof import("../components/cos/workflowCanvas")>()),
-  WorkflowCanvas: ({ onSelect, onToggleExpanded }: { onSelect: (id: string) => void; onToggleExpanded: () => void }) => (
+  WorkflowCanvas: ({ onSelect, onToggleExpanded, selected, problems }: { onSelect: (id: string) => void; onToggleExpanded: () => void; selected: string | null; problems?: Record<string, number> }) => (
     <>
+      <output aria-label="selected step">{selected ?? ""}</output>
+      <output aria-label="marked steps">{JSON.stringify(problems ?? {})}</output>
       <button onClick={onToggleExpanded}>Full screen</button>
       <button onClick={() => onSelect("build")}>select build</button>
       <button onClick={() => onSelect("review")}>select review</button>
@@ -219,7 +221,8 @@ function Stateful({ initial, usedBy = {}, onDelete }: { initial: WorkflowsDocume
 
 /** The text of a field's box: its label, the control and any error under it. */
 const fieldText = (control: Element) => control.parentElement!.textContent ?? "";
-const problemList = () => Array.from(container.querySelectorAll("ul li")).map((li) => li.textContent);
+const problemList = () => Array.from(container.querySelectorAll("[data-problem] li")).map((li) => li.textContent);
+const selectedStep = () => container.querySelector('[aria-label="selected step"]')!.textContent;
 const dots = () => Array.from(container.querySelectorAll('[aria-label="has problems"]')).map((d) => d.closest("button")!.textContent);
 
 it("shows an empty “Use when” of a new model choice under the field, in the list and on the tab", async () => {
@@ -231,7 +234,7 @@ it("shows an empty “Use when” of a new model choice under the field, in the 
   await setValue(fields("Model")[0]!, "haiku");
 
   expect(fieldText(fields("Use when")[0]!)).toContain("“Use when” must not be empty");
-  expect(problemList()).toEqual(['Workflow "Plan, build, review, ship" › step "Review" › model choice 1: “Use when” must not be empty']);
+  expect(problemList()).toEqual(["Review › model choice 1: “Use when” must not be empty"]);
   expect(dots()).toEqual(["Plan, build, review, shipdefault"]);
 
   await setValue(fields("Use when")[0]!, "small changes");
@@ -244,12 +247,12 @@ it("shows an error under a cleared workflow or step name", async () => {
   await mount(<Stateful initial={structuredClone(DEFAULT_DOCUMENT)} />);
   await setValue(fields("Name")[0]!, "");
   expect(fieldText(fields("Name")[0]!)).toContain("Name must not be empty");
-  expect(problemList()).toContain("Workflow 1: name must not be empty");
+  expect(problemList()).toContain("Name must not be empty");
 
   await click(button("select build"));
   await setValue(fields("Name")[1]!, "");
   expect(fieldText(fields("Name")[1]!)).toContain("Name must not be empty");
-  expect(problemList()).toContain("Workflow 1 › step 2 (build): name must not be empty");
+  expect(problemList()).toContain("step 2 (build): name must not be empty");
 });
 
 it("shows out-of-range numbers under their fields and marks only the workflow they are in", async () => {
@@ -263,7 +266,64 @@ it("shows out-of-range numbers under their fields and marks only the workflow th
   expect(fieldText(fields("Command")[0]!)).toContain("Command must not be empty");
 
   await click(button("Hotfix"));
-  expect(problemList()).toEqual([]);
+  // The other workflow's problems are one row that leads there, not repeated here.
+  expect(problemList()).toEqual(["Plan, build, review, ship · 2 to fix"]);
+  await click(button("Plan, build, review, ship · 2 to fix"));
+  expect(fields("Name")[0]!.value).toBe("Plan, build, review, ship");
+});
+
+/** The default workflow with an unconnected Check added after it, as the canvas toolbar adds one. */
+const withLooseCheck = (): WorkflowsDocument => ({ default: "default", workflows: [{ ...structuredClone(DEFAULT_WORKFLOW), steps: [...structuredClone(DEFAULT_WORKFLOW.steps), blankStep("check", "new-check", "New check")] }] });
+
+it("lists the open workflow's problems once, without its name, each leading to its step", async () => {
+  await mount(<Stateful initial={withLooseCheck()} />);
+  expect(problemList()).toEqual([
+    "New check: needs a step that writes code before it",
+    "Build and New check could run at the same time, but both change the worktree; connect one after the other",
+    "Ship and New check could run at the same time, but both change the worktree; connect one after the other",
+  ]);
+  expect(container.textContent).not.toContain("Workflow \"Plan, build, review, ship\"");
+  expect(selectedStep()).toBe("");
+
+  await click(button("New check: needs a step that writes code before it"));
+  expect(selectedStep()).toBe("new-check");
+  expect(button("Remove New check")).toBeDefined();
+  expect(document.activeElement?.textContent).toContain("New check");
+});
+
+it("marks the steps with problems for the canvas", async () => {
+  await mount(<Stateful initial={withLooseCheck()} />);
+  expect(JSON.parse(container.querySelector('[aria-label="marked steps"]')!.textContent!)).toEqual({ "new-check": 3 });
+});
+
+it("opens the step a problem is about in list view", async () => {
+  await mount(<Stateful initial={withLooseCheck()} />);
+  await click(button("List"));
+  expect(() => button("Remove New check")).not.toThrow();
+  const header = () => Array.from(container.querySelectorAll("article button[aria-expanded]")).find((b) => b.textContent!.includes("New check"))!;
+  expect(header().getAttribute("aria-expanded")).toBe("false");
+  expect(header().textContent).toContain("3 to fix");
+
+  await click(button("New check: needs a step that writes code before it"));
+  expect(header().getAttribute("aria-expanded")).toBe("true");
+  expect(header().textContent).not.toContain("to fix");
+  expect(document.activeElement).toBe(header());
+});
+
+it("shows three problems, then the rest on request", async () => {
+  const doc = withLooseCheck();
+  doc.workflows[0]!.name = "";
+  await mount(<Stateful initial={doc} />);
+  expect(problemList()).toEqual([
+    "Name must not be empty",
+    "New check: needs a step that writes code before it",
+    "Build and New check could run at the same time, but both change the worktree; connect one after the other",
+    "Show all 4",
+  ]);
+  expect(button("Show all 4").getAttribute("aria-expanded")).toBe("false");
+  await click(button("Show all 4"));
+  expect(problemList()).toHaveLength(5);
+  expect(button("Show fewer").getAttribute("aria-expanded")).toBe("true");
 });
 
 it("does not carry an armed Remove? from one selected step to the next", async () => {

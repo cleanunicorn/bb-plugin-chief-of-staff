@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { DEFAULT_WORKFLOW, workflowSchema } from "../src/workflow";
+import { DEFAULT_WORKFLOW, blankStep, workflowSchema } from "../src/workflow";
 import { stubReactFlowDom } from "./helpers/reactFlow";
 
 vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
@@ -70,6 +70,22 @@ it("names each step for screen readers with its type and live status", async () 
   await render(null);
   expect(node("build").getAttribute("aria-label")).toBe("Build, Agent step, working");
   expect(node("plan").getAttribute("aria-label")).toBe("Plan, Agent step");
+});
+
+it("marks the steps with problems and names the count for screen readers", async () => {
+  await act(async () => { root.render(<WorkflowCanvas workflow={DEFAULT_WORKFLOW} onChange={vi.fn()} problems={{ review: 2 }} selected={null} onSelect={onSelect} />); });
+  expect(node("review").getAttribute("aria-label")).toBe("Review, Agent step, 2 to fix");
+  expect(node("review").querySelector("[data-problems]")?.textContent).toBe("2");
+  expect(node("plan").getAttribute("aria-label")).toBe("Plan, Agent step");
+  expect(node("plan").querySelector("[data-problems]")).toBeNull();
+});
+
+it("keeps a step the parent selects together with a new workflow", async () => {
+  const wider = { ...DEFAULT_WORKFLOW, id: "other", steps: [...DEFAULT_WORKFLOW.steps, blankStep("check", "new-check", "New check")] };
+  await act(async () => { root.render(<WorkflowCanvas workflow={DEFAULT_WORKFLOW} onChange={vi.fn()} selected={null} onSelect={onSelect} />); });
+  await act(async () => { root.render(<WorkflowCanvas workflow={wider} onChange={vi.fn()} selected="new-check" onSelect={onSelect} />); });
+  expect(onSelect).not.toHaveBeenCalled();
+  expect(node("new-check").classList.contains("selected")).toBe(true);
 });
 
 // Keyboard deletion. React Flow listens on the document, so the key goes to document.body, and a keyup

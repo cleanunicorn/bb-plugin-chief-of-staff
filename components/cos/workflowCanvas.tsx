@@ -70,7 +70,8 @@ function subtitle(s: Step): string {
   }
 }
 
-type StepNodeData = { step: Step; live?: LiveStatus; selected: boolean };
+/** `problems`: how many things to fix in this step before the workflow can be saved. */
+type StepNodeData = { step: Step; live?: LiveStatus; selected: boolean; problems?: number };
 
 /** The step a React Flow selection points at: one step, none (`null`), or `undefined` to leave the current one (an arrow or several steps are selected). */
 export function selectionTarget(selection: { nodes: readonly { id: string }[]; edges: readonly { id: string }[] }): string | null | undefined {
@@ -94,14 +95,14 @@ export function liveTone(live: LiveStatus | undefined): { color: string; label: 
 }
 
 function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
-  const { step, live, selected } = data;
+  const { step, live, selected, problems } = data;
   const meta = STEP_TYPE_META[step.type];
   const tone = liveTone(live);
   const active = live?.status === "running";
   return (
     <div
       className={cn("w-52 rounded-lg border bg-card px-3 py-2 text-left shadow-sm", selected ? "ring-2 ring-ring" : "")}
-      style={{ borderColor: tone?.color ?? "var(--border)", borderWidth: tone && tone.label !== "pending" ? 2 : 1 }}
+      style={problems ? { borderColor: STATUS.critical, borderWidth: 2 } : { borderColor: tone?.color ?? "var(--border)", borderWidth: tone && tone.label !== "pending" ? 2 : 1 }}
     >
       <Handle type="target" position={Position.Top} className="!size-2.5 !border-border !bg-background" />
       <div className="flex items-center gap-1.5">
@@ -110,6 +111,12 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
           <Icon name={meta.icon} fallback="Circle" className="relative size-3.5 text-foreground" aria-hidden />
         </span>
         <span className="truncate text-sm font-semibold text-foreground">{step.name}</span>
+        {problems ? (
+          // The node's aria-label carries the count.
+          <span data-problems aria-hidden className="ml-auto shrink-0 rounded-full px-1.5 text-[11px] font-semibold text-white tabular-nums" style={{ background: STATUS.critical }}>
+            {problems}
+          </span>
+        ) : null}
       </div>
       <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={subtitle(step)}>
         {subtitle(step)}
@@ -155,17 +162,27 @@ export interface WorkflowCanvasProps {
   onToggleExpanded?: () => void;
   /** Read-only: how often each arrow was taken, by edge id (`next:a:b`, `fail:a:b`); shown from 1 for fail arrows, from 2 otherwise. */
   edgeCounts?: Record<string, number>;
+  /** Edit mode: problems to fix per step id; those steps are marked. Keep the object stable between renders. */
+  problems?: Record<string, number>;
 }
 
-function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts }: WorkflowCanvasProps) {
+function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts, problems }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
   const { fitView } = useReactFlow();
   const fit = editable ? FIT_EDIT : FIT_VIEW;
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
     (): Node<StepNodeData>[] =>
-      workflow.steps.map((s) => ({ id: s.id, type: "step", position: positions.get(s.id) ?? { x: 0, y: 0 }, data: { step: s, live: live?.[s.id], selected: s.id === selected }, draggable: editable, selected: s.id === selected, ariaLabel: [s.name, `${STEP_TYPE_META[s.type].label} step`, liveTone(live?.[s.id])?.label].filter(Boolean).join(", ") })),
-    [workflow, positions, live, selected, editable],
+      workflow.steps.map((s) => ({
+        id: s.id,
+        type: "step",
+        position: positions.get(s.id) ?? { x: 0, y: 0 },
+        data: { step: s, live: live?.[s.id], selected: s.id === selected, problems: problems?.[s.id] },
+        draggable: editable,
+        selected: s.id === selected,
+        ariaLabel: [s.name, `${STEP_TYPE_META[s.type].label} step`, liveTone(live?.[s.id])?.label, problems?.[s.id] ? `${problems[s.id]} to fix` : null].filter(Boolean).join(", "),
+      })),
+    [workflow, positions, live, selected, editable, problems],
   );
   const [nodes, setNodes] = useState<Node<StepNodeData>[]>(build);
   useEffect(() => setNodes(build()), [build]);
