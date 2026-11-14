@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseRepos } from "../src/config";
 import type { RepoConfig } from "../src/config";
-import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
+import { blankRepo, capacityWarnings, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
 
 const reposJson = JSON.stringify({
   repos: [
@@ -143,6 +143,30 @@ describe("generalSettingsProblems", () => {
       { key: "defaultProviderId", text: "Default provider is longer than 200 characters" },
       { key: "defaultModel", text: "Default model is longer than 200 characters" },
     ]);
+  });
+});
+
+describe("capacityWarnings (#125)", () => {
+  const repo = (owner: string, maxConcurrent: number) => ({ ...blankRepo("proj"), owner, repo: "app", maxConcurrent });
+
+  it("warns, without blocking, when the changes set the total to 0", () => {
+    expect(capacityWarnings({ maxConcurrentTotal: 0 }, null)).toEqual([{ section: "general", text: "Max tasks across all repos is 0: no new tasks will start until you raise it." }]);
+  });
+
+  it("warns for each repository in a pending draft whose limit is 0, naming it", () => {
+    expect(capacityWarnings({}, [repo("acme", 2), repo("beta", 0), { ...blankRepo("proj"), maxConcurrent: 0 }])).toEqual([
+      { section: "repos", repo: 1, text: "beta/app: Max concurrent tasks is 0: no new tasks will start in this repository." },
+      { section: "repos", repo: 2, text: "Repository 3: Max concurrent tasks is 0: no new tasks will start in this repository." },
+    ]);
+  });
+
+  it("ignores the placeholder entry, which the server ignores too", () => {
+    expect(capacityWarnings({}, [{ ...repo("owner", 0), repo: "repo" }])).toEqual([]);
+  });
+
+  it("finds nothing for limits above 0, untouched settings, or no repository draft", () => {
+    expect(capacityWarnings({ maxConcurrentTotal: 4, stallThresholdMinutes: 10 }, [repo("acme", 1)])).toEqual([]);
+    expect(capacityWarnings({}, null)).toEqual([]);
   });
 });
 
