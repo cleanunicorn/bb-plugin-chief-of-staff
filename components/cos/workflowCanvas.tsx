@@ -88,7 +88,15 @@ function subtitle(s: Step): string {
   }
 }
 
-type StepNodeData = { step: Step; live?: LiveStatus; selected: boolean };
+/** Whether `box` (flow coordinates) lies wholly inside a `frame`-sized canvas panned and zoomed by `viewport`. */
+export function inView(box: { x: number; y: number; width: number; height: number }, viewport: { x: number; y: number; zoom: number }, frame: { width: number; height: number }): boolean {
+  const left = box.x * viewport.zoom + viewport.x;
+  const top = box.y * viewport.zoom + viewport.y;
+  return left >= 0 && top >= 0 && left + box.width * viewport.zoom <= frame.width && top + box.height * viewport.zoom <= frame.height;
+}
+
+/** `problems`: how many things to fix in this step before the workflow can be saved. */
+type StepNodeData = { step: Step; live?: LiveStatus; selected: boolean; problems?: number };
 
 /** The step a React Flow selection points at: one step, none (`null`), or `undefined` to leave the current one (an arrow or several steps are selected). */
 export function selectionTarget(selection: { nodes: readonly { id: string }[]; edges: readonly { id: string }[] }): string | null | undefined {
@@ -112,14 +120,14 @@ export function liveTone(live: LiveStatus | undefined): { color: string; label: 
 }
 
 function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
-  const { step, live, selected } = data;
+  const { step, live, selected, problems } = data;
   const meta = STEP_TYPE_META[step.type];
   const tone = liveTone(live);
   const active = live?.status === "running";
   return (
     <div
       className={cn("w-52 rounded-lg border bg-card px-3 py-2 text-left shadow-sm", selected ? "ring-2 ring-ring" : "")}
-      style={{ borderColor: tone?.color ?? "var(--border)", borderWidth: tone && tone.label !== "pending" ? 2 : 1 }}
+      style={problems ? { borderColor: STATUS.critical, borderWidth: 2 } : { borderColor: tone?.color ?? "var(--border)", borderWidth: tone && tone.label !== "pending" ? 2 : 1 }}
     >
       <Handle type="target" position={Position.Top} className="!size-2.5 !border-border !bg-background" />
       <div className="flex items-center gap-1.5">
@@ -128,6 +136,12 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
           <Icon name={meta.icon} fallback="Circle" className="relative size-3.5 text-foreground" aria-hidden />
         </span>
         <span className="truncate text-sm font-semibold text-foreground">{step.name}</span>
+        {problems ? (
+          // The node's aria-label carries the count.
+          <span data-problems aria-hidden className="ml-auto shrink-0 rounded-full px-1.5 text-[11px] font-semibold text-white tabular-nums" style={{ background: STATUS.critical }}>
+            {problems}
+          </span>
+        ) : null}
       </div>
       <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={subtitle(step)}>
         {subtitle(step)}
@@ -175,17 +189,29 @@ export interface WorkflowCanvasProps {
   edgeCounts?: Record<string, number>;
   /** Edit mode: a step was added from the toolbar (and selected). */
   onAdd?: (id: string) => void;
+  /** Edit mode: a new value pans the selected step into view again, e.g. when a problem about it is opened. */
+  reveal?: number;
+  /** Edit mode: problems to fix per step id; those steps are marked. Keep the object stable between renders. */
+  problems?: Record<string, number>;
 }
 
-function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts, onAdd }: WorkflowCanvasProps) {
+function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts, onAdd, problems, reveal }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
-  const { fitView, setCenter, getZoom, getInternalNode } = useReactFlow();
+  const { fitView, setCenter, getZoom, getInternalNode, getViewport } = useReactFlow();
   const fit = editable ? FIT_EDIT : FIT_VIEW;
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
     (): Node<StepNodeData>[] =>
-      workflow.steps.map((s) => ({ id: s.id, type: "step", position: positions.get(s.id) ?? { x: 0, y: 0 }, data: { step: s, live: live?.[s.id], selected: s.id === selected }, draggable: editable, selected: s.id === selected, ariaLabel: [s.name, `${STEP_TYPE_META[s.type].label} step`, liveTone(live?.[s.id])?.label].filter(Boolean).join(", ") })),
-    [workflow, positions, live, selected, editable],
+      workflow.steps.map((s) => ({
+        id: s.id,
+        type: "step",
+        position: positions.get(s.id) ?? { x: 0, y: 0 },
+        data: { step: s, live: live?.[s.id], selected: s.id === selected, problems: problems?.[s.id] },
+        draggable: editable,
+        selected: s.id === selected,
+        ariaLabel: [s.name, `${STEP_TYPE_META[s.type].label} step`, liveTone(live?.[s.id])?.label, problems?.[s.id] ? `${problems[s.id]} to fix` : null].filter(Boolean).join(", "),
+      })),
+    [workflow, positions, live, selected, editable, problems],
   );
   const [nodes, setNodes] = useState<Node<StepNodeData>[]>(build);
   useEffect(() => setNodes(build()), [build]);
@@ -327,6 +353,37 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
       observer.disconnect();
     };
   }, [editable, fitView]);
+
+  // A step the parent selects (opened from a problem, or just added) outside the visible part of the
+  // canvas is panned to, keeping the zoom; a new `reveal` pans again. A step the user picked on the
+  // canvas is left where it is, so a click or drag never moves the canvas under the pointer. A step
+  // added in this render reaches React Flow's store a few frames later, so it is looked for until then.
+  const lastReveal = useRef(reveal);
+  useEffect(() => {
+    // Only a new token counts: it going away (the user picked a step on the canvas) is no reveal.
+    const revealed = reveal !== undefined && reveal !== lastReveal.current;
+    lastReveal.current = reveal;
+    if (!editable || !selected) return;
+    if (!revealed && reported.current === selected) return;
+    let raf = 0;
+    let tries = 10;
+    const pan = () => {
+      const el = frame.current;
+      // No layout (jsdom): nothing to pan.
+      if (!el || !el.clientWidth) return;
+      const node = getInternalNode(selected);
+      if (!node?.measured.width) {
+        if (--tries > 0) raf = requestAnimationFrame(pan);
+        return;
+      }
+      const box = { ...node.internals.positionAbsolute, width: node.measured.width, height: node.measured.height ?? 0 };
+      const viewport = getViewport();
+      if (inView(box, viewport, { width: el.clientWidth, height: el.clientHeight })) return;
+      void setCenter(box.x + box.width / 2, box.y + box.height / 2, { zoom: viewport.zoom, duration: 200 });
+    };
+    raf = requestAnimationFrame(pan);
+    return () => cancelAnimationFrame(raf);
+  }, [editable, selected, reveal, getInternalNode, getViewport, setCenter]);
 
   const relayout = () => {
     const fresh = layout(workflow, true);

@@ -2,7 +2,7 @@
 // default), and for the selected one a canvas and a list view of its steps.
 // Every step has a name, instructions and arrows to the steps after it; its
 // type (agent, check, ship) adds the rest.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
@@ -16,6 +16,8 @@ import {
   modelMode,
   descendants,
   insertStepAfter,
+  problemKey,
+  problemLine,
   topoOrder,
   workflowProblems,
   type ModelChoice,
@@ -28,7 +30,7 @@ import {
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
-import { ConfirmRemove, Field, NumberInput, Problems, Select, TextInput, ToggleRow } from "./fields";
+import { ConfirmRemove, Field, NumberInput, Select, TextInput, ToggleRow } from "./fields";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas } from "./workflowCanvas";
 import { STATUS, StatusPill } from "./viz";
 
@@ -59,14 +61,86 @@ function retype(step: Step, type: StepType): Step {
   return { ...fresh, instructions, next: step.next, position: step.position } as Step;
 }
 
+/** A line of the editor's problem list: what to fix, and where activating it goes (nowhere for the document's own problems). */
+type ProblemLineItem = { key: string; text: string; workflow?: number; step?: number };
+
+/**
+ * The problems to list while workflow `open` is shown: the document's, the open
+ * workflow's without its name, and one row per other workflow with problems.
+ * The same words in two workflows or steps are two lines.
+ */
+export function problemLines(doc: WorkflowsDocument, problems: readonly WorkflowProblem[], open: number): ProblemLineItem[] {
+  const out: ProblemLineItem[] = [];
+  const seen = new Set<string>();
+  const others = new Map<number, number>();
+  for (const p of problems) {
+    const key = problemKey(p);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (p.workflow === undefined) out.push({ key, text: p.text });
+    else if (p.workflow === open) out.push({ key, text: problemLine(doc.workflows[open]!, p), workflow: open, step: p.step });
+    else others.set(p.workflow, (others.get(p.workflow) ?? 0) + 1);
+  }
+  for (const [i, n] of others) out.push({ key: `workflow/${i}`, text: `${doc.workflows[i]?.name.trim() || `Workflow ${i + 1}`} · ${n} to fix`, workflow: i });
+  return out;
+}
+
+/** How many problem lines show before "Show all", so the list cannot push the canvas off a phone screen. */
+const SHOWN_PROBLEMS = 3;
+
+/** What to fix before saving. A line about a step selects it; a row for another workflow opens that workflow. */
+function ProblemList({ lines, onGo, open }: { lines: ProblemLineItem[]; onGo: (workflow: number, step?: number) => void; open: number }) {
+  const [all, setAll] = useState(false);
+  if (!lines.length) return null;
+  const shown = all ? lines : lines.slice(0, SHOWN_PROBLEMS);
+  return (
+    <ul data-problem className="flex flex-col gap-1 rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground">
+      {shown.map((line) => {
+        const icon = <Icon name="CircleX" fallback="Circle" className="mt-px size-3.5 shrink-0" style={{ color: STATUS.critical }} aria-hidden />;
+        // A line about the open workflow but no step has nowhere else to go.
+        const target = line.workflow !== undefined && (line.step !== undefined || line.workflow !== open);
+        return (
+          <li key={line.key} className="flex items-start gap-1.5">
+            {target ? (
+              <button type="button" className="flex items-start gap-1.5 text-left hover:underline" onClick={() => onGo(line.workflow!, line.step)}>
+                {icon}
+                {line.text}
+              </button>
+            ) : (
+              <>
+                {icon}
+                {line.text}
+              </>
+            )}
+          </li>
+        );
+      })}
+      {lines.length > SHOWN_PROBLEMS ? (
+        <li>
+          <button type="button" aria-expanded={all} className="pl-5 text-muted-foreground hover:text-foreground hover:underline" onClick={() => setAll(!all)}>
+            {all ? "Show fewer" : `Show all ${lines.length}`}
+          </button>
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
+/** A workflow (by index) and optionally one of its steps to open on. Each new object is applied once. */
+export type WorkflowReveal = { workflow: number; step?: number };
+
 /**
  * `usedBy` lists the repositories running each workflow; `onDelete` runs after
  * a workflow is removed from the document, so the caller can detach them.
+ * `reveal` opens a workflow and selects a step, e.g. from the save bar while
+ * another section was shown (this editor was not mounted then).
  */
-export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]>; onDelete?: (id: string) => void; problems?: WorkflowProblem[] }) {
+export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, reveal }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]>; onDelete?: (id: string) => void; problems?: WorkflowProblem[]; reveal?: WorkflowReveal }) {
   const [current, setCurrent] = useState(doc.default);
   const [view, setView] = useState<"canvas" | "list">("canvas");
   const [selected, setSelected] = useState<string | null>(null);
+  /** The step a problem was opened on: its panel opens, scrolls into view and takes focus, once per `nonce`. */
+  const [revealed, setRevealed] = useState<{ id: string; nonce: number } | null>(null);
   const [expanded, setExpanded] = useState(false);
   // A step just added from the canvas toolbar: its panel opens with the Name field focused. Selecting a step clears it.
   const [focusNameOf, setFocusNameOf] = useState<string | null>(null);
@@ -84,12 +158,37 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
   const allProblems = useMemo(() => problems ?? workflowProblems(doc), [doc, problems]);
   const wfIndex = doc.workflows.indexOf(wf);
   const wfProblems = useMemo(() => allProblems.filter((p) => p.workflow === wfIndex), [allProblems, wfIndex]);
-  const shownProblems = useMemo(() => [...new Set(allProblems.filter((p) => p.workflow === undefined || p.workflow === wfIndex).map((p) => p.text))], [allProblems, wfIndex]);
+  const lines = useMemo(() => problemLines(doc, allProblems, wfIndex), [doc, allProblems, wfIndex]);
   const selectedStep = wf.steps.find((s) => s.id === selected);
   const stepProblems = (step: Step) => {
     const index = wf.steps.indexOf(step);
     return wfProblems.filter((p) => p.step === index);
   };
+  /** Problems per step id, for the canvas marks. */
+  const problemCounts = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const p of wfProblems) {
+      const id = p.step === undefined ? undefined : wf.steps[p.step]?.id;
+      if (typeof id === "string") out[id] = (out[id] ?? 0) + 1;
+    }
+    return out;
+  }, [wfProblems, wf]);
+
+  /** Open workflow `index` and, when given, select step `step` and bring its panel into view. */
+  const goTo = (index: number, step?: number) => {
+    const target = doc.workflows[index];
+    if (!target) return;
+    setCurrent(target.id);
+    const id = step === undefined ? undefined : target.steps[step]?.id;
+    // Set together with the workflow, so the reset a workflow switch does cannot win.
+    setSelected(typeof id === "string" ? id : null);
+    setRevealed((r) => (typeof id === "string" ? { id, nonce: (r?.nonce ?? 0) + 1 } : null));
+  };
+  const goToRef = useRef(goTo);
+  goToRef.current = goTo;
+  useEffect(() => {
+    if (reveal) goToRef.current(reveal.workflow, reveal.step);
+  }, [reveal]);
 
   const setWf = (next: Workflow) => onChange({ ...doc, workflows: doc.workflows.map((w) => (w.id === wf.id ? next : w)) });
   const setStep = (id: string, next: Step) => setWf({ ...wf, steps: wf.steps.map((s) => (s.id === id ? next : s)) });
@@ -97,6 +196,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
     if (wf.steps.length <= 1) return;
     setWf({ ...wf, steps: wf.steps.filter((s) => s.id !== id).map((s) => ({ ...s, next: s.next.filter((n) => n !== id), ...(s.onFail === id ? { onFail: undefined } : {}) }) as Step) });
     setSelected(null);
+    setRevealed(null);
   };
   const addWorkflow = (from: Workflow) => {
     const name = from === DEFAULT_WORKFLOW ? "New workflow" : `${from.name} (copy)`;
@@ -121,6 +221,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
             onClick={() => {
               setCurrent(w.id);
               setSelected(null);
+              setRevealed(null);
             }}
             className={cn("inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm", w.id === wf.id ? "border-foreground/40 bg-state-active font-medium text-foreground" : "border-border text-muted-foreground hover:bg-state-hover")}
           >
@@ -165,7 +266,10 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
         ) : null}
         <div role="group" aria-label="View" className="ml-auto flex rounded-md border border-border p-0.5">
           {(["canvas", "list"] as const).map((v) => (
-            <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", view === v ? "bg-state-active text-foreground" : "text-muted-foreground")}>
+            <button key={v} type="button" aria-pressed={view === v} onClick={() => {
+                setView(v);
+                setRevealed(null);
+              }} className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", view === v ? "bg-state-active text-foreground" : "text-muted-foreground")}>
               <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />
               {v === "canvas" ? "Canvas" : "List"}
             </button>
@@ -173,7 +277,8 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
         </div>
       </div>
 
-      <Problems items={shownProblems} />
+      {/* Keyed by workflow, so each one's list starts collapsed. */}
+      <ProblemList key={wf.id} lines={lines} onGo={goTo} open={wfIndex} />
 
       {view === "canvas" ? (
         <div className={cn(expanded && "fixed inset-0 z-50 flex flex-col gap-3 bg-background p-3")}>
@@ -194,10 +299,10 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
           {/* Side by side (xl), the canvas sticks to the top of the page's scroller, so the graph stays in view while a long step panel scrolls.
               Only on windows at least 45rem tall: on shorter ones the Save bar (sticky bottom-0) would cover the pinned canvas's zoom and Fit controls. */}
           <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
-            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setFocusNameOf(null); }} onAdd={setFocusNameOf} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px] xl:self-start [@media(min-width:80rem)_and_(min-height:45rem)]:sticky [@media(min-width:80rem)_and_(min-height:45rem)]:top-3"} />
+            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setFocusNameOf(null); setRevealed(null); }} onAdd={setFocusNameOf} problems={problemCounts} reveal={revealed?.nonce} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px] xl:self-start [@media(min-width:80rem)_and_(min-height:45rem)]:sticky [@media(min-width:80rem)_and_(min-height:45rem)]:top-3"} />
             <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
               {selectedStep ? (
-                <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow focusName={focusNameOf === selectedStep.id} />
+                <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} reveal={revealed?.id === selectedStep.id ? revealed.nonce : undefined} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow focusName={focusNameOf === selectedStep.id} />
               ) : (
                 <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                   <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
@@ -211,7 +316,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
         <div className="flex flex-col gap-2">
           {topoOrder(wf).map((id) => {
             const step = wf.steps.find((s) => s.id === id)!;
-            return <StepPanel key={id} workflow={wf} step={step} problems={stepProblems(step)} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} skills={skills} collapsible />;
+            return <StepPanel key={id} workflow={wf} step={step} problems={stepProblems(step)} reveal={revealed?.id === id ? revealed.nonce : undefined} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} skills={skills} collapsible />;
           })}
           <div className="flex flex-wrap gap-1.5">
             {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
@@ -235,11 +340,23 @@ function Row({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
   return <div className={cn("grid grid-cols-1 gap-3", !narrow && "sm:grid-cols-2")}>{children}</div>;
 }
 
-/** Edit one step: the common fields, then its type's fields. `problems` are this step's, shown under their fields. */
-/** `focusName`: focus the Name field when the panel opens (a step just added). */
-export function StepPanel({ workflow, step, problems = [], onChange, onRemove, skills = null, collapsible = false, narrow = false, focusName = false }: { workflow: Workflow; step: Step; problems?: WorkflowProblem[]; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean; focusName?: boolean }) {
+/**
+ * Edit one step: the common fields, then its type's fields. `problems` are this step's, shown under their fields.
+ * A new `reveal` value opens the panel, scrolls it into view and focuses its heading.
+ * `focusName`: focus the Name field when the panel opens (a step just added).
+ */
+export function StepPanel({ workflow, step, problems = [], reveal, onChange, onRemove, skills = null, collapsible = false, narrow = false, focusName = false }: { workflow: Workflow; step: Step; problems?: WorkflowProblem[]; reveal?: number; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean; focusName?: boolean }) {
   const two = narrow ? "grid grid-cols-1 gap-2" : "grid grid-cols-1 gap-2 sm:grid-cols-2";
   const [open, setOpen] = useState(!collapsible);
+  const panel = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!reveal) return;
+    setOpen(true);
+    // jsdom has no scrollIntoView.
+    panel.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    heading.current?.focus({ preventScroll: true });
+  }, [reveal]);
   const choiceKeys = useRowKeys<ModelChoice>();
   const set = (patch: Record<string, unknown>) => onChange({ ...step, ...patch } as Step);
   /** The problem with one of this step's fields (or of one of its model choices). */
@@ -252,13 +369,14 @@ export function StepPanel({ workflow, step, problems = [], onChange, onRemove, s
   const agentRuns = step.type === "agent" || autoModel;
   const canFail = step.type === "ship" ? step.action === "merge" : step.type === "model" ? false : step.type !== "agent" || step.verdict;
   return (
-    <article className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3">
+    <article ref={panel} className="flex scroll-mt-3 flex-col gap-3 rounded-lg border border-border bg-background p-3">
       <header className="flex items-center gap-2">
-        <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => collapsible && setOpen(!open)} aria-expanded={open}>
+        <button ref={heading} type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => collapsible && setOpen(!open)} aria-expanded={open}>
           {collapsible ? <Icon name={open ? "ChevronDown" : "ChevronRight"} fallback="Circle" className="size-4 text-muted-foreground" aria-hidden /> : null}
           <Icon name={meta.icon} fallback="Circle" className="size-4 text-foreground" aria-hidden />
           <span className="truncate text-sm font-semibold text-foreground">{step.name}</span>
           <StatusPill tone="neutral" label={meta.label} />
+          {collapsible && !open && problems.length ? <StatusPill tone="critical" label={`${problems.length} to fix`} /> : null}
           {step.next.length ? <span className="truncate text-[11px] text-muted-foreground">→ {step.next.map((n) => workflow.steps.find((s) => s.id === n)?.name ?? n).join(", ")}</span> : null}
         </button>
         {workflow.steps.length > 1 ? <ConfirmRemove label={`Remove ${step.name}`} onConfirm={onRemove} /> : null}

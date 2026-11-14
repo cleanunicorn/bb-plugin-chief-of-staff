@@ -42,6 +42,19 @@
   side by side, the canvas now stays in view while you scroll down a long step
   panel to edit "Runs next" or "On fail, go back to". The task workflow sheet is unchanged.
 
+- **Configure lists what to fix once, and takes you to it.** A workflow draft
+  with problems listed them twice, in the Workflows editor and again in the
+  save bar, each line starting with the workflow's name; on a phone the bar
+  covered most of the screen. The editor's list now shows the open workflow's
+  problems without its name, three at a time ("Show all N"), with one row per
+  other workflow that has problems. Activating a problem about a step selects
+  it: the canvas pans to it and its panel opens with focus (in list view the
+  step expands). Steps with problems carry a red border and a count on the
+  canvas, and an "N to fix" pill in list view. The save bar is one row, "N to
+  fix before saving" with Show/Hide: expanded, it lists only the sections and
+  repositories with problems that are not on screen, and opening Workflows
+  from there selects the first problem's step.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

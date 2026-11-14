@@ -14,7 +14,8 @@ export const inputClass =
 export function Field({ label, hint, children, className, error }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null }) {
   const id = useId();
   return (
-    <div className={cn("flex min-w-0 flex-col gap-1", className)}>
+    // `data-problem` lets "Show" in the save bar find the first field to fix.
+    <div data-problem={error ? "" : undefined} className={cn("flex min-w-0 flex-col gap-1", className)}>
       <label htmlFor={id} className="text-xs font-medium text-foreground">
         {label}
       </label>
