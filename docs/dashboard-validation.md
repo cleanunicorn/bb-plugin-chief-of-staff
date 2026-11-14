@@ -25,8 +25,36 @@ to the previous compact rows).
   the message and actor are links. The repository is left out when only one
   is configured. A Task menu, or Show activity on a card, narrows the feed to
   one task; Problems only applies on top. Message text is unchanged.
+- Since #105 the active grid holds active tasks only. Finished tasks are
+  compact rows in a Finished section between the grid and Throughput, newest
+  first, grouped by UTC day, 10 at first then 20 more per click, with outcome,
+  repository and search filters (`components/cos/finished.tsx`,
+  `components/cos/finishedModel.ts`). Throughput's days and counts open it
+  filtered. Its view is held by the Dashboard and in local storage
+  (`cos.finishedView.v1`, without the date range).
 
 ## Validation
+
+Finished section (#105): `npm run check` (lint, typecheck, all tests) and
+`npm run build` pass. Unit tests cover ordering, UTC day grouping, paging,
+all seven outcomes, repository, title, `#n`, PR number, date range and
+combined filters, and the stored view. UI tests cover the active grid never
+holding finished tasks, stage filters not hiding them, 10 then 30 rows and the
+next page fetched, a retried task leaving the list, the "No finished tasks yet"
+and "No finished tasks match" states, Search older, Throughput days and counts,
+and the view surviving a tab switch and a reload. Layout was measured in
+headless Chromium with the real `PipelineTab`, mocked data (4 active, 50
+finished) and the built plugin CSS plus Tailwind's preflight, but without the
+host's theme tokens, so heights are approximate and not a live BB install:
+
+| Viewport | Active grid ends | Throughput starts | Activity starts | Row height |
+| --- | --- | --- | --- | --- |
+| 1440 × 1000 | 485 px | 1005 px (+520) | 1227 px (+742) | 28 px |
+| 390 wide (fine pointer) | 893 px | 2184 px (+1291, about 1.5 screens of 844) | 2555 px | 89 px |
+
+Before, the issue measured about 4,900 px and 13,650 px for the whole page
+with 54 tasks. On a coarse pointer the row buttons are 40 px tall, which adds
+roughly 12 px per row on a phone.
 
 Task context in Activity (#109): `npm run check` (lint, typecheck, all tests)
 and `npm run build` pass. Tests cover the `listLog` join (row id and repo kept,
@@ -134,15 +162,18 @@ Decisions worth knowing:
   `not-sr-only` resets padding and sorts after the plain utilities. It has no
   `shadow-sm`: the plugin CSS does not define `--shadow-sm`, and the undefined
   variable drops the whole `box-shadow`, focus ring included.
-- Chart days are not focusable. The table view toggle, just before the chart
-  in tab order, gives the same numbers by keyboard. A real action for a day
-  (open that day's finished tasks) belongs to #105. The view toggle buttons
-  are named on the button (“Chart view”, “Table view”), not on the icon.
+- Chart days are not tab stops. On a fine pointer each day is a button with
+  `tabIndex` -1 that opens that day's finished tasks (#105), for the mouse.
+  The table view toggle, just before the chart in tab order, gives the same
+  numbers by keyboard, and each Day cell there is a button that opens the
+  day (at least 40 px tall on a coarse pointer). The view toggle buttons are
+  named on the button (“Chart view”, “Table view”), not on the icon.
 - Only the current card's controls have `tabIndex` 0; the others get -1,
   including the issue and PR links (`UrlLink` passes `tabIndex` to its anchor). The first
   card is current until focus lands on another by any route: arrow key, click,
   or a sheet returning focus to its opener. If the current card leaves the
-  list (refetch, filter, Show/Hide finished), the first card is current again.
+  list (refetch, filter), the first card is current again. The Finished
+  section's rows are a second group of the same kind, with its own hint.
 - Arrow keys land on the card's “Workflow progress” row (marked with
   `data-roving-entry`), or on its Workflow button when it has no workflow
   steps. The issue link comes first in the card, but it leaves the plugin,

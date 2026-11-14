@@ -98,12 +98,29 @@ Every task has one status, derived from its steps:
 | `ready` | You | PR is green and ready to merge. |
 | `waiting_on_human` | You | A question, an approval or a decision. |
 | `blocked` | You | Stalled: no activity past the stall threshold. |
-| `done` / `failed` | Nobody | Finished. Shown with **Show finished**. |
+| `done` / `failed` | Nobody | Finished. Listed under **Finished**. |
 
-A finished card says how the task ended: **Merged**, **PR opened**,
-**Completed**, **Marked done**, **Failed**, **Marked failed** or **PR closed**.
-It also says when the task finished and how long it took, and why it ended if it
-did not deliver. Steps it left unfinished show as **stopped**.
+### Finished tasks
+
+Finished tasks never mix with active cards. They are listed in the
+**Finished** section, below the active tasks and above Throughput, as one row
+each, newest first, under the day they finished (**Today**, **Yesterday**,
+**Nov 8**; days are UTC, like Throughput's). A row says how the task ended:
+**Merged**, **PR opened**, **Completed**, **Marked done**, **Failed**, **Marked
+failed** or **PR closed**. It also says when the task finished and how long it
+took, and why it ended if it did not deliver, with links to the issue, the PR,
+the thread and the workflow, and the same More actions as a card.
+
+The section shows 10 rows, then **Show 20 more**. Filter it by outcome
+(**Shipped**, **Marked done**, **Failed**; pick several), by repository, or
+search the title and the issue or PR number (`#12`). Filters search the
+finished tasks loaded so far; **Search older** loads the next page. Click a
+Throughput day (or a day in its table view) to see the tasks finished that
+day, or **N completed** / **N historical failed runs** to see the window's
+tasks with that outcome; the date filter shows as a chip you can remove. The
+section's view and filters are kept when you switch tabs and when you reload;
+the date filter lasts until you leave the dashboard. **Collapse** folds the
+section away.
 
 ### Read a task card
 
@@ -338,10 +355,9 @@ capacity. Stage filters count tasks; task slots retain the admission semantics
 above. “Failures needing a decision” counts active human waits caused by an
 escalation, a missing report, or a Chief of Staff error. Stalled work is shown
 separately. Terminal failed runs are historical outcomes, not unresolved
-incidents; they remain accessible with **Show finished**, which adds the most
-recently finished tasks after every active one; **Show older finished** loads
-the next page. Retrying work stays in Checks & shipping until it requires a
-decision.
+incidents; they are listed in the **Finished** section below the active tasks,
+which stage and attention filters never hide. Retrying work stays in Checks &
+shipping until it requires a decision.
 
 A task whose repository is not in the `repos` setting (removed, renamed, or the
 setting has an error, which leaves it empty) does not wait for capacity. If it

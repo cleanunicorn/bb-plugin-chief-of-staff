@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Finished tasks get their own section, with filters.** Show finished used
+  to pour every finished task, as a full card, into the active grid, mixed
+  with active work and in no particular order. Finished tasks are now listed
+  in a **Finished** section below the active tasks and above Throughput: one
+  compact row each (how it ended, title, issue, PR, when it finished and how
+  long it took, actions), newest first and grouped by day. It shows 10 rows,
+  then 20 more per click. Filter by outcome (Shipped, Marked done, Failed), by
+  repository, or search the title and issue or PR number. Clicking a
+  Throughput day, or its "completed" or "failed" count, opens the section
+  filtered to it. The section's view and filters survive switching tabs and
+  reloading. Stage filters apply to active tasks only and no longer hide
+  finished ones. The Show finished, Hide finished and Show older finished
+  buttons are gone.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues
