@@ -11,8 +11,9 @@ import { STATUS } from "./viz";
 export const inputClass =
   "h-8 w-full min-w-0 rounded-md border border-input bg-transparent px-2.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
 
-export function Field({ label, hint, children, className, error }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null }) {
-  const id = useId();
+export function Field({ label, hint, children, className, error, id: fixedId }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null; id?: string }) {
+  const generated = useId();
+  const id = fixedId ?? generated;
   return (
     <div className={cn("flex min-w-0 flex-col gap-1", className)}>
       <label htmlFor={id} className="text-xs font-medium text-foreground">

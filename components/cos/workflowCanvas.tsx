@@ -173,9 +173,11 @@ export interface WorkflowCanvasProps {
   onToggleExpanded?: () => void;
   /** Read-only: how often each arrow was taken, by edge id (`next:a:b`, `fail:a:b`); shown from 1 for fail arrows, from 2 otherwise. */
   edgeCounts?: Record<string, number>;
+  /** Edit mode: a step was added from the toolbar (and selected). */
+  onAdd?: (id: string) => void;
 }
 
-function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts }: WorkflowCanvasProps) {
+function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts, onAdd }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
   const { fitView, setCenter, getZoom, getInternalNode } = useReactFlow();
   const fit = editable ? FIT_EDIT : FIT_VIEW;
@@ -297,6 +299,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     pendingReveal.current = id;
     update(placeNewStep(next, id));
     onSelect?.(id);
+    onAdd?.(id);
   };
   // Measuring a step updates `nodes`, so this runs again until the new step has a size; the zoom stays as it is.
   useEffect(() => {
