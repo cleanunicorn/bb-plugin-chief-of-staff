@@ -8,6 +8,15 @@
   sections, reload keeps the section you were on, and a copied link opens it.
   Unsaved drafts survive the move, and the settings page's editor is unchanged.
 
+- **A task limit of 0 is explained, and the Pipeline tab no longer shows it as
+  unlimited.** 0 in "Max tasks across all repos" (or a repository's "Max
+  concurrent tasks") starts no new tasks; tasks holding a slot keep going. The
+  Pipeline tab used to drop the limit at 0, so "Task slots" read like there
+  was none. It now reads "Task slots: N / 0", keeps the All repos meter, and
+  says that no new tasks start until the limit is raised. In Configure, the
+  capacity fields and "Intake every" have hint text, and the save bar warns
+  before a limit of 0 is saved. Saving it is still allowed.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

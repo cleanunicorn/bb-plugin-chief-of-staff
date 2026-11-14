@@ -538,6 +538,58 @@ it("sends neither document while a workflow is invalid, even with a valid genera
   expect(mocks.call).not.toHaveBeenCalled();
 });
 
+// ---------- a limit of 0 (#125) ----------
+/** The hint or error under a field. */
+const hintOf = (label: string) => field(label).parentElement!.textContent!.replace(label, "");
+const saveBarWarnings = () => Array.from(container.querySelectorAll('[aria-label="Warnings"] li')).map((li) => li.textContent);
+
+it("explains the capacity fields under General", async () => {
+  await mount(<Configurator initialSection="general" />);
+  expect(hintOf(MAX_TASKS)).toBe("Tasks running at once, across all repositories. 0 starts no new tasks.");
+  expect(hintOf("Intake every (minutes)")).toBe("How often each repository is checked for new matching issues.");
+});
+
+it("warns in the save bar before a total of 0 is saved, and still saves it", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "0");
+  expect(hintOf(MAX_TASKS)).toContain("0 starts no new tasks.");
+  expect(saveBarWarnings()).toEqual(["General · Max tasks across all repos is 0: no new tasks will start until you raise it."]);
+  expect(text()).not.toContain("to fix before saving");
+  expect(button("Save changes").disabled).toBe(false);
+  await click(button("Save changes"));
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_settings", { maxConcurrentTotal: 0 });
+});
+
+it("shows no capacity warning for a total above 0", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "3");
+  expect(text()).toContain("Unsaved changes");
+  expect(saveBarWarnings()).toEqual([]);
+});
+
+it("explains a repository's limit and warns before a limit of 0 is saved", async () => {
+  await mount(<Configurator initialSection="repos" />);
+  await click(container.querySelector("article button[aria-expanded]")!);
+  expect(hintOf("Max concurrent tasks")).toBe("Tasks running at once in this repository. 0 starts no new tasks here.");
+  await setValue(field("Max concurrent tasks"), "0");
+  expect(saveBarWarnings()).toEqual(["Repositories · acme/app: Max concurrent tasks is 0: no new tasks will start in this repository."]);
+  expect(button("Save changes").disabled).toBe(false);
+  await click(button("Save changes"));
+  const [method, input] = mocks.call.mock.calls[0] as [string, { repos: string }];
+  expect(method).toBe("cos_set_config");
+  expect((JSON.parse(input.repos) as { repos: { maxConcurrent: number }[] }).repos[0]!.maxConcurrent).toBe(0);
+});
+
+it("lists at most five capacity warnings in the save bar", async () => {
+  const repos = Array.from({ length: 7 }, (_, i) => ({ owner: "acme", repo: `app${i}`, projectId: "proj_1", maxConcurrent: 0 }));
+  mocks.config = { ...mocks.config, repos: JSON.stringify({ repos }) };
+  await mount(<Configurator initialSection="repos" />);
+  await click(container.querySelector("article button[aria-expanded]")!);
+  await setValue(field("Model"), "opus");
+  expect(saveBarWarnings()).toHaveLength(6);
+  expect(saveBarWarnings()[5]).toBe("and 2 more");
+});
+
 it("saves a stall threshold typed over the limit as the limit", async () => {
   await mount(<Configurator initialSection="general" />);
   await setValue(field(STALL), "5000");

@@ -1028,6 +1028,22 @@ describe("chief-of-staff server", () => {
       expect(result.results[0].skipped).toEqual([{ issue: 14, reason: "global max concurrency (1)" }, { issue: 15, reason: "global max concurrency (1)" }]);
     });
 
+    // 0 is a valid limit that starts no new tasks (#125).
+    it("starts nothing at a total limit of 0, and says why", async () => {
+      await configure(5, 0);
+      const result = await intake();
+      expect(result.results[0].started).toEqual([]);
+      expect(result.results[0].skipped).toEqual([13, 14, 15].map((issue) => ({ issue, reason: "global max concurrency (0)" })));
+      expect(new StateStore(host.bb.storage.database()).listWorkItems()).toHaveLength(0);
+    });
+
+    it("starts nothing in a repository whose limit is 0, and says why", async () => {
+      await configure(0);
+      const result = await intake();
+      expect(result.results[0].started).toEqual([]);
+      expect(result.results[0].skipped).toEqual([13, 14, 15].map((issue) => ({ issue, reason: "repo at max concurrency (0)" })));
+    });
+
     it("starts in a real run exactly what the dry run reported", async () => {
       await configure(2);
       const dry = await intake(true);
@@ -2835,6 +2851,11 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.callRpc("cos_set_settings", { clearGithubToken: true });
     const cleared = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { token: { stored: boolean } };
     expect(cleared.token.stored).toBe(false);
+  });
+
+  it("accepts a total task limit of 0 and reports it in the overview (#125)", async () => {
+    await host.harness.behavior.callRpc("cos_set_settings", { maxConcurrentTotal: 0 });
+    expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ settings: { maxConcurrentTotal: 0 } });
   });
 
   it("sends /skill references in step instructions as skill mentions", async () => {

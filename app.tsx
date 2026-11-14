@@ -756,7 +756,8 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     return counts;
   }, [active]);
   const s = stats.data;
-  const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
+  // Undefined until the overview loads; 0 is a real limit that starts no new tasks (#125).
+  const maxTotal = overview.data?.settings.maxConcurrentTotal;
   // The setting defaults to on; until the overview loads, assume it.
   const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
@@ -810,6 +811,12 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         {overview.data?.paused ? <strong className="text-foreground">Chief of Staff is paused. </strong> : null}
         {overview.data?.paused ? "New workflow actions are held until you resume." : "Pause intake and hold new workflow actions."} Already running agents and jobs can continue.
       </p>
+      {maxTotal !== undefined && maxTotal <= 0 ? (
+        <p className="flex items-start gap-1.5 text-xs text-foreground">
+          <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
+          <span><strong>No new tasks start: Max tasks across all repos is {maxTotal}.</strong> Raise it in Configure → General. Tasks holding a slot keep going; one waiting on CI or a merge waits for a slot before its next agent step.</span>
+        </p>
+      ) : null}
       {newTask ? (
         <div id="new-task">
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
@@ -834,7 +841,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
           <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
         </Button>)}
-        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
+        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal !== undefined ? ` / ${maxTotal}` : ""}</span>
       </nav>
       {/* Agents */}
       <Panel
@@ -911,7 +918,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         </Panel>
         <Panel className="lg:col-span-2" title="Capacity" icon="Gauge" dim={overview.isFetching && !overview.isLoading}>
           <div className="flex flex-col gap-3">
-            {maxTotal ? (
+            {maxTotal !== undefined ? (
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-baseline justify-between text-xs">
                   <span className="font-medium text-foreground">All repos</span>

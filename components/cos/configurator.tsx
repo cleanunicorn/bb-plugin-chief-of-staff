@@ -8,7 +8,7 @@ import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { blankRepo, capacityWarnings, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
 import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
@@ -175,7 +175,7 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
             <ToggleRow label="Pick up issues" hint="Off: only tasks you start." checked={repo.intake} onChange={(v) => set("intake", v)} />
             <Field label="Issue labels" hint="Issues must carry all of these. Comma separated.">{(id) => <ListInput id={id} value={repo.issueFilter.labels} onChange={(v) => set("issueFilter", { ...repo.issueFilter, labels: v })} placeholder="agent-ready" />}</Field>
             <Field label="Assignee" hint="Optional GitHub login.">{(id) => <TextInput id={id} value={repo.issueFilter.assignee ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, assignee: v })} placeholder="any" />}</Field>
-            <Field label="Max concurrent tasks">{(id) => <NumberInput id={id} value={repo.maxConcurrent} min={0} max={50} onChange={(v) => set("maxConcurrent", v)} />}</Field>
+            <Field label="Max concurrent tasks" hint="Tasks running at once in this repository. 0 starts no new tasks here.">{(id) => <NumberInput id={id} value={repo.maxConcurrent} min={0} max={50} onChange={(v) => set("maxConcurrent", v)} />}</Field>
           </Group>
           <Group title="Agent" icon="Bot" cols={3}>
             <Field label="Provider">{(id) => <ProviderPicker id={id} value={repo.providerId ?? ""} providers={providers} allowDefault={`Default (${defaultProvider || "bb default"})`} onChange={(v) => set("providerId", v)} />}</Field>
@@ -238,8 +238,8 @@ function GeneralEditor({ values, onChange, providers, errors = {} }: { values: G
   return (
     <div className="flex flex-col gap-5">
       <Group title="Capacity" icon="Gauge" cols={3}>
-        <Field label="Max tasks across all repos" error={errors.maxConcurrentTotal}>{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
-        <Field label="Intake every (minutes)" error={errors.intakeIntervalMinutes}>{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
+        <Field label="Max tasks across all repos" hint="Tasks running at once, across all repositories. 0 starts no new tasks." error={errors.maxConcurrentTotal}>{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
+        <Field label="Intake every (minutes)" hint="How often each repository is checked for new matching issues." error={errors.intakeIntervalMinutes}>{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
         <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled." error={errors.stallThresholdMinutes}>{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
       </Group>
       <Group title="Default agent" icon="Bot" cols={2}>
@@ -475,6 +475,8 @@ export function Configurator({
     for (const p of generalIssues) out.push({ section: "general", text: p.text });
     return out;
   }, [repoIssues, repoDraft, workflowIssues, generalIssues]);
+  /** Valid but worth a second look (a limit of 0 starts no new tasks); never blocks saving. */
+  const warnings = useMemo(() => capacityWarnings(generalChanges, dirty.repos ? repoDraft : null), [generalChanges, dirty.repos, repoDraft]);
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
   const usedBy = useMemo(() => {
     const out: Record<string, string[]> = {};
@@ -626,6 +628,7 @@ export function Configurator({
   // A JSON save sends only the JSON documents and the server validates them, so the visual
   // problems (which point into sections that are inert right now) don't block it.
   const blocking = advancedDirty ? [] : problems;
+  const cautions = advancedDirty ? [] : warnings;
 
   // A failed refresh keeps the loaded data, so the editor and its drafts stay and the error becomes a banner.
   const failures = Array.from(new Set([config.error, settings.error].filter((e) => e !== null && e !== undefined).map(errorText)));
@@ -768,6 +771,28 @@ export function Configurator({
                       </li>
                     ))}
                     {blocking.length > 5 ? <li className="text-xs text-muted-foreground">and {blocking.length - 5} more</li> : null}
+                  </ul>
+                ) : null}
+                {cautions.length ? (
+                  <ul aria-label="Warnings" className="flex basis-full flex-col gap-0.5">
+                    {cautions.slice(0, 5).map((w, i) => (
+                      <li key={i}>
+                        <button
+                          type="button"
+                          className="flex items-start gap-1.5 text-left text-xs text-foreground hover:underline"
+                          onClick={() => {
+                            setSection(w.section);
+                            if (w.repo !== undefined) setOpenRepo(w.repo);
+                          }}
+                        >
+                          <Icon name="TriangleAlert" fallback="Circle" className="mt-0.5 size-3 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
+                          <span>
+                            <b>{SECTIONS.find((x) => x.id === w.section)?.label}</b> · {w.text}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                    {cautions.length > 5 ? <li className="text-xs text-muted-foreground">and {cautions.length - 5} more</li> : null}
                   </ul>
                 ) : null}
               </>
