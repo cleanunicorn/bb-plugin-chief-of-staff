@@ -2,7 +2,7 @@
 // state, stall detection, and reconciliation after a restart (including
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
-import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
+import { actorOf, freshNode, initialNodes, limitedNode, resetTime, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
 import { occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
@@ -26,6 +26,8 @@ export interface RosterStep {
   round: number;
   waitingKind: WaitingKind | null;
   retrying: boolean;
+  /** Its agents wait out the provider's usage limit until then (ISO); null otherwise. */
+  limitedUntil?: string | null;
   /** An automatic model step: what its agent picked ("provider · model · reasoning"), once it has. */
   picked?: string | null;
 }
@@ -88,7 +90,8 @@ export function rosterSteps(item: WorkItem): RosterStep[] {
       attempts: n.attempts,
       round: n.round,
       waitingKind: n.waiting?.kind ?? null,
-      retrying: Boolean(n.retry?.at),
+      retrying: Boolean(n.retry?.at) || limitedNode(n),
+      limitedUntil: limitedNode(n) ? Object.values(n.limits ?? {}).map((l) => l.until).sort().at(-1)! : null,
       picked: agentWork(s)?.picksModel ? describePick(pickedModel(n)) : null,
     };
   });
@@ -235,6 +238,7 @@ export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSte
   const parts = steps
     .filter((s) => s.status === "running")
     .map((s) => {
+      if (s.limitedUntil) return `${s.name}: usage limit reached; continues after ${resetTime(s.limitedUntil)}`;
       if (s.retrying) return `${s.name}: Chief of Staff retrying after an error`;
       if (s.type === "check") return `${s.name}: running the check`;
       if (s.type === "ship") {

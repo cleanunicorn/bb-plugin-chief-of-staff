@@ -90,7 +90,7 @@ Every task has one status, derived from its steps:
 | `agent` | Agent | An agent is working on a step. |
 | `cos` | Chief of Staff | Running a check, pushing or merging. |
 | `ci` | Chief of Staff | PR open, CI running. |
-| `retrying` | Chief of Staff | Retrying after an error. |
+| `retrying` | Chief of Staff | Retrying after an error, or waiting for the agent's Claude or Codex usage limit to reset; the agent then continues where it stopped. |
 | `ready` | You | PR is green and ready to merge. |
 | `waiting_on_human` | You | A question, an approval or a decision. |
 | `blocked` | You | Stalled: no activity past the stall threshold. |
