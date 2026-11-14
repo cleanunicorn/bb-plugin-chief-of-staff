@@ -275,7 +275,8 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, rev
         </div>
       </div>
 
-      <ProblemList lines={lines} onGo={goTo} open={wfIndex} />
+      {/* Keyed by workflow, so each one's list starts collapsed. */}
+      <ProblemList key={wf.id} lines={lines} onGo={goTo} open={wfIndex} />
 
       {view === "canvas" ? (
         <div className={cn(expanded && "fixed inset-0 z-50 flex flex-col gap-3 bg-background p-3")}>

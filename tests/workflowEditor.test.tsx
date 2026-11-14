@@ -310,6 +310,16 @@ it("opens the step a problem is about in list view", async () => {
   expect(document.activeElement).toBe(header());
 });
 
+it("starts each workflow's list collapsed", async () => {
+  const doc = withLooseCheck();
+  const other = { ...structuredClone(doc.workflows[0]!), id: "hotfix", name: "Hotfix" };
+  doc.workflows.push(other);
+  await mount(<Stateful initial={doc} />);
+  await click(button("Show all 4"));
+  await click(button("Hotfix"));
+  expect(button("Show all 4").getAttribute("aria-expanded")).toBe("false");
+});
+
 it("reveals a step once: switching views afterwards leaves focus where it is", async () => {
   await mount(<Stateful initial={withLooseCheck()} />);
   await click(button("New check: needs a step that writes code before it"));
