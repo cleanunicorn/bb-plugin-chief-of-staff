@@ -12,8 +12,9 @@
   a feed, Throughput a rising line and Capacity a gauge. Tokens, Cost and
   Fix cycles each have their own icon, and the Throughput table switch and the
   workflow canvas's Tidy button no longer look like "All tasks". Steps done,
-  Received, Produced, the Activity filter and skill references, which drew a
-  plain circle, now have icons too.
+  Received, Produced and skill references, which drew a plain circle, now
+  have icons too, and the Needs attention row has a bell instead of
+  repeating the hand of its questions and approvals.
 
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour

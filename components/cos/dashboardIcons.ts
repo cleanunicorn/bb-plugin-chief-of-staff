@@ -40,7 +40,7 @@ export const CARD_ICON = {
   age: "Timer",
   finishedAge: "CalendarCheck",
   lastActivity: "Activity",
-  tokens: "AiContentGenerator01", // host name: Lucide has no token icon
+  tokens: "Hash",
   cost: "Coins",
   fixCycles: "Undo2", // sent back to fix, like Loop-backs; RefreshCw is the retrying state
   error: "CircleAlert",
@@ -48,6 +48,14 @@ export const CARD_ICON = {
 
 /** The card menu's "Show activity", which opens the Activity panel. */
 export const SHOW_ACTIVITY_ICON = "Newspaper";
+
+/** A task card's buttons and menu items that sit beside its state mark and rows. */
+export const CARD_ACTION_ICON = {
+  openThread: "MessageSquare",
+  workflow: "Network",
+  moreActions: "Ellipsis",
+  showActivity: SHOW_ACTIVITY_ICON,
+} as const;
 
 /** Panel titles on the dashboard. */
 export const PANEL_ICON = {
@@ -62,7 +70,7 @@ export const PANEL_ICON = {
 
 /** The Needs-attention row. */
 export const ATTENTION_ICON = {
-  title: "Hand",
+  title: "BellRing", // the row's heading; its input chip is the hand
   failures: "CircleAlert",
   stalled: STALLED_ICON,
   input: "Hand",

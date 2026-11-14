@@ -49,7 +49,7 @@ function expressionEnd(src: string, i: number, objectValue: boolean): number {
 }
 
 /** Icon names requested in a source file: string literals inside `name=`, `icon=`, `fallback=` and `icon:` values, ternaries included. */
-export function requestedIcons(src: string): string[] {
+function requestedIcons(src: string): string[] {
   const out: string[] = [];
   for (const m of src.matchAll(/\b(?:(name|icon|fallback)=|(icon)\??:\s*)/g)) {
     const start = m.index + m[0].length;
@@ -124,8 +124,8 @@ it("maps names the host lacks and passes the rest through", () => {
 type Meanings = Record<string, string>; // meaning → requested icon name
 
 /** Pairs of meanings that resolve to the same host icon, unless an allowed class holds both. */
-function collisions(meanings: Meanings, allowed: string[][] = []): string[] {
-  const entries = Object.entries(meanings).map(([meaning, name]) => [meaning, hostIconName(name)] as const);
+function collisions(meanings: Meanings, allowed: string[][] = [], resolve: (name: string) => string = hostIconName): string[] {
+  const entries = Object.entries(meanings).map(([meaning, name]) => [meaning, resolve(name)] as const);
   const out: string[] = [];
   for (let i = 0; i < entries.length; i++)
     for (let j = i + 1; j < entries.length; j++) {
@@ -172,7 +172,7 @@ describe("state marks", () => {
   });
 
   it("keeps the Needs-attention chips apart", () => {
-    expect(collisions(prefixed("attention", { failures: ATTENTION_ICON.failures, stalled: ATTENTION_ICON.stalled, input: ATTENTION_ICON.input }))).toEqual([]);
+    expect(collisions(prefixed("attention", ATTENTION_ICON))).toEqual([]);
   });
 
   it("keeps the status pill tones apart, and away from the stalled and CoS-stuck marks", () => {
@@ -281,4 +281,44 @@ it("keeps a card's PR state chip apart from the card's rows", () => {
 
 it("checks the status pill tones against the catalog too", () => {
   expect(Object.values(TONE_ICON).filter((name) => !drawable(hostIconName(name)))).toEqual([]);
+});
+
+// ---------- every group again, as an older host draws it ----------
+
+/** What a host without the extended names draws: the base stand-in where there is one. */
+const standIn = (name: string) => HOST_ICON_FALLBACKS[hostIconName(name)] ?? hostIconName(name);
+
+const { CARD_ACTION_ICON, TASK_SECTION_ICON } = dashboardIcons;
+/** Everything on a card besides its state mark: the rows and the buttons, including the menu. */
+const CARD_PARTS: Meanings = { ...prefixed("card", CARD_ICON), ...prefixed("action", CARD_ACTION_ICON) };
+
+const GROUPS: [string, Meanings, string[][]][] = [
+  ["state marks", STATE_MARKS, SAME_STATE],
+  // An active card shows the age (Timer), a finished one the end date (CalendarCheck): never both.
+  ["card rows and buttons", CARD_PARTS, [["card.age", "card.finishedAge"]]],
+  ["filter row", prefixed("filter", { all: FILTER_ICON.all, ...Object.fromEntries(STAGES.map((s) => [s.key, s.icon])), taskSlots: FILTER_ICON.taskSlots }), []],
+  ["panel titles", prefixed("panel", PANEL_ICON), []],
+  ["Throughput header", { title: PANEL_ICON.throughput, chart: VIEW_ICON.chart, table: VIEW_ICON.table }, []],
+  ["Needs attention", prefixed("attention", ATTENTION_ICON), []],
+  ["task summary", prefixed("summary", TASK_SUMMARY_ICON), []],
+  ["task sections", prefixed("section", TASK_SECTION_ICON), [["section.loopBacks", "section.sentBack"]]],
+];
+
+describe.each([
+  ["bb 0.49.0", hostIconName],
+  ["an older host", standIn],
+])("as %s draws them", (_host, resolve) => {
+  it.each(GROUPS)("keeps the %s apart", (_name, meanings, allowed) => {
+    expect(collisions(meanings, allowed, resolve)).toEqual([]);
+  });
+
+  it("never draws a card's state mark like one of its rows or buttons", () => {
+    const parts = new Set(Object.values(CARD_PARTS).map(resolve));
+    expect(Object.entries(STATE_MARKS).filter(([, name]) => parts.has(resolve(name)))).toEqual([]);
+  });
+});
+
+it("never stands in with a name the UI already uses for something else", () => {
+  const used = new Set([...REQUESTED.keys()].map(hostIconName));
+  expect(Object.entries(HOST_ICON_FALLBACKS).filter(([, base]) => used.has(base))).toEqual([]);
 });

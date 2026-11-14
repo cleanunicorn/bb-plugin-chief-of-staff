@@ -28,7 +28,7 @@ import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
-import { ATTENTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
+import { ATTENTION_ICON, CARD_ACTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
@@ -540,12 +540,12 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           {entry.threadId ? (
             <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={() => navigate.toThread(entry.threadId!)}>
-              <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+              <Icon name={CARD_ACTION_ICON.openThread} fallback="Circle" aria-hidden /> Open thread
             </Button>
           ) : null}
           {/* Without a Workflow progress row, the arrow keys land here rather than on the issue link, which leaves the plugin. */}
           <Button {...(entry.steps.length ? {} : { [ENTRY_ATTRIBUTE]: "" })} size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
-            <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
+            <Icon name={CARD_ACTION_ICON.workflow} fallback="Workflow" aria-hidden /> Workflow
           </Button>
           {entry.prUrl ? (
             <UrlLink href={entry.prUrl} tabIndex={tabIndex} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
@@ -567,7 +567,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
-              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+              <Icon name={CARD_ACTION_ICON.moreActions} fallback="MoreHorizontal" aria-hidden />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent

@@ -67,6 +67,8 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   Ellipsis: "MoreHorizontal",
   FlaskConical: "Beaker",
   FolderGit2: "FolderGit",
+  // Tokens on a card: a count of generated text. Lucide has no token icon.
+  Hash: "AiContentGenerator01",
   Gauge: "Limitation",
   Hand: "UserRound",
   History: "TimeSchedule",
@@ -114,16 +116,17 @@ export const HOST_ICON_NAMES: Record<string, string> = {
 // Base-catalog stand-ins for the extended-catalog names #111 adopted, in case a host older than 0.49.0 lacks them
 // (engines.bb is >=0.48). They win over a caller's generic fallback, which is usually Circle.
 export const HOST_ICON_FALLBACKS: Record<string, string> = {
-  AiContentGenerator01: "Code", // Tokens
-  ArchiveRestore: "Archive", // Produced
-  Clean: "Workflow", // canvas Tidy
-  FileQuestion: "CircleQuestion", // No report
-  LayoutList: "ListTodo", // Steps done
-  Limitation: "SlidersHorizontal", // Capacity
-  ListEnd: "MoreHorizontal", // Queued
-  News01: "MessageSquare", // Activity
-  Puzzle: "Toolbox", // skill reference
-  Rows2: "ListTodo", // Throughput table view
+  // Each is a base name the UI uses nowhere else, so a stand-in never looks like a neighbour (tests/hostIcons.test.ts).
+  AiContentGenerator01: "Edit", // Tokens: written text
+  ArchiveRestore: "FolderExport", // Produced
+  Clean: "SectionMove", // canvas Tidy: rearranges the steps
+  FileQuestion: "FolderUnknown", // No report
+  LayoutList: "SectionAdd", // Steps done
+  Limitation: "Unavailable", // Capacity: a limit
+  ListEnd: "Loading", // Queued: waiting its turn
+  News01: "ComputerTerminal01", // Activity: the log
+  Puzzle: "Folder", // skill reference: a skill is a folder
+  Rows2: "PanelLeft", // Throughput table view
 };
 
 /** The host catalog's name for an icon name used by our UI. */
