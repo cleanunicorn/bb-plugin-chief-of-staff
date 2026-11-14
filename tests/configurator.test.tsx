@@ -231,6 +231,16 @@ it("keeps the dialog's title while it closes, after the drafts it names are gone
   expect(closing.every((r) => !r.open && r.title === "Discard changes to General?")).toBe(true);
 });
 
+it("puts Discard and Save at opposite ends of their own row on phones, and side by side from sm up", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  const group = button("Discard").parentElement!;
+  expect(group).toBe(button("Save changes").parentElement);
+  const classes = (group.getAttribute("class") ?? "").split(/\s+/);
+  expect(classes).toEqual(expect.arrayContaining(["flex", "basis-full", "justify-between", "sm:ml-auto", "sm:basis-auto", "sm:justify-end"]));
+  expect(classes).not.toContain("ml-auto");
+});
+
 it("is clean again when a general setting is typed back to its loaded value", async () => {
   await mount(<Configurator initialSection="general" />);
   await setValue(field(MAX_TASKS), "5");

@@ -741,7 +741,8 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                   Unsaved changes in {joinNames(dirtySections)}
                   {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
                 </span>
-                <span className="ml-auto flex gap-1.5">
+                {/* Below sm the buttons take their own row, Discard at the left edge and Save at the right, so a thumb aimed at one does not land on the other. */}
+                <span className="flex basis-full justify-between gap-1.5 sm:ml-auto sm:basis-auto sm:justify-end">
                   <Button size="sm" variant="outline" disabled={saving} onClick={(e) => ask("discard", e.currentTarget)}>
                     Discard
                   </Button>
