@@ -265,10 +265,19 @@ toolbar floated over the canvas's top left and Full screen over its top right,
 so they overlapped on a narrow canvas and the toolbar covered the first step
 after Fit. The React Flow frame no longer contains the toolbar, so the opening
 fit and "Fit all steps in view" frame only the area below the bar, and
-`FIT_EDIT` is unchanged. In the two-column layout (`xl`) the canvas is
-`sticky top-3 self-start`, so it stays in view while the step panel scrolls.
-Full screen and the read-only task sheet canvas, which keeps its floating Full
-screen button, are unchanged.
+`FIT_EDIT` is unchanged. The same bar is used in full screen, where it
+floated before too, and on phones, where Full screen moves from the canvas's
+top right into the bar. In full screen the bar has no Full screen button: the
+way out is the "Exit full screen" bar, as before.
+
+In the two-column layout (`xl`) the canvas is `self-start` and, on windows at
+least 45rem (720 px) tall, `sticky top-3`, so it stays in view while the step
+panel scrolls. The pinned canvas spans 12–532 px from the top of the page's
+scroller. On a shorter window the configurator's Save bar (`sticky bottom-0`,
+shown while there are unsaved edits) would cover its bottom strip, which holds
+the zoom and Fit controls, so there the canvas scrolls with the page as before.
+The read-only task sheet canvas keeps its floating Full screen button and is
+unchanged.
 
 Tests (jsdom has no layout, so they check structure): `tests/workflowCanvas.test.tsx`
 checks that the editor has exactly one Full screen button, that it is the last
@@ -276,8 +285,9 @@ child of the toolbar group after the four Add buttons and Tidy, and that the
 group is outside `.react-flow` with no `absolute` class. It also checks that
 there is no Full screen button once expanded, and that the read-only canvas
 keeps its own button with no toolbar. `tests/workflowEditor.test.tsx` checks
-that the canvas gets the `xl:` sticky classes when embedded, no unprefixed
-sticky class, and none of them in full screen. The existing fit tests pass
+that the embedded canvas gets `xl:self-start` and `sticky`/`top-3` under the
+`(min-width: 80rem) and (min-height: 45rem)` media variant, that no other
+variant makes it sticky, and that none of them apply in full screen. The existing fit tests pass
 unchanged.
 
 Browser check: headless Chromium (Playwright 1.62 with the bundled headless
@@ -309,6 +319,9 @@ way.
 | 1280×1000 | 652 | two-column | 256 px | 2 | none | none / none | sticky, fully in view |
 | 1440×1000 | 1232 | two-column | 836 px | 1 | none | none / none | sticky, fully in view |
 | 1920×1000 | 1232 | two-column | 836 px | 1 | none | none / none | sticky, fully in view |
+| 1440×720 | 847 | two-column | 451 px | 2 | none | none / none | sticky, y 12–532, clear of the Save bar (672–720) |
+| 1440×719 | 847 | two-column | 451 px | 2 | none | none / none | not sticky (window under 45rem) |
+| 1280×600 | 652 | two-column | 256 px | 2 | none | none / none | not sticky (window under 45rem) |
 | 1279×1000 | 652 | stacked | 652 px | 1 | none | none / none | scrolled off (by design) |
 | 1000×1000 | 952 | stacked | 952 px | 1 | none | none / none | scrolled off (by design) |
 | 1200×900 | 952 | stacked | 952 px | 1 | none | none / none | scrolled off (by design) |
@@ -316,7 +329,7 @@ way.
 At every size every toolbar button lies inside the canvas box and Full screen
 is the last button. With "On fail, go back to" at the bottom of a 1000 px
 window, and again with the page scrolled to its end, the whole 520 px canvas
-is visible in every two-column case.
+is visible in every two-column case at least 720 px tall.
 
 The same script against the parent commit (`c59c5af`, built the same way)
 reproduces the issue. In the issue's configuration (451 px canvas), Tidy
@@ -333,11 +346,16 @@ the live page. The wrappers are flex and gap only, plus the configurator's
 
 Not met, by design: below `xl` the canvas and the step panel stack, and the
 canvas still scrolls away while you edit the bottom of the panel. A sticky
-canvas there would cover the panel. Criterion 3 was measured, and is met, in
+canvas there would cover the panel. The same holds at `xl` on windows under
+720 px tall, where a pinned canvas would sit under the Save bar. Criterion 3 was measured, and is met, in
 the two-column layout.
 
 Not checked: a live BB install (host fonts, icons, the configurator's section
-list, and the real header heights), touch, and dark theme. The fixture's step
+list, and the real header heights), touch, and dark theme. Also not checked:
+the compact configurator in BB's settings page (`<Configurator compact />`).
+There the page's scroller belongs to the host, and the media variant follows
+the window, so the canvas also sticks there, 12 px below the top of the
+host's scroller, and may sit under a sticky host header if there is one. The fixture's step
 panel for Review is about 990 px tall, against about 1,400 px in the live
 report. The canvas stuck at the page end anyway, so a taller panel only
 scrolls further under it.

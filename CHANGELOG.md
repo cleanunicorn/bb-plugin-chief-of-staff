@@ -7,10 +7,10 @@
   left and Full screen over its top right, so on a narrow canvas Full screen
   covered Tidy (or Model), and the toolbar covered the first step after "Fit
   all steps in view". The toolbar is now a bar above the canvas that wraps when
-  it runs out of room, with Full screen as its last button. On wide screens,
-  where the canvas and the step panel sit side by side, the canvas now stays in
-  view while you scroll down a long step panel to edit "Runs next" or "On fail,
-  go back to". The task workflow sheet is unchanged.
+  it runs out of room, with Full screen as its last button. On windows at
+  least 1280 px wide and 720 px tall, where the canvas and the step panel sit
+  side by side, the canvas now stays in view while you scroll down a long step
+  panel to edit "Runs next" or "On fail, go back to". The task workflow sheet is unchanged.
 
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour

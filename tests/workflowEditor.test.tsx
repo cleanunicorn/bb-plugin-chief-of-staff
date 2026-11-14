@@ -209,14 +209,16 @@ it("leaves full screen by button or Escape without editing the selected step", a
   editor.expectInputUntouched();
 });
 
-it("keeps the canvas in view while the step panel scrolls, in the two-column layout only", async () => {
+it("keeps the canvas in view while the step panel scrolls, in the two-column layout on a tall enough window only", async () => {
   await open();
   await click(button("select build"));
   const canvas = () => container.querySelector<HTMLElement>('[data-testid="canvas"]')!.className.split(/\s+/);
   // xl: canvas and step panel side by side; self-start stops the grid stretching the canvas to the panel's height.
-  expect(canvas()).toEqual(expect.arrayContaining(["h-[520px]", "xl:sticky", "xl:top-3", "xl:self-start"]));
-  // Stacked below xl, a sticky canvas would cover the panel.
-  expect(canvas().filter((c) => /sticky/.test(c) && !c.startsWith("xl:"))).toEqual([]);
+  // At least 45rem tall: on a shorter window the Save bar (sticky bottom-0) would cover the pinned canvas's controls.
+  const tallXl = "[@media(min-width:80rem)_and_(min-height:45rem)]";
+  expect(canvas()).toEqual(expect.arrayContaining(["h-[520px]", "xl:self-start", `${tallXl}:sticky`, `${tallXl}:top-3`]));
+  // Stacked below xl a sticky canvas would cover the panel; no other variant may make it sticky.
+  expect(canvas().filter((c) => /sticky/.test(c) && !c.startsWith(`${tallXl}:`))).toEqual([]);
   await click(button("Full screen"));
   expect(canvas().filter((c) => /sticky|self-start/.test(c))).toEqual([]);
 });
