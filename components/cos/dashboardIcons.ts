@@ -52,7 +52,7 @@ export const SHOW_ACTIVITY_ICON = "Newspaper";
 /** Panel titles on the dashboard. */
 export const PANEL_ICON = {
   tasks: "Bot",
-  throughput: "ChartColumn",
+  throughput: "TrendingUp", // the chart switch beside it is ChartColumn
   capacity: "Gauge",
   activity: "Newspaper",
   repositories: "FolderGit2",

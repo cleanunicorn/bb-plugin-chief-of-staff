@@ -54,6 +54,8 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   BellRing: "BellDot",
   CalendarCheck: "CalendarCheckOut02",
   Braces: "Code",
+  // The canvas "Tidy" button. GridView is the "All" filter.
+  BrushCleaning: "Clean",
   ChefHat: "chief-of-staff/chef-hat",
   CircleAlert: "AlertCircle",
   CircleDot: "CircleCheck",
@@ -95,9 +97,12 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   // A skill reference in an instructions box: a piece the agent can pick up.
   Sparkles: "Puzzle",
   SquareCheck: "Check",
-  Table: "GridView",
+  // Throughput's table view: rows. GridView is the "All" filter.
+  Table: "Rows2",
   Tag: "Filter",
   Timer: "Clock",
+  // The Throughput panel. Its chart switch is ChartColumn.
+  TrendingUp: "chief-of-staff/trending-up",
   TriangleAlert: "AlertTriangle",
   Undo2: "ArrowTurnBackward",
   // Hand-marked outcomes: the host's only person icon (UserRound) already stands for "Your call".

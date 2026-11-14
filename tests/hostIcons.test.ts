@@ -222,3 +222,20 @@ describe("panel titles", () => {
 it("gives each item of a task's summary its own icon", () => {
   expect(collisions(prefixed("summary", TASK_SUMMARY_ICON))).toEqual([]);
 });
+
+const { VIEW_ICON } = dashboardIcons;
+
+describe("filter row and toggles", () => {
+  it("gives All tasks, each stage chip and Task slots their own icons", () => {
+    const row = { all: FILTER_ICON.all, ...Object.fromEntries(STAGES.map((s) => [s.key, s.icon])), taskSlots: FILTER_ICON.taskSlots };
+    expect(collisions(prefixed("filter", row))).toEqual([]);
+  });
+
+  it("keeps the Throughput chart and table switches apart, and apart from the panel title", () => {
+    expect(collisions({ title: PANEL_ICON.throughput, chart: VIEW_ICON.chart, table: VIEW_ICON.table })).toEqual([]);
+  });
+
+  it("keeps the table switch apart from All tasks", () => {
+    expect(hostIconName(VIEW_ICON.table)).not.toBe(hostIconName(FILTER_ICON.all));
+  });
+});
