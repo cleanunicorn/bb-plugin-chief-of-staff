@@ -158,6 +158,7 @@ it("asks before Discard, naming every section with changes, and discards them al
   await click(button("Discard"));
   expect(dialog()?.textContent).toContain("Discard changes to Workflows and General?");
   expect(dialog()?.textContent).toContain(DISCARD_DESCRIPTION);
+  expect(document.activeElement).toBe(dialogButton("Discard"));
   // Nothing is dropped until the dialog is answered.
   expect(unsavedLabels()).toEqual(["Workflows", "General"]);
   expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
@@ -165,6 +166,7 @@ it("asks before Discard, naming every section with changes, and discards them al
   await click(dialogButton("Discard"));
   await tick();
   expect(dialog()).toBeNull();
+  expect(document.body.style.pointerEvents).not.toBe("none");
   expect(unsavedLabels()).toEqual([]);
   expect(unsavedLine()).toBeNull();
   expect((field("Name") as HTMLInputElement).value).toBe(DEFAULT_DOCUMENT.workflows[0]!.name);
@@ -177,7 +179,12 @@ it("hands focus to the current section's button after a confirmed Discard, since
   await mount(<Configurator initialSection="general" />);
   await setValue(field(MAX_TASKS), "5");
   button("Discard").focus();
-  await confirmDiscard();
+  await click(button("Discard"));
+  // Only the section on screen has changes, so the dialog does not mention others.
+  expect(dialog()?.textContent).toContain("Your edits go back to the saved values. This cannot be undone.");
+  expect(dialog()?.textContent).not.toContain("not on screen");
+  await click(dialogButton("Discard"));
+  await tick();
   expect(document.activeElement).toBe(navButton("General"));
 });
 
@@ -194,6 +201,7 @@ it.each([
   await cancel();
   await tick();
   expect(dialog()).toBeNull();
+  expect(document.body.style.pointerEvents).not.toBe("none");
   expect(number(MAX_TASKS)).toBe("5");
   expect(unsavedLabels()).toEqual(["General"]);
   expect(unsavedLine()).toBe("Unsaved changes in General");

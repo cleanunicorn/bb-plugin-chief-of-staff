@@ -4,7 +4,7 @@
 
 - **Discard in Configure asks first.** Discard in the save bar, and Revert in
   Advanced JSON, now open a confirmation that names what will be lost
-  ('Discard changes to Workflows and General?') instead of dropping every
+  ("Discard changes to Workflows and General?") instead of dropping every
   unsaved draft at once. The save bar also says which sections have unsaved
   changes, and on phones Discard and Save sit at opposite ends of the bar.
 

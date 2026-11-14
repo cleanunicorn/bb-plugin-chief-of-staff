@@ -392,7 +392,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const [retrying, setRetrying] = useState(false);
   const repoKeys = useRowKeys<RepoConfig>();
   // What was asked outlives the opening: the dialog keeps naming the sections while it closes, after their drafts are gone.
-  const [confirming, setConfirming] = useState<{ kind: "discard" | "revert"; sections: string[]; open: boolean; confirmed: boolean }>({ kind: "discard", sections: [], open: false, confirmed: false });
+  const [confirming, setConfirming] = useState<{ kind: "discard" | "revert"; sections: string[]; offScreen: boolean; open: boolean; confirmed: boolean }>({ kind: "discard", sections: [], offScreen: false, open: false, confirmed: false });
   /** The button that asked, where focus returns when the dialog is cancelled. */
   const confirmOpener = useRef<HTMLElement | null>(null);
   /** The nav button of the section on screen: where focus goes once a confirmed Discard or Revert has removed or disabled the button that asked. */
@@ -616,10 +616,13 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   /** Discard (the save bar) and Revert (Advanced JSON) drop drafts that cannot be got back, so both ask first. */
   const ask = (kind: "discard" | "revert", opener: HTMLElement) => {
     confirmOpener.current = opener;
-    setConfirming({ kind, sections: dirtySections, open: true, confirmed: false });
+    // Revert names no sections: it only ever drops the Advanced JSON drafts.
+    const sections = kind === "discard" ? dirtySections : [];
+    const onScreen = SECTIONS.find((s) => s.id === section)?.label;
+    setConfirming({ kind, sections, offScreen: sections.some((label) => label !== onScreen), open: true, confirmed: false });
   };
   const confirmCopy = confirming.kind === "discard"
-    ? { title: `Discard changes to ${joinNames(confirming.sections)}?`, description: "Your edits go back to the saved values, including in sections not on screen. This cannot be undone.", confirmLabel: "Discard" }
+    ? { title: `Discard changes to ${joinNames(confirming.sections)}?`, description: `Your edits go back to the saved values${confirming.offScreen ? ", including in sections not on screen" : ""}. This cannot be undone.`, confirmLabel: "Discard" }
     : { title: "Revert your Advanced JSON edits?", description: "Both documents go back to the saved JSON. This cannot be undone.", confirmLabel: "Revert" };
   const openAdvanced = () => setSection("advanced");
   const visualSection = section === "workflow" || section === "repos" || section === "general";
@@ -797,8 +800,12 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         }}
         onCancel={() => setConfirming((c) => ({ ...c, open: false }))}
         // The dialog has no trigger to return focus to. Cancel returns it to the button that asked; a confirmed answer
-        // removes Discard with the save bar, or disables Revert, so focus goes to the section's button instead.
-        restoreFocus={() => (confirming.confirmed ? currentSectionButton.current : confirmOpener.current)?.focus()}
+        // removes Discard with the save bar, or disables Revert, so focus goes to the section's button instead. So does
+        // a cancel after the drafts were cleared some other way while the dialog was open, taking the bar with them.
+        restoreFocus={() => {
+          const opener = confirmOpener.current;
+          (!confirming.confirmed && opener?.isConnected ? opener : currentSectionButton.current)?.focus();
+        }}
       />
     </div>
   );
