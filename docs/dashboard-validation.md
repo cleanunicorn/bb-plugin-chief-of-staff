@@ -44,13 +44,14 @@ next page fetched, a retried task leaving the list, the "No finished tasks yet"
 and "No finished tasks match" states, Search older, Throughput days and counts,
 and the view surviving a tab switch and a reload. Layout was measured in
 headless Chromium with the real `PipelineTab`, mocked data (4 active, 50
-finished) and the built plugin CSS plus Tailwind's preflight, but without the
-host's theme tokens, so heights are approximate and not a live BB install:
+finished) and the built plugin CSS plus Tailwind's preflight (in its base
+layer), but without the host's theme tokens and fonts, so heights are
+approximate and this is not a live BB install:
 
 | Viewport | Active grid ends | Throughput starts | Activity starts | Row height |
 | --- | --- | --- | --- | --- |
-| 1440 × 1000 | 485 px | 1005 px (+520) | 1227 px (+742) | 28 px |
-| 390 wide (fine pointer) | 893 px | 2184 px (+1291, about 1.5 screens of 844) | 2555 px | 89 px |
+| 1440 × 1000 | 568 px | 1250 px (+682) | 1535 px (+967) | 36 px |
+| 390 wide (fine pointer) | 1126 px | 2759 px (+1633, about 1.9 screens of 844) | 3247 px (+2121) | 123 px |
 
 Before, the issue measured about 4,900 px and 13,650 px for the whole page
 with 54 tasks. On a coarse pointer the row buttons are 40 px tall, which adds

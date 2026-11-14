@@ -100,7 +100,7 @@ function FinishedRow({ entry, now, busy, tabbable, onAction, onAsk, onWorkflow, 
   const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   const titleId = `cos-finished-${entry.id}`;
   return (
-    <article {...{ [CARD_ATTRIBUTE]: entry.id }} aria-labelledby={titleId} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 py-2">
+    <article {...{ [CARD_ATTRIBUTE]: entry.id }} aria-labelledby={titleId} className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 py-1">
       <StatusPill tone={meta.tone} label={meta.label} icon={meta.icon} />
       <p id={titleId} className="min-w-0 flex-1 basis-48 text-sm font-medium text-foreground [overflow-wrap:anywhere] sm:truncate" title={title}>{title}</p>
       <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -253,7 +253,8 @@ export function FinishedSection({ finished, now, busy, view, onViewChange, repos
   const slice = visibleSlice(matching, shown);
   const roving = useRovingCards(slice.rows.map((e) => e.id));
   const groups = groupByDay(slice.rows, now);
-  const repoOptions = useMemo(() => [...new Set([...repos, ...entries.map((e) => e.repo)])].sort(), [repos, entries]);
+  // A stored repository stays listed even when none of its tasks is loaded, so the select shows what is filtered.
+  const repoOptions = useMemo(() => [...new Set([...repos, ...entries.map((e) => e.repo), ...(view.repo ? [view.repo] : [])])].sort(), [repos, entries, view.repo]);
   const bodyId = "cos-finished-list";
   const count = query.data ? `${entries.length}${cursor ? "+" : ""}` : null;
   // A date range reaches back into older pages: load them until the loaded tasks pass its first day.
@@ -312,10 +313,13 @@ export function FinishedSection({ finished, now, busy, view, onViewChange, repos
         {slice.rows.length ? (
           // One tab stop group, like the active grid (#115): Tab visits the current row's controls only.
           <div role="group" aria-label="Finished tasks" aria-describedby={FINISHED_KEYS_HINT_ID} className="group/finished flex flex-col gap-1" {...roving.groupProps}>
-            <p id={FINISHED_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/finished:visible">Arrow keys move between tasks.</p>
-            {groups.map((group) => (
+            {groups.map((group, index) => (
               <div key={group.key} className="flex flex-col">
-                <h3 className="border-b border-border pb-1 text-xs font-semibold text-muted-foreground">{group.label}</h3>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 border-b border-border pb-1">
+                  <h3 className="text-xs font-semibold text-muted-foreground">{group.label}</h3>
+                  {/* On the first day's line, so it takes no row of its own; visible only while focus is in the rows. */}
+                  {index === 0 ? <p id={FINISHED_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/finished:visible">Arrow keys move between tasks.</p> : null}
+                </div>
                 <ul className="flex flex-col divide-y divide-border">
                   {group.entries.map((e) => (
                     <li key={e.id}>

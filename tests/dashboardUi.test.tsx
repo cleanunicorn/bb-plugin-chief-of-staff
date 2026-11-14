@@ -1275,3 +1275,13 @@ it("keeps a failed task's Mark done text while the roster changes under the open
   expect(container.querySelector("article")!.textContent).not.toContain("failed");
   expect(confirmDialog()!.textContent).toContain("recorded as done instead of failed");
 });
+
+it("keeps a stored repository in the select even when none of its tasks is loaded", async () => {
+  localStorage.setItem("cos.finishedView.v1", JSON.stringify({ open: true, outcomes: [], repo: "acme/gone", query: "" }));
+  mocks.repos = [{ key: "acme/app" }];
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "App task")] : [], nextBefore: null });
+  await mount();
+  const select = container.querySelector<HTMLSelectElement>('select[aria-label="Repository"]')!;
+  expect(select.value).toBe("acme/gone");
+  expect(finishedPanel().textContent).toContain("No finished tasks match");
+});
