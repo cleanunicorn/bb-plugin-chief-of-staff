@@ -15,6 +15,7 @@ import { runningWriter } from "./prompts";
 import { parseTextReport } from "./report";
 import type { ItemThread, WorkItem } from "./state";
 import { lastAssistantText, pendingInteractions, plainTextQuestion } from "./threads";
+import { observeUsageLimit, tickLimits, type TurnFailure } from "./usageLimit";
 import { agentWork, stepById, type AgentWork } from "./workflow";
 
 /** Runtime statuses that mean a turn is in progress (or about to be). */
@@ -40,6 +41,8 @@ export interface ThreadSnapshot {
   updatedAt: number;
   hasPendingInteraction: boolean | null;
   gone: string | null;
+  /** The thread's own status (`status` prefers the runtime's display status). */
+  raw?: string;
 }
 
 function waitingReason(pending: string[]): string {
@@ -56,6 +59,7 @@ export function snapshotOf(thread: { id: string; status: string; updatedAt?: unk
   return {
     id: thread.id,
     status: thread.runtime?.displayStatus ?? thread.status,
+    raw: thread.status,
     updatedAt: toMs(thread.updatedAt),
     hasPendingInteraction: typeof thread.hasPendingInteraction === "boolean" ? thread.hasPendingInteraction : null,
     gone: thread.deletedAt ? "thread deleted" : thread.archivedAt ? "thread archived" : thread.status === "error" ? "thread is in error state" : null,
@@ -146,6 +150,11 @@ export async function observeActive(cos: Cos, itemId: string, threadId: string, 
     const ctx = threadContext(cos, item, threadId);
     if (!ctx?.step) return;
     const node = item.nodes[ctx.step.id];
+    // The turn that hit a usage limit was retried: the agent works again.
+    if (node?.limits?.[ctx.agent]) {
+      await dispatchLocked(cos, item.id, { type: "turn_started", step: ctx.step.id, agent: ctx.agent }, actor);
+      return;
+    }
     if (node?.status !== "waiting" || !node.waiting) return;
     // Some providers report active while an interaction is open: not a resume.
     const pending = await pendingInteractions(cos, threadId);
@@ -164,7 +173,13 @@ export async function observeInteraction(cos: Cos, itemId: string, threadId: str
   });
 }
 
-export async function observeFailure(cos: Cos, itemId: string, threadId: string, error: string, actor: string): Promise<void> {
+/**
+ * One of an item's threads failed or is gone. `errored`: the thread is in
+ * BB's error state (its turn failed), so the failure may be a usage limit to
+ * wait out; `failure` is BB's account of that turn when the event carried it.
+ */
+export async function observeFailure(cos: Cos, itemId: string, threadId: string, error: string, actor: string, opts: { errored?: boolean; failure?: TurnFailure | null } = {}): Promise<void> {
+  if (opts.errored && (await observeUsageLimit(cos, itemId, threadId, actor, opts.failure))) return;
   await withItemLock(itemId, async () => {
     const item = cos.store.getWorkItem(itemId);
     if (!item || item.status === "failed" || item.status === "done") return;
@@ -192,7 +207,7 @@ export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnaps
   const ctx = threadContext(cos, item, snapshot.id);
   if (!ctx) return;
   if (snapshot.gone) {
-    await observeFailure(cos, item.id, snapshot.id, snapshot.gone, actor);
+    await observeFailure(cos, item.id, snapshot.id, snapshot.gone, actor, { errored: snapshot.raw === "error" });
     return;
   }
   if (!ctx.step) return;
@@ -206,8 +221,8 @@ export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnaps
     }
   }
   if (BUSY.has(snapshot.status)) {
-    // Working. If the step is parked, someone resumed the thread in BB.
-    if (node.status === "waiting") await observeActive(cos, item.id, snapshot.id, actor);
+    // Working. If the step is parked, someone resumed the thread in BB; if it waited out a usage limit, BB retried it.
+    if (node.status === "waiting" || node.limits?.[ctx.agent]) await observeActive(cos, item.id, snapshot.id, actor);
     else cos.store.updateWorkItem(item.id, { lastActivityAt: new Date(Math.max(snapshot.updatedAt, Date.parse(item.lastActivityAt ?? item.createdAt))).toISOString() });
     return;
   }
@@ -314,6 +329,7 @@ export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> 
 /** Retry due infrastructure errors, restart lost jobs, start queued items. */
 export async function tickItems(cos: Cos, actor: string): Promise<void> {
   await resumeQueued(cos, actor);
+  await tickLimits(cos, actor);
   const now = cos.now().getTime();
   for (const item of cos.store.listWorkItems({ activeOnly: true })) {
     if (!item.workflow.steps.length || cos.store.isPaused(item.repo)) continue;

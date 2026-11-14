@@ -52,8 +52,23 @@ export function isPromptDeliveryRetry(retry: InfraRetry | null | undefined): boo
   return retry?.effect.type === "agent" && (retry.cause === "prompt_delivery" || (retry.cause === undefined && !retry.effect.fresh));
 }
 
+/**
+ * An agent's turn failed on the provider's usage limit (a Claude or Codex
+ * subscription window). The step keeps running: BB retries the failed turn
+ * once the window resets, and the agent carries on where it stopped.
+ */
+export interface UsageLimit {
+  /** When the provider said the limit resets (ISO). */
+  until: string;
+  threadId: string;
+}
+
 export interface NodeState {
   agentRetries?: Record<number, InfraRetry>;
+  /** Agents waiting out a usage limit, by agent index. */
+  limits?: Record<number, UsageLimit>;
+  /** Usage-limit waits this round (each failed turn counts once). */
+  limitCount?: number;
   deliveries?: Record<number, AgentDelivery>;
   status: NodeStatus;
   /** Incremented every time the step starts; work from an older round is ignored. */
@@ -96,6 +111,8 @@ export type MachineEvent =
   | { type: "interaction_pending"; step: string; agent: number; reason: string | null }
   /** `step` null: the builder thread itself is gone. */
   | { type: "thread_failed"; step: string | null; agent: number; error: string }
+  /** An agent's turn failed on the provider's usage limit, which resets at `until`; BB retries the turn then. */
+  | { type: "usage_limited"; step: string; agent: number; until: string; threadId: string }
   | { type: "check_result"; step: string; ok: boolean; output: string }
   | { type: "pushed"; step: string }
   | { type: "pr_opened"; step: string; prNumber: number; prUrl: string }
@@ -173,6 +190,20 @@ export function infraBackoffMs(attempt: number): number {
   return Math.max(1, attempt) ** 2 * 60_000;
 }
 
+/** Usage-limit waits in one round before the step is handed to a person instead. */
+export const MAX_USAGE_LIMIT_WAITS = 5;
+
+/** Every agent of the step still owing a report is waiting out a usage limit. */
+export function limitedNode(n: Pick<NodeState, "limits" | "reports">): boolean {
+  const limits = n.limits ?? {};
+  return Object.keys(limits).length > 0 && n.reports.every((r, i) => r || limits[i]);
+}
+
+/** "14:05 UTC": when a usage limit resets, for notifications and the roster. */
+export function resetTime(iso: string): string {
+  return `${iso.slice(11, 16)} UTC`;
+}
+
 export function freshNode(): NodeState {
   return { agentRetries: {}, deliveries: {}, status: "pending", round: 0, attempts: 0, reports: [], nudges: [], waiting: null, feedback: null, phase: null, output: null, retry: null, startedAt: null, finishedAt: null };
 }
@@ -214,7 +245,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const n = node(id);
     if (!s || !n) return;
     const count = agentsOf(s);
-    Object.assign(n, { agentRetries: {}, deliveries: {}, status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
+    Object.assign(n, { agentRetries: {}, deliveries: {}, limits: undefined, limitCount: undefined, status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
     note("started", id, n.feedback);
     if (agentWork(s)) for (let i = 0; i < count; i++) effects.push({ type: "agent", step: id, agent: i, kind: "start" });
     else if (s.type === "model") {
@@ -235,7 +266,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const n = node(id);
     if (!n) return;
     note("passed", id, how ?? (step(id)?.type === "check" ? n.output : null));
-    Object.assign(n, { status: "done", waiting: null, feedback: null, phase: null, retry: null, agentRetries: {}, finishedAt: iso });
+    Object.assign(n, { status: "done", waiting: null, feedback: null, phase: null, retry: null, agentRetries: {}, limits: undefined, finishedAt: iso });
   };
 
   const wait = (id: string, kind: WaitingKind, reason: string, agent?: number) => {
@@ -276,6 +307,13 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
     const why = s.onFail ? `failed ${n.attempts} time(s), past its limit of ${limitOf(s)}` : "failed";
     wait(id, "escalation", `${s.name} ${why}. Approve to continue anyway, or send instructions back.`);
+  };
+
+  /** The agent's turn is moving again (or over): it no longer waits out a usage limit. */
+  const clearLimit = (n: NodeState, agent: number) => {
+    if (!n.limits?.[agent]) return;
+    n.limits = { ...n.limits };
+    delete n.limits[agent];
   };
 
   /** Every agent on an agent step has reported: pass it on, gate it, or fail it. */
@@ -322,6 +360,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
     case "turn_started": {
       const n = node(event.step);
+      if (n) clearLimit(n, event.agent);
       if (!n || n.status !== "waiting" || !n.waiting) break;
       if (["question", "no_report", "stalled"].includes(n.waiting.kind)) {
         n.status = "running";
@@ -335,6 +374,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       const s = agentWork(step(event.step));
       const n = node(event.step);
       if (!s || !n || (n.status !== "running" && !(event.report && n.status === "waiting" && n.waiting?.kind === "cos_error" && isPromptDeliveryRetry(n.retry))) || event.round !== n.round) break;
+      clearLimit(n, event.agent);
       if (n.reports[event.agent]) break; // this agent already reported
       const report = event.report;
       if (report?.outcome === "needs_input") {
@@ -387,9 +427,37 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       }
       const n = node(event.step);
       if (!n || n.status === "done" || n.status === "pending") break;
+      clearLimit(n, event.agent);
       n.retry = { cause: "thread_failure", effect: { type: "agent", step: event.step, agent: event.agent, kind: "start", fresh: true }, at: null, count: 0 };
       n.agentRetries = { ...n.agentRetries, [event.agent]: n.retry };
       wait(event.step, "cos_error", `The agent's thread failed (${event.error}). Retry starts a new one.`, event.agent);
+      break;
+    }
+
+    case "usage_limited": {
+      const s = agentWork(step(event.step));
+      const n = node(event.step);
+      if (!s || !n) break;
+      if (item.status === "failed") {
+        // The builder's failure was recorded first; a usage limit is not fatal.
+        if (!isWriter(s) || (n.status !== "running" && n.status !== "waiting") || item.lastError === "PR closed without merge") break;
+        patch.status = undefined;
+        patch.lastError = null;
+        patch.finishedAt = null;
+      }
+      // A step thread parked as dead a moment ago: it only waits out a limit.
+      if (n.status === "waiting" && n.waiting?.kind === "cos_error" && n.agentRetries?.[event.agent]?.cause === "thread_failure") {
+        n.agentRetries = { ...n.agentRetries };
+        delete n.agentRetries[event.agent];
+        selectAgentRetry(n);
+      }
+      if (n.status !== "running" || n.reports[event.agent]) break;
+      const first = !n.limits?.[event.agent];
+      n.limits = { ...n.limits, [event.agent]: { until: event.until, threadId: event.threadId } };
+      if (first) {
+        n.limitCount = (n.limitCount ?? 0) + 1;
+        effects.push({ type: "notify", title: `Usage limit reached: ${label(item)}`, body: `${s.name} waits for the provider's usage limit to reset at ${resetTime(event.until)}, then continues on its own.` });
+      }
       break;
     }
 
@@ -742,7 +810,7 @@ export function deriveStatus(item: Pick<WorkItem, "status" | "workflow">, nodes:
     return { status: w.kind === "stalled" ? "blocked" : "waiting_on_human", waitingKind: w.kind, waitingReason: `${name}: ${w.reason}`.slice(0, 600) };
   }
   const running = order.map((id) => ({ s: stepById(wf, id)!, n: nodes[id] })).filter((x) => x.n?.status === "running");
-  const active = running.filter((x) => !x.n!.retry?.at);
+  const active = running.filter((x) => !x.n!.retry?.at && !limitedNode(x.n!));
   if (active.some((x) => agentWork(x.s))) return { status: "agent", waitingKind: null, waitingReason: null };
   if (active.some((x) => x.s.type === "check" || x.n!.phase === "pushing" || x.n!.phase === "merging")) return { status: "cos", waitingKind: null, waitingReason: null };
   if (active.some((x) => x.n!.phase === "ci")) return { status: "ci", waitingKind: null, waitingReason: null };

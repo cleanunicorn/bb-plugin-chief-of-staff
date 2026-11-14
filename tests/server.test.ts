@@ -61,11 +61,16 @@ describe("chief-of-staff server", () => {
   let checkLeak = "";
   let checkHangs = false;
   let threadUpdatedAt = 0;
-  let threadStatus: "idle" | "active" = "idle";
+  let threadStatus: "idle" | "active" | "error" = "idle";
   let checkBlocks: Promise<void> | null = null;
   let ghRoutes: Record<string, Route> = {};
   /** Per-thread overrides of status / updatedAt for the fake thread list. */
-  let perThread: Record<string, { status?: "idle" | "active"; updatedAt?: number }> = {};
+  let perThread: Record<string, { status?: "idle" | "active" | "error"; updatedAt?: number }> = {};
+  /** What a thread's failed turn reports (its provider/error and rate-limit events). */
+  let failures: Record<string, { errorInfo: { category: string; httpStatusCode: number | null; providerCode: null }; rateLimits: unknown }> = {};
+  /** Retries of failed turns asked for, and the threads with one queued. */
+  let retries: { threadId: string; sendAt?: number; reason?: string }[] = [];
+  let queuedRetry: Record<string, boolean> = {};
   const spawned = new Set<string>();
   let prCreated = false;
   let clock = 0;
@@ -96,6 +101,9 @@ describe("chief-of-staff server", () => {
     assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
     prCreated = false;
     perThread = {};
+    failures = {};
+    retries = [];
+    queuedRetry = {};
     spawned.clear();
     ghRoutes = {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
@@ -145,7 +153,10 @@ describe("chief-of-staff server", () => {
             spawned.add(id);
             return makeThreadResponse({ id, environmentId: builder || args.environment.type === "reuse" ? "env_1" : `env_${id}`, providerId: "claude-code" });
           },
-          get: async (args: { threadId: string }) => ({ ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus } }),
+          get: async (args: { threadId: string }) => {
+            const status = perThread[args.threadId]?.status ?? threadStatus;
+            return { ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status, updatedAt: perThread[args.threadId]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status } };
+          },
           interactions: {
             list: async () => pending as never,
             resolve: async (args: unknown) => {
@@ -168,7 +179,22 @@ describe("chief-of-staff server", () => {
             sent.push(args);
             return { ok: true, delivery: "sent" } as never;
           },
-          events: { list: async () => [] as never },
+          events: {
+            list: async (args: { threadId: string; types?: readonly string[] }) => {
+              const failure = failures[args.threadId];
+              if (!failure) return [] as never;
+              if (args.types?.includes("provider/error")) return [{ type: "provider/error", data: { message: "usage limit", errorInfo: failure.errorInfo } }] as never;
+              if (args.types?.includes("provider/rateLimits/updated")) return [{ type: "provider/rateLimits/updated", data: { rateLimits: failure.rateLimits } }] as never;
+              return [] as never;
+            },
+          },
+          retry: async (args: { threadId: string; sendAt?: number; reason?: string }) => {
+            if (queuedRetry[args.threadId]) throw new Error("retry_already_queued");
+            retries.push(args);
+            queuedRetry[args.threadId] = true;
+            return {} as never;
+          },
+          queuedMessages: { list: async (args: { threadId: string }) => (queuedRetry[args.threadId] ? [{ id: "q1", threadId: args.threadId, payload: { kind: "retry" }, sendAt: null }] : []) as never },
         },
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
@@ -1672,6 +1698,160 @@ describe("chief-of-staff server", () => {
     expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "done" });
     // Was waiting on a question: still waiting, same question.
     expect(byIssue(32)).toMatchObject({ detail: "waiting_on_human", waitingKind: "question", waitingReason: "Build: Question: which DB?" });
+  });
+
+  describe("provider usage limits (the Claude or Codex 5-hour window)", () => {
+    const START = Date.parse("2026-11-06T10:00:00Z");
+    const RESET = Date.parse("2026-11-06T12:30:00Z");
+    const limitOf = (resetsAtMs: number) => ({
+      errorInfo: { category: "rate-limit", httpStatusCode: 429, providerCode: null },
+      rateLimits: { kind: "subscription-window", status: "blocked", providerId: "claude-code", overageReason: null, overageStatus: null, reachedReason: null, windows: [{ label: "5h", providerKey: null, resetsAtMs, status: "blocked" }] },
+    });
+    /** The thread's turn fails on the limit: BB announces thread.failed, then turn.failed. */
+    const hitLimit = async (threadId: string, resetsAtMs = RESET, opts: { turnFailed?: boolean; eventsReadable?: boolean } = {}) => {
+      if (opts.eventsReadable !== false) failures[threadId] = limitOf(resetsAtMs);
+      perThread[threadId] = { status: "error", updatedAt: Date.now() };
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: threadId, status: "error" }), error: "Claude usage limit reached" } as never);
+      await settleJobs();
+      if (opts.turnFailed !== false) {
+        await host.harness.behavior.emitThreadEvent("turn.failed", { threadId, requestId: "req_1", turnId: null, inputAccepted: true, attemptNumber: 1, originPluginId: "chief-of-staff", ...limitOf(resetsAtMs) } as never);
+        await settleJobs();
+      }
+    };
+    /** BB's retry runs once the window resets: the thread works again. */
+    const resumed = async (threadId: string) => {
+      perThread[threadId] = { status: "active", updatedAt: Date.now() };
+      delete failures[threadId];
+      queuedRetry[threadId] = false;
+      await sweep();
+    };
+    const at = (ms: number) => vi.setSystemTime(ms);
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      at(START);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("waits out the builder's limit and continues the same turn after the reset", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      const prompts = sent.length;
+      await hitLimit("thr_1");
+      expect(await roster()).toMatchObject({ detail: "retrying", actor: "system", current: ["Build"], lastError: null, activity: "Build: usage limit reached; continues after 12:30 UTC" });
+      // One retry of the failed turn, shortly after the reset.
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ threadId: "thr_1", reason: expect.stringContaining("Usage limit") });
+      expect(retries[0]!.sendAt).toBeGreaterThanOrEqual(RESET + 15_000);
+      expect(retries[0]!.sendAt).toBeLessThan(RESET + 60_000);
+
+      // Hours of sweeps before the reset: not failed, not stalled, nothing re-sent.
+      for (let t = START; t < RESET; t += 40 * 60_000) {
+        at(t);
+        await sweep();
+        expect(await roster()).toMatchObject({ detail: "retrying", stalled: false });
+      }
+      expect(retries).toHaveLength(1);
+      expect(sent.length).toBe(prompts);
+
+      at(RESET + 60_000);
+      await resumed("thr_1");
+      expect(await roster()).toMatchObject({ detail: "agent", activity: "Build: agent working" });
+      await report("build");
+      await idle();
+      expect(ranChecks()).toBe(1);
+      expect(sent.length).toBe(prompts);
+    });
+
+    it("leaves the retry to BB when provider-retry already queued one", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      queuedRetry.thr_1 = true;
+      await hitLimit("thr_1");
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      expect(retries).toEqual([]);
+    });
+
+    it("handles thread.failed and turn.failed arriving back to back once", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      failures.thr_1 = limitOf(RESET);
+      perThread.thr_1 = { status: "error", updatedAt: Date.now() };
+      await Promise.all([
+        host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "Claude usage limit reached" } as never),
+        host.harness.behavior.emitThreadEvent("turn.failed", { threadId: "thr_1", requestId: "req_1", turnId: null, inputAccepted: true, attemptNumber: 1, originPluginId: "chief-of-staff", ...limitOf(RESET) } as never),
+      ]);
+      await settleJobs();
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      expect(retries).toHaveLength(1);
+      const store = new StateStore(host.bb.storage.database());
+      expect(store.listLog({ limit: 50 }).filter((e) => e.kind === "usage_limit")).toHaveLength(1);
+    });
+
+    it("takes back a builder failure recorded before BB said it was a usage limit", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1", RESET, { eventsReadable: false });
+      expect(await roster()).toMatchObject({ detail: "retrying", lastError: null, activity: "Build: usage limit reached; continues after 12:30 UTC" });
+      expect(retries).toHaveLength(1);
+    });
+
+    it("waits out a step thread's limit and takes the report of the retried turn", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      expect(await roster()).toMatchObject({ current: ["Review"], detail: "agent" });
+      await hitLimit("thr_review");
+      expect(await roster()).toMatchObject({ current: ["Review"], detail: "retrying", waitingKind: null, activity: "Review: usage limit reached; continues after 12:30 UTC" });
+      at(RESET + 60_000);
+      await resumed("thr_review");
+      expect(await roster()).toMatchObject({ current: ["Review"], detail: "agent" });
+      await report("review", "done", "Looks good", "thr_review");
+      await idle("Looks good", "thr_review");
+      expect((await roster()).current).not.toContain("Review");
+    });
+
+    it("hands a limit that resets days away to a person, as before", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1", START + 3 * 24 * 60 * 60_000);
+      expect(await roster()).toMatchObject({ detail: "failed", lastError: "Claude usage limit reached" });
+      expect(retries).toEqual([]);
+    });
+
+    it("retries itself when nobody did, and hands the step to a person when the limit does not lift", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1");
+      // The scheduled retry was lost (deleted from the queue): Chief of Staff asks again after the reset.
+      queuedRetry.thr_1 = false;
+      at(RESET + 10 * 60_000 + 30_000);
+      await sweep();
+      expect(retries).toHaveLength(2);
+      expect(retries[1]!.sendAt).toBeUndefined();
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      // Still failing two hours on: a person decides.
+      queuedRetry.thr_1 = false;
+      at(RESET + 2 * 60 * 60_000 + 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ detail: "failed", lastError: expect.stringContaining("usage limit did not lift") });
+    });
+
+    it("keeps a step thread whose limit did not lift with the person on later sweeps", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      await hitLimit("thr_review");
+      queuedRetry.thr_review = true; // BB's retry stays queued but the thread never recovers
+      at(RESET + 2 * 60 * 60_000 + 60_000);
+      await sweep();
+      const parked = await roster();
+      expect(parked).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error", current: ["Review"] });
+      expect(parked.waitingReason).toContain("usage limit did not lift");
+      for (let i = 1; i <= 3; i++) {
+        at(RESET + 2 * 60 * 60_000 + 60_000 + i * 60_000);
+        await sweep();
+        expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error" });
+      }
+    });
   });
 
   it("revives a failed item when its thread is resumed", async () => {

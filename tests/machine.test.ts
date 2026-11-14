@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MAX_RATE_LIMIT_DEFERRALS, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MAX_RATE_LIMIT_DEFERRALS, deriveStatus, limitedNode, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
@@ -780,6 +780,96 @@ describe("stale errors (#24)", () => {
     [review] = run(review, { type: "thread_failed", step: null, agent: 0, error: "provider crashed" });
     [review] = run(review, { type: "delivery_ack", step: "review", agent: 0, round: 1 });
     expect([review.status, review.lastError]).toEqual(["failed", "provider crashed"]);
+  });
+});
+
+describe("usage limits", () => {
+  const RESET = "2026-11-07T14:05:00.000Z";
+  const limited = (step: string, agent = 0, threadId = "thr_1"): MachineEvent => ({ type: "usage_limited", step, agent, until: RESET, threadId });
+
+  it("keeps the step running while the agent waits out a usage limit, then takes its report", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]), { threadId: "thr_1" });
+    [item] = run(item, { type: "start" });
+    let fx: Effect[];
+    [item, fx] = run(item, limited("build"));
+    expect(item.nodes.build).toMatchObject({ status: "running", round: 1, limits: { 0: { until: RESET, threadId: "thr_1" } }, limitCount: 1 });
+    expect(item.status).toBe("retrying");
+    expect(fx).toEqual([{ type: "notify", title: "Usage limit reached: acme/app#12", body: "Build waits for the provider's usage limit to reset at 14:05 UTC, then continues on its own." }]);
+    // The sweep sees the same limit again: no second notification or count.
+    [item, fx] = run(item, limited("build"));
+    expect(fx).toEqual([]);
+    expect(item.nodes.build!.limitCount).toBe(1);
+    // BB retries the turn at the reset; the agent carries on and reports.
+    [item] = run(item, { type: "turn_started", step: "build", agent: 0 });
+    expect(item.status).toBe("agent");
+    expect(item.nodes.build!.limits).toEqual({});
+    [item, fx] = run(item, ended("build", report(), item));
+    expect(item.status).toBe("done");
+    expect(agentFx(fx)).toEqual([]);
+  });
+
+  it("counts a new limit after the agent resumed", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, limited("build"));
+    [item] = run(item, { type: "turn_started", step: "build", agent: 0 });
+    const [again, fx] = run(item, limited("build"));
+    expect(again.nodes.build!.limitCount).toBe(2);
+    expect(fx.map((e) => e.type)).toEqual(["notify"]);
+  });
+
+  it("stays with the agents while a sibling on the same step still works", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, limited("review", 1, "thr_r2"));
+    expect(item.status).toBe("agent");
+    expect(limitedNode(item.nodes.review!)).toBe(false);
+    [item] = run(item, ended("review", report(), item, 0));
+    expect(item.status).toBe("retrying");
+    expect(limitedNode(item.nodes.review!)).toBe(true);
+  });
+
+  it("revives a builder whose failure was recorded before the limit was known", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]), { threadId: "thr_1" });
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "thread_failed", step: null, agent: 0, error: "Claude usage limit reached" });
+    expect(item.status).toBe("failed");
+    [item] = run(item, limited("build"));
+    expect([item.status, item.lastError, item.finishedAt]).toEqual(["retrying", null, null]);
+    expect(item.nodes.build).toMatchObject({ status: "running", limits: { 0: { until: RESET } } });
+  });
+
+  it("does not revive a task whose PR was closed", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "pr_closed" });
+    [item] = run(item, limited("build"));
+    expect(item.status).toBe("failed");
+  });
+
+  it("un-parks a step thread whose failure turned out to be a usage limit", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "usage limit" });
+    expect(item.status).toBe("waiting_on_human");
+    [item] = run(item, limited("review", 0, "thr_review"));
+    expect(item.status).toBe("retrying");
+    expect(item.nodes.review).toMatchObject({ status: "running", waiting: null, retry: null, agentRetries: {} });
+    [item] = run(item, ended("review", report(), item));
+    expect(item.status).toBe("done");
+  });
+
+  it("drops the wait when the thread then fails for good, and when the step restarts", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, limited("review"));
+    const [dead] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "the usage limit did not lift" });
+    expect(dead.nodes.review!.limits).toEqual({});
+    expect(dead.status).toBe("waiting_on_human");
+    const [rerun] = run(item, { type: "rerun", step: "review" });
+    expect(rerun.nodes.review).toMatchObject({ status: "running", round: 2 });
+    expect(rerun.nodes.review!.limits).toBeUndefined();
+    expect(rerun.nodes.review!.limitCount).toBeUndefined();
   });
 });
 

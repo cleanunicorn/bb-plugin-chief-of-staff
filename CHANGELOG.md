@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A task waits out a Claude or Codex usage limit instead of failing.** When
+  an agent's turn stops on the provider's subscription window (the 5-hour
+  limit), its step keeps running and shows "usage limit reached; continues
+  after 14:05 UTC". Once the window resets BB retries the failed turn and the
+  agent carries on where it stopped, in the same thread, with no new prompt.
+  You get one notification when the limit is hit. BB's provider-retry usually
+  queues that retry, and Chief of Staff queues one itself when it did not. A
+  reset more than 6 hours away (a weekly cap), a limit hit 5 times on one step,
+  or one still in force 2 hours after its reset goes to you as a failure, as
+  before. Credit and spend limits are still failures.
+
 - **Chief of Staff opens without crashing.** The activity feed omits its
   pagination cursor until viewing older entries, keeping query inputs valid JSON.
 
