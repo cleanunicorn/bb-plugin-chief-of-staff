@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DOCUMENT, normalizeWorkflow, parseWorkflows, serializeWorkflows, validateDocument, workflowProblems, workflowSchema, type Workflow, type WorkflowsDocument } from "../src/workflow";
+import { DEFAULT_DOCUMENT, DEFAULT_WORKFLOW, blankStep, normalizeWorkflow, parseWorkflows, serializeWorkflows, validateDocument, workflowProblems, workflowSchema, type Workflow, type WorkflowsDocument } from "../src/workflow";
 
 type Raw = Record<string, unknown>;
 const wf = (steps: unknown[]) => ({ id: "w", name: "w", steps }) as unknown as Workflow;
@@ -122,7 +122,26 @@ describe("workflowProblems", () => {
 
   it("names a step without a name by its number in the graph checks too", () => {
     const problems = workflowProblems(draft((d) => Object.assign(d.workflows[0]!.steps[2]!, { name: "", onFail: "ship" })));
-    expect(problems).toContainEqual({ workflow: 0, message: "step 3 (test): on fail must go back to a step before it (Ship is not)", text: 'Workflow "Delivery": step 3 (test): on fail must go back to a step before it (Ship is not)' });
+    expect(problems).toContainEqual({ workflow: 0, step: 2, message: "step 3 (test): on fail must go back to a step before it (Ship is not)", text: 'Workflow "Delivery": step 3 (test): on fail must go back to a step before it (Ship is not)' });
+  });
+
+  it("locates every problem of an unconnected Check at that step", () => {
+    const problems = workflowProblems({ default: "default", workflows: [{ ...DEFAULT_WORKFLOW, steps: [...DEFAULT_WORKFLOW.steps, blankStep("check", "new-check", "New check")] }] });
+    expect(problems.map((p) => [p.step, p.message])).toEqual([
+      [4, "New check: needs a step that writes code before it"],
+      // A pair is located at its later step: the one just added, not the step it was always next to.
+      [4, "Build and New check could run at the same time, but both change the worktree; connect one after the other"],
+      [4, "Ship and New check could run at the same time, but both change the worktree; connect one after the other"],
+    ]);
+  });
+
+  it("locates a duplicate step id at the second step and a loop at none", () => {
+    const duplicate = workflowProblems(draft((d) => (d.workflows[0]!.steps[3]!.id = "build")));
+    expect(duplicate).toContainEqual(expect.objectContaining({ workflow: 0, step: 3, message: 'two steps have the id "build"' }));
+    const loop = workflowProblems(draft((d) => (d.workflows[0]!.steps[3]!.next = ["build"])));
+    const arrows = loop.find((p) => p.message.startsWith("the arrows form a loop"))!;
+    expect(arrows).toBeDefined();
+    expect(arrows).not.toHaveProperty("step");
   });
 
   it("reports graph and document problems with the workflow they belong to", () => {

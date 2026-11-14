@@ -359,15 +359,24 @@ export function settingsFor(wf: Workflow, id: string, nodes?: Record<string, { r
 
 /** Problems that make a workflow unrunnable, as human-readable messages. */
 export function validateWorkflow(wf: Workflow): string[] {
-  return graphProblems(wf, (s) => s.name);
+  return graphProblems(wf, (s) => s.name).map((p) => p.text);
 }
 
-/** The graph checks behind `validateWorkflow`, naming steps with `label`. */
-function graphProblems(wf: Workflow, label: (s: Step) => string): string[] {
-  const problems: string[] = [];
+/** A graph problem and the index of the step it is about, if one is. */
+type GraphProblem = { text: string; step?: number };
+
+/**
+ * The graph checks behind `validateWorkflow`, naming steps with `label`.
+ * Each problem is located at the step it names first, except: a duplicate id
+ * at its second step, two steps that could run at once at the later one in
+ * the list (usually the one just added), and a loop at none.
+ */
+function graphProblems(wf: Workflow, label: (s: Step) => string): GraphProblem[] {
+  const problems: GraphProblem[] = [];
+  const add = (text: string, at?: Step) => problems.push(at ? { text, step: wf.steps.indexOf(at) } : { text });
   const ids = new Set<string>();
   for (const s of wf.steps) {
-    if (ids.has(s.id)) problems.push(`two steps have the id "${s.id}"`);
+    if (ids.has(s.id)) add(`two steps have the id "${s.id}"`, s);
     ids.add(s.id);
   }
   const name = (id: string) => {
@@ -376,32 +385,32 @@ function graphProblems(wf: Workflow, label: (s: Step) => string): string[] {
   };
   for (const s of wf.steps) {
     for (const n of s.next) {
-      if (n === s.id) problems.push(`${label(s)} points at itself`);
-      else if (!ids.has(n)) problems.push(`${label(s)} points at a missing step "${n}"`);
+      if (n === s.id) add(`${label(s)} points at itself`, s);
+      else if (!ids.has(n)) add(`${label(s)} points at a missing step "${n}"`, s);
     }
   }
   if (topoOrder(wf).some((id, i, order) => predecessors(wf, id).some((p) => order.indexOf(p) > i))) {
-    problems.push("the arrows form a loop; use “on fail” to go back to an earlier step");
+    add("the arrows form a loop; use “on fail” to go back to an earlier step");
   }
   for (const s of wf.steps) {
-    if (s.type === "agent" && s.writes && s.agents > 1) problems.push(`${label(s)}: only read-only steps can run several agents`);
-    if (s.type === "agent" && s.onFail && !s.verdict) problems.push(`${label(s)}: “on fail” needs the pass/fail verdict switched on`);
+    if (s.type === "agent" && s.writes && s.agents > 1) add(`${label(s)}: only read-only steps can run several agents`, s);
+    if (s.type === "agent" && s.onFail && !s.verdict) add(`${label(s)}: “on fail” needs the pass/fail verdict switched on`, s);
     if (s.onFail) {
-      if (!ids.has(s.onFail)) problems.push(`${label(s)}: on fail goes to a missing step "${s.onFail}"`);
-      else if (s.onFail !== s.id && !reachable(wf, s.onFail, s.id)) problems.push(`${label(s)}: on fail must go back to a step before it (${name(s.onFail)} is not)`);
+      if (!ids.has(s.onFail)) add(`${label(s)}: on fail goes to a missing step "${s.onFail}"`, s);
+      else if (s.onFail !== s.id && !reachable(wf, s.onFail, s.id)) add(`${label(s)}: on fail must go back to a step before it (${name(s.onFail)} is not)`, s);
     }
     if (s.type === "agent" && s.chooses.length) {
       const seen = new Set<string>();
       for (const c of s.chooses) {
-        if (seen.has(c.id)) problems.push(`${label(s)}: two model choices have the id "${c.id}"`);
+        if (seen.has(c.id)) add(`${label(s)}: two model choices have the id "${c.id}"`, s);
         seen.add(c.id);
-        if (!c.providerId?.trim() && !c.model?.trim() && !c.reasoningLevel?.trim()) problems.push(`${label(s)}: model choice "${c.id}" sets nothing`);
+        if (!c.providerId?.trim() && !c.model?.trim() && !c.reasoningLevel?.trim()) add(`${label(s)}: model choice "${c.id}" sets nothing`, s);
       }
     }
-    if (s.type === "model" && modelMode(s) === "fixed" && !s.providerId?.trim() && !s.model?.trim() && !s.reasoningLevel?.trim()) problems.push(`${label(s)}: set a provider, a model or a reasoning level`);
+    if (s.type === "model" && modelMode(s) === "fixed" && !s.providerId?.trim() && !s.model?.trim() && !s.reasoningLevel?.trim()) add(`${label(s)}: set a provider, a model or a reasoning level`, s);
     if (s.type !== "agent" && s.type !== "model") {
       const writerBefore = wf.steps.some((w) => w.type === "agent" && w.writes && reachable(wf, w.id, s.id));
-      if (!writerBefore) problems.push(`${label(s)}: needs a step that writes code before it`);
+      if (!writerBefore) add(`${label(s)}: needs a step that writes code before it`, s);
     }
   }
   // Steps sharing the worktree exclusively must run one after the other.
@@ -410,10 +419,12 @@ function graphProblems(wf: Workflow, label: (s: Step) => string): string[] {
     for (let j = i + 1; j < exclusive.length; j++) {
       const a = exclusive[i]!;
       const b = exclusive[j]!;
-      if (!reachable(wf, a.id, b.id) && !reachable(wf, b.id, a.id)) problems.push(`${label(a)} and ${label(b)} could run at the same time, but both change the worktree; connect one after the other`);
+      if (!reachable(wf, a.id, b.id) && !reachable(wf, b.id, a.id)) add(`${label(a)} and ${label(b)} could run at the same time, but both change the worktree; connect one after the other`, b);
     }
   }
-  return [...new Set(problems)];
+  // The same words twice are one problem, located where they first came up.
+  const seen = new Set<string>();
+  return problems.filter((p) => !seen.has(p.text) && seen.add(p.text));
 }
 
 /** Document check: workflow `i` reuses the id of an earlier one. */
@@ -576,7 +587,7 @@ export function workflowProblems(doc: WorkflowsDocument): WorkflowProblem[] {
       const duplicate = duplicateWorkflowId(checked, i);
       if (duplicate) out.push({ text: upperFirst(duplicate), message: upperFirst(duplicate) });
       const where = workflowLabel(wf, i);
-      for (const p of graphProblems(wf, (s) => stepLabel(s, wf.steps.indexOf(s), false))) out.push({ workflow: i, text: `${where}: ${p}`, message: p });
+      for (const p of graphProblems(wf, (s) => stepLabel(s, wf.steps.indexOf(s), false))) out.push({ workflow: i, ...(p.step === undefined ? {} : { step: p.step }), text: `${where}: ${p.text}`, message: p.text });
     });
     const missing = missingDefault(checked);
     if (missing) out.push({ text: upperFirst(missing), message: upperFirst(missing) });
