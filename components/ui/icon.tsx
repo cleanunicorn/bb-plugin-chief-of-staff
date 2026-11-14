@@ -45,7 +45,8 @@ export const HOST_ICON_CATALOG: ReadonlySet<string> = new Set([
 // into host names, or into plugin icons (`chief-of-staff/<key>`, package.json bb.branding.experimental_icons), so
 // none draws its fallback. tests/hostIcons.test.ts checks every name the source requests against the catalog.
 export const HOST_ICON_NAMES: Record<string, string> = {
-  Activity: "ChartColumn",
+  // A pulse: when a task last did something. ChartColumn is Throughput.
+  Activity: "chief-of-staff/activity",
   ArrowDownToLine: "Download",
   ArrowUpFromLine: "ArchiveRestore",
   BarChart3: "ChartColumn",
@@ -58,12 +59,13 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   CircleDot: "CircleCheck",
   ClipboardCheck: "ListTodo",
   Cog: "Settings",
-  Coins: "Layers",
+  // Cost. Layers is Task slots.
+  Coins: "chief-of-staff/coins",
   Command: "Terminal",
   Ellipsis: "MoreHorizontal",
   FlaskConical: "Beaker",
   FolderGit2: "FolderGit",
-  Gauge: "ChartColumn",
+  Gauge: "Limitation",
   Hand: "UserRound",
   History: "TimeSchedule",
   // Stalled needs the user; the host has no hourglass, and its Clock is a task's age and Pause means paused.
@@ -78,6 +80,8 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   // "No report": the step ended without its report. MessageQuestion stays the agent's question.
   MessageSquareWarning: "FileQuestion",
   MousePointerClick: "Target",
+  // The Activity panel: a feed of what happened.
+  Newspaper: "News01",
   Network: "Workflow",
   // "CoS stuck". AlertCircle stays a card's error line and the serious tone.
   OctagonAlert: "chief-of-staff/octagon-alert",

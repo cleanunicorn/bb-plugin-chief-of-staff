@@ -181,3 +181,44 @@ describe("state marks", () => {
     expect(tones.has(hostIconName(WAITING_LABEL.cos_error!.icon))).toBe(false);
   });
 });
+
+const { CARD_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, TASK_SUMMARY_ICON } = dashboardIcons;
+
+describe("task card", () => {
+  const { finishedAge, age, ...rows } = CARD_ICON;
+  it.each([
+    ["active", age],
+    ["finished", finishedAge],
+  ])("gives each row of the %s card its own icon", (_kind, ageIcon) => {
+    expect(collisions(prefixed("card", { ...rows, age: ageIcon }))).toEqual([]);
+  });
+
+  it("never repeats a state mark in the card's rows, so a queued card shows Clock once at most", () => {
+    const rowHosts = new Set(Object.values(CARD_ICON).map(hostIconName));
+    const clashes = Object.entries(STATE_MARKS).filter(([, name]) => rowHosts.has(hostIconName(name)));
+    expect(clashes).toEqual([]);
+  });
+});
+
+describe("panel titles", () => {
+  it("gives each dashboard panel its own icon", () => {
+    expect(collisions(prefixed("panel", PANEL_ICON))).toEqual([]);
+  });
+
+  it("keeps Last activity, the Activity panel, Throughput and Capacity apart", () => {
+    expect(collisions({ lastActivity: CARD_ICON.lastActivity, activity: PANEL_ICON.activity, throughput: PANEL_ICON.throughput, capacity: PANEL_ICON.capacity })).toEqual([]);
+  });
+
+  it("draws Show activity like the Activity panel it opens", () => {
+    expect(hostIconName(SHOW_ACTIVITY_ICON)).toBe(hostIconName(PANEL_ICON.activity));
+  });
+
+  it("keeps Tokens and Cost apart from Task slots", () => {
+    expect(collisions({ tokens: CARD_ICON.tokens, slots: FILTER_ICON.taskSlots })).toEqual([]);
+    expect(collisions({ cost: CARD_ICON.cost, slots: FILTER_ICON.taskSlots })).toEqual([]);
+  });
+});
+
+it("gives each item of a task's summary its own icon", () => {
+  expect(collisions(prefixed("summary", TASK_SUMMARY_ICON))).toEqual([]);
+});

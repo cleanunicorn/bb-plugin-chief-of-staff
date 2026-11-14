@@ -17,7 +17,9 @@
         "user-check": "./assets/user-check.svg",
         "user-x": "./assets/user-x.svg",
         "hourglass": "./assets/hourglass.svg",
-        "octagon-alert": "./assets/octagon-alert.svg"
+        "octagon-alert": "./assets/octagon-alert.svg",
+        "coins": "./assets/coins.svg",
+        "activity": "./assets/activity.svg"
       }
     },
     "server": "./server.ts",

@@ -40,21 +40,21 @@ export const CARD_ICON = {
   age: "Timer",
   finishedAge: "CalendarCheck",
   lastActivity: "Activity",
-  tokens: "Coins",
+  tokens: "AiContentGenerator01", // host name: Lucide has no token icon
   cost: "Coins",
-  fixCycles: "RefreshCw",
+  fixCycles: "Undo2", // sent back to fix, like Loop-backs; RefreshCw is the retrying state
   error: "CircleAlert",
 } as const;
 
 /** The card menu's "Show activity", which opens the Activity panel. */
-export const SHOW_ACTIVITY_ICON = "Activity";
+export const SHOW_ACTIVITY_ICON = "Newspaper";
 
 /** Panel titles on the dashboard. */
 export const PANEL_ICON = {
   tasks: "Bot",
   throughput: "ChartColumn",
   capacity: "Gauge",
-  activity: "Activity",
+  activity: "Newspaper",
   repositories: "FolderGit2",
   intake: "Inbox",
   pullRequests: "GitPullRequest",
@@ -80,4 +80,14 @@ export const FILTER_ICON = {
 export const VIEW_ICON = {
   chart: "ChartColumn",
   table: "Table",
+} as const;
+
+/** The summary row of a task's run view (taskRunView.tsx TaskSummary). */
+export const TASK_SUMMARY_ICON = {
+  status: "Activity",
+  elapsed: "Timer",
+  steps: "ListChecks",
+  loopBacks: "Undo2",
+  pr: "GitPullRequest",
+  branch: "GitBranch",
 } as const;

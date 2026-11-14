@@ -9,6 +9,7 @@ import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { STATUS, duration, relative } from "./viz";
+import { TASK_SUMMARY_ICON } from "./dashboardIcons";
 import { STEP_TYPE_META, liveTone, type LiveStatus } from "./workflowCanvas";
 import { PIVOTAL_KINDS, journalLine, stepInputs, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail } from "./runModel";
 import { modelMode, stepById, type Step, type Workflow } from "../../src/workflow";
@@ -50,17 +51,17 @@ const who = (actor: string) => (actor === "rpc:client" ? "you" : null);
 export function TaskSummary({ task, workflow, live, loops, now, oneLine = false }: { task: TaskDetail | undefined; workflow: Workflow; live: Record<string, LiveStatus>; loops: LoopSummary; now: number; oneLine?: boolean }) {
   const done = workflow.steps.filter((s) => live[s.id]?.status === "done").length;
   const items: { icon: string; label: string; value: ReactNode; title?: string }[] = [];
-  if (task) items.push({ icon: "Activity", label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
-  if (task) items.push({ icon: "Timer", label: task.finishedAt ? "Took" : "Running for", value: duration(minutesBetween(task.createdAt, task.finishedAt, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
-  items.push({ icon: "ListChecks", label: "Steps done", value: `${done}/${workflow.steps.length}` });
+  if (task) items.push({ icon: TASK_SUMMARY_ICON.status, label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
+  if (task) items.push({ icon: TASK_SUMMARY_ICON.elapsed, label: task.finishedAt ? "Took" : "Running for", value: duration(minutesBetween(task.createdAt, task.finishedAt, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
+  items.push({ icon: TASK_SUMMARY_ICON.steps, label: "Steps done", value: `${done}/${workflow.steps.length}` });
   items.push({
-    icon: "Undo2",
+    icon: TASK_SUMMARY_ICON.loopBacks,
     label: "Loop-backs",
     value: `${loops.approximate && loops.total ? "≈" : ""}${loops.total}`,
     title: loops.loops.map((l) => `${l.from ? (stepById(workflow, l.from)?.name ?? l.from) : "You"} → ${stepById(workflow, l.to)?.name ?? l.to} ×${l.count}`).join("\n") || "Nothing was sent back",
   });
-  if (task?.prUrl) items.push({ icon: "GitPullRequest", label: "PR", value: <UrlLink href={task.prUrl}>#{task.prNumber}</UrlLink> });
-  if (task?.branch) items.push({ icon: "GitBranch", label: "Branch", value: <span className="font-mono">{task.branch}</span>, title: task.branch });
+  if (task?.prUrl) items.push({ icon: TASK_SUMMARY_ICON.pr, label: "PR", value: <UrlLink href={task.prUrl}>#{task.prNumber}</UrlLink> });
+  if (task?.branch) items.push({ icon: TASK_SUMMARY_ICON.branch, label: "Branch", value: <span className="font-mono">{task.branch}</span>, title: task.branch });
   return (
     <dl aria-label="Task summary" className={cn("flex shrink-0 gap-x-4 gap-y-1 text-xs", oneLine ? "flex-nowrap overflow-x-auto [scrollbar-width:thin]" : "flex-wrap")}>
       {items.map((i, n) => (
