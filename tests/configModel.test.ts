@@ -25,6 +25,16 @@ describe("configModel", () => {
     expect(server.value.map((r) => `${r.owner}/${r.repo}`)).toEqual(["acme/app", "acme/api"]);
   });
 
+  // A repository limit of 0 is valid and starts no new tasks there (#125). The repos
+  // document loads through this schema, so rejecting 0 would fail every repository.
+  it("loads, validates and round-trips a repository limit of 0", () => {
+    const loaded = loadRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", maxConcurrent: 0 }, { owner: "acme", repo: "api", projectId: "proj_2" }] }));
+    if (!loaded.ok) throw new Error(loaded.error);
+    expect(loaded.items.map((r) => r.maxConcurrent)).toEqual([0, 2]);
+    expect(validateRepos(loaded.items)).toEqual({});
+    expect(loadRepos(serializeRepos(loaded.items))).toEqual(loaded);
+  });
+
   it("keeps entries that only miss their identity so they can be fixed", () => {
     const loaded = loadRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "" }, { owner: "acme", repo: "api", projectId: "p" }] }));
     if (!loaded.ok) throw new Error(loaded.error);
@@ -132,6 +142,7 @@ describe("project-inferred repository", () => {
 describe("generalSettingsProblems", () => {
   it("finds nothing in valid changes or none", () => {
     expect(generalSettingsProblems({})).toEqual([]);
+    // A total of 0 is deliberate: it starts no new tasks while running ones finish (#125).
     expect(generalSettingsProblems({ stallThresholdMinutes: 1440, maxConcurrentTotal: 0, defaultModel: "m".repeat(200), notifyPush: false })).toEqual([]);
   });
 

@@ -433,7 +433,7 @@ The same settings, as stored:
 | `githubToken` (secret) | Token with `repo` scope. Empty → `gh auth token` on the server host. Never logged. |
 | `workflow` (JSON) | Your workflows and which one is the default, see above. |
 | `repos` (JSON) | Repository list, see below. |
-| `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. |
+| `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. A `maxConcurrentTotal` of 0 starts no new tasks while running ones finish; the Pipeline tab then reads "Task slots: N / 0" with a notice. |
 | `defaultProviderId`, `defaultModel` | Used when a repo does not set its own. |
 | `notifyPush` | Push notifications through the push-notifications plugin. |
 | `archiveThreadsOnDone` | Archive a task's builder and step threads once its workflow is done or you mark it done (default on). Failed tasks keep theirs. |
@@ -465,6 +465,9 @@ so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
 when they carry every label in `issueFilter.labels` and, if
 `issueFilter.assignee` is set, are assigned to that user. With neither set,
 no issue is picked up. Set `intake: false` to run only tasks you start.
+
+`maxConcurrent` (default 2) is how many tasks run at once in the repository.
+At 0 no new task starts there; tasks already running finish. Configure warns before you save a limit of 0.
 
 `issueComments` (default `true`) controls the comments Chief of Staff leaves on
 the issue. When an agent starts it posts one status comment and, on a restart
