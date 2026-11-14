@@ -21,7 +21,8 @@ import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dial
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
-import { configSectionFromSubPath } from "@/components/cos/configRoute";
+import { configSectionFromSubPath, configSubPath } from "@/components/cos/configRoute";
+import type { ConfigSection } from "@/components/cos/configRoute";
 import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
@@ -1355,6 +1356,9 @@ export function Dashboard({ subPath }: { subPath: string }) {
     return TABS.some((t) => t.id === first) ? (first as Tab) : "agents";
   }, [subPath]);
   const goTab = useCallback((t: Tab) => navigate.toPluginPanel("cos", { subPath: t }), [navigate]);
+  // The address is the only record of Configure's section: picking one pushes it, so Back, reload and links follow.
+  const configSection = useMemo(() => configSectionFromSubPath(subPath), [subPath]);
+  const goConfigSection = useCallback((s: ConfigSection) => navigate.toPluginPanel("cos", { subPath: configSubPath(s) }), [navigate]);
   const [alert, setAlert] = useState<{ title: string; body: string } | null>(null);
   // Held here so a task card's "Show activity" can narrow the feed, and the choice survives switching tabs.
   const [activityTask, setActivityTask] = useState<ActivityTask | null>(null);
@@ -1414,7 +1418,7 @@ export function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSectionFromSubPath(subPath)} />}
+        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} section={configSection} onSectionChange={goConfigSection} />}
         {tab === "config" ? null : <ActivityFeed task={activityTask} onTaskChange={setActivityTask} headingRef={activityHeading} />}
       </div>
     </PaletteProvider>
@@ -1424,7 +1428,7 @@ export function Dashboard({ subPath }: { subPath: string }) {
 function ConfigureLink({ section, label }: { section: "repos"; label: string }) {
   const navigate = useBbNavigate();
   return (
-    <Button size="sm" className="mt-2" onClick={() => navigate.toPluginPanel("cos", { subPath: `config/${section}` })}>
+    <Button size="sm" className="mt-2" onClick={() => navigate.toPluginPanel("cos", { subPath: configSubPath(section) })}>
       <Icon name="Plus" fallback="Circle" aria-hidden /> {label}
     </Button>
   );

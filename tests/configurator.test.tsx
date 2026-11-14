@@ -74,6 +74,29 @@ it("lists exactly the sections the page address can name, in the same order", ()
   expect(SECTIONS.map((s) => s.id)).toEqual([...CONFIG_SECTIONS]);
 });
 
+const currentSection = () => container.querySelector('nav [aria-current="page"]')!.textContent;
+const sectionButton = (label: string) => Array.from(container.querySelectorAll("nav button")).find((b) => b.textContent?.includes(label))!;
+
+it("switches sections on its own when nobody controls the section (the settings page)", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await click(sectionButton("Repositories"));
+  expect(currentSection()).toContain("Repositories");
+  expect(hasButton("Add repository")).toBe(true);
+});
+
+it("asks its owner to change section when the section is controlled, and shows the section it is given", async () => {
+  const onSectionChange = vi.fn();
+  await mount(<Configurator section="general" onSectionChange={onSectionChange} />);
+  await click(sectionButton("General"));
+  expect(onSectionChange).not.toHaveBeenCalled();
+  await click(sectionButton("Repositories"));
+  expect(onSectionChange).toHaveBeenCalledExactlyOnceWith("repos");
+  expect(currentSection()).toContain("General");
+
+  await mount(<Configurator section="repos" onSectionChange={onSectionChange} />);
+  expect(currentSection()).toContain("Repositories");
+});
+
 it("shows no save bar and no unsaved dot on a clean load", async () => {
   await mount(<Configurator initialSection="general" />);
   expect(number(MAX_TASKS)).toBe("8");

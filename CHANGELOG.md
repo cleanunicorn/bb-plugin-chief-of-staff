@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Configure's sections are now part of the page address.** Picking
+  Workflows, Repositories, General, GitHub access or Advanced JSON updates the
+  address to `…/cos/config/<section>`, so Back and Forward move between
+  sections, reload keeps the section you were on, and a copied link opens it.
+  Unsaved drafts survive the move, and the settings page's editor is unchanged.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

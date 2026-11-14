@@ -372,14 +372,36 @@ function LoadFailure({ messages, retrying, onRetry }: { messages: string[]; retr
 /**
  * Pass `drafts` to keep unsaved edits after the Configurator unmounts (the
  * dashboard does, so they survive tab switches); otherwise it keeps its own.
+ * Pass `section` and `onSectionChange` to own the section (the dashboard keeps
+ * it in the page address); otherwise it starts at `initialSection` and keeps its own.
  */
-export function Configurator({ initialSection = "workflow", compact = false, drafts }: { initialSection?: Section; compact?: boolean; drafts?: ConfigDrafts }) {
+export function Configurator({
+  initialSection = "workflow",
+  section: controlledSection,
+  onSectionChange,
+  compact = false,
+  drafts,
+}: {
+  initialSection?: Section;
+  section?: Section;
+  onSectionChange?: (section: Section) => void;
+  compact?: boolean;
+  drafts?: ConfigDrafts;
+}) {
   const rpc = useRpc<Contract>();
   const own = useConfigDrafts();
   const { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, pendingConfig, setPendingConfig, savingRef, clear } = drafts ?? own;
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
   const settings = experimental_useRpcQuery<Contract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
-  const [section, setSection] = useState<Section>(initialSection);
+  const [ownSection, setOwnSection] = useState<Section>(initialSection);
+  const controlled = controlledSection !== undefined && onSectionChange !== undefined;
+  const section = controlled ? controlledSection : ownSection;
+  /** Every section change goes through here; re-selecting the current section does nothing (no extra history entry). */
+  const selectSection = (next: Section) => {
+    if (next === section) return;
+    if (controlled) onSectionChange(next);
+    else setOwnSection(next);
+  };
   const [openRepo, setOpenRepo] = useState<number | null>(null);
   // A "Saved." or error line belongs to this visit; don't show it again after a tab switch.
   useEffect(() => () => setStatus(null), [setStatus]);
@@ -599,7 +621,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const banner = loadErrors
     .filter((e) => e.section !== section)
     .map((e) => `${e.title} JSON does not load: ${e.error}. ${section === "advanced" ? "Repair it below." : "Repair it in Advanced JSON; until then the visual editor leaves it unchanged and does not save it."}`);
-  const openAdvanced = () => setSection("advanced");
+  const openAdvanced = () => selectSection("advanced");
   const visualSection = section === "workflow" || section === "repos" || section === "general";
   // A JSON save sends only the JSON documents and the server validates them, so the visual
   // problems (which point into sections that are inert right now) don't block it.
@@ -618,7 +640,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
             key={s.id}
             type="button"
             aria-current={section === s.id ? "page" : undefined}
-            onClick={() => setSection(s.id)}
+            onClick={() => selectSection(s.id)}
             className={cn("flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors", section === s.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:bg-state-hover hover:text-foreground")}
           >
             <Icon name={s.icon} fallback="Circle" className="size-4" aria-hidden />
@@ -656,7 +678,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                     onClick={() => {
                       editRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
                       setOpenRepo(repoDraft.length);
-                      setSection("repos");
+                      selectSection("repos");
                     }}
                   >
                     <Icon name="Plus" fallback="Circle" aria-hidden /> Add repository
@@ -735,7 +757,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                           className="flex items-start gap-1.5 text-left text-xs hover:underline"
                           style={{ color: STATUS.critical }}
                           onClick={() => {
-                            setSection(p.section);
+                            selectSection(p.section);
                             if (p.repo !== undefined) setOpenRepo(p.repo);
                           }}
                         >
