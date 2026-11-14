@@ -7,7 +7,7 @@
   with active work and in no particular order. Finished tasks are now listed
   in a **Finished** section below the active tasks and above Throughput: one
   compact row each (how it ended, title, issue, PR, when it finished and how
-  long it took, actions), newest first and grouped by day. It shows 10 rows,
+  long it took, actions), newest first and grouped by day. It shows 8 rows,
   then 20 more per click. Filter by outcome (Shipped, Marked done, Failed), by
   repository, or search the title and issue or PR number. Clicking a
   Throughput day, or its "completed" or "failed" count, opens the section

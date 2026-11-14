@@ -531,7 +531,7 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
   const active = useMemo(() => (live ?? []).filter((e) => !isFinished(e)), [live]);
   const activeIds = useMemo(() => new Set(active.map((e) => e.id)), [active]);
   const finished = useFinishedTasks(activeIds, setActionError);
-  const ownView = useFinishedView();
+  const ownView = useFinishedView(!heldView);
   const finishedView = heldView ?? ownView;
   const finishedHeading = useRef<HTMLHeadingElement>(null);
   const finishedQuery = finished.query;
@@ -577,6 +577,8 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
     return counts;
   }, [active]);
   const s = stats.data;
+  const configuredRepos = overview.data?.repos;
+  const repoKeys = useMemo(() => (configuredRepos ?? []).map((r) => r.key), [configuredRepos]);
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
   // The setting defaults to on; until the overview loads, assume it.
   const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
@@ -643,7 +645,7 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
       </p>
       {newTask ? (
         <div id="new-task">
-          <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
+          <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={repoKeys} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
         </div>
       ) : null}
       {failures + stalled + humanInput > 0 ? (
@@ -709,7 +711,7 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
         busy={busy}
         view={finishedView.view}
         onViewChange={finishedView.update}
-        repos={(overview.data?.repos ?? []).map((r) => r.key)}
+        repos={repoKeys}
         headingRef={finishedHeading}
         onAction={(id, action) => void act(id, action)}
         onAsk={confirm.ask}
@@ -743,6 +745,7 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}
               onShowTable={() => setThroughputTable(true)}
               onSelect={showDay}
+              selectLabel={(d) => `Show tasks finished ${fmtDay(d)}`}
               rows={s.daily.map((d) => ({ date: d.date, done: d.done, failed: d.failed }))}
               xKey="date"
               formatX={fmtDay}

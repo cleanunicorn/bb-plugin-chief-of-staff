@@ -27,7 +27,7 @@ to the previous compact rows).
   one task; Problems only applies on top. Message text is unchanged.
 - Since #105 the active grid holds active tasks only. Finished tasks are
   compact rows in a Finished section between the grid and Throughput, newest
-  first, grouped by UTC day, 10 at first then 20 more per click, with outcome,
+  first, grouped by UTC day, 8 at first then 20 more per click, with outcome,
   repository and search filters (`components/cos/finished.tsx`,
   `components/cos/finishedModel.ts`). Throughput's days and counts open it
   filtered. Its view is held by the Dashboard and in local storage
@@ -39,7 +39,7 @@ Finished section (#105): `npm run check` (lint, typecheck, all tests) and
 `npm run build` pass. Unit tests cover ordering, UTC day grouping, paging,
 all seven outcomes, repository, title, `#n`, PR number, date range and
 combined filters, and the stored view. UI tests cover the active grid never
-holding finished tasks, stage filters not hiding them, 10 then 30 rows and the
+holding finished tasks, stage filters not hiding them, 8 then 28 rows and the
 next page fetched, a retried task leaving the list, the "No finished tasks yet"
 and "No finished tasks match" states, Search older, Throughput days and counts,
 and the view surviving a tab switch and a reload. Layout was measured in
@@ -50,8 +50,11 @@ approximate and this is not a live BB install:
 
 | Viewport | Active grid ends | Throughput starts | Activity starts | Row height |
 | --- | --- | --- | --- | --- |
-| 1440 × 1000 | 568 px | 1250 px (+682) | 1535 px (+967) | 36 px |
-| 390 wide (fine pointer) | 1126 px | 2759 px (+1633, about 1.9 screens of 844) | 3247 px (+2121) | 123 px |
+| 1440 × 1000 | 568 px | 1152 px (+584) | 1437 px (+869) | 36 px |
+| 390 wide (fine pointer) | 1126 px | 2486 px (+1360, about 1.6 screens of 844) | 2974 px (+1848) | 123 px |
+
+The first eight rows include one failed row with its "Why it ended" line,
+which adds about 20 px; at 1440 px there is room for about six more.
 
 Before, the issue measured about 4,900 px and 13,650 px for the whole page
 with 54 tasks. On a coarse pointer the row buttons are 40 px tall, which adds

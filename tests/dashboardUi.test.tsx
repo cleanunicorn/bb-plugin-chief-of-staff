@@ -506,7 +506,7 @@ it("renders a finished task whose detail was pruned (#56)", async () => {
   expect(finishedGroup()!.textContent).toContain("Started");
 });
 
-it("shows 10 finished tasks, then 20 more per click, fetching the next page when the loaded ones run out", async () => {
+it("shows 8 finished tasks, then 20 more per click, fetching the next page when the loaded ones run out", async () => {
   const page1 = Array.from({ length: 45 }, (_, i) => finished(`f${i}`, `Finished ${i}`));
   const page2 = Array.from({ length: 10 }, (_, i) => finished(`g${i}`, `Older ${i}`));
   mocks.roster = (input) => ({ entries: input.includeDone ? page1 : [], nextBefore: input.includeDone ? "c1" : null });
@@ -516,15 +516,15 @@ it("shows 10 finished tasks, then 20 more per click, fetching the next page when
     throw new Error(`unexpected cursor ${input.before}`);
   });
   await mount();
-  expect(rowTitles()).toHaveLength(10);
+  expect(rowTitles()).toHaveLength(8);
   expect(finishedPanel().querySelector("h2")!.textContent).toBe("Finished · 45+");
   await act(async () => buttonLabelled("Show 20 more").click());
-  expect(rowTitles()).toHaveLength(30);
+  expect(rowTitles()).toHaveLength(28);
   expect(mocks.call).not.toHaveBeenCalled();
   await act(async () => buttonLabelled("Show 20 more").click());
   expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: false });
-  expect(rowTitles()).toHaveLength(50);
-  expect(rowTitles().at(-1)).toBe("Older 4");
+  expect(rowTitles()).toHaveLength(48);
+  expect(rowTitles().at(-1)).toBe("Older 2");
   await act(async () => buttonLabelled("Show 20 more").click());
   expect(rowTitles()).toHaveLength(55);
   expect(hasButton("Show 20 more")).toBe(false);
@@ -682,9 +682,9 @@ it("starts paging over when a filter changes", async () => {
   mocks.roster = (input) => ({ entries: input.includeDone ? many : [], nextBefore: null });
   await mount();
   await act(async () => buttonLabelled("Show 20 more").click());
-  expect(rowTitles()).toHaveLength(30);
+  expect(rowTitles()).toHaveLength(28);
   await act(async () => outcomeToggle("Shipped").click());
-  expect(rowTitles()).toHaveLength(10);
+  expect(rowTitles()).toHaveLength(8);
   expect(rowTitles()[0]).toBe("Task 0");
   await act(async () => buttonLabelled("Show 20 more").click());
   expect(rowTitles()).toHaveLength(20);
@@ -715,7 +715,7 @@ it("opens a Throughput day's finished tasks from its column, clearing other filt
   await mount();
   await setValue(searchBox(), "Today");
   await act(async () => buttonLabelled("Collapse").click());
-  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(3))}:`))!;
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`Show tasks finished ${fmt(utcDay(3))} (`))!;
   await act(async () => day.click());
   expect(buttonLabelled("Collapse").getAttribute("aria-expanded")).toBe("true");
   expect(searchBox().value).toBe("");
@@ -773,7 +773,7 @@ it("loads older pages for a day until the loaded tasks reach past it", async () 
     throw new Error(`unexpected cursor ${input.before}`);
   });
   await mount();
-  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(7))}:`))!;
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`Show tasks finished ${fmt(utcDay(7))} (`))!;
   await act(async () => day.click());
   await tick();
   expect(mocks.call.mock.calls.map(([, input]) => (input as RosterInput).before)).toEqual(["c1", "c2"]);
@@ -785,7 +785,7 @@ it("stops loading older pages for a day when one fails", async () => {
   mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "Today one", "done", { finishedAt: at(0) })] : [], nextBefore: input.includeDone ? "c1" : null });
   mocks.call.mockRejectedValue(new Error("history unavailable"));
   await mount();
-  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(7))}:`))!;
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`Show tasks finished ${fmt(utcDay(7))} (`))!;
   await act(async () => day.click());
   await tick();
   await tick();
@@ -803,7 +803,7 @@ it("keeps the Finished view, filters and date range when switching to Repos & PR
   mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory().map((e, i) => ({ ...e, finishedAt: at(i) })) : [], nextBefore: null });
   await mount(<Dashboard subPath="agents" />);
   await act(async () => outcomeToggle("Failed").click());
-  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(2))}:`))!;
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`Show tasks finished ${fmt(utcDay(2))} (`))!;
   await act(async () => day.click());
   await act(async () => outcomeToggle("Failed").click());
   await setValue(searchBox(), "deploy");
@@ -1081,7 +1081,7 @@ it.each([
   { outcome: "failed", label: "Failed", icon: "CircleX" },
   { outcome: "marked_failed", label: "Marked failed", icon: "UserX" },
   { outcome: "pr_closed", label: "PR closed", icon: "GitPullRequestClosed" },
-] as const)("labels a finished card by how it ended: $outcome", async ({ outcome, label, icon }) => {
+] as const)("labels a finished row by how it ended: $outcome", async ({ outcome, label, icon }) => {
   const failed = outcome === "failed" || outcome === "marked_failed" || outcome === "pr_closed";
   mocks.entries = [finishedCard({ outcome, detail: failed ? "failed" : "done", status: failed ? "failed" : "done" })];
   await mount();
@@ -1284,4 +1284,93 @@ it("keeps a stored repository in the select even when none of its tasks is loade
   const select = container.querySelector<HTMLSelectElement>('select[aria-label="Repository"]')!;
   expect(select.value).toBe("acme/gone");
   expect(finishedPanel().textContent).toContain("No finished tasks match");
+});
+
+// ---------- review fixes (#105) ----------
+
+it("moves focus to Work overview when an active card marked done leaves the grid", async () => {
+  mocks.entries = [entry()];
+  mocks.call.mockImplementation(async () => {
+    mocks.entries = [entry({ detail: "done", status: "done", actor: "none", current: [], occupiesCapacity: false, outcome: "marked_done", finishedAt: new Date().toISOString() })];
+    return {};
+  });
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Mark done").click());
+  await tick();
+  await act(async () => bodyButton("Mark done").click());
+  await tick(5);
+  expect(activeGroup()).toBeNull();
+  expect(rowTitles()).toEqual(["Fix login"]);
+  expect(document.activeElement?.textContent).toBe("Work overview");
+});
+
+it("moves focus to the Finished heading when a failed row marked done leaves a Failed filter", async () => {
+  mocks.entries = [finished("one", "Fix login", "failed", { outcome: "failed", lastError: "boom", threadId: "thread-1" })];
+  mocks.call.mockImplementation(async () => {
+    mocks.entries = [finished("one", "Fix login", "done", { outcome: "marked_done", lastError: "Marked done" })];
+    return {};
+  });
+  await mount();
+  await act(async () => outcomeToggle("Failed").click());
+  await openMenu();
+  await act(async () => menuItem("Mark done").click());
+  await tick();
+  await act(async () => bodyButton("Mark done").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "mark_done" }]]);
+  expect(finishedGroup()).toBeNull();
+  expect(document.activeElement).toBe(finishedPanel().querySelector("h2"));
+});
+
+it("says older tasks are loading for a date range instead of that none match", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "Today one", "done", { finishedAt: at(0) })] : [], nextBefore: input.includeDone ? "c1" : null });
+  let resolve!: (page: unknown) => void;
+  mocks.call.mockImplementation(() => new Promise((r) => { resolve = r; }));
+  await mount();
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`Show tasks finished ${fmt(utcDay(6))} (`))!;
+  await act(async () => day.click());
+  expect(finishedPanel().textContent).toContain("Loading older finished tasks…");
+  expect(finishedPanel().textContent).not.toContain("No finished tasks match");
+  // The page reaches past the day with nothing on it: older pages cannot match, so there is nothing to search.
+  await act(async () => resolve({ entries: [finished("b", "Eight days ago", "done", { finishedAt: at(8) })], nextBefore: "c2" }));
+  expect(mocks.call).toHaveBeenCalledTimes(1);
+  expect(finishedPanel().textContent).toContain("No finished tasks match");
+  expect(finishedPanel().textContent).toContain("Change or clear the filters.");
+  expect(hasButton("Search older")).toBe(false);
+});
+
+it("does not load older pages for a date range while the section is collapsed", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "Today one", "done", { finishedAt: at(0) })] : [], nextBefore: input.includeDone ? "c1" : null });
+  let resolve!: (page: unknown) => void;
+  mocks.call.mockImplementation(() => new Promise((r) => { resolve = r; }));
+  await mount();
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`Show tasks finished ${fmt(utcDay(10))} (`))!;
+  await act(async () => day.click());
+  await act(async () => buttonLabelled("Collapse").click());
+  await act(async () => resolve({ entries: [finished("b", "Five days ago", "done", { finishedAt: at(5) })], nextBefore: "c2" }));
+  await tick();
+  expect(mocks.call).toHaveBeenCalledTimes(1);
+  await act(async () => buttonLabelled("Expand").click());
+  expect(mocks.call).toHaveBeenCalledTimes(2);
+});
+
+it("puts the first rendered row in the tab order when a task without a finish time is listed first", async () => {
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("legacy", "Legacy task", "done", { finishedAt: null, threadId: "thread-l" }), finished("new", "New task", "done", { finishedAt: new Date().toISOString(), threadId: "thread-n" })] : [], nextBefore: null });
+  await mount();
+  expect(rowTitles()).toEqual(["New task", "Legacy task"]);
+  const [first, second] = Array.from(finishedGroup()!.querySelectorAll("article"));
+  const tabStops = (el: Element) => Array.from(el.querySelectorAll<HTMLElement>("a[href], button")).filter((b) => b.tabIndex >= 0);
+  expect(tabStops(first!).length).toBeGreaterThan(0);
+  expect(tabStops(second!)).toHaveLength(0);
+});
+
+it("does not write the stored Finished view until it changes", async () => {
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "A task")] : [], nextBefore: null });
+  await mount(<Dashboard subPath="agents" />);
+  expect(localStorage.getItem("cos.finishedView.v1")).toBeNull();
+  await act(async () => outcomeToggle("Failed").click());
+  expect(JSON.parse(localStorage.getItem("cos.finishedView.v1")!)).toMatchObject({ outcomes: ["failed"] });
 });

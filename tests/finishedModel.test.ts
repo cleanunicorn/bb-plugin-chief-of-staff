@@ -72,12 +72,12 @@ describe("groupByDay", () => {
 });
 
 describe("visibleSlice", () => {
-  it("shows the first ten, then twenty more per step", () => {
+  it("shows the first eight, then twenty more per step", () => {
     const list = Array.from({ length: 45 }, (_, i) => i);
-    expect(FINISHED_FIRST).toBe(10);
+    expect(FINISHED_FIRST).toBe(8);
     expect(FINISHED_STEP).toBe(20);
-    expect(visibleSlice(list, FINISHED_FIRST)).toEqual({ rows: list.slice(0, 10), more: true });
-    expect(visibleSlice(list, FINISHED_FIRST + FINISHED_STEP)).toEqual({ rows: list.slice(0, 30), more: true });
+    expect(visibleSlice(list, FINISHED_FIRST)).toEqual({ rows: list.slice(0, 8), more: true });
+    expect(visibleSlice(list, FINISHED_FIRST + FINISHED_STEP)).toEqual({ rows: list.slice(0, 28), more: true });
     expect(visibleSlice(list, 50)).toEqual({ rows: list, more: false });
   });
 });

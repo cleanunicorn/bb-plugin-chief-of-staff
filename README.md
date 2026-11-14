@@ -111,7 +111,7 @@ failed** or **PR closed**. It also says when the task finished and how long it
 took, and why it ended if it did not deliver, with links to the issue, the PR,
 the thread and the workflow, and the same More actions as a card.
 
-The section shows 10 rows, then **Show 20 more**. Filter it by outcome
+The section shows 8 rows, then **Show 20 more**. Filter it by outcome
 (**Shipped**, **Marked done**, **Failed**; pick several), by repository, or
 search the title and the issue or PR number (`#12`). Filters search the
 finished tasks loaded so far; **Search older** loads the next page. Click a

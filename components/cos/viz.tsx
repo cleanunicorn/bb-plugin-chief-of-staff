@@ -238,10 +238,11 @@ export interface Series {
 
 /**
  * A stacked column chart. On a fine pointer each column is an image named with its numbers, with a hover tooltip; with `onSelect`, it is a
- * button that selects its x value, for the mouse only (not a tab stop: the table view offers the same choice by keyboard). On a coarse
+ * button that selects its x value, for the mouse only (not a tab stop: the table view offers the same choice by keyboard), named by
+ * `selectLabel` ("Show tasks finished Nov 8") followed by its numbers. On a coarse
  * pointer the columns are too narrow to tap, so they are inert; with `onShowTable`, the whole plot becomes one button that calls it.
  */
-export function ColumnChart<Row extends Record<string, number | string>>({ rows, series, xKey, formatX, height = 120, label, onShowTable, onSelect }: { rows: Row[]; series: Series[]; xKey: keyof Row; formatX: (v: string) => string; height?: number; label: string; onShowTable?: () => void; onSelect?: (x: string) => void }) {
+export function ColumnChart<Row extends Record<string, number | string>>({ rows, series, xKey, formatX, height = 120, label, onShowTable, onSelect, selectLabel }: { rows: Row[]; series: Series[]; xKey: keyof Row; formatX: (v: string) => string; height?: number; label: string; onShowTable?: () => void; onSelect?: (x: string) => void; selectLabel?: (x: string) => string }) {
   const { tip, show, hide } = useTooltip();
   const coarse = usePointerCoarse();
   const totals = rows.map((r) => series.reduce((a, s) => a + Number(r[s.key] ?? 0), 0));
@@ -296,14 +297,15 @@ export function ColumnChart<Row extends Record<string, number | string>>({ rows,
                 </span>
               );
               if (coarse) return <span key={x} className="flex h-full flex-1 items-end justify-center">{bars}</span>;
-              const name = `${formatX(x)}: ${series.map((s) => `${s.label} ${Number(r[s.key] ?? 0)}`).join(", ")}`;
+              const numbers = series.map((s) => `${s.label} ${Number(r[s.key] ?? 0)}`).join(", ");
+              const name = `${formatX(x)}: ${numbers}`;
               if (onSelect) {
                 return (
                   <button
                     key={x}
                     type="button"
                     tabIndex={-1}
-                    aria-label={name}
+                    aria-label={selectLabel ? `${selectLabel(x)} (${numbers})` : name}
                     className="group flex h-full flex-1 cursor-pointer items-end justify-center rounded-sm hover:bg-state-hover"
                     onMouseEnter={() => show(xPct, content)}
                     onMouseLeave={hide}

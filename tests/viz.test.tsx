@@ -110,3 +110,10 @@ it("on a coarse pointer, keeps the columns inert even with onSelect, and the cha
   expect(dayButtons()).toHaveLength(0);
   expect(showTable()).not.toBeNull();
 });
+
+it("names a selectable day by what clicking it does, then its numbers", async () => {
+  root = createRoot(container);
+  await act(async () => { root!.render(<ColumnChart label="Throughput" rows={rows} series={series} xKey="date" formatX={(d) => d.slice(5)} onSelect={vi.fn()} selectLabel={(d) => `Show tasks finished ${d.slice(5)}`} />); });
+  const day = container.querySelectorAll("button[aria-label]")[2]!;
+  expect(day.getAttribute("aria-label")).toBe("Show tasks finished 11-03 (Done 2, Failed 0)");
+});

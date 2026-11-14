@@ -3,8 +3,9 @@
 import type { Outcome } from "../../src/outcome";
 import { duration, relative } from "./viz";
 
-/** Rows shown at first, and how many more each "Show 20 more" adds. */
-export const FINISHED_FIRST = 10;
+/** Rows shown at first, and how many more each "Show 20 more" adds. Eight keep Throughput and Activity within one
+ * 1000 px screen below the active tasks at 1440 px, with room for a few failed rows' "Why it ended" lines. */
+export const FINISHED_FIRST = 8;
 export const FINISHED_STEP = 20;
 
 export type OutcomeGroup = "shipped" | "marked_done" | "failed";
@@ -59,8 +60,13 @@ export function groupByDay<T extends { finishedAt: string | null }>(entries: rea
   const earlier: T[] = [];
   for (const entry of entries) {
     const day = finishDay(entry);
-    if (!day) earlier.push(entry);
-    else days.set(day, [...(days.get(day) ?? []), entry]);
+    if (!day) {
+      earlier.push(entry);
+      continue;
+    }
+    const rows = days.get(day);
+    if (rows) rows.push(entry);
+    else days.set(day, [entry]);
   }
   const groups = Array.from(days, ([key, rows]) => ({ key, label: dayLabel(key, now), entries: rows }));
   if (earlier.length) groups.push({ key: "earlier", label: "Earlier", entries: earlier });

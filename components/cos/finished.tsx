@@ -168,15 +168,18 @@ function saveView(view: FinishedView): void {
 /**
  * The Finished section's view, read from local storage and saved on every change, so it survives reloads.
  * Hold it above the tab switch (the Dashboard does), so the date range survives switching tabs too.
+ * `enabled: false` skips reading storage, for a fallback copy that is not used.
  */
-export function useFinishedView(): { view: FinishedView; update: (patch: Partial<FinishedView>) => void } {
-  const [view, setView] = useState<FinishedView>(loadView);
+export function useFinishedView(enabled = true): { view: FinishedView; update: (patch: Partial<FinishedView>) => void } {
+  const [view, setView] = useState<FinishedView>(() => (enabled ? loadView() : DEFAULT_FINISHED_VIEW));
+  // Saved only when the view changes, never on mount: a copy that was just read has nothing new to write.
+  const changed = useRef(false);
+  useEffect(() => {
+    if (changed.current) saveView(view);
+  }, [view]);
   const update = useCallback((patch: Partial<FinishedView>) => {
-    setView((v) => {
-      const next = { ...v, ...patch };
-      saveView(next);
-      return next;
-    });
+    changed.current = true;
+    setView((v) => ({ ...v, ...patch }));
   }, []);
   return { view, update };
 }
@@ -241,7 +244,7 @@ export type FinishedSectionProps = {
   headingRef?: Ref<HTMLHeadingElement>;
 } & RowHandlers;
 
-/** Finished tasks as compact rows, newest first, by day: 10 at first, then 20 more per click. */
+/** Finished tasks as compact rows, newest first, by day: 8 at first, then 20 more per click. */
 export function FinishedSection({ finished, now, busy, view, onViewChange, repos, headingRef, ...handlers }: FinishedSectionProps) {
   const { query, entries, cursor, loadingOlder, loadOlder, failedCursor } = finished;
   const filtering = isFiltering(view);
@@ -251,18 +254,23 @@ export function FinishedSection({ finished, now, busy, view, onViewChange, repos
   const [paging, setPaging] = useState({ key: filterKey, shown: FINISHED_FIRST });
   const shown = paging.key === filterKey ? paging.shown : FINISHED_FIRST;
   const slice = visibleSlice(matching, shown);
-  const roving = useRovingCards(slice.rows.map((e) => e.id));
   const groups = groupByDay(slice.rows, now);
+  // In the order rendered: rows without a finish time move to the end, under "Earlier".
+  const roving = useRovingCards(groups.flatMap((g) => g.entries.map((e) => e.id)));
   // A stored repository stays listed even when none of its tasks is loaded, so the select shows what is filtered.
   const repoOptions = useMemo(() => [...new Set([...repos, ...entries.map((e) => e.repo), ...(view.repo ? [view.repo] : [])])].sort(), [repos, entries, view.repo]);
   const bodyId = "cos-finished-list";
   const count = query.data ? `${entries.length}${cursor ? "+" : ""}` : null;
-  // A date range reaches back into older pages: load them until the loaded tasks pass its first day.
+  // A date range reaches back into older pages: while the section is open, load them until the loaded tasks
+  // pass its first day. A page that failed is not fetched again unasked.
   const from = view.range?.from ?? null;
+  const pastRange = from !== null && loadedPast(entries, from);
+  const loadingRange = view.open && from !== null && !!cursor && cursor !== failedCursor && !pastRange;
   useEffect(() => {
-    if (from === null || !cursor || cursor === failedCursor || loadingOlder || loadedPast(entries, from)) return;
-    void loadOlder();
-  }, [from, cursor, failedCursor, loadingOlder, entries, loadOlder]);
+    if (loadingRange && !loadingOlder) void loadOlder();
+  }, [loadingRange, loadingOlder, loadOlder]);
+  // Older pages may still hold matches: not once the loaded tasks reach past a date range.
+  const olderMayMatch = !!cursor && !pastRange;
   const showMore = () => {
     const next = shown + FINISHED_STEP;
     setPaging({ key: filterKey, shown: next });
@@ -298,12 +306,15 @@ export function FinishedSection({ finished, now, busy, view, onViewChange, repos
           </p>
         ) : null}
         {entries.length || cursor || filtering ? <FinishedFilters view={view} repos={repoOptions} onChange={onViewChange} /> : null}
-        {query.data && filtering && !matching.length && (entries.length || cursor) ? (
+        {query.data && filtering && !matching.length && loadingRange ? (
+          <p role="status" className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">Loading older finished tasks…</p>
+        ) : null}
+        {query.data && filtering && !matching.length && !loadingRange && (entries.length || cursor) ? (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
             <span className="font-medium text-foreground">No finished tasks match</span>
-            {cursor ? <span>{searchedNote}</span> : <span>Change or clear the filters.</span>}
+            {olderMayMatch ? <span>{searchedNote}</span> : <span>Change or clear the filters.</span>}
             <div className="flex flex-wrap justify-center gap-2">
-              {cursor ? searchOlder : null}
+              {olderMayMatch ? searchOlder : null}
               <Button size="sm" variant="ghost" onClick={() => onViewChange(NO_FILTER)}>
                 <Icon name="X" fallback="Circle" aria-hidden />Clear filters
               </Button>
@@ -338,7 +349,7 @@ export function FinishedSection({ finished, now, busy, view, onViewChange, repos
             </Button>
           </div>
         ) : null}
-        {filtering && cursor && slice.rows.length && !slice.more ? (
+        {filtering && olderMayMatch && !loadingRange && slice.rows.length > 0 && !slice.more ? (
           <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs text-muted-foreground">
             <span>{searchedNote}</span>
             {searchOlder}

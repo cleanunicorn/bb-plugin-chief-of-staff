@@ -74,7 +74,7 @@ it("names chart days with their numbers, as mouse-only buttons that are not tab 
   const days = Array.from(figure.querySelectorAll<HTMLButtonElement>("button[aria-label]"));
   expect(days).toHaveLength(14);
   expect(days.every((d) => d.tabIndex === -1)).toBe(true);
-  expect(days[2]!.getAttribute("aria-label")).toMatch(/^Nov 3: Done 2, Failed 1$/);
+  expect(days[2]!.getAttribute("aria-label")).toBe("Show tasks finished Nov 3 (Done 2, Failed 1)");
 });
 
 it("still shows a day's tooltip on hover", async () => {
@@ -263,8 +263,8 @@ const rows = () => Array.from(finishedGroup().querySelectorAll("article"));
 it("keeps Throughput a few tab stops past the tasks, with 50 finished tasks", async () => {
   mocks.entries = [...withApprovalFirst(tasks(5)), ...finishedTasks(50)];
   await page();
-  // Ten rows render; only the current one's five controls are tab stops.
-  expect(rows()).toHaveLength(10);
+  // Eight rows render; only the current one's five controls are tab stops.
+  expect(rows()).toHaveLength(8);
   expect(tabbables(finishedGroup())).toHaveLength(5);
   expect(rows().slice(1).every((row) => tabbables(row).length === 0)).toBe(true);
   // From the last active card's stop to Throughput: Collapse, search, three outcome toggles, the row's five, Show 20 more.
