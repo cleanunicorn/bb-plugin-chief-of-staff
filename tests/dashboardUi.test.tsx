@@ -1015,3 +1015,17 @@ it("keeps the All repos meter above one meter per repository with two or more re
   await mount();
   expect(meters()).toEqual(["All repos", "acme/app", "acme/web"]);
 });
+
+it("keeps the stage filters to one scrolling row below sm and wraps them from sm up", async () => {
+  mocks.entries = [entry()];
+  await mount();
+  const nav = container.querySelector<HTMLElement>('nav[aria-label="Filter active tasks"]')!;
+  expect(classes(nav)).toEqual(expect.arrayContaining(["flex-nowrap", "overflow-x-auto", "sm:flex-wrap", "sm:overflow-visible"]));
+  expect(classes(nav)).not.toContain("flex-wrap");
+  const items = Array.from(nav.children);
+  expect(items.length).toBeGreaterThan(1);
+  // Chips and the Task slots line keep their width instead of squeezing or wrapping inside the row.
+  for (const item of items) expect(classes(item)).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+  // Chips keep their pressed state.
+  expect(nav.querySelector('button[aria-pressed="true"]')!.textContent).toContain("All tasks");
+});

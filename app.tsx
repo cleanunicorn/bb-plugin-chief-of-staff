@@ -657,6 +657,8 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
 const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
+/** Each item of the stage filter row: keeps its width in the phone's single scrolling row. */
+const FILTER_CHIP = "shrink-0 whitespace-nowrap";
 
 export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
@@ -827,12 +829,14 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           </Button> : null}
         </section>
       ) : null}
-      <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-xs">
-        <Button size="sm" variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name="LayoutGrid" aria-hidden />All tasks</Button>
-        {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
+      {/* One row on a phone, scrolling sideways, so the first task is near the top (#110); from sm up the chips wrap.
+          The padding keeps focus rings inside the scroller, which clips them; a focused chip scrolls into view. */}
+      <nav aria-label="Filter active tasks" className="-mx-1 flex flex-nowrap items-center gap-1 overflow-x-auto p-1 text-xs sm:flex-wrap sm:overflow-visible">
+        <Button size="sm" variant="ghost" className={FILTER_CHIP} aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name="LayoutGrid" aria-hidden />All tasks</Button>
+        {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" className={FILTER_CHIP} aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
           <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
         </Button>)}
-        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
+        <span className={cn(FILTER_CHIP, "flex items-center gap-1.5 px-2 py-1 text-muted-foreground")}><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
       </nav>
       {/* Agents */}
       <Panel
