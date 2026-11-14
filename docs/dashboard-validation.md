@@ -302,10 +302,13 @@ workflow gave 5); a second Check gives 4 lines and "Show all 4".
 |---|---|---|---|---|---|
 | 390×844 | Workflows | 48 px, one row ("3 to fix · Show · Discard · Save") | 88 px, 3 lines | 263 px of 484 px above the bar | was 496 px bar, no canvas in view |
 | 390×844 | Workflows, 2 Checks | 48 px | 108 px, 3 lines + "Show all 4" | 243 px | |
+| 390×844 | Workflows, a Check and a Ship (7 to fix) | 48 px | 92 px, 3 lines + "Show all 7" | 259 px | |
 | 390×844 | General, same draft | 48 px; expanded 75 px with `Workflows · 3 to fix` | n/a | n/a | General row absent (on screen) |
 | 390×844 | `Workflows · 3 to fix` from General | 48 px | | | New check selected, its panel heading focused and scrolled to the top |
 | 1440×1000 | Workflows | 48 px, one row | 56 px, 3 lines | 520 px, all of it | New check panned into view, red border and badge "3" |
 | 1440×1000 | General, same draft | 48 px; expanded 75 px | n/a | n/a | |
 
-No horizontal page overflow at either size, and no error text in the bar in
-any state. Not checked: a screen reader, Safari, a live BB install.
+At 1440×1000 a step added from the toolbar below the fitted view is panned to
+(its top 233 px into the 520 px canvas); clicking a step on the canvas leaves
+the pan and zoom as they were. No horizontal page overflow at either size, and
+no error text in the bar in any state. Not checked: a screen reader, Safari, a live BB install.

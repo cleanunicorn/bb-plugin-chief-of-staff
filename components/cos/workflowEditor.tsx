@@ -193,6 +193,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, rev
     if (wf.steps.length <= 1) return;
     setWf({ ...wf, steps: wf.steps.filter((s) => s.id !== id).map((s) => ({ ...s, next: s.next.filter((n) => n !== id), ...(s.onFail === id ? { onFail: undefined } : {}) }) as Step) });
     setSelected(null);
+    setRevealed(null);
   };
   const addWorkflow = (from: Workflow) => {
     const name = from === DEFAULT_WORKFLOW ? "New workflow" : `${from.name} (copy)`;
@@ -262,7 +263,10 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, rev
         ) : null}
         <div role="group" aria-label="View" className="ml-auto flex rounded-md border border-border p-0.5">
           {(["canvas", "list"] as const).map((v) => (
-            <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", view === v ? "bg-state-active text-foreground" : "text-muted-foreground")}>
+            <button key={v} type="button" aria-pressed={view === v} onClick={() => {
+                setView(v);
+                setRevealed(null);
+              }} className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", view === v ? "bg-state-active text-foreground" : "text-muted-foreground")}>
               <Icon name={v === "canvas" ? "Network" : "List"} fallback="Circle" className="size-3.5" aria-hidden />
               {v === "canvas" ? "Canvas" : "List"}
             </button>

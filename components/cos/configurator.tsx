@@ -786,7 +786,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                   </Button>
                   <Button size="sm" disabled={saving || blocking.length > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
                     <Icon name="Save" fallback="Circle" aria-hidden />
-                    {saving ? "Saving…" : <>Save<span className="hidden sm:inline"> changes</span></>}
+                    <span>{saving ? "Saving…" : <>Save<span className="hidden sm:inline"> changes</span></>}</span>
                   </Button>
                 </span>
               </div>

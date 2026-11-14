@@ -310,6 +310,17 @@ it("opens the step a problem is about in list view", async () => {
   expect(document.activeElement).toBe(header());
 });
 
+it("reveals a step once: switching views afterwards leaves focus where it is", async () => {
+  await mount(<Stateful initial={withLooseCheck()} />);
+  await click(button("New check: needs a step that writes code before it"));
+  const list = button("List");
+  list.focus();
+  await click(list);
+  expect(document.activeElement).toBe(list);
+  const header = Array.from(container.querySelectorAll("article button[aria-expanded]")).find((b) => b.textContent!.includes("New check"))!;
+  expect(header.getAttribute("aria-expanded")).toBe("false");
+});
+
 it("shows three problems, then the rest on request", async () => {
   const doc = withLooseCheck();
   doc.workflows[0]!.name = "";

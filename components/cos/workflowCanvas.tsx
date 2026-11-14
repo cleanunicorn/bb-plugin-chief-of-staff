@@ -324,11 +324,16 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     };
   }, [editable, fitView]);
 
-  // A selected step outside the visible part of the canvas (opened from a problem, or just added) is
-  // panned to, keeping the zoom. A step added in this render reaches React Flow's store a few frames
-  // later, so it is looked for until then.
+  // A step the parent selects (opened from a problem, or just added) outside the visible part of the
+  // canvas is panned to, keeping the zoom; a new `reveal` pans again. A step the user picked on the
+  // canvas is left where it is, so a click or drag never moves the canvas under the pointer. A step
+  // added in this render reaches React Flow's store a few frames later, so it is looked for until then.
+  const lastReveal = useRef(reveal);
   useEffect(() => {
+    const revealed = reveal !== lastReveal.current;
+    lastReveal.current = reveal;
     if (!editable || !selected) return;
+    if (!revealed && reported.current === selected) return;
     let raf = 0;
     let tries = 10;
     const pan = () => {
