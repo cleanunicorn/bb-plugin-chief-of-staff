@@ -1746,6 +1746,23 @@ describe("chief-of-staff server", () => {
       ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [] });
     };
 
+    it("reports tasks finished since a visit through cos_since, and stores nothing (#110)", async () => {
+      const before = new Date(Date.now() - 60_000).toISOString();
+      await intakeOnce();
+      const id = (await roster()).id;
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+      const db = host.bb.storage.database();
+      const rows = () => db.prepare("SELECT COUNT(*) AS n FROM work_items").get();
+      const count = rows();
+      expect(await host.harness.behavior.callRpc("cos_since", { since: before })).toEqual({
+        shipped: 0, failed: 1,
+        failures: [{ id, repo: "acme/app", issueNumber: 12, issueTitle: "Fix login", outcome: "marked_failed", reason: null }],
+      });
+      expect(await host.harness.behavior.callRpc("cos_since", { since: new Date(Date.now() + 60_000).toISOString() })).toEqual({ shipped: 0, failed: 0, failures: [] });
+      expect(rows()).toEqual(count);
+      await expect(host.harness.behavior.callRpc("cos_since", { since: "yesterday" })).rejects.toThrow();
+    });
+
     it("stays done when the agent's turn ends afterwards: no nudge, threads archived", async () => {
       await intakeOnce();
       expect(await roster()).toMatchObject({ detail: "agent", current: ["Build"] });

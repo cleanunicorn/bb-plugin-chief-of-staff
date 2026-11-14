@@ -12,7 +12,7 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
-import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
+import { OUTCOME_META, endReason } from "./src/outcome";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
@@ -448,8 +448,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const tabIndex = tabbable ? undefined : -1;
   const timer = cardTimer(entry, finished, now);
   // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
-  // MARKED_FAILED only repeats the outcome label.
-  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) && entry.lastError !== MARKED_FAILED ? entry.lastError : null;
+  const reason = endReason(entry.outcome, entry.lastError);
   // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
   const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   return (
@@ -482,11 +481,11 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
-      {endReason ? (
+      {reason ? (
         <p className="flex items-start gap-1.5 text-sm text-foreground">
           {/* Muted: a failed run is history, not an alarm (#22). */}
           <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">{reasonLead}</span> {endReason}</span>
+          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={reason}><span className="text-muted-foreground">{reasonLead}</span> {reason}</span>
         </p>
       ) : null}
       {entry.steps.length ? <details className="group text-xs">

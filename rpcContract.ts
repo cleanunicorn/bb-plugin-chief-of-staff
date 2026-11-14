@@ -10,6 +10,9 @@ export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_M
 /** An earlier roster page's opaque nextBefore cursor. */
 export const rosterCursorSchema = z.string().min(1).max(1000);
 
+/** How a finished task ended (src/outcome.ts OUTCOMES). */
+const outcomeSchema = z.enum(["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"]);
+
 const rosterEntry = z.object({
   occupiesCapacity: z.boolean(),
   id: z.string(),
@@ -61,7 +64,7 @@ const rosterEntry = z.object({
   /** When a done or failed task finished; null while it runs (and on some legacy rows). */
   finishedAt: z.string().nullable(),
   /** How a finished task ended (src/outcome.ts); null while it runs. */
-  outcome: z.enum(["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"]).nullable(),
+  outcome: outcomeSchema.nullable(),
   lastActivityAt: z.string().nullable(),
   stalled: z.boolean(),
   fixAttempts: z.number(),
@@ -257,6 +260,16 @@ export const rpcContract = defineRpcContract({
       failedInWindow: z.number(),
       medianCycleMinutes: z.number().nullable(),
       totalTracked: z.number(),
+    }),
+  },
+  /** "Since you were here" (#110): tasks finished after `since`, the browser's last visit. Reads only. */
+  cos_since: {
+    input: z.object({ since: z.iso.datetime({ offset: true }) }),
+    output: z.object({
+      shipped: z.number(),
+      failed: z.number(),
+      /** The newest failures (at most 3), with the card's "Why it ended"; null when the outcome says it all. */
+      failures: z.array(z.object({ id: z.string(), repo: z.string(), issueNumber: z.number().nullable(), issueTitle: z.string(), outcome: outcomeSchema, reason: z.string().nullable() })),
     }),
   },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional(), onlyProblems: z.boolean().default(false), before: z.number().int().positive().optional() }), output: z.object({ entries: z.array(logEntry), nextCursor: z.number().int().nullable() }) },
