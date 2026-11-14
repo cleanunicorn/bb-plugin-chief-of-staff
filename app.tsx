@@ -30,6 +30,7 @@ import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
+import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -43,12 +44,6 @@ const TABS = [
 type Tab = (typeof TABS)[number]["id"];
 
 const WINDOW_DAYS = 14;
-
-function useLiveRefresh(refetch: () => Promise<void>) {
-  useRealtime("cos-changed", () => {
-    void refetch();
-  });
-}
 
 function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now());

@@ -3,7 +3,7 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
+import { isActiveStatus, occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { FAILED_OUTCOMES, finishedOutcome, OUTCOME_META, type Outcome } from "./outcome";
 import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
 import { readThreadUsage, type ThreadUsage } from "./threads";
@@ -154,12 +154,15 @@ export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<R
   const items = [...page.active, ...page.finished];
   const threadIds = [...new Set(items.map((i) => i.threadId).filter((id): id is string => Boolean(id)))];
   const threads = new Map<string, { status: string; title: string | null }>();
+  /** The thread states were read; without them a finished item's thread may still be running. */
+  let threadsKnown = true;
   for (let i = 0; i < threadIds.length; i += THREAD_BATCH) {
     const batch = threadIds.slice(i, i + THREAD_BATCH);
     try {
       const list = await cos.bb.sdk.threads.list({ threadIds: batch, includeHidden: true, limit: batch.length });
       for (const t of list) threads.set(t.id, { status: t.runtime?.displayStatus ?? t.status, title: t.title ?? t.titleFallback ?? null });
     } catch (error) {
+      threadsKnown = false;
       cos.bb.log.debug(`threads.list failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -206,10 +209,45 @@ export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<R
       providerId: item.providerId,
       model: item.model,
       source: item.source,
-      usage: opts.withUsage && item.threadId ? await readThreadUsage(cos, item.threadId) : null,
+      usage: null,
+    });
+  }
+  if (opts.withUsage) {
+    const toRead: { entry: RosterEntry; item: WorkItem }[] = [];
+    items.forEach((item, i) => {
+      const entry = entries[i]!;
+      if (!item.threadId) return;
+      // A finished item's usage no longer changes: once stored, it is not read again.
+      if (item.finalUsage && !isActiveStatus(item.status)) entry.usage = item.finalUsage;
+      else toRead.push({ entry, item });
+    });
+    await mapLimit(toRead, USAGE_CONCURRENCY, async ({ entry, item }) => {
+      const threadId = item.threadId!;
+      const { usage, complete } = await readThreadUsage(cos, threadId);
+      entry.usage = usage;
+      // Store it once final: the item finished, both queries answered, and the
+      // thread is not running (an item can be marked done while it still is).
+      if (isActiveStatus(item.status) || !complete || !threadsKnown || isBusy(threads.get(threadId)?.status ?? "")) return;
+      try {
+        cos.store.setFinalUsage(item.id, threadId, usage);
+      } catch (error) {
+        cos.bb.log.warn(`storing usage of ${item.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     });
   }
   return { entries, nextBefore: page.nextBefore };
+}
+
+/** Threads whose usage the roster reads at once (each read makes two SDK calls). */
+export const USAGE_CONCURRENCY = 4;
+
+/** Run `fn` over `items`, at most `limit` at a time. */
+async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 const OUTPUT_MAX = 6_000;

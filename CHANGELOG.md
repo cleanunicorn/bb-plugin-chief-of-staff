@@ -155,6 +155,13 @@
   and return the next cursor (`nextBefore`). `bb cos` JSON output is no
   longer cut off at 60,000 characters, so it always parses.
 
+- **The Pipeline tab stops re-reading token usage of finished tasks.** A
+  finished task's usage is read from its thread once and stored; later
+  refreshes reuse it, so **Show finished** costs about the same as active work.
+  Usage of unfinished tasks is read concurrently instead of one task at a
+  time. The dashboard's own refresh after a burst of updates now runs once,
+  500 ms after the burst ends, or every 2 s while updates keep coming.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
