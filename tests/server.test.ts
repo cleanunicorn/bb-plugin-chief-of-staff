@@ -68,9 +68,9 @@ describe("chief-of-staff server", () => {
   let perThread: Record<string, { status?: "idle" | "active" | "error"; updatedAt?: number }> = {};
   /** What a thread's failed turn reports (its provider/error and rate-limit events). */
   let failures: Record<string, { errorInfo: { category: string; httpStatusCode: number | null; providerCode: null }; rateLimits: unknown }> = {};
-  /** Retries of failed turns asked for, and the threads with one queued. */
+  /** Retries of failed turns asked for, and the threads with one queued (a number: queued for then). */
   let retries: { threadId: string; sendAt?: number; reason?: string }[] = [];
-  let queuedRetry: Record<string, boolean> = {};
+  let queuedRetry: Record<string, boolean | number> = {};
   const spawned = new Set<string>();
   let prCreated = false;
   let clock = 0;
@@ -194,7 +194,12 @@ describe("chief-of-staff server", () => {
             queuedRetry[args.threadId] = true;
             return {} as never;
           },
-          queuedMessages: { list: async (args: { threadId: string }) => (queuedRetry[args.threadId] ? [{ id: "q1", threadId: args.threadId, payload: { kind: "retry" }, sendAt: null }] : []) as never },
+          queuedMessages: {
+            list: async (args: { threadId: string }) => {
+              const queued = queuedRetry[args.threadId];
+              return (queued ? [{ id: "q1", threadId: args.threadId, payload: { kind: "retry" }, sendAt: typeof queued === "number" ? queued : null }] : []) as never;
+            },
+          },
         },
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
@@ -1742,7 +1747,7 @@ describe("chief-of-staff server", () => {
       expect(await roster()).toMatchObject({ detail: "retrying", actor: "system", current: ["Build"], lastError: null, activity: "Build: usage limit reached; continues after 12:30 UTC" });
       // One retry of the failed turn, shortly after the reset.
       expect(retries).toHaveLength(1);
-      expect(retries[0]).toMatchObject({ threadId: "thr_1", reason: expect.stringContaining("Usage limit") });
+      expect(retries[0]).toMatchObject({ threadId: "thr_1", reason: expect.stringContaining("usage limit resets") });
       expect(retries[0]!.sendAt).toBeGreaterThanOrEqual(RESET + 15_000);
       expect(retries[0]!.sendAt).toBeLessThan(RESET + 60_000);
 
@@ -1832,6 +1837,43 @@ describe("chief-of-staff server", () => {
       at(RESET + 2 * 60 * 60_000 + 60_000);
       await sweep();
       expect(await roster()).toMatchObject({ detail: "failed", lastError: expect.stringContaining("usage limit did not lift") });
+    });
+
+    it("does not give up while BB's retry is still scheduled for later", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1");
+      queuedRetry.thr_1 = RESET + 3 * 60 * 60_000; // e.g. an account pool's later retry time
+      at(RESET + 2 * 60 * 60_000 + 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      at(RESET + 3 * 60 * 60_000 + 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ detail: "failed", lastError: expect.stringContaining("usage limit did not lift") });
+    });
+
+    it("lifts the wait when the thread is idle again after the reset", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1");
+      at(RESET + 11 * 60_000);
+      delete failures.thr_1;
+      perThread.thr_1 = { status: "idle", updatedAt: Date.now() };
+      await sweep();
+      expect((await roster()).detail).not.toBe("retrying");
+    });
+
+    it("does not read a parked step thread's events on every sweep", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      perThread.thr_review = { status: "error", updatedAt: Date.now() };
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_review", status: "error" }), error: "provider crashed" } as never);
+      await settleJobs();
+      expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error" });
+      const reads = () => host.harness.inspection.sdk.callsTo("threads.events.list").filter((c) => (c[0] as { types?: string[] }).types?.includes("provider/error")).length;
+      const before = reads();
+      await sweep();
+      expect(reads()).toBe(before);
     });
 
     it("keeps a step thread whose limit did not lift with the person on later sweeps", async () => {

@@ -7,7 +7,7 @@
 // limit will not lift.
 import type { Cos } from "./context";
 import { dispatchLocked, withItemLock } from "./delivery";
-import { MAX_USAGE_LIMIT_WAITS, resetTime } from "./machine";
+import { resetTime } from "./machine";
 import { threadContext } from "./sync";
 
 /** The parts of a failed turn that say whether it hit a usage limit (BB's turn.failed event). */
@@ -16,6 +16,8 @@ export interface TurnFailure {
   rateLimits: { kind: string; status: string; windows: { status: string; resetsAtMs: number | null }[] } | null;
 }
 
+/** Usage-limit waits in one round of a step before it goes to a person instead. */
+export const MAX_USAGE_LIMIT_WAITS = 5;
 /** Longest reset Chief of Staff waits for; BB's provider-retry waits 6 hours by default too. A weekly cap goes to a person. */
 export const MAX_USAGE_LIMIT_WAIT_MS = 6 * 60 * 60_000;
 /** After the reset, how long the thread may stay failed with no retry before Chief of Staff retries it itself. */
@@ -60,17 +62,17 @@ export async function readTurnFailure(cos: Cos, threadId: string): Promise<TurnF
   }
 }
 
-/** Whether a retry of the thread's failed turn is queued (by BB's provider-retry or by us). */
-async function retryQueued(cos: Cos, threadId: string): Promise<boolean> {
-  const rows = (await cos.bb.sdk.threads.queuedMessages.list({ threadId })) as { payload: { kind: string } }[];
-  return rows.some((row) => row.payload.kind === "retry");
+/** The queued retry of the thread's failed turn (by BB's provider-retry or by us), if any. */
+async function queuedRetry(cos: Cos, threadId: string): Promise<{ sendAt: number | null } | null> {
+  const rows = (await cos.bb.sdk.threads.queuedMessages.list({ threadId })) as { payload: { kind: string }; sendAt: number | null }[];
+  return rows.find((row) => row.payload.kind === "retry") ?? null;
 }
 
 /** Queue a retry of the thread's failed turn at `sendAt` (now when omitted), unless one is queued already. */
 async function ensureRetry(cos: Cos, threadId: string, sendAt?: number): Promise<void> {
   try {
-    if (await retryQueued(cos, threadId)) return;
-    await cos.bb.sdk.threads.retry({ threadId, ...(sendAt ? { sendAt } : {}), reason: "Usage limit reset: Chief of Staff continues the step" });
+    if (await queuedRetry(cos, threadId)) return;
+    await cos.bb.sdk.threads.retry({ threadId, ...(sendAt ? { sendAt } : {}), reason: "Continues the step after the usage limit resets (Chief of Staff)" });
   } catch (error) {
     // retry_already_queued: provider-retry got there first. Anything else: the sweep tries again.
     cos.bb.log.info(`retry of ${threadId} after its usage limit not queued: ${error instanceof Error ? error.message : String(error)}`);
@@ -90,6 +92,8 @@ async function ensureRetry(cos: Cos, threadId: string, sendAt?: number): Promise
  */
 export async function observeUsageLimit(cos: Cos, itemId: string, threadId: string, actor: string, failure?: TurnFailure | null): Promise<boolean> {
   const fromEvent = failure !== undefined;
+  // From the events, only a running step or one already waiting can open or keep a wait: skip reading them otherwise.
+  if (!fromEvent && !mayWait(cos, itemId, threadId)) return false;
   const resetAt = usageLimitResetAt(fromEvent ? failure : await readTurnFailure(cos, threadId));
   // Decided under the item's lock: thread.failed and turn.failed arrive back to back.
   const decision = await withItemLock(itemId, async (): Promise<{ wait: boolean; until?: number }> => {
@@ -126,6 +130,13 @@ export async function observeUsageLimit(cos: Cos, itemId: string, threadId: stri
   return decision.wait;
 }
 
+function mayWait(cos: Cos, itemId: string, threadId: string): boolean {
+  const item = cos.store.getWorkItem(itemId);
+  const ctx = item ? threadContext(cos, item, threadId) : null;
+  const node = ctx?.step ? item!.nodes[ctx.step.id] : undefined;
+  return Boolean(item && item.status !== "failed" && node && (node.status === "running" || node.limits?.[ctx!.agent]));
+}
+
 /**
  * Per-minute watch over usage-limit waits whose reset has passed: retry a
  * thread nobody retried, and hand the step to a person when the limit will
@@ -141,12 +152,20 @@ export async function tickLimits(cos: Cos, actor: string): Promise<void> {
         if (node.status !== "running" || late < LIMIT_RETRY_GRACE_MS) continue;
         try {
           const thread = await cos.bb.sdk.threads.get({ threadId: limit.threadId });
-          if (thread.status !== "error") continue; // the retry is running, or ran: the thread sync takes it from here
+          if (thread.status !== "error") {
+            // Idle past the reset with the wait still recorded: the retried turn's start was missed.
+            // Lift the wait so the step shows as working and the thread sync reads the turn.
+            if (thread.status === "idle") await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "turn_started", step: stepId, agent: Number(agent) }, actor));
+            continue; // otherwise the retry is running: the thread sync takes it from here
+          }
           if (late < LIMIT_GIVE_UP_MS) {
             // Once per retry interval (the sweep runs every minute), not every minute.
             if ((late - LIMIT_RETRY_GRACE_MS) % LIMIT_RETRY_EVERY_MS < 60_000) await ensureRetry(cos, limit.threadId);
             continue;
           }
+          // BB's retry is still scheduled (a pool's later retry time, say): the limit has not been tried again yet.
+          const queued = await queuedRetry(cos, limit.threadId);
+          if (queued?.sendAt && queued.sendAt > now) continue;
           const ctx = threadContext(cos, item, limit.threadId);
           cos.store.log({ level: "warn", kind: "usage_limit", repo: item.repo, workItemId: item.id, message: `the usage limit did not lift ${Math.round(late / 60_000)} min after its reset`, actor });
           const error = `The provider's usage limit did not lift after its reset at ${resetTime(limit.until)}`;

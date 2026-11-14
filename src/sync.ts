@@ -222,7 +222,8 @@ export async function syncThread(cos: Cos, item: WorkItem, snapshot: ThreadSnaps
   }
   if (BUSY.has(snapshot.status)) {
     // Working. If the step is parked, someone resumed the thread in BB; if it waited out a usage limit, BB retried it.
-    if (node.status === "waiting" || node.limits?.[ctx.agent]) await observeActive(cos, item.id, snapshot.id, actor);
+    const retried = Boolean(node.limits?.[ctx.agent]) && (snapshot.raw === "active" || snapshot.raw === "starting");
+    if (node.status === "waiting" || retried) await observeActive(cos, item.id, snapshot.id, actor);
     else cos.store.updateWorkItem(item.id, { lastActivityAt: new Date(Math.max(snapshot.updatedAt, Date.parse(item.lastActivityAt ?? item.createdAt))).toISOString() });
     return;
   }

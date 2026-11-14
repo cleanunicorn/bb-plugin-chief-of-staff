@@ -190,9 +190,6 @@ export function infraBackoffMs(attempt: number): number {
   return Math.max(1, attempt) ** 2 * 60_000;
 }
 
-/** Usage-limit waits in one round before the step is handed to a person instead. */
-export const MAX_USAGE_LIMIT_WAITS = 5;
-
 /** Every agent of the step still owing a report is waiting out a usage limit. */
 export function limitedNode(n: Pick<NodeState, "limits" | "reports">): boolean {
   const limits = n.limits ?? {};
