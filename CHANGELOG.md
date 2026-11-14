@@ -2,6 +2,117 @@
 
 ## Unreleased
 
+- **Configure's sections are now part of the page address.** Picking
+  Workflows, Repositories, General, GitHub access or Advanced JSON updates the
+  address to `…/cos/config/<section>`, so Back and Forward move between
+  sections, reload keeps the section you were on, and a copied link opens it.
+  Unsaved drafts survive the move, and the settings page's editor is unchanged.
+
+- **A task limit of 0 is explained, and the Pipeline tab no longer shows it as
+  unlimited.** 0 in "Max tasks across all repos" (or a repository's "Max
+  concurrent tasks") starts no new tasks; tasks holding a slot keep going. The
+  Pipeline tab used to drop the limit at 0, so "Task slots" read like there
+  was none. It now reads "Task slots: N / 0", keeps the All repos meter, and
+  says that no new tasks start until the limit is raised. In Configure, the
+  capacity fields and "Intake every" have hint text, and the save bar warns
+  before a limit of 0 is saved. Saving it is still allowed.
+
+- **Discard in Configure asks first.** Discard in the save bar, and Revert in
+  Advanced JSON, now open a confirmation that names what will be lost
+  ("Discard changes to Workflows and General?") instead of dropping every
+  unsaved draft at once. The save bar also says which sections have unsaved
+  changes, and on phones Discard and Save sit at opposite ends of the bar.
+
+- **A step added from the workflow editor lands in the flow and in view.** The
+  toolbar's Agent, Check, Ship and Model buttons now put the new step after the
+  selected step (or after the last one), taking over that step's "Runs next"
+  links, so a check added after a code-writing step raises no problems. It
+  appears directly below that step, the steps after it move down to make room,
+  the canvas pans to it at the current zoom, and its Name field is focused. An
+  agent step with no instructions now says so under its Instructions field; it
+  still runs on the task and earlier reports, and Save is not blocked.
+
+- **The workflow editor's Full screen button no longer hides Tidy.** In
+  Configure → Workflows the add-step toolbar floated over the canvas's top
+  left and Full screen over its top right, so on a narrow canvas Full screen
+  covered Tidy (or Model), and the toolbar covered the first step after "Fit
+  all steps in view". The toolbar is now a bar above the canvas that wraps when
+  it runs out of room, with Full screen as its last button. On windows at
+  least 1280 px wide and 720 px tall, where the canvas and the step panel sit
+  side by side, the canvas now stays in view while you scroll down a long step
+  panel to edit "Runs next" or "On fail, go back to". The task workflow sheet is unchanged.
+
+- **Configure lists what to fix once, and takes you to it.** A workflow draft
+  with problems listed them twice, in the Workflows editor and again in the
+  save bar, each line starting with the workflow's name; on a phone the bar
+  covered most of the screen. The editor's list now shows the open workflow's
+  problems without its name, three at a time ("Show all N"), with one row per
+  other workflow that has problems. Activating a problem about a step selects
+  it: the canvas pans to it and its panel opens with focus (in list view the
+  step expands). Steps with problems carry a red border and a count on the
+  canvas, and an "N to fix" pill in list view. The save bar keeps to a count,
+  "N to fix before saving" with Show/Hide (one row, plus a row for Discard and
+  Save on a phone): expanded, it lists only the sections and
+  repositories with problems that are not on screen, and opening Workflows
+  from there selects the first problem's step.
+
+- **Token usage covers every thread of a task, and is totalled.** A card's
+  figure used to count the builder thread alone. Now it sums every agent
+  thread the task spawned: model chooser, planner, reviewers and replaced
+  builders. It is labelled "Tokens · all threads", and its tooltip gives the
+  thread count. A finished task is counted once, in the background, after all
+  of its agents have stopped. Until then its card says "counting…", and
+  opening the dashboard makes no usage calls for finished tasks. Throughput
+  adds the window's total ("· 412M tokens") and a Tokens column in the table
+  view, and `cos_stats` reports the total, cost per currency, the median per
+  completed task, and the tasks that reported no usage or are not counted yet.
+  With finished tasks shown, **Most tokens** orders them by usage, and each
+  finished card shows its share. The workflow sheet's header adds Tokens and
+  Cost. Counts stored by an earlier version (builder only) are not reused:
+  finished tasks are counted again.
+
+- **A finished task's workflow sheet reads as a record.** Opening Workflow on
+  a done or failed task used to describe it as still running: the sheet was
+  titled "Where this task is", a step the task stopped in showed "Running for"
+  growing on every tick with "Working on it.", and the reason it failed sat in
+  an unlabelled box. The sheet is now titled "How this task went". The
+  overview says how the task ended and when ("Failed · ended …", "Merged ·
+  ended …") and, when it did not deliver, labels why ("Why it ended: thread
+  archived"). The finish time sits next to the start and last activity. A
+  stopped step shows "Ran for 1.0h before the task ended" and "Did not
+  finish." (or "Did not run."), and no duration changes while the sheet is
+  open. Running a step again from a finished task says it reopens the task
+  and starts agent work again.
+
+- **Different things on the dashboard no longer share an icon.** BB draws
+  plugin icons from its own, smaller catalog, and several icons used to turn
+  into the same picture there. A stalled task and a queued task both showed a
+  clock; "Last activity", the Activity panel, Throughput and Capacity all
+  showed a bar chart; Tokens, Cost and Task slots all showed layers. Now
+  Queued shows a list end, Stalled an hourglass, "CoS stuck" an octagon alert
+  and "No report" a file question mark. Last activity shows a pulse, Activity
+  a feed, Throughput a rising line and Capacity a gauge. Tokens, Cost and
+  Fix cycles each have their own icon, and the Throughput table switch and the
+  workflow canvas's Tidy button no longer look like "All tasks". Steps done,
+  Received, Produced and skill references, which drew a plain circle, now
+  have icons too, and the Needs attention row has a bell instead of
+  repeating the hand of its questions and approvals.
+
+- **The Pipeline tab says what changed since your last visit and what needs
+  you.** A summary at the top reads, for example, "Since you were here (5h
+  ago): 3 shipped · 1 failed (Thread archived)". Each count opens the finished
+  tasks, and up to three failures are listed with why they ended. The former
+  Needs attention row now sits in this summary. When nothing finished and
+  nothing waits, it says "All clear — 4 agents working". The last visit is
+  kept in this browser only; a first visit shows the current state without
+  counts, and coming back after 30 minutes away starts a new visit.
+
+- **Pipeline polish.** Loading panels show skeletons instead of "Loading…".
+  With one repository, Capacity shows one meter instead of repeating it as
+  "All repos". On a phone the stage filters take one row that scrolls
+  sideways. `j` and `k` move between task cards, except while typing in a
+  field or with a dialog, menu or sheet open.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

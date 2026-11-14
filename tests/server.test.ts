@@ -1028,6 +1028,22 @@ describe("chief-of-staff server", () => {
       expect(result.results[0].skipped).toEqual([{ issue: 14, reason: "global max concurrency (1)" }, { issue: 15, reason: "global max concurrency (1)" }]);
     });
 
+    // 0 is a valid limit that starts no new tasks (#125).
+    it("starts nothing at a total limit of 0, and says why", async () => {
+      await configure(5, 0);
+      const result = await intake();
+      expect(result.results[0].started).toEqual([]);
+      expect(result.results[0].skipped).toEqual([13, 14, 15].map((issue) => ({ issue, reason: "global max concurrency (0)" })));
+      expect(new StateStore(host.bb.storage.database()).listWorkItems()).toHaveLength(0);
+    });
+
+    it("starts nothing in a repository whose limit is 0, and says why", async () => {
+      await configure(0);
+      const result = await intake();
+      expect(result.results[0].started).toEqual([]);
+      expect(result.results[0].skipped).toEqual([13, 14, 15].map((issue) => ({ issue, reason: "repo at max concurrency (0)" })));
+    });
+
     it("starts in a real run exactly what the dry run reported", async () => {
       await configure(2);
       const dry = await intake(true);
@@ -1746,6 +1762,23 @@ describe("chief-of-staff server", () => {
       ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [] });
     };
 
+    it("reports tasks finished since a visit through cos_since, and stores nothing (#110)", async () => {
+      const before = new Date(Date.now() - 60_000).toISOString();
+      await intakeOnce();
+      const id = (await roster()).id;
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+      const db = host.bb.storage.database();
+      const rows = () => db.prepare("SELECT COUNT(*) AS n FROM work_items").get();
+      const count = rows();
+      expect(await host.harness.behavior.callRpc("cos_since", { since: before })).toEqual({
+        shipped: 0, failed: 1,
+        failures: [{ id, repo: "acme/app", issueNumber: 12, issueTitle: "Fix login", outcome: "marked_failed", reason: null }],
+      });
+      expect(await host.harness.behavior.callRpc("cos_since", { since: new Date(Date.now() + 60_000).toISOString() })).toEqual({ shipped: 0, failed: 0, failures: [] });
+      expect(rows()).toEqual(count);
+      await expect(host.harness.behavior.callRpc("cos_since", { since: "yesterday" })).rejects.toThrow();
+    });
+
     it("stays done when the agent's turn ends afterwards: no nudge, threads archived", async () => {
       await intakeOnce();
       expect(await roster()).toMatchObject({ detail: "agent", current: ["Build"] });
@@ -2331,6 +2364,19 @@ describe("chief-of-staff server", () => {
     expect(stored.build).toMatchObject({ status: "waiting" });
   });
 
+  it("gives the workflow view the task's outcome once it has finished", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const id = store.listWorkItems()[0]!.id;
+    const outcome = async () => ((await host.harness.behavior.callRpc("cos_item_workflow", { id })) as { task: { outcome: string | null } }).task.outcome;
+    expect(await outcome()).toBeNull();
+    store.updateWorkItem(id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString() });
+    expect(await outcome()).toBe("failed");
+    store.updateWorkItem(id, { status: "queued", lastError: null, finishedAt: null });
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_done" });
+    expect(await outcome()).toBe("marked_done");
+  });
+
   it("says a task marked done by hand ended that way, and when", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const before = await roster();
@@ -2835,6 +2881,11 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.callRpc("cos_set_settings", { clearGithubToken: true });
     const cleared = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { token: { stored: boolean } };
     expect(cleared.token.stored).toBe(false);
+  });
+
+  it("accepts a total task limit of 0 and reports it in the overview (#125)", async () => {
+    await host.harness.behavior.callRpc("cos_set_settings", { maxConcurrentTotal: 0 });
+    expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ settings: { maxConcurrentTotal: 0 } });
   });
 
   it("sends /skill references in step instructions as skill mentions", async () => {

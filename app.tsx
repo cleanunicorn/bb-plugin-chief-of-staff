@@ -12,8 +12,8 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
-import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
-import { edgeCounts, loopBacks } from "@/components/cos/runModel";
+import { OUTCOME_META, endReason } from "./src/outcome";
+import { edgeCounts, loopBacks, taskEnd, type TaskUsage } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
@@ -21,20 +21,35 @@ import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dial
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
+import { configSectionFromSubPath, configSubPath } from "@/components/cos/configRoute";
+import type { ConfigSection } from "@/components/cos/configRoute";
 import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, usageNote, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
+import { CARD_ACTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
-import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
+import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, shortcutBlocked, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
+import { useVisitBaseline } from "@/components/cos/lastVisit";
+import { CardSkeleton, LoadingRegion, Skeleton } from "@/components/cos/skeleton";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
+type UsageStats = PluginRpcResult<Contract["cos_stats"]>["usage"];
+type FinishedOrder = PluginRpcResult<Contract["cos_roster"]>["finishedOrder"];
+
+/** A task's share of all finished tasks' tokens: "12%", or "<1%" for a small non-zero share. */
+function sharePercent(tokens: number, of: number): string {
+  const pct = (tokens / of) * 100;
+  return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
+}
+
+type Since = PluginRpcResult<Contract["cos_since"]>;
 
 const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
@@ -92,15 +107,6 @@ function Empty({ icon, title, children, illustration = false }: { icon: string; 
 
 // ---------- status helpers ----------
 
-const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
-  approval: { label: "Approve", icon: "ClipboardCheck" },
-  stalled: { label: "Stalled", icon: "Hourglass" },
-  question: { label: "Question", icon: "MessageCircleQuestion" },
-  escalation: { label: "Your call", icon: "Hand" },
-  no_report: { label: "No report", icon: "MessageSquareWarning" },
-  cos_error: { label: "CoS stuck", icon: "OctagonAlert" },
-};
-
 /** "acme/app" → "app". */
 function repoName(repo: string): string {
   return repo.split("/")[1] ?? repo;
@@ -109,19 +115,19 @@ function repoName(repo: string): string {
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
   // A finished task reads by how it ended, never by whether an old error is still stored.
   if (e.outcome) return OUTCOME_META[e.outcome];
-  if (e.detail === "done") return { tone: "good", label: "Done", icon: "CircleCheck" };
-  if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
-  if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
+  if (e.detail === "done") return { tone: "good", label: "Done", icon: DETAIL_ICON.done };
+  if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: DETAIL_ICON.failed };
+  if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: DETAIL_ICON.blocked };
   if (e.detail === "waiting_on_human") {
     const w = WAITING_LABEL[e.waitingKind ?? "question"] ?? WAITING_LABEL.question!;
     return { tone: e.waitingKind === "cos_error" ? "serious" : "warning", ...w };
   }
-  if (e.detail === "retrying") return { tone: "serious", label: `${e.current[0] ?? "Step"} · retrying`, icon: "RefreshCw" };
-  if (e.detail === "agent" && e.current.length) return { tone: "info", label: e.current.join(" + "), icon: "Bot" };
-  if (e.detail === "ready") return { tone: "good", label: "Ready to merge", icon: "GitMerge" };
-  if (e.detail === "ci") return { tone: "info", label: "CI running", icon: "GitPullRequest" };
+  if (e.detail === "retrying") return { tone: "serious", label: `${e.current[0] ?? "Step"} · retrying`, icon: DETAIL_ICON.retrying };
+  if (e.detail === "agent" && e.current.length) return { tone: "info", label: e.current.join(" + "), icon: DETAIL_ICON.agent };
+  if (e.detail === "ready") return { tone: "good", label: "Ready to merge", icon: DETAIL_ICON.ready };
+  if (e.detail === "ci") return { tone: "info", label: "CI running", icon: DETAIL_ICON.ci };
   const stage = stageOf(e);
-  if (!stage) return { tone: "neutral", label: e.detail, icon: "Circle" };
+  if (!stage) return { tone: "neutral", label: e.detail, icon: DETAIL_ICON.unknown };
   return { tone: stage.tone ?? "info", label: stage.label, icon: stage.icon };
 }
 
@@ -149,11 +155,14 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
   return <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{entry.activity}</p>;
 }
 
-/** What "Run again from here" resets: the step and every step reachable after it (the server's rerun does the same). */
-function rerunEffect(wf: Workflow, stepId: string, name: string): string {
+/**
+ * What "Run again from here" resets: the step and every step reachable after it (the server's rerun does the same).
+ * On a finished task the rerun also reopens it: the server clears its status, error and finish time.
+ */
+function rerunEffect(wf: Workflow, stepId: string, name: string, finished: boolean): string {
   const after = descendants(wf, stepId).size - 1;
-  if (after <= 0) return `This resets ${name} and runs it again.`;
-  return `This resets ${name} and the ${after === 1 ? "step" : `${after} steps`} after it, then runs ${name} again.`;
+  const resets = after <= 0 ? `This resets ${name} and runs it again.` : `This resets ${name} and the ${after === 1 ? "step" : `${after} steps`} after it, then runs ${name} again.`;
+  return finished ? `${resets} This reopens the finished task, and agents start working on it again.` : resets;
 }
 
 /**
@@ -171,16 +180,45 @@ export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)"
 export const PHONE_VIEWPORT_QUERY = "not all and (min-width: 40rem)";
 type SheetMode = "canvas" | "list";
 
-/** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
-function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
+/**
+ * The task's usage over all its agent threads: a finished task's stored count
+ * comes with the run view; an active task's is read once, when the sheet
+ * opens (each read makes usage calls per thread), not on every refresh.
+ */
+function useTaskUsage(id: string, task: { status: string; usage?: TaskUsage | null } | undefined): TaskUsage | null {
+  const rpc = useRpc<Contract>();
+  // Read through a ref: the effect runs when the task opens or becomes active, not when the client object changes.
+  const client = useRef(rpc);
+  useEffect(() => { client.current = rpc; });
+  const [live, setLive] = useState<TaskUsage | null>(null);
+  const active = Boolean(task) && task!.status !== "done" && task!.status !== "failed";
+  useEffect(() => {
+    // Another task's figure must not stand in for this one's while it loads.
+    setLive(null);
+    if (!active) return;
+    let current = true;
+    client.current.call("cos_item_usage", { id }).then((r) => { if (current) setLive(r.usage); }, () => {});
+    return () => { current = false; };
+  }, [active, id]);
+  return task?.usage ?? (active ? live : null);
+}
+
+/**
+ * One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here".
+ * A finished task's sheet reads as a record. `finishedHint`: the opener's view of whether the task has finished, used until the sheet's own data loads.
+ * Without one (the Activity feed does not know) the sheet says nothing about the task's state until then.
+ */
+function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; finishedHint?: boolean; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
+  const usage = useTaskUsage(id, view.data?.task);
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<SheetMode>(initialMode);
   const [busy, setBusy] = useState(false);
-  const [confirmRerun, setConfirmRerun] = useState(false);
+  // Whether the task had finished is kept from when the question opened, so its text holds while it animates closed after the rerun reopens the task.
+  const [confirmRerun, setConfirmRerun] = useState<{ open: boolean; finished: boolean }>({ open: false, finished: false });
   const rerunButton = useRef<HTMLButtonElement>(null);
   const focusRerun = useFocusWhenEnabled(rerunButton, busy);
   const [error, setError] = useState<string | null>(null);
@@ -192,6 +230,9 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
   const column = useRef<HTMLDivElement>(null);
   const aside = useRef<HTMLElement>(null);
   const data = view.data;
+  // undefined: not known yet.
+  const finished = data ? taskEnd(data.task).finished : finishedHint;
+  const sheetTitle = finished === undefined ? "Task workflow" : finished ? "How this task went" : "Where this task is";
   const wf = data?.workflow as Workflow | undefined;
   const live = useMemo(() => (data?.live ?? {}) as Record<string, LiveStatus>, [data?.live]);
   const step = wf?.steps.find((s) => s.id === selected);
@@ -285,7 +326,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
         <header className="flex shrink-0 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
             {/* Basis auto, not 0: the controls drop to a second line before the title is squeezed. */}
-            <DialogTitle className="min-w-0 flex-auto leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+            <DialogTitle className="min-w-0 flex-auto leading-normal tracking-normal text-foreground">{sheetTitle}</DialogTitle>
             {controls}
           </div>
           <p className="line-clamp-3 text-xs text-muted-foreground [overflow-wrap:anywhere]" title={taskLine}>{taskLine ?? "Loading…"}</p>
@@ -294,12 +335,12 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
         <header className="flex shrink-0 items-start justify-between gap-2">
           <div className="min-w-0">
             <p className={cn(short ? "line-clamp-1" : "line-clamp-2", "text-xs text-muted-foreground")} title={taskLine}>{taskLine ?? "Loading…"}</p>
-            <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+            <DialogTitle className="leading-normal tracking-normal text-foreground">{sheetTitle}</DialogTitle>
           </div>
           {controls}
         </header>
       )}
-      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} oneLine={short} /> : null}
+      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} usage={usage} oneLine={short} /> : null}
       <ErrorLine error={view.error ?? error} />
       {/* On a phone the row is the one scroller: the canvas at a set height, then the list or overview at natural height. */}
       {wf && data ? <div ref={column} className={cn("flex min-h-0 flex-1", phoneColumn ? "flex-col gap-2 overflow-y-auto overscroll-contain" : short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
@@ -335,7 +376,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
         )}
         <aside ref={aside} aria-label={step ? "Step details" : "Task overview"} className={cn("rounded-lg border border-border text-sm", phoneColumn ? "shrink-0 p-3" : cn("min-h-0 overflow-y-auto", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0"))}>
           {step ? (
-            <StepPanel itemId={id} workflow={wf} step={step} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
+            <StepPanel itemId={id} workflow={wf} step={step} task={data.task} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
           ) : (
             <TaskOverview itemId={id} title={data.title} workflow={wf} task={data.task} loops={loops} journal={journal} now={now} />
           )}
@@ -348,24 +389,24 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
             <span>
               <b className="text-foreground">{step.name}</b> · {statusLabel(step.id)}
             </span>
-            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun(true)}>
+            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun({ open: true, finished: finished === true })}>
               <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
             </Button>
             <ConfirmDialog
-              open={confirmRerun}
+              open={confirmRerun.open}
               title={`Run ‘${step.name}’ again?`}
-              description={rerunEffect(wf!, step.id, step.name)}
-              confirmLabel="Run again"
+              description={rerunEffect(wf!, step.id, step.name, confirmRerun.finished)}
+              confirmLabel={confirmRerun.finished ? "Reopen and run again" : "Run again"}
               onConfirm={() => {
-                setConfirmRerun(false);
+                setConfirmRerun((c) => ({ ...c, open: false }));
                 void rerun();
               }}
-              onCancel={() => setConfirmRerun(false)}
+              onCancel={() => setConfirmRerun((c) => ({ ...c, open: false }))}
               restoreFocus={focusRerun}
             />
           </>
         ) : (
-          <span>Select a step to run it (and everything after it) again.</span>
+          finished === undefined ? null : <span>{finished ? "Select a step to reopen this task and run it (and everything after it) again." : "Select a step to run it (and everything after it) again."}</span>
         )}
       </footer> : null}
     </Sheet>
@@ -429,7 +470,8 @@ function cardConfirm(kind: Confirmable, title: string, failed: boolean, archives
 
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
 /** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
-function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
+/** `finishedTokens`: tokens of all finished tasks, for a finished task's share; null when unknown or not shown. */
+function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; finishedTokens?: number | null; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
   // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
   // refetch has changed the task's outcome under it.
@@ -440,6 +482,8 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
+  const usage = entry.usage;
+  const share = finished && usage?.counted && usage.totalTokens != null && finishedTokens ? sharePercent(usage.totalTokens, finishedTokens) : null;
   // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
   const showingActivity = useRef(false);
   const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed, archivesOnDone);
@@ -448,14 +492,13 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const tabIndex = tabbable ? undefined : -1;
   const timer = cardTimer(entry, finished, now);
   // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
-  // MARKED_FAILED only repeats the outcome label.
-  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) && entry.lastError !== MARKED_FAILED ? entry.lastError : null;
+  const reason = endReason(entry.outcome, entry.lastError);
   // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
   const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   return (
     <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
-        <StateMark icon={entry.stalled ? "Hourglass" : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
+        <StateMark icon={entry.stalled ? STALLED_ICON : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
           <h3 className="text-sm font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{title}</h3>
           <p className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">
@@ -474,19 +517,19 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
       <div className={cn("flex items-start justify-between gap-2", finished && "flex-wrap gap-y-1")}>
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
-          {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
+          {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon={STALLED_ICON} /> : null}
         </div>
         <span className={cn("flex items-center gap-1 text-xs text-muted-foreground tabular-nums", finished ? "min-w-0" : "shrink-0")} title={timer.title} aria-label={timer.label}>
-          <Icon name={finished ? "CalendarCheck" : "Timer"} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
+          <Icon name={finished ? CARD_ICON.finishedAge : CARD_ICON.age} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
           {timer.text}
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
-      {endReason ? (
+      {reason ? (
         <p className="flex items-start gap-1.5 text-sm text-foreground">
           {/* Muted: a failed run is history, not an alarm (#22). */}
           <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">{reasonLead}</span> {endReason}</span>
+          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={reason}><span className="text-muted-foreground">{reasonLead}</span> {reason}</span>
         </p>
       ) : null}
       {entry.steps.length ? <details className="group text-xs">
@@ -521,25 +564,30 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
       ) : null}
       {entry.lastError && !finished && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
         <p className="flex items-start gap-1.5 text-sm text-foreground">
-          <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
+          <Icon name={CARD_ICON.error} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
           <span className="line-clamp-2">{entry.lastError}</span>
         </p>
       ) : null}
       <dl className="mt-auto flex flex-wrap gap-x-3 gap-y-1 text-xs [&>div]:flex [&>div]:items-center [&>div]:gap-1.5">
         <div className="min-w-0">
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Activity" className="size-3.5" aria-hidden />Last activity</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.lastActivity} className="size-3.5" aria-hidden />Last activity</dt>
           <dd className="font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
         </div>
-        {entry.usage?.totalTokens != null ? <div>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Tokens</dt>
-          <dd className="font-medium text-foreground tabular-nums">{compact(entry.usage.totalTokens)}</dd>
+        {/* Usage covers every agent thread of the task (planner, reviewers, replaced builders), and says so. */}
+        {usage && (!usage.counted || usage.totalTokens != null) ? <div title={usageNote(usage)}>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.tokens} className="size-3.5" aria-hidden />{finished ? "Tokens" : "Tokens so far"} · all threads</dt>
+          <dd className="font-medium text-foreground tabular-nums">{usage.totalTokens != null ? compact(usage.totalTokens) : "counting…"}</dd>
         </div> : null}
-        {entry.usage?.cost != null ? <div>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Cost</dt>
-          <dd className="font-medium text-foreground tabular-nums">{entry.usage.cost.amount.toFixed(2)} {entry.usage.cost.currency}</dd>
+        {share ? <div title={`${share} of finished tasks' tokens`}>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.share} fallback="Circle" className="size-3.5" aria-hidden />Share</dt>
+          <dd className="font-medium text-foreground tabular-nums">{share}<span className="sr-only"> of finished tasks' tokens</span></dd>
+        </div> : null}
+        {usage?.cost != null ? <div title={usageNote(usage)}>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.cost} className="size-3.5" aria-hidden />Cost</dt>
+          <dd className="font-medium text-foreground tabular-nums">{usage.cost.amount.toFixed(2)} {usage.cost.currency}</dd>
         </div> : null}
         {entry.fixAttempts > 0 ? <div>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="RefreshCw" className="size-3.5" aria-hidden />Fix cycles</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.fixCycles} className="size-3.5" aria-hidden />Fix cycles</dt>
           <dd className="font-medium text-foreground tabular-nums">{entry.fixAttempts}</dd>
         </div> : null}
       </dl>
@@ -548,12 +596,12 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           {entry.threadId ? (
             <Button size="sm" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={() => navigate.toThread(entry.threadId!)}>
-              <Icon name="MessageSquare" fallback="Circle" aria-hidden /> Open thread
+              <Icon name={CARD_ACTION_ICON.openThread} fallback="Circle" aria-hidden /> Open thread
             </Button>
           ) : null}
           {/* Without a Workflow progress row, the arrow keys land here rather than on the issue link, which leaves the plugin. */}
           <Button {...(entry.steps.length ? {} : { [ENTRY_ATTRIBUTE]: "" })} size="sm" variant="outline" className="h-7 px-2 pointer-coarse:h-10" tabIndex={tabIndex} onClick={(event) => onWorkflow(entry.id, event.currentTarget)}>
-            <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
+            <Icon name={CARD_ACTION_ICON.workflow} fallback="Workflow" aria-hidden /> Workflow
           </Button>
           {entry.prUrl ? (
             <UrlLink href={entry.prUrl} tabIndex={tabIndex} className="inline-flex h-7 items-center gap-1 rounded-md border border-input px-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:h-10">
@@ -575,7 +623,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
-              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+              <Icon name={CARD_ACTION_ICON.moreActions} fallback="MoreHorizontal" aria-hidden />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -591,7 +639,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
           >
             {onShowActivity ? (
               <DropdownMenuItem onSelect={() => { showingActivity.current = true; }}>
-                <Icon name="Activity" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                <Icon name={SHOW_ACTIVITY_ICON} fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
                 Show activity
               </DropdownMenuItem>
             ) : null}
@@ -653,10 +701,152 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
 
 // ---------- pipeline tab ----------
 
+/** Throughput's usage figure: " · 412M tokens (3 not counted yet)", over all threads of the tasks finished in the window. */
+function ThroughputUsage({ usage }: { usage: UsageStats }) {
+  const { totalTokens, pending, unreported, cost } = usage;
+  if (totalTokens == null && !pending) return null;
+  const note = [
+    "Tokens of the tasks finished in the window, each summed over all its agent threads",
+    medianNote(usage.medianTokensPerDone),
+    cost.length ? `Cost: ${cost.map((c) => `${c.amount.toFixed(2)} ${c.currency}`).join(", ")}` : null,
+    unreported ? `${unreported} ${unreported === 1 ? "task" : "tasks"} reported no usage` : null,
+    pending ? `${pending} ${pending === 1 ? "task is" : "tasks are"} not counted yet: usage is counted once all of a task's agents have stopped` : null,
+  ].filter(Boolean).join("\n");
+  return (
+    <span title={note}>
+      {totalTokens != null ? ` · ${compact(totalTokens)} tokens` : " · Tokens"}
+      {pending ? (totalTokens != null ? ` (${pending} not counted yet)` : `: ${pending} not counted yet`) : ""}
+    </span>
+  );
+}
+
+const medianNote = (median: number | null) => (median != null ? `Median per completed task: ${compact(median)}` : null);
+
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
+/** cos_since's input on a first visit, when the query is off: valid, never sent. */
+const FIRST_VISIT = "1970-01-01T00:00:00.000Z";
 const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
+/** Each item of the stage filter row: keeps its width in the phone's single scrolling row. */
+const FILTER_CHIP = "shrink-0 whitespace-nowrap";
+
+/** What the header knows about changes since the last visit. `baseline` is null on a first visit. */
+type SinceState = { baseline: string | null; data: Since | undefined; pending: boolean };
+
+/** Reasons can be whole error messages; the header keeps them to one short phrase. */
+const REASON_MAX = 80;
+function clip(text: string, max = REASON_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+/**
+ * Why a failure ended, in the header: the card's reason, or the outcome's label when it has none ("Marked failed",
+ * "PR closed"). Null for a plain failure with no stored reason: "1 failed (Failed)" would only repeat the count.
+ */
+function failureWhy(failure: Since["failures"][number]): string | null {
+  if (failure.reason) return failure.reason;
+  return failure.outcome === "failed" ? null : OUTCOME_META[failure.outcome].label;
+}
+
+const SINCE_LINK = "rounded font-medium pointer-coarse:py-1.5 text-foreground underline decoration-muted-foreground/60 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** One listed failure: "#N title — why", the why left out when there is none. */
+function FailureItem({ failure }: { failure: Since["failures"][number] }) {
+  const label = taskLabel({ workItemId: failure.id, issueNumber: failure.issueNumber, issueTitle: failure.issueTitle });
+  const why = failureWhy(failure);
+  return (
+    <li className="truncate" title={why ? `${label} — ${why}` : (label ?? undefined)}>
+      <span className="text-foreground">{label}</span>{why ? <> — {clip(why)}</> : null}
+    </li>
+  );
+}
+
+/**
+ * "Since you were here (3h ago): 3 shipped · 1 failed (Thread archived) · Nothing waits on you" (#110). Only the
+ * non-zero counts show; each opens the finished tasks. Two or more failures are listed below, three at most.
+ */
+function SinceLine({ baseline, data, nothingWaits, onShowFinished, now }: { baseline: string; data: Since; nothingWaits: boolean; onShowFinished: () => void; now: number }) {
+  const [first] = data.failures;
+  const listed = data.failed >= 2 ? data.failures : [];
+  return (
+    <div className="flex flex-col gap-1">
+      {/* Inline text with real spaces, so it wraps as a sentence and reads as one. */}
+      <p className="text-sm text-foreground [overflow-wrap:anywhere]">
+        <Icon name="History" fallback="Clock" className="mr-1.5 inline size-3.5 align-[-2px] text-muted-foreground" aria-hidden />
+        <span className="text-muted-foreground">Since you were here (<time dateTime={baseline} title={new Date(baseline).toLocaleString()}>{relative(baseline, now)}</time>):</span>{" "}
+        {data.shipped ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.shipped} shipped</button> : null}
+        {data.shipped && data.failed ? " · " : null}
+        {data.failed ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.failed} failed</button> : null}
+        {data.failed === 1 && first && failureWhy(first) ? <> (<span title={failureWhy(first)!}>{clip(failureWhy(first)!)}</span>)</> : null}
+        {nothingWaits ? <span className="text-muted-foreground"> · Nothing waits on you</span> : null}
+      </p>
+      {listed.length ? (
+        <ul className="flex list-none flex-col gap-0.5 pl-5 text-xs text-muted-foreground">
+          {listed.map((f) => (
+            <FailureItem key={f.id} failure={f} />
+          ))}
+          {data.failed > listed.length ? <li>and {data.failed - listed.length} more</li> : null}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** The agents line: "1 agent working", "3 agents working", "no agents working". */
+function agentsWorking(n: number): string {
+  return n === 0 ? "no agents working" : `${n} ${n === 1 ? "agent" : "agents"} working`;
+}
+
+/**
+ * The top of the Pipeline tab (#110): what waits on you, or "All clear" with the agents working. The waiting part
+ * is the former Needs attention row, unchanged; it drills into the matching filter. Nothing is called clear before
+ * the tasks have loaded.
+ */
+function PipelineSummary({ loaded, loading, agents, failures, stalled, humanInput, filter, onFilter, since, onShowFinished, now }: { loaded: boolean; loading: boolean; agents: number; failures: number; stalled: number; humanInput: number; filter: TaskFilter; onFilter: (filter: TaskFilter) => void; since: SinceState; onShowFinished: () => void; now: number }) {
+  const waiting = failures + stalled + humanInput;
+  const changed = since.data !== undefined && since.data.shipped + since.data.failed > 0;
+  // All clear needs the tasks loaded, nothing waiting, and nothing finished since the last visit. The since counts
+  // count once known; on a first visit or when they fail to load, the current state decides alone.
+  const clear = loaded && waiting === 0 && !since.pending && !changed;
+  const shown = changed || waiting > 0 || clear;
+  // Still loading with nothing to say yet: one line of skeleton. Failed with nothing to say: no empty box.
+  if (!shown) {
+    if (!loading && !since.pending) return null;
+    return (
+      <section aria-label="Summary" className="rounded-lg border border-border bg-card px-3 py-2">
+        <LoadingRegion label="Loading the summary…" className="flex items-center gap-2">
+          <Skeleton className="size-8 shrink-0 rounded-lg" />
+          <Skeleton className="h-4 w-full max-w-sm" />
+        </LoadingRegion>
+      </section>
+    );
+  }
+  return (
+    <section aria-label="Summary" className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2">
+      {changed && since.baseline ? <SinceLine baseline={since.baseline} data={since.data!} nothingWaits={loaded && waiting === 0} onShowFinished={onShowFinished} now={now} /> : null}
+      {waiting > 0 ? (
+        <div role="group" aria-label="Needs attention" className="flex flex-wrap items-center gap-2">
+          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
+          {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => onFilter("failures")}>
+            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
+          </Button> : null}
+          {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => onFilter("stalled")}>
+            <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
+          </Button> : null}
+          {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => onFilter("input")}>
+            <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
+          </Button> : null}
+        </div>
+      ) : clear ? (
+        <p className="flex items-center gap-2 text-sm text-foreground">
+          <StateMark icon="CircleCheck" tone="good" />
+          <span><span className="font-semibold">All clear</span> — {agentsWorking(agents)}</span>
+        </p>
+      ) : null}
+    </section>
+  );
+}
 
 export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
@@ -664,19 +854,27 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [includeDone, setIncludeDone] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [throughputTable, setThroughputTable] = useState(false);
-  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true } });
+  const [finishedOrder, setFinishedOrder] = useState<FinishedOrder>("recent");
+  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true, finishedOrder } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  // This browser tab's last visit (#110); null on a first visit, which asks for no since counts.
+  const baseline = useVisitBaseline();
+  const since = experimental_useRpcQuery<Contract, "cos_since">({ contract: rpcContract, method: "cos_since", input: { since: baseline ?? FIRST_VISIT }, enabled: baseline !== null });
   const refetchAll = useCallback(async () => {
-    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch()]);
-  }, [roster, stats, overview]);
+    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch(), ...(baseline !== null ? [since.refetch()] : [])]);
+  }, [roster, stats, overview, since, baseline]);
   useLiveRefresh(refetchAll);
+  const sinceState: SinceState = baseline === null
+    ? { baseline: null, data: undefined, pending: false }
+    : { baseline, data: since.data, pending: since.data === undefined && !since.error };
+  const tasksHeading = useRef<HTMLHeadingElement>(null);
   const [pausing, setPausing] = useState(false);
   // Every task with an action in flight: one finishing must not re-enable another's buttons.
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
-  const [viewing, setViewing] = useState<{ id: string; mode: SheetMode } | null>(null);
+  const [viewing, setViewing] = useState<{ id: string; mode: SheetMode; finished: boolean } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
@@ -711,17 +909,36 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [older, setOlder] = useState<{ entries: RosterEntry[]; before: string | null } | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const olderRequest = useRef<{ generation: number; inFlight: boolean }>({ generation: 0, inFlight: false });
-  const olderCursor = !includeDone ? null : older ? older.before : (roster.data?.nextBefore ?? null);
+  // Until the roster answers for the order chosen, its cursor belongs to the other order (which the server rejects).
+  const orderLoaded = (roster.data?.finishedOrder ?? "recent") === finishedOrder;
+  const olderCursor = !includeDone || !orderLoaded ? null : older ? older.before : (roster.data?.nextBefore ?? null);
   const entries = useMemo(() => {
     if (!older) return liveEntries;
     const ids = new Set(liveEntries.map((e) => e.id));
     return [...liveEntries, ...older.entries.filter((e) => !ids.has(e.id))];
   }, [liveEntries, older]);
-  const toggleFinished = () => {
+  /** Drop the older finished pages: they belong to the list being replaced. */
+  const resetOlder = () => {
     olderRequest.current = { generation: olderRequest.current.generation + 1, inFlight: false };
     setOlder(null);
     setLoadingOlder(false);
+  };
+  const toggleFinished = () => {
+    resetOlder();
     setIncludeDone((v) => !v);
+  };
+  const orderFinished = (order: FinishedOrder) => {
+    if (order === finishedOrder) return;
+    resetOlder();
+    setFinishedOrder(order);
+  };
+  const finishedTokens = includeDone ? (roster.data?.finishedTokens ?? null) : null;
+  // The since counts open the finished tasks: all of them, with the task list in view (#110).
+  const showFinished = () => {
+    if (!includeDone) toggleFinished();
+    setFilter("all");
+    tasksHeading.current?.focus({ preventScroll: true });
+    tasksHeading.current?.scrollIntoView?.({ block: "start" });
   };
   const loadOlder = async () => {
     const request = olderRequest.current;
@@ -731,7 +948,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     setActionError(null);
     const snapshot = liveEntries.filter(isFinished);
     try {
-      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true });
+      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true, finishedOrder });
       if (olderRequest.current !== request) return;
       setOlder((prev) => {
         const base = prev?.entries ?? snapshot;
@@ -754,7 +971,8 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     return counts;
   }, [active]);
   const s = stats.data;
-  const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
+  // Undefined until the overview loads; 0 is a real limit that starts no new tasks (#125).
+  const maxTotal = overview.data?.settings.maxConcurrentTotal;
   // The setting defaults to on; until the overview loads, assume it.
   const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
@@ -763,12 +981,27 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
   const visible = entries.filter((e) => matchesTaskFilter(e, filter));
   const roving = useRovingCards(visible.map((e) => e.id));
+  const moveCard = roving.move;
+  // j and k move between task cards from anywhere in the Pipeline tab, or with nothing focused, like the arrow
+  // keys inside the grid (#110). Off while a sheet is open; shortcutBlocked also leaves keys pressed elsewhere in
+  // BB alone, and covers typing, modifiers, menus and confirm dialogs.
+  const pipelineRoot = useRef<HTMLDivElement>(null);
+  const sheetOpen = answering !== null || viewing !== null;
+  useEffect(() => {
+    if (sheetOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.key !== "j" && event.key !== "k") || shortcutBlocked(event, pipelineRoot.current)) return;
+      if (moveCard(event.key === "j" ? 1 : -1)) event.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sheetOpen, moveCard]);
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
   return (
-    <div className="flex flex-col gap-4">
-      <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
+    <div ref={pipelineRoot} className="flex flex-col gap-4">
+      <QueryErrors errors={[roster.error, stats.error, overview.error, baseline !== null ? since.error : null, actionError]} />
       <div className="relative flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
         {/* The first tab stop after the heading: past the filters and every task card (issue #115).
@@ -808,37 +1041,33 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         {overview.data?.paused ? <strong className="text-foreground">Chief of Staff is paused. </strong> : null}
         {overview.data?.paused ? "New workflow actions are held until you resume." : "Pause intake and hold new workflow actions."} Already running agents and jobs can continue.
       </p>
+      {maxTotal !== undefined && maxTotal <= 0 ? (
+        <p className="flex items-start gap-1.5 text-xs text-foreground">
+          <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
+          <span><strong>No new tasks start: Max tasks across all repos is {maxTotal}.</strong> Raise it in Configure → General. Tasks holding a slot keep going; one waiting on CI or a merge waits for a slot before its next agent step.</span>
+        </p>
+      ) : null}
+      <PipelineSummary loaded={roster.data !== undefined} loading={roster.isLoading} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} since={sinceState} onShowFinished={showFinished} now={now} />
       {newTask ? (
         <div id="new-task">
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
         </div>
       ) : null}
-      {failures + stalled + humanInput > 0 ? (
-        <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
-          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
-          {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
-            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
-          </Button> : null}
-          {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
-            <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
-          </Button> : null}
-          {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => setFilter("input")}>
-            <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
-          </Button> : null}
-        </section>
-      ) : null}
-      <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-xs">
-        <Button size="sm" variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name="LayoutGrid" aria-hidden />All tasks</Button>
-        {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
+      {/* One row on a phone, scrolling sideways, so the first task is near the top (#110); from sm up the chips wrap.
+          The padding keeps focus rings inside the scroller, which clips them; a focused chip scrolls into view. */}
+      <nav aria-label="Filter active tasks" className="-mx-1 flex flex-nowrap items-center gap-1 overflow-x-auto p-1 text-xs sm:flex-wrap sm:overflow-visible">
+        <Button size="sm" variant="ghost" className={FILTER_CHIP} aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name={FILTER_ICON.all} aria-hidden />All tasks</Button>
+        {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" className={FILTER_CHIP} aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
           <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
         </Button>)}
-        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name="Layers" className="size-4" aria-hidden />Task slots: {running}{maxTotal ? ` / ${maxTotal}` : ""}</span>
+        <span className={cn(FILTER_CHIP, "flex items-center gap-1.5 px-2 py-1 text-muted-foreground")}><Icon name={FILTER_ICON.taskSlots} className="size-4" aria-hidden />Task slots: {running}{maxTotal !== undefined ? ` / ${maxTotal}` : ""}</span>
       </nav>
       {/* Agents */}
       <Panel
         className="border-0 bg-transparent [&>header]:px-0 [&>header]:flex-wrap [&>div]:px-0"
         title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
-        icon="Bot"
+        icon={PANEL_ICON.tasks}
+        headingRef={tasksHeading}
         dim={roster.isFetching && !roster.isLoading}
         actions={
           <>
@@ -847,14 +1076,28 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
+            {includeDone ? (
+              <div role="group" aria-label="Order finished tasks" className="flex items-center gap-1">
+                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "recent"} onClick={() => orderFinished("recent")}>
+                  <Icon name="CalendarCheck" fallback="Clock" aria-hidden />Recently finished
+                </Button>
+                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "tokens"} onClick={() => orderFinished("tokens")}>
+                  <Icon name={CARD_ICON.tokens} fallback="Circle" aria-hidden />Most tokens
+                </Button>
+              </div>
+            ) : null}
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
-              <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
+              <Icon name={includeDone ? FILTER_ICON.hideFinished : FILTER_ICON.showFinished} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
             </Button>
           </>
         }
       >
-        {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+        {roster.isLoading ? (
+          <LoadingRegion label="Loading tasks…" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {[0, 1, 2].map((i) => <CardSkeleton key={i} />)}
+          </LoadingRegion>
+        ) : null}
         {!roster.isLoading && !visible.length && (!roster.error || roster.data) ? (
           <Empty icon="Bot" illustration={filter === "all"} title={filter === "all" ? "No active tasks" : "Nothing in this stage"}>
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
@@ -865,10 +1108,10 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           <div role="group" aria-label="Tasks" aria-describedby={TASK_KEYS_HINT_ID} className="group/tasks flex flex-col gap-1.5" {...roving.groupProps}>
             {/* Above the cards, so it is on screen with the first one. Its space is kept while hidden, so
                 focus entering the grid does not shift the cards. Always the group's description. */}
-            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
+            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys or j and k move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
+                <AgentCard key={e.id} entry={e} finishedTokens={finishedTokens} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode, finished: e.detail === "done" || e.detail === "failed" }); }} onShowActivity={onShowActivity} />
               ))}
             </div>
           </div>
@@ -884,15 +1127,23 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       </Panel>
 
       <div className="grid gap-4 lg:grid-cols-5">
-        <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
+        <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon={PANEL_ICON.throughput} dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
           {s ? <p className="mb-4 text-sm text-muted-foreground">
             {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
+            <ThroughputUsage usage={s.usage} />
           </p> : null}
           {!s ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            // A failed first load is reported above the page; no placeholder waits for it.
+            stats.error ? null : (
+              <LoadingRegion label="Loading throughput…" className="flex flex-col gap-4">
+                <Skeleton className="h-4 w-3/5" />
+                <Skeleton className="h-[120px] w-full" />
+                <Skeleton className="h-3 w-full" />
+              </LoadingRegion>
+            )
           ) : throughputTable ? (
-            <DataTable columns={["Day", "Started", "Done", "Failed"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed])} />
+            <DataTable columns={["Day", "Started", "Done", "Failed", "Tokens"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed, d.tokens != null ? compact(d.tokens) : "—"])} />
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}
@@ -907,9 +1158,20 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             />
           )}
         </Panel>
-        <Panel className="lg:col-span-2" title="Capacity" icon="Gauge" dim={overview.isFetching && !overview.isLoading}>
+        <Panel className="lg:col-span-2" title="Capacity" icon={PANEL_ICON.capacity} dim={overview.isFetching && !overview.isLoading}>
+          {!overview.data && !overview.error ? (
+            <LoadingRegion label="Loading capacity…" className="flex flex-col gap-3">
+              {["w-16", "w-24"].map((w) => (
+                <div key={w} className="flex flex-col gap-1.5">
+                  <div className="flex justify-between"><Skeleton className={cn("h-3", w)} /><Skeleton className="h-3 w-8" /></div>
+                  <Skeleton className="h-2 w-full rounded-full" />
+                </div>
+              ))}
+            </LoadingRegion>
+          ) : null}
           <div className="flex flex-col gap-3">
-            {maxTotal ? (
+            {/* With one repository its own meter says the same; the global cap stays in Task slots (#110). */}
+            {maxTotal !== undefined && overview.data?.repos.length !== 1 ? (
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-baseline justify-between text-xs">
                   <span className="font-medium text-foreground">All repos</span>
@@ -936,7 +1198,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       </div>
 
       {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
-      {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
+      {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} finishedHint={viewing.finished} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }
@@ -1002,7 +1264,7 @@ export function ReposTab() {
   }, [overview, roster]);
   useLiveRefresh(refetchAll);
   const [intake, setIntake] = useState<{ results: IntakeResult[]; dryRun: boolean } | null>(null);
-  const [viewing, setViewing] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ id: string; finished: boolean } | null>(null);
   // Closing the workflow sheet returns focus to the row's Workflow button, or to the panel heading when the row is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const [message, setMessage] = useState<string | null>(null);
@@ -1051,7 +1313,7 @@ export function ReposTab() {
       ) : null}
       <Panel
         title="Repositories"
-        icon="FolderGit2"
+        icon={PANEL_ICON.repositories}
         dim={overview.isFetching && !overview.isLoading}
         actions={
           <>
@@ -1122,25 +1384,25 @@ export function ReposTab() {
         </div>
       </Panel>
       {intake ? (
-        <Panel title={intake.dryRun ? "Intake preview" : "Intake result"} icon="Inbox" actions={<Button size="sm" variant="ghost" onClick={() => setIntake(null)}><Icon name="X" fallback="Circle" aria-hidden /> Close</Button>}>
+        <Panel title={intake.dryRun ? "Intake preview" : "Intake result"} icon={PANEL_ICON.intake} actions={<Button size="sm" variant="ghost" onClick={() => setIntake(null)}><Icon name="X" fallback="Circle" aria-hidden /> Close</Button>}>
           <IntakeSummary results={intake.results} dryRun={intake.dryRun} />
         </Panel>
       ) : null}
-      <Panel title="Pull requests" icon="GitPullRequest" headingRef={sheetFocus.fallback} dim={roster.isFetching && !roster.isLoading}>
+      <Panel title="Pull requests" icon={PANEL_ICON.pullRequests} headingRef={sheetFocus.fallback} dim={roster.isFetching && !roster.isLoading}>
         <PullRequestList
           entries={prs}
           now={now}
           authOk={authOk}
           stage={(e) => <StagePill entry={e} />}
           action={(e) => (
-            <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing(e.id); }}>
+            <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing({ id: e.id, finished: e.detail === "done" || e.detail === "failed" }); }}>
               <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
             </Button>
           )}
           empty={roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their state, checks and review.</Empty>}
         />
       </Panel>
-      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
+      {viewing ? <WorkflowSheet id={viewing.id} finishedHint={viewing.finished} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }
@@ -1239,7 +1501,7 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
   return (
     <Panel
       title="Activity"
-      icon="Activity"
+      icon={PANEL_ICON.activity}
       headingRef={heading}
       dim={log.isFetching && !log.isLoading}
       actions={
@@ -1288,6 +1550,11 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
       }
     >
       <ErrorLine error={log.error} />
+      {log.isLoading && !log.data ? (
+        <LoadingRegion label="Loading activity…" className="flex flex-col gap-2.5">
+          {["w-4/5", "w-3/5", "w-2/3"].map((w) => <Skeleton key={w} className={cn("h-3.5", w)} />)}
+        </LoadingRegion>
+      ) : null}
       {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : task ? "No activity for this task." : "No activity yet."}</p> : null}
       {entries.length > 0 ? <p className="mb-2 text-xs text-muted-foreground">
         {entries.length} entries · {new Date(entries.at(-1)!.at).toLocaleString()} – {new Date(entries[0]!.at).toLocaleString()}
@@ -1354,6 +1621,9 @@ export function Dashboard({ subPath }: { subPath: string }) {
     return TABS.some((t) => t.id === first) ? (first as Tab) : "agents";
   }, [subPath]);
   const goTab = useCallback((t: Tab) => navigate.toPluginPanel("cos", { subPath: t }), [navigate]);
+  // The address is the only record of Configure's section: picking one pushes it, so Back, reload and links follow.
+  const configSection = useMemo(() => configSectionFromSubPath(subPath), [subPath]);
+  const goConfigSection = useCallback((s: ConfigSection) => navigate.toPluginPanel("cos", { subPath: configSubPath(s) }), [navigate]);
   const [alert, setAlert] = useState<{ title: string; body: string } | null>(null);
   // Held here so a task card's "Show activity" can narrow the feed, and the choice survives switching tabs.
   const [activityTask, setActivityTask] = useState<ActivityTask | null>(null);
@@ -1413,22 +1683,17 @@ export function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
+        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} section={configSection} onSectionChange={goConfigSection} />}
         {tab === "config" ? null : <ActivityFeed task={activityTask} onTaskChange={setActivityTask} headingRef={activityHeading} />}
       </div>
     </PaletteProvider>
   );
 }
 
-function configSection(subPath: string): "workflow" | "repos" | "general" | "access" | "advanced" {
-  const second = decodeURIComponent(subPath.split("/")[1] ?? "");
-  return second === "repos" || second === "general" || second === "access" || second === "advanced" ? second : "workflow";
-}
-
 function ConfigureLink({ section, label }: { section: "repos"; label: string }) {
   const navigate = useBbNavigate();
   return (
-    <Button size="sm" className="mt-2" onClick={() => navigate.toPluginPanel("cos", { subPath: `config/${section}` })}>
+    <Button size="sm" className="mt-2" onClick={() => navigate.toPluginPanel("cos", { subPath: configSubPath(section) })}>
       <Icon name="Plus" fallback="Circle" aria-hidden /> {label}
     </Button>
   );

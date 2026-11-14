@@ -7,6 +7,7 @@ import type { ReactNode, Ref, RefObject } from "react";
 import { Icon } from "@/components/ui/icon";
 import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
 import { cn } from "@/lib/utils";
+import { VIEW_ICON } from "./dashboardIcons";
 
 export type Mode = "light" | "dark";
 
@@ -159,7 +160,7 @@ export function Swatch({ color, shape = "square" }: { color: string; shape?: "sq
   return <span aria-hidden className={cn("inline-block size-2.5 shrink-0", shape === "dot" ? "rounded-full" : "rounded-[3px]")} style={{ background: color }} />;
 }
 
-const TONE_ICON: Record<Tone, string> = { good: "CircleCheck", warning: "TriangleAlert", serious: "CircleAlert", critical: "CircleX", neutral: "Circle", info: "Info" };
+export const TONE_ICON: Record<Tone, string> = { good: "CircleCheck", warning: "TriangleAlert", serious: "CircleAlert", critical: "CircleX", neutral: "Circle", info: "Info" };
 
 // A status pill: colored icon + text in ink. Never color alone.
 export function StatusPill({ tone, label, icon, pulse }: { tone: Tone; label: string; icon?: string; pulse?: boolean }) {
@@ -372,7 +373,7 @@ export function ViewToggle({ table, onChange }: { table: boolean; onChange: (tab
           onClick={() => onChange(t)}
           className={cn("rounded-[5px] p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring pointer-coarse:p-2.5", table === t && "bg-state-active text-foreground")}
         >
-          <Icon name={t ? "Table" : "ChartColumn"} fallback={t ? "List" : "BarChart3"} className="size-3.5" aria-hidden />
+          <Icon name={t ? VIEW_ICON.table : VIEW_ICON.chart} fallback={t ? "List" : "BarChart3"} className="size-3.5" aria-hidden />
         </button>
       ))}
     </div>

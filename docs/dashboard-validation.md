@@ -15,6 +15,12 @@ to the previous compact rows).
   generic working text, and expose full step progress on expansion. Task age is
   measured from task creation, not from the current step's start.
 - Missing usage fields disappear; zero tokens and zero cost remain visible.
+  Since #119 the figure sums every agent thread of the task ("Tokens · all
+  threads", "Tokens so far" while active). Its tooltip gives the thread count,
+  and a finished task not counted yet shows "counting…". A finished card shows
+  its share of finished tasks' tokens. Throughput's summary adds the window's
+  tokens, and its table adds a Tokens column ("—" for a day with none
+  reported).
   Open thread is primary when available, Workflow remains available without it,
   and existing approval, retry, PR, and overflow actions are retained.
 - Activity uses the previous compact rows: severity icon, event type, repository,
@@ -255,3 +261,281 @@ overview was clipped (0 px visible). In List mode the column scrolls to the
 overview (measured). Portrait heights below about 580 px leave less than 60 px
 of overview below the canvas (55 px at 320×568), still reachable by touch. A
 fix needs its own layout for short, narrow viewports.
+
+## Workflow editor toolbar and Full screen (issue #121)
+
+In the workflow editor (Configure → Workflows) the add-step toolbar is now an
+in-flow, wrapping bar above the canvas at every width (`role="group"`, named
+"Canvas tools"), and Full screen is its last button. Before, from `sm` up, the
+toolbar floated over the canvas's top left and Full screen over its top right,
+so they overlapped on a narrow canvas and the toolbar covered the first step
+after Fit. The React Flow frame no longer contains the toolbar, so the opening
+fit and "Fit all steps in view" frame only the area below the bar, and
+`FIT_EDIT` is unchanged. The same bar is used in full screen, where it
+floated before too, and on phones, where Full screen moves from the canvas's
+top right into the bar. In full screen the bar has no Full screen button: the
+way out is the "Exit full screen" bar, as before.
+
+In the two-column layout (`xl`) the canvas is `self-start` and, on windows at
+least 45rem (720 px) tall, `sticky top-3`, so it stays in view while the step
+panel scrolls. The pinned canvas spans 12–532 px from the top of the page's
+scroller. On a shorter window the configurator's Save bar (`sticky bottom-0`,
+shown while there are unsaved edits) would cover its bottom strip, which holds
+the zoom and Fit controls, so there the canvas scrolls with the page as before.
+The read-only task sheet canvas keeps its floating Full screen button and is
+unchanged.
+
+Tests (jsdom has no layout, so they check structure): `tests/workflowCanvas.test.tsx`
+checks that the editor has exactly one Full screen button, that it is the last
+child of the toolbar group after the four Add buttons and Tidy, and that the
+group is outside `.react-flow` with no `absolute` class. It also checks that
+there is no Full screen button once expanded, and that the read-only canvas
+keeps its own button with no toolbar. `tests/workflowEditor.test.tsx` checks
+that the embedded canvas gets `xl:self-start` and `sticky`/`top-3` under the
+`(min-width: 80rem) and (min-height: 45rem)` media variant, that no other
+variant makes it sticky, and that none of them apply in full screen. The existing fit tests pass
+unchanged.
+
+Browser check: headless Chromium (Playwright 1.62 with the bundled headless
+shell; BB browser automation kept losing its browser on this host). It ran the
+actual `WorkflowsEditor` with the default workflow and the built
+`dist/app.css`. The page is a fixture shell that mimics the plugin page: a
+host-sidebar placeholder, a `[data-bb-plugin=chief-of-staff]` panel with
+the `h-full overflow-auto` scroller, the `max-w-7xl p-4 md:p-6` column, header
+and nav placeholders, and a `sticky bottom-0` Save bar. It used a simulated
+host theme, a 16 px root with 14 px system-font body text, and placeholder
+squares for host icons. It is not a live BB install, the running plugin was
+not reinstalled, and nothing was saved.
+Measured with `getBoundingClientRect`: on opening and after Fit, the toolbar
+buttons' pairwise intersections, each step's top against the toolbar's
+bottom, and steps inside the frame. Then, after selecting Review, scrolling
+"On fail, go back to" to the bottom of the window and then scrolling the page
+to its end, the canvas box against the window.
+
+The fixture's panel stands in for the plugin page's width, so the editor is the
+panel minus the page padding (48 px). The real page also has the
+configurator's section list beside the editor from `lg` up, and that list is
+not in the fixture. The canvas widths below cover the issue's range either
+way.
+
+| Window | Editor | Layout | Canvas | Toolbar rows | Overlaps | Steps under toolbar (open / Fit) | Canvas at page end |
+|---|---|---|---|---|---|---|---|
+| 1440×1000 | 847 (issue repro) | two-column | 451 px | 2 (Full screen wraps) | none | none / none | sticky, top 12, fully in view |
+| 1440×1000 | 652 | two-column | 256 px | 2 | none | none / none | sticky, fully in view |
+| 1280×1000 | 652 | two-column | 256 px | 2 | none | none / none | sticky, fully in view |
+| 1440×1000 | 1232 | two-column | 836 px | 1 | none | none / none | sticky, fully in view |
+| 1920×1000 | 1232 | two-column | 836 px | 1 | none | none / none | sticky, fully in view |
+| 1440×720 | 847 | two-column | 451 px | 2 | none | none / none | sticky, y 12–532, clear of the Save bar (672–720) |
+| 1440×719 | 847 | two-column | 451 px | 2 | none | none / none | not sticky (window under 45rem) |
+| 1280×600 | 652 | two-column | 256 px | 2 | none | none / none | not sticky (window under 45rem) |
+| 1279×1000 | 652 | stacked | 652 px | 1 | none | none / none | scrolled off (by design) |
+| 1000×1000 | 952 | stacked | 952 px | 1 | none | none / none | scrolled off (by design) |
+| 1200×900 | 952 | stacked | 952 px | 1 | none | none / none | scrolled off (by design) |
+
+At every size every toolbar button lies inside the canvas box and Full screen
+is the last button. With "On fail, go back to" at the bottom of a 1000 px
+window, and again with the page scrolled to its end, the whole 520 px canvas
+is visible in every two-column case at least 720 px tall.
+
+The same script against the parent commit (`c59c5af`, built the same way)
+reproduces the issue. In the issue's configuration (451 px canvas), Tidy
+spans x 868–926 and Full screen x 916–1011, so they overlap. The issue
+measured 890–955 and 911–1011. With a 256 px canvas, Full screen covers
+Check and Ship, and the toolbar covers the Plan step both on opening and
+after Fit. At the page end the canvas is not sticky and its top is 78 px off
+screen.
+
+No element between the page's scroller (`app.tsx`, `h-full overflow-auto`)
+and the editor sets `overflow`, so nothing stops the canvas from sticking in
+the live page. The wrappers are flex and gap only, plus the configurator's
+`lg:flex-row lg:items-start` row.
+
+Not met, by design: below `xl` the canvas and the step panel stack, and the
+canvas still scrolls away while you edit the bottom of the panel. A sticky
+canvas there would cover the panel. The same holds at `xl` on windows under
+720 px tall, where a pinned canvas would sit under the Save bar. Criterion 3 was measured, and is met, in
+the two-column layout.
+
+Not checked: a live BB install (host fonts, icons, the configurator's section
+list, and the real header heights), touch, and dark theme. Also not checked:
+the compact configurator in BB's settings page (`<Configurator compact />`).
+There the page's scroller belongs to the host, and the media variant follows
+the window, so the canvas also sticks there, 12 px below the top of the
+host's scroller, and may sit under a sticky host header if there is one. The fixture's step
+panel for Review is about 990 px tall, against about 1,400 px in the live
+report. The canvas stuck at the page end anyway, so a taller panel only
+scrolls further under it.
+
+## Configure problems listed once (issue #123)
+
+A workflow draft's problems are listed once, in the Workflows editor; the save
+bar keeps only the count.
+
+- The editor's list shows the open workflow's problems without the
+  `Workflow "<name>":` prefix, starting with the step they are about, then one
+  `<name> · N to fix` row per other workflow with problems. Three lines show,
+  then "Show all N".
+- Graph problems now carry their step (a pair that could run at once: the
+  later step in the list, usually the one just added; a duplicate id: the
+  second step; a loop: none), so every line about a step selects it. The
+  canvas pans to the step if it is out of view, and its panel opens with focus
+  on its heading; in list view that step expands.
+- Steps with problems have a critical border and a count badge on the canvas,
+  "N to fix" in their accessible name, and an "N to fix" pill while collapsed
+  in list view.
+- The save bar is one row from `sm` up: "Unsaved changes in <sections> · N to
+  fix before saving" (below `sm`, "N to fix"), Show/Hide, Discard, Save. Below
+  `sm`, Discard and Save take a second row of their own, at opposite ends
+  (#124), so the phone figures below (measured before that) are one row short.
+  Expanded, it lists section
+  summaries for what is not on screen (`Workflows · N to fix`,
+  `Repositories · acme/app · N to fix`, `General · N to fix`), at most about
+  three rows before scrolling. With nothing off screen, Show scrolls to the
+  section's own list or first invalid field.
+
+Validation: `tests/workflow.test.ts` (step of each graph problem),
+`tests/workflowEditor.test.tsx` (no prefix, step selection on the canvas and
+in list view, other-workflow row, three lines then Show all),
+`tests/workflowCanvas.test.tsx` (marks, accessible name, a selection made with
+a new workflow is kept, the in-view check behind panning),
+`tests/configurator.test.tsx` (collapsed bar without problem text, Show, the
+on-screen section left out, opening a repository, selecting a step from
+General, a revealed step not selected again on returning).
+
+Browser check: headless Chromium (Playwright 1.62, Chromium build 1234; BB
+browser automation sessions failed to start on this host) on the actual
+`Configurator` with the built `dist/app.css` under a
+`data-bb-plugin="chief-of-staff"` root, fixture RPC data (the default workflow,
+one repository), placeholder icons and a minimal host preflight. Not a live BB
+install; the running plugin was not reinstalled. Repro: Workflows → toolbar
+**Check**, unsaved. The default workflow gives 3 problems (the issue's
+workflow gave 5); a second Check gives 4 lines and "Show all 4".
+
+| Viewport | Section | Save bar | Editor list | Canvas visible | Notes |
+|---|---|---|---|---|---|
+| 390×844 | Workflows | 48 px, one row ("3 to fix · Show · Discard · Save") | 88 px, 3 lines | 263 px of 484 px above the bar | was 496 px bar, no canvas in view |
+| 390×844 | Workflows, 2 Checks | 48 px | 108 px, 3 lines + "Show all 4" | 243 px | |
+| 390×844 | Workflows, a Check and a Ship (7 to fix) | 48 px | 92 px, 3 lines + "Show all 7" | 259 px | |
+| 390×844 | General, same draft | 48 px; expanded 75 px with `Workflows · 3 to fix` | n/a | n/a | General row absent (on screen) |
+| 390×844 | `Workflows · 3 to fix` from General | 48 px | | | New check selected, its panel heading focused and scrolled to the top |
+| 1440×1000 | Workflows | 48 px, one row | 56 px, 3 lines | 520 px, all of it | New check panned into view, red border and badge "3" |
+| 1440×1000 | General, same draft | 48 px; expanded 75 px | n/a | n/a | |
+
+At 1440×1000 a step added from the toolbar below the fitted view is panned to
+(its top 233 px into the 520 px canvas). After a step is opened from a problem
+line, clicking a step only partly inside the canvas (Review, at 1440×1000 and
+at 390×844) selects it and leaves the pan and zoom as they were. The 390×844
+rows predate Discard and Save moving to their own row on phones (#124); the
+collapsed bar is now two rows there, still well under a quarter of the screen,
+and was not re-measured. No horizontal
+page overflow at either size, and no error text in the bar in any state. Not checked: a screen reader, Safari, a live BB install.
+
+## What changed, what needs you (issue #110)
+
+What changed on the Pipeline tab:
+
+- **Summary header**, under the Work overview row. It holds the former Needs
+  attention row (same buttons, labels, `aria-pressed` and drill-downs, now a
+  `role="group"` inside `section[aria-label="Summary"]`). Above it, with a
+  baseline: "Since you were here (5h ago): 3 shipped · 1 failed (reason)".
+  Only non-zero counts show; two or more failures are listed as "#N title —
+  reason" (three at most, then "and N more"). A failure without a stored
+  reason shows its outcome label ("Marked failed"); reasons are clipped to 80
+  characters, whole in the tooltip. "Nothing waits on you" ends the line when
+  nothing waits. "All clear — N agents working" needs the roster loaded,
+  nothing waiting and no since counts (or none to load: a first visit, or
+  `cos_since` failed, which `QueryErrors` reports). The shipped and failed
+  counts turn Show finished on, clear the filter and focus the task list
+  heading.
+- **`cos_since`** (read-only RPC): done and failed counts with
+  `COALESCE(finished_at, updated_at) > since`, and the newest three failures
+  with outcome and reason. The reason rule is one helper, `endReason` in
+  `src/outcome.ts`, used by the card and the RPC.
+- **Skeletons** with `aria-busy` and an `sr-only` status replace "Loading…" in
+  the summary, task grid, Throughput, Capacity and Activity. A panel whose
+  first load failed shows none. The "Loading…" lines inside `WorkflowSheet`
+  are out of scope (a sheet, not the tab).
+- **Capacity** hides "All repos" with exactly one repository; the global cap
+  stays in "Task slots".
+- **Stage filters** are one sideways-scrolling row below `sm`, wrapping from
+  `sm` up.
+- **`j`/`k`** move between task cards (clamped), and focus the current card
+  from elsewhere in the Pipeline tab or with nothing focused. The plugin
+  shares BB's document, so a key pressed with focus anywhere else in BB is
+  left alone. They also do nothing with a modifier, while composing, in
+  `input, textarea, select, [contenteditable], [role=textbox]`, with a sheet
+  open, or with an open `[role=dialog]`, `[role=alertdialog]` or `[role=menu]`
+  in the document. Closed overlays (`data-state=closed`, `inert`, `hidden` or
+  `aria-hidden`) do not count: on phones the persistent drawer keeps a closed
+  `role=dialog` mounted after its first opening. `/` is left out: #105, which
+  adds the search field, is still open.
+
+Baseline semantics (`components/cos/lastVisit.ts`): `localStorage
+["cos.lastVisit"]` is when this browser last left the dashboard, written on
+`pagehide`, on the page becoming hidden and when the Pipeline tab unmounts.
+`sessionStorage["cos.visitBaseline"]` is this browser tab's baseline (`"none"`
+on a first visit). Within a visit it is read back unchanged, so live
+refetches, StrictMode remounts, reloads and tab switches keep the counts. A
+visit ends when the Pipeline tab was out of sight for 30 minutes: on mount, or
+when the page becomes visible again, a stale `cos.lastVisit` starts a new
+visit from it. Time on another dashboard tab counts as away, so returning to
+Pipeline after 40 minutes on Configure starts a new visit. `cos.lastVisit` is
+shared by the browser's windows, so another BB window hiding the dashboard
+can end this window's visit when it next becomes visible.
+This amends the plan, which kept the baseline for the browser tab's life; BB
+stays open for days, so that baseline would never move. Storage that throws
+reads as a first visit. Known limit: if the host keeps the panel mounted and
+the page visible while you work elsewhere in BB, the visit continues until the
+panel unmounts or the page is hidden.
+
+Tests: `tests/since.test.ts` (counts on each side of `since` and at it, legacy
+rows without a finish time, failure order and limit, reasons for a failed
+thread, a closed PR, marked failed with and without the stored label, offsets,
+empty), `tests/server.test.ts` (`cos_since` through the RPC, input validation,
+nothing stored), `tests/lastVisit.test.tsx` (first visit, stored visit, reuse
+within a visit, new visit after 30 minutes, invalid values, throwing and
+unreachable storage, writes on `pagehide`/hidden/unmount, a new visit on
+becoming visible), `tests/dashboardUi.test.tsx` (single and multiple
+repository meters, the filter row classes, all clear with 0, 1 and 3 agents,
+each attention kind, loading and failed roster, since counts, first visit,
+the failure list, reason fallback and clipping, the links, counts kept across
+a dashboard tab switch, a failed or loading `cos_since`, skeletons) and
+`tests/pipelineKeyboard.test.tsx` (`j`/`k` from a card, any control and the
+page, clamping, modifiers, the New task fields, an open menu, confirm dialog
+and workflow sheet, focus on a control outside the dashboard, a closed
+dialog or menu left in the document; guard tests assert the key was not claimed, since focus
+traps would undo a move anyway). `npm run check` and `npm run build:ci` pass.
+
+Browser check: headless Chromium (BB browser automation) on a static render of
+the real `Dashboard` with the built `dist/app.css`, simulated host colour
+tokens and a reset layered below the utilities, a stand-in SDK answering RPCs from fixture data (54 tasks:
+4 or 5 active, 49 finished, one repository), and placeholder icons.
+
+| Viewport | Scenario | Summary (top–bottom) | First card top | Filters | Page overflow |
+| --- | --- | --- | --- | --- | --- |
+| 1440×900 | 3 shipped, 1 failed, 1 approval waiting | 145–219 px | 367 px | one 40 px row | 0 |
+| 1440×900 | 7 shipped, 4 failed (3 listed), nothing waits | 145–255 px | 403 px | one 40 px row | 0 |
+| 1440×900 | all clear | 145–195 px | 343 px | one 40 px row | 0 |
+| 390×844 (touch) | 3 shipped, 1 failed, 1 approval waiting | 233–366 px | 514 px | one 40 px row, 959 px of chips scrolling in 334 px | 0 |
+| 390×844 (touch) | 7 shipped, 4 failed (3 listed) | 233–362 px | 510 px | same | 0 |
+| 390×844 (touch) | all clear | 233–283 px | 431 px | same | 0 |
+
+The first pass used an unlayered reset that overrode the plugin's utilities
+(no padding or borders); these numbers are from the second pass, with the
+reset in `@layer base` below `utilities`. That pass also showed a list bullet
+on "and N more" without the host's preflight, so the list now sets
+`list-none` itself.
+
+At 390×844 the loading scenario showed skeletons with five busy regions
+(summary, tasks, throughput, capacity, activity), pulsing, and no "Loading…"
+text. All clear read "All clear — 4 agents working"; a first visit showed only
+the Needs attention row. Capacity showed one meter, named after the repository.
+
+Not checked: a live BB install (host navigation, icons, theme, and whether the
+host unmounts or hides the panel when you open a thread, which decides when a
+visit ends); dark theme; `j`/`k` and the links in a real browser (covered in
+jsdom); reduced-motion rendering of the skeletons (`motion-safe:` only).
+`j`/`k` act only on keys pressed in the Pipeline tab or with nothing focused.
+If the host keeps the panel mounted but hidden, a `j` with nothing focused
+could still move focus to a hidden card; whether the host does that is the
+same unknown as when a visit ends.

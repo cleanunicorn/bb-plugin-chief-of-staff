@@ -3,10 +3,10 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { isActiveStatus, occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
-import { FAILED_OUTCOMES, finishedOutcome, MARKED_FAILED, OUTCOME_META, type Outcome } from "./outcome";
+import { occupiesCapacity, type FinishedOrder, type PrState, type WaitingKind, type WorkItem } from "./state";
+import { describeOutcome, finishedOutcome, type Outcome } from "./outcome";
 import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
-import { readThreadUsage, type ThreadUsage } from "./threads";
+import { itemsUsage, storedUsage, type ItemUsage } from "./usage";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
 import { agentWork, describePick, isAuthoredAgent, isWriter, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
@@ -78,7 +78,12 @@ export interface RosterEntry {
   providerId: string | null;
   model: string | null;
   source: string;
-  usage: ThreadUsage | null;
+  /**
+   * With withUsage: the task's usage summed over all its agent threads; for a
+   * finished task the stored count (`counted` false until it is counted), for
+   * an active one read live, so far. Null without withUsage.
+   */
+  usage: ItemUsage | null;
 }
 
 /**
@@ -137,6 +142,8 @@ export interface RosterOptions {
   finishedLimit?: number;
   /** Cursor from an earlier page's `nextBefore`: return only the next page of finished items. */
   before?: string;
+  /** Finished items most recently finished first (default), or most tokens first. A cursor belongs to its order. */
+  finishedOrder?: FinishedOrder;
   withUsage?: boolean;
 }
 
@@ -144,25 +151,30 @@ export interface Roster {
   entries: RosterEntry[];
   /** Pass as `before` for the next page of finished items; null when there are no more. */
   nextBefore: string | null;
+  /**
+   * With finished items: the tokens of every finished task in scope (all pages,
+   * the repo filter applied), for each task's share; null when none reported
+   * tokens or no finished items were asked for.
+   */
+  finishedTokens: number | null;
+  /** The order the finished items (and `nextBefore`) follow. */
+  finishedOrder: FinishedOrder;
 }
 
-/** Every active item (newest first), then one page of finished items (most recently finished first). */
+/** Every active item (newest first), then one page of finished items (most recently finished, or most tokens, first). */
 export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<Roster> {
   const { values } = await cos.config();
   const finishedLimit = Math.min(ROSTER_FINISHED_MAX, Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT)));
-  const page = cos.store.listRosterItems({ repo: opts.repo, includeDone: opts.includeDone, finishedLimit, before: opts.before });
+  const page = cos.store.listRosterItems({ repo: opts.repo, includeDone: opts.includeDone, finishedLimit, before: opts.before, order: opts.finishedOrder });
   const items = [...page.active, ...page.finished];
   const threadIds = [...new Set(items.map((i) => i.threadId).filter((id): id is string => Boolean(id)))];
   const threads = new Map<string, { status: string; title: string | null }>();
-  /** The thread states were read; without them a finished item's thread may still be running. */
-  let threadsKnown = true;
   for (let i = 0; i < threadIds.length; i += THREAD_BATCH) {
     const batch = threadIds.slice(i, i + THREAD_BATCH);
     try {
       const list = await cos.bb.sdk.threads.list({ threadIds: batch, includeHidden: true, limit: batch.length });
       for (const t of list) threads.set(t.id, { status: t.runtime?.displayStatus ?? t.status, title: t.title ?? t.titleFallback ?? null });
     } catch (error) {
-      threadsKnown = false;
       cos.bb.log.debug(`threads.list failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -212,42 +224,10 @@ export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<R
       usage: null,
     });
   }
-  if (opts.withUsage) {
-    const toRead: { entry: RosterEntry; item: WorkItem }[] = [];
-    items.forEach((item, i) => {
-      const entry = entries[i]!;
-      if (!item.threadId) return;
-      // A finished item's usage no longer changes: once stored, it is not read again.
-      if (item.finalUsage && !isActiveStatus(item.status)) entry.usage = item.finalUsage;
-      else toRead.push({ entry, item });
-    });
-    await mapLimit(toRead, USAGE_CONCURRENCY, async ({ entry, item }) => {
-      const threadId = item.threadId!;
-      const { usage, complete } = await readThreadUsage(cos, threadId);
-      entry.usage = usage;
-      // Store it once final: the item finished, both queries answered, and the
-      // thread is not running (an item can be marked done while it still is).
-      if (isActiveStatus(item.status) || !complete || !threadsKnown || isBusy(threads.get(threadId)?.status ?? "")) return;
-      try {
-        cos.store.setFinalUsage(item.id, threadId, usage);
-      } catch (error) {
-        cos.bb.log.warn(`storing usage of ${item.id} failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    });
-  }
-  return { entries, nextBefore: page.nextBefore };
-}
-
-/** Threads whose usage the roster reads at once (each read makes two SDK calls). */
-export const USAGE_CONCURRENCY = 4;
-
-/** Run `fn` over `items`, at most `limit` at a time. */
-async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) await fn(items[next++]!);
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  // Finished items show their stored count: no usage calls for them.
+  if (opts.withUsage) (await itemsUsage(cos, items)).forEach((usage, i) => { entries[i]!.usage = usage; });
+  const finishedTokens = opts.includeDone || opts.before !== undefined ? cos.store.finishedTokens(opts.repo) : null;
+  return { entries, nextBefore: page.nextBefore, finishedTokens, finishedOrder: opts.finishedOrder ?? "recent" };
 }
 
 const OUTPUT_MAX = 6_000;
@@ -299,20 +279,13 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
       createdAt: item.createdAt,
       lastActivityAt: item.lastActivityAt,
       finishedAt: item.finishedAt,
+      /** A finished task's stored usage over all its threads; null while it runs (read it with cos_item_usage). */
+      usage: finished ? storedUsage(cos, item) : null,
+      outcome: finishedOutcome(item, finished ? (cos.store.latestManualActions([item.id]).get(item.id) ?? null) : null),
     },
     steps,
     journal: cos.store.listJournal(item.id).map(previewEntry),
   };
-}
-
-/** How a finished task ended, with why when it did not deliver ("Failed: thread archived"). */
-export function describeOutcome(outcome: Outcome, lastError: string | null): string {
-  const label = OUTCOME_META[outcome].label;
-  if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return label;
-  // A person ended it: mark_failed stores MARKED_FAILED; any other stored error is only the last seen, not the cause.
-  if (outcome === "marked_failed") return lastError === MARKED_FAILED ? label : `${label} (last error: ${lastError})`;
-  // "PR closed without merge" already says it.
-  return lastError.toLowerCase().startsWith(label.toLowerCase()) ? lastError : `${label}: ${lastError}`;
 }
 
 /** One line on what is happening right now, for the roster. */

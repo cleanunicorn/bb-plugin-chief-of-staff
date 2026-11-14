@@ -10,11 +10,11 @@ import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
 
-type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
+type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean; finishedOrder?: "recent" | "tokens" };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string; active?: number; maxConcurrent?: number }[], paused: false, maxConcurrentTotal: 8, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number; tokens?: number | null }[], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } as { totalTokens: number | null; cost: { amount: number; currency: string }[]; counted: number; unreported: number; pending: number; medianTokensPerDone: number | null }, failing: {} as Record<string, string>, loading: {} as Record<string, boolean>, since: { shipped: 0, failed: 0, failures: [] } as { shipped: number; failed: number; failures: { id: string; repo: string; issueNumber: number | null; issueTitle: string; outcome: string; reason: string | null }[] }, queries: [] as { method: string; input: unknown; enabled?: boolean }[], /** cos_item_workflow has not answered yet. */ workflowLoading: false, /** The task cos_item_workflow returns. */ workflowTask: undefined as Record<string, unknown> | undefined, call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
-  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
+  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null; finishedTokens?: number | null; finishedOrder?: "recent" | "tokens" }),
   rosterInputs: [] as RosterInput[],
 }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -22,17 +22,19 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useBbNavigate: () => mocks.navigate,
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
-  experimental_useRpcQuery: ({ method, input }: { method: string; input: { onlyProblems?: boolean; before?: number; limit?: number } }) => {
+  experimental_useRpcQuery: ({ method, input, enabled }: { method: string; input: { onlyProblems?: boolean; before?: number; limit?: number }; enabled?: boolean }) => {
     // The host validates JSON before rendering, including absent optional cursors.
     z.json().parse(input);
     if (method === "cos_roster") mocks.rosterInputs.push(input as RosterInput);
-    mocks.queries.push({ method, input });
+    mocks.queries.push({ method, input, enabled });
     const failure = mocks.failing[method];
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
+    // A first load in flight: no data yet.
+    if (mocks.loading[method]) return { data: undefined, error: null, isLoading: true, isFetching: true, refetch: vi.fn() };
     const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
-      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily, usage: mocks.usage } : method === "cos_item_workflow" ? (mocks.workflowLoading ? undefined : { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {}, task: mocks.workflowTask }) : method === "cos_since" ? mocks.since : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: mocks.maxConcurrentTotal, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -55,7 +57,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.maxConcurrentTotal = 8; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.usage = { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null }; mocks.failing = {}; mocks.loading = {}; mocks.since = { shipped: 0, failed: 0, failures: [] }; localStorage.clear(); sessionStorage.clear(); mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.workflowLoading = false; mocks.workflowTask = undefined; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
 
 /** An activity row of task "one", #7 Fix login, in acme/app. */
 const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
@@ -95,13 +97,29 @@ it("leads with the title, omits missing usage, and opens the task thread", async
 });
 
 it("shows real zero usage and keeps task actions available without a thread", async () => {
-  mocks.entries = [entry({ threadId: null, usage: { inputTokens: null, outputTokens: null, totalTokens: 0, cost: { amount: 0, currency: "USD" } } })];
+  mocks.entries = [entry({ threadId: null, usage: { inputTokens: null, outputTokens: null, totalTokens: 0, cost: { amount: 0, currency: "USD" }, threads: 1, reportedThreads: 1, counted: true } })];
   await mount();
   const card = container.querySelector("article")!;
-  expect(card.textContent).toContain("Tokens0");
+  expect(card.textContent).toContain("Tokens so far · all threads0");
   expect(card.textContent).toContain("Cost0.00 USD");
   expect(card.textContent).not.toContain("Open thread");
   expect(card.textContent).toContain("Workflow");
+});
+
+it("labels usage as covering all threads, and says a finished task's count is pending", async () => {
+  const finished = { detail: "done" as const, status: "done" as const, outcome: "merged" as const, finishedAt: new Date().toISOString(), current: [] };
+  mocks.entries = [
+    entry({ id: "counted", ...finished, issueTitle: "Counted", usage: { inputTokens: 1, outputTokens: 2, totalTokens: 4_200_000, cost: null, threads: 5, reportedThreads: 4, counted: true } }),
+    entry({ id: "pending", ...finished, issueTitle: "Pending", usage: { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 3, reportedThreads: 0, counted: false } }),
+    entry({ id: "quiet", ...finished, issueTitle: "Quiet", usage: { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 2, reportedThreads: 0, counted: true } }),
+  ];
+  await mount();
+  const card = (title: string) => Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes(title))!;
+  expect(card("Counted").textContent).toContain("Tokens · all threads4.2M");
+  expect(card("Counted").querySelector('[title^="Sum over"]')!.getAttribute("title")).toBe("Sum over 5 agent threads (4 reported usage)");
+  expect(card("Pending").textContent).toContain("Tokens · all threadscounting…");
+  // A provider that reported nothing shows no figure, rather than 0.
+  expect(card("Quiet").textContent).not.toContain("Tokens");
 });
 
 it("names the workflow summary as a spaced sentence for screen readers", async () => {
@@ -165,7 +183,32 @@ it("opens the Throughput table when the chart is tapped on a coarse pointer", as
   await mount();
   expect(container.querySelector("table")).toBeNull();
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Show throughput as a table"]')!.click());
-  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed"]);
+  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed", "Tokens"]);
+});
+
+it("shows Throughput's total tokens, the tasks not counted yet, and tokens per day in the table", async () => {
+  mocks.entries = [];
+  mocks.daily = [
+    { date: "2026-11-01", started: 1, done: 1, failed: 0, tokens: 412_000_000 },
+    { date: "2026-11-02", started: 1, done: 0, failed: 0, tokens: null },
+  ];
+  mocks.usage = { totalTokens: 412_000_000, cost: [{ amount: 12.5, currency: "USD" }], counted: 1, unreported: 1, pending: 3, medianTokensPerDone: 412_000_000 };
+  await mount();
+  const summary = container.querySelector(`#cos-throughput p`)!;
+  expect(summary.textContent).toContain("· 412.0M tokens (3 not counted yet)");
+  const note = summary.querySelector("span[title]")!.getAttribute("title")!;
+  expect(note).toContain("summed over all its agent threads");
+  expect(note).toContain("Cost: 12.50 USD");
+  expect(note).toContain("1 task reported no usage");
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Table view"]')!.click());
+  const cells = Array.from(container.querySelectorAll("tbody tr")).map((tr) => tr.lastElementChild!.textContent);
+  expect(cells).toEqual(["412.0M", "—"]);
+});
+
+it("leaves usage out of Throughput when no finished task reported or awaits a count", async () => {
+  mocks.entries = [];
+  await mount();
+  expect(container.querySelector(`#cos-throughput p`)!.textContent).not.toContain("okens");
 });
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
@@ -207,6 +250,18 @@ it("names each row's task: number and title, a standalone title, or nothing with
   const rows = container.querySelectorAll("li");
   expect(rows[4]!.querySelector("button[aria-label^='Open task']")).toBeNull();
   expect(rows[5]!.querySelector("button[aria-label^='Open task']")).toBeNull();
+});
+
+it("does not guess whether a task opened from the feed has finished before its workflow loads", async () => {
+  // A log row does not say whether its task has finished: the title stays neutral until the sheet knows (#117).
+  mocks.workflowLoading = true;
+  mocks.logs = [logRow()];
+  await mount(<ActivityFeed />);
+  await act(async () => { taskButtons()[0]!.click(); });
+  await tick();
+  const sheet = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(document.getElementById(sheet.getAttribute("aria-labelledby")!)?.textContent).toBe("Task workflow");
+  expect(sheet.textContent).not.toMatch(/Where this task is|How this task went|Select a step/);
 });
 
 it("opens the task's workflow from its name, and returns focus to the name on close", async () => {
@@ -390,6 +445,38 @@ it("preserves global pause and resume alongside the redesigned task overview", a
 });
 
 
+// ---------- a zero total limit (#125) ----------
+const HELD = "No new tasks start: Max tasks across all repos is";
+const taskSlots = () => Array.from(container.querySelectorAll("nav span")).find((s) => s.textContent?.startsWith("Task slots"))!.textContent;
+const allReposMeter = () => container.querySelector<HTMLElement>('[role="meter"][aria-label="All repos"]');
+
+it("shows a total limit of 0 as held, not as unlimited", async () => {
+  mocks.entries = [entry()];
+  mocks.maxConcurrentTotal = 0;
+  await mount();
+  expect(taskSlots()).toBe("Task slots: 1 / 0");
+  expect(container.textContent).toContain(`${HELD} 0. Raise it in Configure → General. Tasks holding a slot keep going; one waiting on CI or a merge waits for a slot before its next agent step.`);
+  expect(allReposMeter()?.getAttribute("aria-valuemax")).toBe("0");
+});
+
+it("shows the total limit without the held notice when it is above 0", async () => {
+  mocks.entries = [entry()];
+  await mount();
+  expect(taskSlots()).toBe("Task slots: 1 / 8");
+  expect(container.textContent).not.toContain(HELD);
+  expect(allReposMeter()?.getAttribute("aria-valuemax")).toBe("8");
+});
+
+it("shows no limit and no held notice until the overview has loaded", async () => {
+  mocks.entries = [entry()];
+  mocks.maxConcurrentTotal = 0;
+  mocks.failing = { cos_overview: "overview unavailable" };
+  await mount();
+  expect(taskSlots()).toBe("Task slots: 1");
+  expect(container.textContent).not.toContain(HELD);
+  expect(allReposMeter()).toBeNull();
+});
+
 const buttonLabelled = (label: string) => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === label)!;
 
 it("shows the overview error on the Pipeline tab, with Pause everything still disabled", async () => {
@@ -480,11 +567,11 @@ it("pages older finished tasks without duplicates and drops them when finished a
   expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.includes("Show older finished"))).toBe(false);
   await act(async () => buttonLabelled("Show finished").click());
   await act(async () => buttonLabelled("Show older finished").click());
-  expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: true });
+  expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: true, finishedOrder: "recent" });
   expect(titles().filter((t) => t?.includes("Finished one"))).toHaveLength(1);
   expect(container.textContent).toContain("Finished two");
   await act(async () => buttonLabelled("Show older finished").click());
-  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "c2", withUsage: true });
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "c2", withUsage: true, finishedOrder: "recent" });
   expect(container.textContent).toContain("Finished three");
   expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.includes("Show older finished"))).toBe(false);
   // The active task comes first, once.
@@ -496,6 +583,44 @@ it("pages older finished tasks without duplicates and drops them when finished a
   await act(async () => buttonLabelled("Show finished").click());
   expect(container.textContent).not.toContain("Finished two");
   expect(buttonLabelled("Show older finished")).toBeDefined();
+});
+
+it("orders finished tasks by tokens, resetting older pages, and shows each one's share", async () => {
+  const counted = (id: string, title: string, totalTokens: number) => ({ ...finished(id, title), usage: { inputTokens: null, outputTokens: null, totalTokens, cost: null, threads: 2, reportedThreads: 2, counted: true } });
+  const recent = [counted("f1", "Small one", 1_000), counted("f2", "Big one", 3_000)];
+  mocks.roster = (input) => (input.includeDone ? { entries: input.finishedOrder === "tokens" ? [...recent].reverse() : recent, nextBefore: input.finishedOrder === "tokens" ? "t1" : "c1", finishedTokens: 400_000, finishedOrder: input.finishedOrder } : { entries: [] });
+  mocks.call.mockImplementation(async (_method: string, input: RosterInput) => ({ entries: [finished(input.before === "t1" ? "f4" : "f3", input.before === "t1" ? "Token page" : "Recent page")], nextBefore: null, finishedTokens: 400_000 }));
+  await mount();
+  expect(container.querySelector('[aria-label="Order finished tasks"]')).toBeNull();
+  await act(async () => buttonLabelled("Show finished").click());
+  expect(buttonLabelled("Recently finished").getAttribute("aria-pressed")).toBe("true");
+  await act(async () => buttonLabelled("Show older finished").click());
+  expect(container.textContent).toContain("Recent page");
+  await act(async () => buttonLabelled("Most tokens").click());
+  expect(mocks.rosterInputs.at(-1)).toMatchObject({ includeDone: true, finishedOrder: "tokens" });
+  // The recent order's older page is gone; the next page follows the tokens order.
+  expect(container.textContent).not.toContain("Recent page");
+  expect(titles()[0]).toContain("Big one");
+  await act(async () => buttonLabelled("Show older finished").click());
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "t1", withUsage: true, finishedOrder: "tokens" });
+  expect(container.textContent).toContain("Token page");
+  const big = Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes("Big one"))!;
+  expect(big.textContent).toContain("Share<1% of finished tasks' tokens");
+  mocks.roster = (input) => ({ entries: input.includeDone ? [counted("f2", "Big one", 100_000)] : [], nextBefore: null, finishedTokens: 400_000 });
+  await act(async () => { root.render(<PipelineTab />); });
+  expect(container.textContent).toContain("Share25% of finished tasks' tokens");
+});
+
+it("offers no older page while the roster still holds the previous order's cursor", async () => {
+  // The query has not answered for the new order yet: its data and cursor are still the recent order's.
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("f1", "Finished one")] : [], nextBefore: "c1", finishedTokens: null, finishedOrder: "recent" });
+  await mount();
+  await act(async () => buttonLabelled("Show finished").click());
+  expect(hasOlderButton()).toBe(true);
+  await act(async () => buttonLabelled("Most tokens").click());
+  expect(hasOlderButton()).toBe(false);
+  await act(async () => buttonLabelled("Recently finished").click());
+  expect(hasOlderButton()).toBe(true);
 });
 
 it("shows a live task once when an appended page still holds its finished copy", async () => {
@@ -956,12 +1081,15 @@ it("offers a done card only a step re-run", async () => {
 
 it("opens a done task's workflow at the step list, and returns focus to More actions on close", async () => {
   mocks.entries = [done()];
+  mocks.workflowTask = { repo: "acme/app", issueNumber: 1, issueUrl: null, body: null, status: "done", branch: null, prNumber: null, prUrl: null, threadId: null, waitingReason: null, lastError: null, createdAt: "2026-11-05T09:00:00.000Z", lastActivityAt: null, finishedAt: "2026-11-05T12:00:00.000Z", outcome: "completed" };
   await mount();
   await openMenu();
   await act(async () => menuItem("Run a step again").click());
   await tick(5);
   const sheet = confirmDialog()!;
-  expect(sheet.textContent).toContain("Where this task is");
+  // A finished task's sheet reads as a record (#117).
+  expect(sheet.textContent).toContain("How this task went");
+  expect(sheet.textContent).not.toContain("Where this task is");
   const toggle = (label: string) => Array.from(sheet.querySelectorAll('[aria-label="View"] button')).find((b) => b.textContent?.trim() === label)!;
   expect(toggle("List").getAttribute("aria-pressed")).toBe("true");
   expect(toggle("Canvas").getAttribute("aria-pressed")).toBe("false");
@@ -996,4 +1124,284 @@ it("keeps a failed task's Mark done text while the roster changes under the open
   await act(async () => { root.render(<PipelineTab />); });
   expect(container.querySelector("article")!.textContent).not.toContain("failed");
   expect(confirmDialog()!.textContent).toContain("recorded as done instead of failed");
+});
+
+// ---------- dashboard experience (#110) ----------
+
+const meters = () => Array.from(container.querySelectorAll('[role="meter"]')).map((m) => m.getAttribute("aria-label"));
+
+it("shows one Capacity meter, named after the repository, when only one repository is configured", async () => {
+  mocks.repos = [{ key: "acme/app", active: 2, maxConcurrent: 4 }];
+  await mount();
+  expect(meters()).toEqual(["acme/app"]);
+  // The global cap is still on screen, in the filter row.
+  expect(container.querySelector('[aria-label="Filter active tasks"]')!.textContent).toContain("Task slots: 1 / 8");
+});
+
+it("keeps the All repos meter above one meter per repository with two or more repositories", async () => {
+  mocks.repos = [{ key: "acme/app", active: 2, maxConcurrent: 4 }, { key: "acme/web", active: 1, maxConcurrent: 2 }];
+  await mount();
+  expect(meters()).toEqual(["All repos", "acme/app", "acme/web"]);
+});
+
+it("keeps the stage filters to one scrolling row below sm and wraps them from sm up", async () => {
+  mocks.entries = [entry()];
+  await mount();
+  const nav = container.querySelector<HTMLElement>('nav[aria-label="Filter active tasks"]')!;
+  expect(classes(nav)).toEqual(expect.arrayContaining(["flex-nowrap", "overflow-x-auto", "sm:flex-wrap", "sm:overflow-visible"]));
+  expect(classes(nav)).not.toContain("flex-wrap");
+  const items = Array.from(nav.children);
+  expect(items.length).toBeGreaterThan(1);
+  // Chips and the Task slots line keep their width instead of squeezing or wrapping inside the row.
+  for (const item of items) expect(classes(item)).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+  // Chips keep their pressed state.
+  expect(nav.querySelector('button[aria-pressed="true"]')!.textContent).toContain("All tasks");
+});
+
+// ---------- summary header (#110) ----------
+
+const summary = () => container.querySelector<HTMLElement>('section[aria-label="Summary"]');
+const summaryText = () => summary()?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+const working = (id: string) => entry({ id, issueTitle: `Task ${id}` });
+
+it("says all clear with no agents working when nothing waits", async () => {
+  mocks.entries = [];
+  await mount();
+  expect(summaryText()).toContain("All clear — no agents working");
+  expect(container.querySelector('[aria-label="Needs attention"]')).toBeNull();
+});
+
+it("counts one agent working in the all clear line", async () => {
+  mocks.entries = [working("a")];
+  await mount();
+  expect(summaryText()).toContain("All clear — 1 agent working");
+});
+
+it("counts several agents working in the all clear line", async () => {
+  mocks.entries = [working("a"), working("b"), working("c"), entry({ id: "q", detail: "queued", status: "queued", current: [] })];
+  await mount();
+  expect(summaryText()).toContain("All clear — 3 agents working");
+});
+
+it("sits under the Work overview row, above the New task form and the filters", async () => {
+  await mount();
+  const order = (a: Element, b: Element) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+  const heading = Array.from(container.querySelectorAll("h2")).find((h) => h.textContent === "Work overview")!;
+  expect(order(heading, summary()!)).toBeTruthy();
+  expect(order(summary()!, container.querySelector('nav[aria-label="Filter active tasks"]')!)).toBeTruthy();
+  await act(async () => buttonLabelled("New task").click());
+  expect(order(summary()!, container.querySelector("#new-task")!)).toBeTruthy();
+});
+
+for (const [kind, waiting, label, filterTitle] of [
+  ["a failure needing a decision", entry({ id: "w", issueTitle: "Repair deploy", detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error" }), "1 failure needing a decision", "Failures needing a decision"],
+  ["stalled work", entry({ id: "w", issueTitle: "Repair deploy", stalled: true }), "1 stalled", "Stalled work"],
+  ["a question or approval", entry({ id: "w", issueTitle: "Repair deploy", detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Approve it" }), "1 questions or approvals", "Questions and approvals"],
+] as const) {
+  it(`shows ${kind} as waiting on you instead of all clear, and drills into it`, async () => {
+    mocks.entries = [working("a"), waiting];
+    await mount();
+    expect(summaryText()).not.toContain("All clear");
+    const attention = container.querySelector('[aria-label="Needs attention"]')!;
+    expect(summary()!.contains(attention)).toBe(true);
+    expect(attention.textContent).toContain("Needs attention");
+    const button = Array.from(attention.querySelectorAll("button")).find((b) => b.textContent?.includes(label))!;
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => button.click());
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).toContain(filterTitle);
+    expect(container.textContent).toContain("Repair deploy");
+    expect(container.textContent).not.toContain("Task a");
+  });
+}
+
+it("never says all clear while the tasks are loading", async () => {
+  mocks.loading = { cos_roster: true };
+  await mount();
+  expect(summary()).not.toBeNull();
+  expect(summaryText()).not.toContain("All clear");
+});
+
+it("never says all clear when the tasks failed to load", async () => {
+  mocks.failing = { cos_roster: "roster down" };
+  await mount();
+  expect(container.textContent).toContain("roster down");
+  expect(summaryText()).not.toContain("All clear");
+});
+
+// ---------- since you were here (#110) ----------
+
+const HOURS_AGO = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+const failure = (n: number, reason: string | null, outcome = "failed") => ({ id: `f${n}`, repo: "acme/app", issueNumber: n, issueTitle: `Broke ${n}`, outcome, reason });
+const sinceQueries = () => mocks.queries.filter((q) => q.method === "cos_since");
+
+it("says what shipped and failed since the last visit, and that nothing waits", async () => {
+  const last = HOURS_AGO(3);
+  localStorage.setItem("cos.lastVisit", last);
+  mocks.entries = [working("a")];
+  mocks.since = { shipped: 3, failed: 1, failures: [failure(5, "Thread archived")] };
+  await mount();
+  expect(summaryText()).toContain("Since you were here (3h ago): 3 shipped · 1 failed (Thread archived) · Nothing waits on you");
+  expect(summaryText()).not.toContain("All clear");
+  expect(sinceQueries().at(-1)).toMatchObject({ input: { since: last }, enabled: true });
+});
+
+it("shows no since counts on a first visit, only the current state", async () => {
+  mocks.entries = [working("a")];
+  mocks.since = { shipped: 3, failed: 1, failures: [failure(5, "Thread archived")] };
+  await mount();
+  expect(summaryText()).not.toContain("Since");
+  expect(summaryText()).toContain("All clear — 1 agent working");
+  expect(sinceQueries().every((q) => q.enabled === false)).toBe(true);
+});
+
+it("says all clear when nothing finished since the last visit and nothing waits", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(2));
+  mocks.entries = [working("a"), working("b")];
+  await mount();
+  expect(summaryText()).toBe("All clear — 2 agents working");
+});
+
+it("lists up to three failures with why they ended, then how many more", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(26));
+  mocks.entries = [];
+  mocks.since = { shipped: 0, failed: 5, failures: [failure(9, "Thread archived"), failure(8, null, "marked_failed"), failure(7, "PR closed without merge", "pr_closed")] };
+  await mount();
+  const text = summaryText();
+  expect(text).toContain("Since you were here (26h ago): 5 failed · Nothing waits on you");
+  expect(text).not.toContain("shipped");
+  const items = Array.from(summary()!.querySelectorAll("li")).map((li) => li.textContent?.replace(/\s+/g, " ").trim());
+  expect(items).toEqual(["#9 Broke 9 — Thread archived", "#8 Broke 8 — Marked failed", "#7 Broke 7 — PR closed without merge", "and 2 more"]);
+});
+
+it("says how a failure ended when it has no stored reason", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.since = { shipped: 0, failed: 1, failures: [failure(4, null, "marked_failed")] };
+  await mount();
+  expect(summaryText()).toContain("1 failed (Marked failed)");
+});
+
+it("clips a long failure reason in the header and keeps it whole in the tooltip", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  const long = `Error: ${"x".repeat(300)}`;
+  mocks.since = { shipped: 0, failed: 1, failures: [failure(4, long)] };
+  await mount();
+  const reason = Array.from(summary()!.querySelectorAll<HTMLElement>("[title]")).find((el) => el.title === long)!;
+  expect(reason.textContent!.length).toBeLessThan(100);
+  expect(reason.textContent).toMatch(/…/);
+});
+
+it("keeps the waiting work below the since counts, without Nothing waits on you", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [entry({ id: "w", detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Approve it" })];
+  mocks.since = { shipped: 2, failed: 0, failures: [] };
+  await mount();
+  expect(summaryText()).toContain("Since you were here (1h ago): 2 shipped");
+  expect(summaryText()).not.toContain("Nothing waits on you");
+  expect(container.querySelector('[aria-label="Needs attention"]')!.textContent).toContain("1 questions or approvals");
+});
+
+it("opens finished tasks from the shipped and failed counts and moves focus to the task list", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [working("a"), entry({ id: "s", issueTitle: "Stalled one", stalled: true })];
+  mocks.since = { shipped: 2, failed: 1, failures: [failure(4, "Thread archived")] };
+  await mount();
+  // A filter from earlier is cleared.
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("1 stalled"))!.click());
+  expect(buttonLabelled("Show finished").getAttribute("aria-pressed")).toBe("false");
+  await act(async () => buttonLabelled("2 shipped").click());
+  expect(buttonLabelled("Hide finished").getAttribute("aria-pressed")).toBe("true");
+  expect(mocks.rosterInputs.at(-1)).toMatchObject({ includeDone: true });
+  expect(document.activeElement?.tagName).toBe("H2");
+  expect(document.activeElement?.textContent).toBe("All tasks");
+  expect(container.textContent).toContain("Task a");
+  // Already showing finished tasks: it stays on.
+  (document.activeElement as HTMLElement).blur();
+  await act(async () => buttonLabelled("1 failed").click());
+  expect(buttonLabelled("Hide finished").getAttribute("aria-pressed")).toBe("true");
+  expect(document.activeElement?.textContent).toBe("All tasks");
+});
+
+it("keeps the same since counts across a dashboard tab switch", async () => {
+  const last = HOURS_AGO(4);
+  localStorage.setItem("cos.lastVisit", last);
+  mocks.since = { shipped: 1, failed: 0, failures: [] };
+  await mount(<Dashboard subPath="agents" />);
+  expect(summaryText()).toContain("Since you were here (4h ago): 1 shipped");
+  await act(async () => { root.render(<Dashboard subPath="issues" />); });
+  expect(summary()).toBeNull();
+  // Leaving the Pipeline tab recorded the visit; coming back keeps this tab's baseline.
+  expect(localStorage.getItem("cos.lastVisit")).not.toBe(last);
+  await act(async () => { root.render(<Dashboard subPath="agents" />); });
+  expect(summaryText()).toContain("Since you were here (4h ago): 1 shipped");
+  expect(sinceQueries().at(-1)).toMatchObject({ input: { since: last }, enabled: true });
+});
+
+it("shows only the current state when the since counts fail to load", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [working("a")];
+  mocks.failing = { cos_since: "since down" };
+  await mount();
+  expect(container.textContent).toContain("since down");
+  expect(summaryText()).toBe("All clear — 1 agent working");
+});
+
+it("does not say all clear while the since counts are loading", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [working("a")];
+  mocks.loading = { cos_since: true };
+  await mount();
+  expect(summaryText()).not.toContain("All clear");
+});
+
+// ---------- skeletons (#110) ----------
+
+const busyRegions = () => Array.from(container.querySelectorAll<HTMLElement>('[aria-busy="true"]'));
+const statusOf = (el: Element) => el.querySelector('[role="status"]')?.textContent;
+
+it("shows skeletons, not Loading…, while the Pipeline tab loads", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.loading = { cos_roster: true, cos_stats: true, cos_overview: true, cos_since: true, cos_log: true };
+  await mount(<Dashboard subPath="agents" />);
+  expect(container.textContent).not.toMatch(/Loading…/);
+  const statuses = busyRegions().map(statusOf);
+  expect(statuses).toEqual(expect.arrayContaining(["Loading the summary…", "Loading tasks…", "Loading throughput…", "Loading capacity…", "Loading activity…"]));
+  for (const region of busyRegions()) expect(region.querySelectorAll("[data-skeleton]").length).toBeGreaterThan(0);
+  // Card-shaped placeholders fill the task grid; the Capacity panel shows two meter bars.
+  const tasksRegion = busyRegions().find((r) => statusOf(r) === "Loading tasks…")!;
+  expect(tasksRegion.querySelectorAll("[data-skeleton-card]")).toHaveLength(3);
+  const capacityRegion = busyRegions().find((r) => statusOf(r) === "Loading capacity…")!;
+  expect(capacityRegion.querySelectorAll("[data-skeleton]").length).toBeGreaterThanOrEqual(2);
+  // Skeletons pulse only when motion is welcome.
+  for (const bone of Array.from(container.querySelectorAll("[data-skeleton]"))) expect(classes(bone)).toContain("motion-safe:animate-pulse");
+  expect(container.querySelector('[role="meter"]')).toBeNull();
+});
+
+it("drops the skeletons once loaded", async () => {
+  mocks.entries = [working("a")];
+  mocks.repos = [{ key: "acme/app", active: 1, maxConcurrent: 4 }];
+  await mount(<Dashboard subPath="agents" />);
+  expect(busyRegions()).toEqual([]);
+  expect(container.querySelector("[data-skeleton]")).toBeNull();
+});
+
+it("shows no skeleton for a panel whose first load failed", async () => {
+  mocks.failing = { cos_stats: "stats down", cos_overview: "overview down" };
+  await mount();
+  expect(container.textContent).toContain("stats down");
+  expect(busyRegions()).toEqual([]);
+  expect(container.textContent).not.toMatch(/Loading/);
+});
+
+it("does not repeat Failed after the count when a failed task stored no reason", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [];
+  mocks.since = { shipped: 0, failed: 1, failures: [failure(4, null)] };
+  await mount();
+  expect(summaryText()).toContain("1 failed · Nothing waits on you");
+  expect(summaryText()).not.toContain("(Failed)");
+  mocks.since = { shipped: 0, failed: 2, failures: [failure(4, null), failure(3, "Thread archived")] };
+  await act(async () => { root.render(<PipelineTab key="again" />); });
+  const items = Array.from(summary()!.querySelectorAll("li")).map((li) => li.textContent?.replace(/\s+/g, " ").trim());
+  expect(items).toEqual(["#4 Broke 4", "#3 Broke 3 — Thread archived"]);
 });

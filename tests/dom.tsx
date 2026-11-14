@@ -60,6 +60,22 @@ export function button(name: string): HTMLButtonElement {
   return found;
 }
 
+/** The open dialog. Dialogs render in a portal on document.body, outside `container`. */
+export function dialog(): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>('[role="dialog"]');
+}
+
+/** The button in the open dialog whose text or aria-label is exactly `name`. Scoped to the dialog, so it never finds a page button with the same label. */
+export function dialogButton(name: string): HTMLButtonElement {
+  const found = Array.from(dialog()?.querySelectorAll("button") ?? []).find((b) => b.textContent?.trim() === name || b.getAttribute("aria-label") === name);
+  if (!found) throw new Error(`no dialog button "${name}"`);
+  return found;
+}
+
+export async function keydown(target: Element, key: string): Promise<void> {
+  await act(async () => { target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
+}
+
 /** Let pending timers run: Radix layers start listening for outside pointers one tick after they open. */
 export async function tick(ms = 0): Promise<void> {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });

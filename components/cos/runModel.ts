@@ -10,6 +10,8 @@ export type ItemWorkflowView = PluginRpcResult<(typeof rpcContract)["cos_item_wo
 export type JournalRecord = NonNullable<ItemWorkflowView["journal"]>[number];
 export type StepDetail = NonNullable<ItemWorkflowView["steps"]>[string];
 export type TaskDetail = NonNullable<ItemWorkflowView["task"]>;
+/** A task's usage summed over all its agent threads. */
+export type TaskUsage = NonNullable<PluginRpcResult<(typeof rpcContract)["cos_item_usage"]>["usage"]>;
 type Live = ItemWorkflowView["live"];
 
 /** Work sent from one step back to another, `count` times. `from` null: you re-ran it. */
@@ -119,3 +121,12 @@ export function journalLine(wf: Workflow, e: JournalRecord): string {
 
 /** Kinds of timeline entry that change the run's course (the rest are progress). */
 export const PIVOTAL_KINDS: ReadonlySet<JournalRecord["kind"]> = new Set(["failed", "revised", "rerun", "waiting", "interrupted", "stopped"]);
+
+/**
+ * Whether the task has finished (done or failed), and when: its finish time, or its last activity on legacy rows
+ * without one; null when neither is known. Durations on a finished task's sheet are measured to `end`, never to now.
+ */
+export function taskEnd(task: Pick<TaskDetail, "status" | "finishedAt" | "lastActivityAt"> | undefined): { finished: boolean; end: string | null } {
+  const finished = task?.status === "done" || task?.status === "failed";
+  return { finished, end: finished ? (task!.finishedAt ?? task!.lastActivityAt ?? null) : null };
+}

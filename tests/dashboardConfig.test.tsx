@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 // The dashboard keeps unsaved configuration drafts while you switch tabs, marks
 // the Configure tab while any draft is pending, and warns before a reload.
+// Configure's sections live in the page address (#126).
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
-import { button, click, container, field, mount, setValue, unmount } from "./dom";
+import { button, click, container, dialog, dialogButton, field, mount, setValue, tick, unmount } from "./dom";
 
 const mocks = vi.hoisted(() => ({
   config: { repos: "", workflow: "" },
@@ -23,7 +24,8 @@ vi.mock("@get-bb/plugin-sdk/app", () => {
     cos_skills: () => ({ skills: [] }),
     cos_roster: () => ({ entries: [] }),
     cos_log: () => ({ entries: [] }),
-    cos_stats: () => ({ doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [] }),
+    cos_stats: () => ({ doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } }),
+    cos_since: () => ({ shipped: 0, failed: 0, failures: [] }),
     cos_overview: () => ({ paused: false, repos: [], occupiedCapacity: 0, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [], tokenSource: "gh-cli" }),
   };
   return {
@@ -48,6 +50,13 @@ const MAX_TASKS = "Max tasks across all repos";
 const text = () => container.textContent ?? "";
 const unsavedSections = () => Array.from(container.querySelectorAll('nav[aria-label="Configuration sections"] [aria-label="unsaved"]')).map((dot) => dot.closest("button")!.textContent);
 const show = (subPath: string) => mount(<Dashboard subPath={subPath} />);
+/** Discard in the save bar, confirmed in the dialog it opens. */
+async function confirmDiscard() {
+  await click(button("Discard"));
+  expect(dialog()?.textContent).toContain("Discard changes to General?");
+  await click(dialogButton("Discard"));
+  await tick();
+}
 
 beforeEach(() => {
   mocks.config = { repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }), workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
@@ -56,6 +65,7 @@ beforeEach(() => {
 afterEach(async () => {
   await unmount();
   mocks.call.mockReset();
+  mocks.navigate.toPluginPanel.mockReset();
 });
 
 it("keeps a general settings draft across a switch to Pipeline and back", async () => {
@@ -109,7 +119,7 @@ it("shows neither unsaved changes nor a stale Saved. after saving and switching 
 it("Discard clears the lifted drafts", async () => {
   await show("config/general");
   await setValue(field(MAX_TASKS), "5");
-  await click(button("Discard"));
+  await confirmDiscard();
   await show("agents");
   await show("config/general");
 
@@ -150,7 +160,7 @@ it("marks the Configure tab on every tab while a draft is pending, and warns bef
   expect(leaveWarns()).toBe(true);
 
   await show("config/general");
-  await click(button("Discard"));
+  await confirmDiscard();
   expect(configureTabDot()).toBeNull();
   expect(leaveWarns()).toBe(false);
 });
@@ -171,6 +181,93 @@ it("neither marks nor warns after a general value is typed back to its loaded va
   await show("agents");
   expect(configureTabDot()).toBeNull();
   expect(leaveWarns()).toBe(false);
+});
+
+// ---------- Configure sections in the page address (#126) ----------
+
+const sectionButton = (label: string) => Array.from(container.querySelectorAll('nav[aria-label="Configuration sections"] button')).find((b) => b.textContent?.includes(label))!;
+const currentSection = () => container.querySelector('nav[aria-label="Configuration sections"] [aria-current="page"]')!.textContent;
+const pushed = () => mocks.navigate.toPluginPanel.mock.calls.map(([path, opts]) => `${path}/${(opts as { subPath: string }).subPath}`);
+/** Do what the host does after a push: show the dashboard at the address it was sent to. */
+const follow = async () => {
+  const last = mocks.navigate.toPluginPanel.mock.calls.at(-1)!;
+  await show((last[1] as { subPath: string }).subPath);
+};
+const BAD_REPOS = '{"repos": [';
+
+it("pushes the section's address when a section is picked, and shows the section the address names", async () => {
+  await show("config");
+  expect(currentSection()).toContain("Workflows");
+  await click(sectionButton("Repositories"));
+  expect(mocks.navigate.toPluginPanel).toHaveBeenCalledExactlyOnceWith("cos", { subPath: "config/repos" });
+  // The address decides: nothing changes until the host shows the new one.
+  expect(currentSection()).toContain("Workflows");
+
+  await follow();
+  expect(currentSection()).toContain("Repositories");
+  // Back: the host shows the previous address again.
+  await show("config");
+  expect(currentSection()).toContain("Workflows");
+});
+
+it("pushes nothing on load, on a click of the current section, or on Add repository", async () => {
+  await show("config");
+  await click(sectionButton("Workflows"));
+  await show("config/repos");
+  await click(sectionButton("Repositories"));
+  await click(button("Add repository"));
+  expect(text()).toContain("1 to fix before saving");
+  expect(mocks.navigate.toPluginPanel).not.toHaveBeenCalled();
+});
+
+it("follows a problem link to its section and opens the repository it names", async () => {
+  await show("config/repos");
+  // With one BB project the new entry duplicates acme/app, and opens.
+  await click(button("Add repository"));
+  const cards = () => Array.from(container.querySelectorAll("article button[aria-expanded]"));
+  await click(cards()[1]!);
+  expect(cards().map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "false"]);
+  await click(sectionButton("General"));
+  await follow();
+  expect(currentSection()).toContain("General");
+
+  // The save bar lists the sections with problems that are not on screen (#123), each leading to its problem.
+  await click(button("Show"));
+  await click(button("Repositories · acme/app · 1 to fix"));
+  expect(pushed().at(-1)).toBe("cos/config/repos");
+  await follow();
+  expect(currentSection()).toContain("Repositories");
+  expect(cards().map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "true"]);
+});
+
+it("pushes config/advanced from Open Advanced JSON", async () => {
+  mocks.config = { ...mocks.config, repos: BAD_REPOS };
+  await show("config/repos");
+  await click(button("Open Advanced JSON"));
+  expect(mocks.navigate.toPluginPanel).toHaveBeenCalledExactlyOnceWith("cos", { subPath: "config/advanced" });
+  await follow();
+  expect((field("Repositories") as HTMLTextAreaElement).value).toBe(BAD_REPOS);
+});
+
+it("still loads Pipeline when the address has a malformed escape after the tab", async () => {
+  await show("agents/%E0");
+  const tabs = Array.from(container.querySelectorAll('nav[aria-label="Dashboard tabs"] button'));
+  expect(tabs.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
+});
+
+it("keeps a General draft while moving between section addresses, and back", async () => {
+  await show("config/general");
+  await setValue(field(MAX_TASKS), "5");
+  await click(sectionButton("Repositories"));
+  await follow();
+  expect(currentSection()).toContain("Repositories");
+  expect(configureTabDot()).not.toBeNull();
+  await show("config/general"); // Back
+
+  expect((field(MAX_TASKS) as HTMLInputElement).value).toBe("5");
+  expect(unsavedSections()).toEqual(["General"]);
+  expect(configureTabDot()).not.toBeNull();
+  expect(pushed()).toEqual(["cos/config/repos"]);
 });
 
 // ---------- Dashboard tabs on narrow screens (#96) ----------

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DOCUMENT, normalizeWorkflow, parseWorkflows, serializeWorkflows, validateDocument, workflowProblems, workflowSchema, type Workflow, type WorkflowsDocument } from "../src/workflow";
+import { DEFAULT_DOCUMENT, DEFAULT_WORKFLOW, STEP_TYPES, blankStep, insertStepAfter, normalizeWorkflow, problemKey, parseWorkflows, serializeWorkflows, topoOrder, validateDocument, validateWorkflow, workflowProblems, workflowSchema, type Step, type Workflow, type WorkflowsDocument } from "../src/workflow";
 
 type Raw = Record<string, unknown>;
 const wf = (steps: unknown[]) => ({ id: "w", name: "w", steps }) as unknown as Workflow;
@@ -122,7 +122,38 @@ describe("workflowProblems", () => {
 
   it("names a step without a name by its number in the graph checks too", () => {
     const problems = workflowProblems(draft((d) => Object.assign(d.workflows[0]!.steps[2]!, { name: "", onFail: "ship" })));
-    expect(problems).toContainEqual({ workflow: 0, message: "step 3 (test): on fail must go back to a step before it (Ship is not)", text: 'Workflow "Delivery": step 3 (test): on fail must go back to a step before it (Ship is not)' });
+    expect(problems).toContainEqual({ workflow: 0, step: 2, message: "step 3 (test): on fail must go back to a step before it (Ship is not)", text: 'Workflow "Delivery": step 3 (test): on fail must go back to a step before it (Ship is not)' });
+  });
+
+  it("locates every problem of an unconnected Check at that step", () => {
+    const problems = workflowProblems({ default: "default", workflows: [{ ...DEFAULT_WORKFLOW, steps: [...DEFAULT_WORKFLOW.steps, blankStep("check", "new-check", "New check")] }] });
+    expect(problems.map((p) => [p.step, p.message])).toEqual([
+      [4, "New check: needs a step that writes code before it"],
+      // A pair is located at its later step: the one just added, not the step it was always next to.
+      [4, "Build and New check could run at the same time, but both change the worktree; connect one after the other"],
+      [4, "Ship and New check could run at the same time, but both change the worktree; connect one after the other"],
+    ]);
+  });
+
+  it("keys the same words at two steps as two problems", () => {
+    const doc = draft((d) => {
+      d.workflows[0]!.steps[1]!.name = "Same";
+      d.workflows[0]!.steps[2]!.name = "Same";
+      d.workflows[0]!.steps[1]!.instructions = "x".repeat(20_001);
+      d.workflows[0]!.steps[2]!.instructions = "x".repeat(20_001);
+    });
+    const long = workflowProblems(doc).filter((p) => p.field === "instructions");
+    expect(new Set(long.map((p) => p.text)).size).toBe(1);
+    expect(new Set(long.map(problemKey)).size).toBe(2);
+  });
+
+  it("locates a duplicate step id at the second step and a loop at none", () => {
+    const duplicate = workflowProblems(draft((d) => (d.workflows[0]!.steps[3]!.id = "build")));
+    expect(duplicate).toContainEqual(expect.objectContaining({ workflow: 0, step: 3, message: 'two steps have the id "build"' }));
+    const loop = workflowProblems(draft((d) => (d.workflows[0]!.steps[3]!.next = ["build"])));
+    const arrows = loop.find((p) => p.message.startsWith("the arrows form a loop"))!;
+    expect(arrows).toBeDefined();
+    expect(arrows).not.toHaveProperty("step");
   });
 
   it("reports graph and document problems with the workflow they belong to", () => {
@@ -168,5 +199,60 @@ describe("validateDocument", () => {
       "Loop: the arrows form a loop; use “on fail” to go back to an earlier step",
       'the default workflow "nope" does not exist',
     ]);
+  });
+});
+
+describe("insertStepAfter", () => {
+  /** Parallel review branches after Build, joined again at Ship. */
+  const PARALLEL = workflowSchema.parse({
+    id: "parallel",
+    name: "Parallel",
+    steps: [
+      { id: "plan", name: "Plan", type: "agent", next: ["build"] },
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["review", "docs"] },
+      { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", next: ["ship"] },
+      { id: "docs", name: "Docs", type: "agent", next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", onFail: "build" },
+    ],
+  });
+  const next = (w: Workflow) => Object.fromEntries(w.steps.map((s) => [s.id, s.next]));
+  const onFail = (w: Workflow) => w.steps.map((s) => [s.id, s.onFail]);
+
+  it("puts the new step after the selected one, taking over all of its links", () => {
+    const before = structuredClone(PARALLEL);
+    const { workflow, id } = insertStepAfter(PARALLEL, "agent", "build");
+    expect(id).toBe("new-agent");
+    expect(workflow.steps.at(-1)).toEqual({ ...blankStep("agent", "new-agent", "New agent"), next: ["review", "docs"] });
+    expect(next(workflow)).toEqual({ ...next(PARALLEL), build: ["new-agent"], "new-agent": ["review", "docs"] });
+    expect(onFail(workflow)).toEqual([...onFail(PARALLEL), ["new-agent", undefined]]);
+    expect(PARALLEL).toEqual(before);
+  });
+
+  it("appends after the last step in order when nothing, or an unknown step, is selected", () => {
+    for (const after of [null, "gone"]) {
+      const { workflow, id } = insertStepAfter(PARALLEL, "check", after);
+      expect(id).toBe("new-check");
+      expect(next(workflow)).toEqual({ ...next(PARALLEL), ship: ["new-check"], "new-check": [] });
+      expect(onFail(workflow)).toEqual([...onFail(PARALLEL), ["new-check", undefined]]);
+    }
+  });
+
+  it("gives each new step a fresh id", () => {
+    const once = insertStepAfter(DEFAULT_WORKFLOW, "agent", null).workflow;
+    expect(insertStepAfter(once, "agent", null).id).toBe("new-agent-2");
+  });
+
+  it("adds a check after a step that writes code without any problem", () => {
+    expect(validateWorkflow(DEFAULT_WORKFLOW)).toEqual([]);
+    const { workflow } = insertStepAfter(DEFAULT_WORKFLOW, "check", "build");
+    expect(next(workflow)).toMatchObject({ build: ["new-check"], "new-check": ["review"] });
+    expect(validateWorkflow(workflow)).toEqual([]);
+  });
+
+  it.each(STEP_TYPES)("appending a %s step finds what wiring it in by hand at the end would", (type) => {
+    const last = topoOrder(DEFAULT_WORKFLOW).at(-1)!;
+    const byHand = { ...DEFAULT_WORKFLOW, steps: [...DEFAULT_WORKFLOW.steps.map((s) => (s.id === last ? ({ ...s, next: [...s.next, "x"] } as Step) : s)), blankStep(type, "x", `New ${type}`)] };
+    const { workflow } = insertStepAfter(DEFAULT_WORKFLOW, type, null);
+    expect(validateWorkflow(workflow)).toEqual(validateWorkflow(byHand));
   });
 });

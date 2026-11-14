@@ -14,7 +14,8 @@ export const inputClass =
 export function Field({ label, hint, children, className, error }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null }) {
   const id = useId();
   return (
-    <div className={cn("flex min-w-0 flex-col gap-1", className)}>
+    // `data-problem` lets "Show" in the save bar find the first field to fix.
+    <div data-problem={error ? "" : undefined} className={cn("flex min-w-0 flex-col gap-1", className)}>
       <label htmlFor={id} className="text-xs font-medium text-foreground">
         {label}
       </label>
@@ -24,8 +25,8 @@ export function Field({ label, hint, children, className, error }: { label: stri
   );
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, type = "text" }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string }) {
-  return <input id={id} type={type} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
+export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean }) {
+  return <input id={id} type={type} autoFocus={autoFocus} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete="off" onChange={(e) => onChange(e.target.value)} />;
 }
 
 /**

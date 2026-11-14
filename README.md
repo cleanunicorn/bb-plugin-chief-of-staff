@@ -41,6 +41,10 @@ no GitHub issue: see [Install](#install).
   repository, issue, PR, age, last activity and token usage (when the provider
   reports it), and who holds the ball: an agent, Chief of Staff, or you. Stalls
   and failures are detected and notified.
+- **Knows what the work cost.** A task's token usage is summed over every agent
+  thread it spawned (planner, builder, reviewers, replaced builders).
+  Throughput totals it for the window and per day, and finished tasks can be
+  ordered by it.
 
 ## How it works
 
@@ -343,6 +347,32 @@ recently finished tasks after every active one; **Show older finished** loads
 the next page. Retrying work stays in Checks & shipping until it requires a
 decision.
 
+**Token usage.** A card's "Tokens · all threads" figure (and cost, when the
+provider reports one) is the sum over every agent thread of the task: model
+chooser, planner, builder, reviewers and replaced builders. Its tooltip gives
+the thread count and how many threads reported usage. An active task's figure
+is read live and labelled "so far". A finished task is counted once by the
+background sweep (up to 10 tasks a minute), when none of its threads is still
+running, or a day after it finished if a thread still looks busy (its host
+gone, for example). Until then its card says "counting…", and opening the
+dashboard makes no usage calls for finished tasks. A task whose provider reported nothing shows
+no figure, rather than 0. Throughput adds the window's total, by the day each
+task finished, and the table view has a Tokens column. With **Show finished**,
+**Most tokens** orders finished tasks by usage (uncounted ones last), and each
+finished card shows its share of all finished tasks' tokens. A task counted
+while older pages are open can move onto a page already loaded; it shows once
+the finished list is reloaded (switch the order, or hide and show finished). The workflow
+sheet's header shows Tokens and Cost too.
+
+The summary at the top of the Pipeline tab counts the tasks that shipped or
+failed since this browser last left the dashboard, names up to three failures
+and why they ended, and keeps the Needs attention buttons. With nothing new and
+nothing waiting it says "All clear" with the number of agents working. The last
+visit is stored in the browser's local storage, and the counts stay the same
+while you reload or visit another dashboard tab briefly; after 30 minutes away
+from the Pipeline tab a new visit starts. `j` and `k` move between task cards
+while focus is in the Pipeline tab.
+
 A task whose repository is not in the `repos` setting (removed, renamed, or the
 setting has an error, which leaves it empty) does not wait for capacity. If it
 has not started, or is waiting to reacquire capacity, it stays queued with
@@ -433,7 +463,7 @@ The same settings, as stored:
 | `githubToken` (secret) | Token with `repo` scope. Empty → `gh auth token` on the server host. Never logged. |
 | `workflow` (JSON) | Your workflows and which one is the default, see above. |
 | `repos` (JSON) | Repository list, see below. |
-| `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. |
+| `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. A `maxConcurrentTotal` of 0 starts no new tasks (see `maxConcurrent` below); the Pipeline tab then reads "Task slots: N / 0" with a notice. |
 | `defaultProviderId`, `defaultModel` | Used when a repo does not set its own. |
 | `notifyPush` | Push notifications through the push-notifications plugin. |
 | `archiveThreadsOnDone` | Archive a task's builder and step threads once its workflow is done or you mark it done (default on). Failed tasks keep theirs. |
@@ -465,6 +495,11 @@ so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
 when they carry every label in `issueFilter.labels` and, if
 `issueFilter.assignee` is set, are assigned to that user. With neither set,
 no issue is picked up. Set `intake: false` to run only tasks you start.
+
+`maxConcurrent` (default 2) is how many tasks run at once in the repository.
+At 0 no new task starts there. Tasks holding a slot keep going, but one that
+gave it up (waiting on CI or a merge) waits for a slot before its next agent
+step. The visual editor in Configure warns before you save a limit of 0.
 
 `issueComments` (default `true`) controls the comments Chief of Staff leaves on
 the issue. When an agent starts it posts one status comment and, on a restart
@@ -563,6 +598,9 @@ recently finished tasks after them, 50 by default (`--finished-limit`, up to
 500). When older ones exist, the output ends with the command for the next
 page: `--before <cursor>` lists only that page of finished tasks and implies
 `--all`. `--json` returns the cursor as `nextBefore` (null on the last page).
+`--usage` adds each task's token usage to the `--json` entries, summed over all
+of its agent threads: read live for active tasks, and the stored count for
+finished ones (`counted: false` until it is counted).
 
 | Agent tool | Purpose |
 | --- | --- |
@@ -696,6 +734,11 @@ activity. **Problems only** selects warnings and errors on the server, including
 those older than the newest 60 entries. Changing the filter returns to its newest
 page. Retention still applies: paging cannot recover pruned entries.
 
-The icons in [assets/user-check.svg](assets/user-check.svg) and
-[assets/user-x.svg](assets/user-x.svg) come from [Lucide](https://lucide.dev)
-(ISC License, Copyright (c) Lucide Contributors).
+The icons in [assets/user-check.svg](assets/user-check.svg),
+[assets/user-x.svg](assets/user-x.svg),
+[assets/hourglass.svg](assets/hourglass.svg),
+[assets/octagon-alert.svg](assets/octagon-alert.svg),
+[assets/coins.svg](assets/coins.svg),
+[assets/activity.svg](assets/activity.svg) and
+[assets/trending-up.svg](assets/trending-up.svg) come from
+[Lucide](https://lucide.dev) (ISC License, Copyright (c) Lucide Contributors).
