@@ -255,3 +255,57 @@ overview was clipped (0 px visible). In List mode the column scrolls to the
 overview (measured). Portrait heights below about 580 px leave less than 60 px
 of overview below the canvas (55 px at 320×568), still reachable by touch. A
 fix needs its own layout for short, narrow viewports.
+
+## Configure problems listed once (issue #123)
+
+A workflow draft's problems are listed once, in the Workflows editor; the save
+bar keeps only the count.
+
+- The editor's list shows the open workflow's problems without the
+  `Workflow "<name>":` prefix, starting with the step they are about, then one
+  `<name> · N to fix` row per other workflow with problems. Three lines show,
+  then "Show all N".
+- Graph problems now carry their step (a pair that could run at once: the
+  later step in the list, usually the one just added; a duplicate id: the
+  second step; a loop: none), so every line about a step selects it. The
+  canvas pans to the step if it is out of view, and its panel opens with focus
+  on its heading; in list view that step expands.
+- Steps with problems have a critical border and a count badge on the canvas,
+  "N to fix" in their accessible name, and an "N to fix" pill while collapsed
+  in list view.
+- The save bar is one row: "Unsaved changes · N to fix before saving" (below
+  `sm`, "N to fix"), Show/Hide, Discard, Save. Expanded, it lists section
+  summaries for what is not on screen (`Workflows · N to fix`,
+  `Repositories · acme/app · N to fix`, `General · N to fix`), at most about
+  three rows before scrolling. With nothing off screen, Show scrolls to the
+  section's own list or first invalid field.
+
+Validation: `tests/workflow.test.ts` (step of each graph problem),
+`tests/workflowEditor.test.tsx` (no prefix, step selection on the canvas and
+in list view, other-workflow row, three lines then Show all),
+`tests/workflowCanvas.test.tsx` (marks, accessible name, a selection made with
+a new workflow is kept, the in-view check behind panning),
+`tests/configurator.test.tsx` (collapsed bar without problem text, Show, the
+on-screen section left out, opening a repository, selecting a step from
+General, a revealed step not selected again on returning).
+
+Browser check: headless Chromium (Playwright 1.62, Chromium build 1234; BB
+browser automation sessions failed to start on this host) on the actual
+`Configurator` with the built `dist/app.css` under a
+`data-bb-plugin="chief-of-staff"` root, fixture RPC data (the default workflow,
+one repository), placeholder icons and a minimal host preflight. Not a live BB
+install; the running plugin was not reinstalled. Repro: Workflows → toolbar
+**Check**, unsaved. The default workflow gives 3 problems (the issue's
+workflow gave 5); a second Check gives 4 lines and "Show all 4".
+
+| Viewport | Section | Save bar | Editor list | Canvas visible | Notes |
+|---|---|---|---|---|---|
+| 390×844 | Workflows | 48 px, one row ("3 to fix · Show · Discard · Save") | 88 px, 3 lines | 263 px of 484 px above the bar | was 496 px bar, no canvas in view |
+| 390×844 | Workflows, 2 Checks | 48 px | 108 px, 3 lines + "Show all 4" | 243 px | |
+| 390×844 | General, same draft | 48 px; expanded 75 px with `Workflows · 3 to fix` | n/a | n/a | General row absent (on screen) |
+| 390×844 | `Workflows · 3 to fix` from General | 48 px | | | New check selected, its panel heading focused and scrolled to the top |
+| 1440×1000 | Workflows | 48 px, one row | 56 px, 3 lines | 520 px, all of it | New check panned into view, red border and badge "3" |
+| 1440×1000 | General, same draft | 48 px; expanded 75 px | n/a | n/a | |
+
+No horizontal page overflow at either size, and no error text in the bar in
+any state. Not checked: a screen reader, Safari, a live BB install.
