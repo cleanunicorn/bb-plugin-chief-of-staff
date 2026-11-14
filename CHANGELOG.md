@@ -142,6 +142,19 @@
   new per-repository `briefComments` option (`trusted`, `all` or `none`)
   changes that. The README has a new Trust model section.
 
+- **Active tasks always show, and finished history is paged.** The roster
+  used to list the 200 most recently created tasks, so with **Show finished**
+  on, an active task older than those (one waiting on your approval, say)
+  vanished from the Pipeline, its Needs-attention and stage counts, and its PR
+  from Repos & PRs. Now every active task is listed first, newest first,
+  followed by the 50 most recently finished; **Show older finished** loads the
+  next page. Repos & PRs shows every active task's PR plus the 200 most
+  recently finished. `bb cos status --all` takes `--finished-limit` and
+  `--before <cursor>` and prints the command for the next page;
+  `cos_roster` and `chief_of_staff_status` take `finishedLimit` and `before`
+  and return the next cursor (`nextBefore`). `bb cos` JSON output is no
+  longer cut off at 60,000 characters, so it always parses.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are

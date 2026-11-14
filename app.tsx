@@ -585,6 +585,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
+const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
 
 export function PipelineTab() {
   const rpc = useRpc<Contract>();
@@ -629,8 +630,50 @@ export function PipelineTab() {
     [rpc, refetchAll],
   );
 
-  const entries = roster.data?.entries ?? [];
-  const active = entries.filter((e) => e.detail !== "done" && e.detail !== "failed");
+  const live = roster.data?.entries;
+  const liveEntries = useMemo(() => live ?? [], [live]);
+  // Counts and attention come from the live query's active items, never from finished pages.
+  const active = liveEntries.filter((e) => !isFinished(e));
+  // Finished pages loaded with "Show older finished": the live query's finished
+  // items at the first click, then each older page. The live query wins on
+  // duplicates (a retried item is active again).
+  const [older, setOlder] = useState<{ entries: RosterEntry[]; before: string | null } | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderRequest = useRef<{ generation: number; inFlight: boolean }>({ generation: 0, inFlight: false });
+  const olderCursor = !includeDone ? null : older ? older.before : (roster.data?.nextBefore ?? null);
+  const entries = useMemo(() => {
+    if (!older) return liveEntries;
+    const ids = new Set(liveEntries.map((e) => e.id));
+    return [...liveEntries, ...older.entries.filter((e) => !ids.has(e.id))];
+  }, [liveEntries, older]);
+  const toggleFinished = () => {
+    olderRequest.current = { generation: olderRequest.current.generation + 1, inFlight: false };
+    setOlder(null);
+    setLoadingOlder(false);
+    setIncludeDone((v) => !v);
+  };
+  const loadOlder = async () => {
+    const request = olderRequest.current;
+    if (!olderCursor || request.inFlight) return;
+    request.inFlight = true;
+    setLoadingOlder(true);
+    setActionError(null);
+    const snapshot = liveEntries.filter(isFinished);
+    try {
+      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true });
+      if (olderRequest.current !== request) return;
+      setOlder((prev) => {
+        const base = prev?.entries ?? snapshot;
+        const seen = new Set(base.map((e) => e.id));
+        return { entries: [...base, ...page.entries.filter((e) => !seen.has(e.id))], before: page.nextBefore ?? null };
+      });
+    } catch (error) {
+      if (olderRequest.current === request) setActionError(errorText(error));
+    } finally {
+      request.inFlight = false;
+      if (olderRequest.current === request) setLoadingOlder(false);
+    }
+  };
   const byStage = useMemo(() => {
     const counts = Object.fromEntries(STAGES.map((s) => [s.key, 0])) as Record<StageKey, number>;
     for (const e of active) {
@@ -733,7 +776,7 @@ export function PipelineTab() {
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
-            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
+            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
             </Button>
@@ -757,6 +800,14 @@ export function PipelineTab() {
                 <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
               ))}
             </div>
+          </div>
+        ) : null}
+        {/* Stage and attention filters never match finished tasks. */}
+        {olderCursor && filter === "all" ? (
+          <div className="mt-3 flex justify-center">
+            <Button size="sm" variant="outline" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => void loadOlder()}>
+              <Icon name="History" fallback="Circle" aria-hidden />Show older finished
+            </Button>
           </div>
         ) : null}
       </Panel>
@@ -874,7 +925,7 @@ export function ReposTab() {
   const rpc = useRpc<Contract>();
   const now = useNow();
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
-  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone: true, withUsage: false } });
+  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone: true, finishedLimit: 200, withUsage: false } });
   const refetchAll = useCallback(async () => {
     await Promise.all([overview.refetch(), roster.refetch()]);
   }, [overview, roster]);

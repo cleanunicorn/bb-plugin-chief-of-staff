@@ -338,8 +338,10 @@ capacity. Stage filters count tasks; task slots retain the admission semantics
 above. “Failures needing a decision” counts active human waits caused by an
 escalation, a missing report, or a Chief of Staff error. Stalled work is shown
 separately. Terminal failed runs are historical outcomes, not unresolved
-incidents; they remain accessible with **Show finished**. Retrying work stays in
-Checks & shipping until it requires a decision.
+incidents; they remain accessible with **Show finished**, which adds the most
+recently finished tasks after every active one; **Show older finished** loads
+the next page. Retrying work stays in Checks & shipping until it requires a
+decision.
 
 A task whose repository is not in the `repos` setting (removed, renamed, or the
 setting has an error, which leaves it empty) does not wait for capacity. If it
@@ -549,16 +551,22 @@ can be merged without anyone reviewing it.
 ## CLI and agent tools
 
 ```
-bb cos status [--repo owner/repo] [--all] [--usage] [--json]
+bb cos status [--repo owner/repo] [--all [--finished-limit n] [--before cursor]] [--usage] [--json]
 bb cos intake [--repo owner/repo] [--dry-run]
 bb cos task "<prompt>" --repo owner/repo [--body "..."]
 bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message "..."]
 bb cos log [--limit n] [--item id]
 ```
 
+`bb cos status` lists every active task, newest first. `--all` adds the most
+recently finished tasks after them, 50 by default (`--finished-limit`, up to
+500). When older ones exist, the output ends with the command for the next
+page: `--before <cursor>` lists only that page of finished tasks and implies
+`--all`. `--json` returns the cursor as `nextBefore` (null on the last page).
+
 | Agent tool | Purpose |
 | --- | --- |
-| `chief_of_staff_status` | Read the roster. |
+| `chief_of_staff_status` | Read the roster. `includeDone` adds finished tasks; page older ones with `before` and `finishedLimit`. |
 | `cos_report` | Workflow agents report a finished step. |
 | `cos_start_task` | Hand a task to Chief of Staff. |
 

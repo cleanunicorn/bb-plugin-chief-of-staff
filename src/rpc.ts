@@ -75,7 +75,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return { repo: input.repo, paused: cos.store.isRepoPaused(input.repo) };
       },
       async cos_roster(input) {
-        return { entries: await buildRoster(cos, input) };
+        return buildRoster(cos, input);
       },
       async cos_intake_now(input) {
         return { results: await runIntake(cos, { repo: input.repo, dryRun: input.dryRun, actor: "rpc:client" }) };

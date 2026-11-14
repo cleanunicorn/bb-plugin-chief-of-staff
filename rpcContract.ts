@@ -3,6 +3,13 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+/** Finished roster items per page: the default and the most one page may ask for. */
+export const ROSTER_FINISHED_LIMIT = 50;
+export const ROSTER_FINISHED_MAX = 500;
+export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_MAX).default(ROSTER_FINISHED_LIMIT);
+/** An earlier roster page's opaque nextBefore cursor. */
+export const rosterCursorSchema = z.string().min(1).max(1000);
+
 const rosterEntry = z.object({
   occupiesCapacity: z.boolean(),
   id: z.string(),
@@ -203,7 +210,18 @@ export const rpcContract = defineRpcContract({
   },
   cos_set_paused: { input: z.object({ paused: z.boolean() }), output: z.object({ paused: z.boolean() }) },
   cos_set_repo_paused: { input: z.object({ repo: z.string().max(200), paused: z.boolean() }), output: z.object({ repo: z.string(), paused: z.boolean() }) },
-  cos_roster: { input: z.object({ repo: z.string().optional(), includeDone: z.boolean().default(false), withUsage: z.boolean().default(false) }), output: z.object({ entries: z.array(rosterEntry) }) },
+  cos_roster: {
+    input: z.object({
+      repo: z.string().optional(),
+      includeDone: z.boolean().default(false),
+      /** Finished items per page. */
+      finishedLimit: finishedLimitSchema,
+      /** An earlier page's nextBefore: return only the next page of finished items. */
+      before: rosterCursorSchema.optional(),
+      withUsage: z.boolean().default(false),
+    }),
+    output: z.object({ entries: z.array(rosterEntry), nextBefore: z.string().nullable() }),
+  },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: {
     input: z.object({ id: z.string(), action: z.enum(["retry", "rerun_step", "approve", "mark_done", "mark_failed"]), step: z.string().max(40).optional(), feedback: z.string().max(20000).optional() }),

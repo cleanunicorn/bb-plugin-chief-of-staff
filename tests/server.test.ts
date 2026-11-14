@@ -75,6 +75,8 @@ describe("chief-of-staff server", () => {
   let retries: { threadId: string; sendAt?: number; reason?: string }[] = [];
   let queuedRetry: Record<string, boolean | number> = {};
   const spawned = new Set<string>();
+  /** The thread ids of each threads.list call. */
+  const threadListCalls: (readonly string[] | undefined)[] = [];
   let prCreated = false;
   let clock = 0;
   let pending: unknown[] = [];
@@ -113,6 +115,7 @@ describe("chief-of-staff server", () => {
     retries = [];
     queuedRetry = {};
     spawned.clear();
+    threadListCalls.length = 0;
     ghRoutes = {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
         "GET /repos/acme/app/issues": () => ({ body: [issue] }),
@@ -181,11 +184,13 @@ describe("chief-of-staff server", () => {
               return { ok: true } as never;
             },
           },
-          list: async () =>
-            ["thr_1", ...[...spawned].filter((id) => id !== "thr_1")].map((id) => {
+          list: async (args?: { threadIds?: readonly string[] }) => {
+            threadListCalls.push(args?.threadIds);
+            return ["thr_1", ...[...spawned].filter((id) => id !== "thr_1")].map((id) => {
               const status = perThread[id]?.status ?? threadStatus;
               return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0, archivedAt: archivedNow.has(id) ? 1 : null };
-            }),
+            });
+          },
           output: async () => ({ output: assistantOutput }),
           archive: async (args: { threadId: string }) => {
             archivedIds.push(args.threadId);
@@ -2730,6 +2735,76 @@ describe("chief-of-staff server", () => {
     expect(cli.exitCode).toBe(0);
     expect(cli.stdout).toContain("acme/app#12");
     expect(cli.stdout).toContain("thr_1");
+  });
+
+  it("lists an active task older than 250 finished ones, with or without finished, and pages the rest (#106)", async () => {
+    const db = host.bb.storage.database();
+    const insert = db.prepare(
+      `INSERT INTO work_items (id, repo, issue_number, issue_title, thread_id, pr_number, pr_url, status, source, created_at, updated_at, finished_at, waiting_kind, waiting_reason)
+       VALUES (@id, 'acme/app', @issue, @title, @thread, @pr, @prUrl, @status, 'task', @created, @created, @finished, @kind, @reason)`,
+    );
+    const base = Date.parse("2026-01-01T00:00:00Z");
+    const iso = (ms: number) => new Date(base + ms).toISOString();
+    insert.run({ id: "old-active", issue: 1, title: "Old approval", thread: "thr_old", pr: 99, prUrl: "https://github.com/acme/app/pull/99", status: "waiting_on_human", created: iso(0), finished: null, kind: "approval", reason: "Approve the plan" });
+    for (let i = 1; i <= 250; i++) insert.run({ id: `done-${i}`, issue: 1000 + i, title: `Done ${i}`, thread: `thr_done_${i}`, pr: null, prUrl: null, status: i % 7 ? "done" : "failed", created: iso(i * 60_000), finished: iso(i * 60_000 + 1_000), kind: null, reason: null });
+    type Page = { entries: { id: string; detail: string; prNumber: number | null }[]; nextBefore: string | null };
+    const roster = async (input: Record<string, unknown>) => (await host.harness.behavior.callRpc("cos_roster", input)) as Page;
+
+    const activeOnly = await roster({});
+    expect(activeOnly.entries.map((e) => e.id)).toEqual(["old-active"]);
+    expect(activeOnly.nextBefore).toBeNull();
+
+    threadListCalls.length = 0;
+    const first = await roster({ includeDone: true });
+    // Active first, then the 50 most recently finished.
+    expect(first.entries[0]).toMatchObject({ id: "old-active", prNumber: 99 });
+    expect(first.entries.slice(1).map((e) => e.id)).toEqual(Array.from({ length: 50 }, (_, k) => `done-${250 - k}`));
+    expect(first.nextBefore).toEqual(expect.any(String));
+    expect(threadListCalls[0]?.[0]).toBe("thr_old");
+
+    const seen = first.entries.slice(1).map((e) => e.id);
+    let before = first.nextBefore;
+    while (before) {
+      const page = await roster({ includeDone: true, before });
+      expect(page.entries.every((e) => e.detail === "done" || e.detail === "failed")).toBe(true);
+      seen.push(...page.entries.map((e) => e.id));
+      before = page.nextBefore;
+    }
+    expect(seen).toEqual(Array.from({ length: 250 }, (_, k) => `done-${250 - k}`));
+
+    // A large page looks every thread up, 200 ids per call, active ones first.
+    threadListCalls.length = 0;
+    const big = await roster({ includeDone: true, finishedLimit: 300 });
+    expect(big.entries).toHaveLength(251);
+    expect(big.nextBefore).toBeNull();
+    expect(threadListCalls.map((ids) => ids?.length)).toEqual([200, 51]);
+    expect(threadListCalls[0]?.[0]).toBe("thr_old");
+
+    // The agent tool and the CLI page the same way.
+    const tool = await host.harness.behavior.callAgentTool("chief_of_staff_status", { includeDone: true, finishedLimit: 2 });
+    const text = typeof tool === "string" ? tool : tool.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    expect(text).toContain("Old approval");
+    expect(text).toMatch(/more finished: before=\S+/);
+    const json = JSON.parse((await host.harness.behavior.runCli(["status", "--all", "--finished-limit", "2", "--json"])).stdout) as Page;
+    expect(json.entries.map((e) => e.id)).toEqual(["old-active", "done-250", "done-249"]);
+    expect(json.nextBefore).toEqual(expect.any(String));
+    // A page larger than the text output limit is still whole, parseable JSON with its cursor.
+    const bigJson = (await host.harness.behavior.runCli(["status", "--all", "--finished-limit", "200", "--json"])).stdout;
+    expect(bigJson.length).toBeGreaterThan(60_000);
+    const parsed = JSON.parse(bigJson) as Page;
+    expect(parsed.entries).toHaveLength(201);
+    expect(parsed.nextBefore).toEqual(expect.any(String));
+    const next = await host.harness.behavior.runCli(["status", "--before", json.nextBefore!, "--finished-limit", "2"]);
+    expect(next.exitCode).toBe(0);
+    expect(next.stdout).toContain("acme/app#1248");
+    expect(next.stdout).not.toContain("acme/app#1 ");
+    expect(next.stdout).toMatch(/More finished: bb cos status --all --finished-limit 2 --before \S+/);
+    const text2 = (await host.harness.behavior.runCli(["status", "--all"])).stdout;
+    expect(text2).toMatch(/More finished: bb cos status --all --before \S+/);
+    // The next-page command keeps the flags that shape the page.
+    const withFlags = (await host.harness.behavior.runCli(["status", "--all", "--repo", "acme/app", "--usage"])).stdout;
+    expect(withFlags).toMatch(/More finished: bb cos status --all --repo acme\/app --usage --before \S+/);
+    expect((await host.harness.behavior.runCli(["status"])).stdout).not.toContain("More finished");
   });
 
   it("reads and writes settings for the configurator without exposing the token", async () => {
