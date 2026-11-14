@@ -1,7 +1,7 @@
 // Visual configurator: the delivery workflow, repositories, general settings
 // and GitHub access. Edits drafts locally, then saves through cos_set_config (the same
 // JSON documents the server parses) and cos_set_settings (scalar settings).
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { experimental_useRpcQuery, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
@@ -11,7 +11,7 @@ import { isPlaceholderRepo, repoKey } from "../../src/config";
 import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
 import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
-import { WorkflowsEditor } from "./workflowEditor";
+import { WorkflowsEditor, type WorkflowReveal } from "./workflowEditor";
 import { useConfigDrafts } from "./configDrafts";
 import type { ConfigDrafts } from "./configDrafts";
 import { useRowKeys } from "./rowKeys";
@@ -161,7 +161,11 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
       </header>
       {open ? (
         <div className="flex flex-col gap-5 border-t border-border px-3 py-4">
-          <Problems items={problems} />
+          {problems.length ? (
+            <div data-problem>
+              <Problems items={problems} />
+            </div>
+          ) : null}
           <Group title="Source" icon="FolderGit2">
             <Field label="BB project" hint="The project whose checkout agents work in. Project ids are specific to this bb.">
               {(id) => <ProjectPicker id={id} value={repo.projectId} projects={projects} repo={repo} onChange={(v) => onChange(selectProject(repo, v, projects))} />}
@@ -440,19 +444,33 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   // Only what would be sent: a loaded value out of range must not block other edits.
   const generalIssues = useMemo(() => generalSettingsProblems(generalChanges), [generalChanges]);
   const generalErrors = useMemo(() => Object.fromEntries(generalIssues.map((p) => [p.key, p.text])) as Partial<Record<keyof GeneralSettings, string>>, [generalIssues]);
-  /** Every blocking problem, with where it is, so the save bar can point at it. */
+  /** Every blocking problem, with where it is, so the save bar can point at it. `name` is the repository's. */
   const problems = useMemo(() => {
-    const out: { section: Section; repo?: number; text: string }[] = [];
+    const out: { section: Section; repo?: number; name?: string; text: string }[] = [];
     for (const [i, list] of Object.entries(repoIssues)) {
       const r = repoDraft[Number(i)];
       const name = r && r.owner && r.repo ? repoKey(r) : `Repository ${Number(i) + 1}`;
-      for (const text of list) out.push({ section: "repos", repo: Number(i), text: `${name}: ${text}` });
+      for (const text of list) out.push({ section: "repos", repo: Number(i), name, text: `${name}: ${text}` });
     }
     for (const text of new Set(workflowIssues.map((p) => p.text))) out.push({ section: "workflow", text });
     for (const p of generalIssues) out.push({ section: "general", text: p.text });
     return out;
   }, [repoIssues, repoDraft, workflowIssues, generalIssues]);
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
+  // The save bar shows a count; expanded, the sections (and repositories) with problems that are not on screen.
+  const [barOpen, setBarOpen] = useState(false);
+  /** Set when a Workflows summary is used: the editor opens on that workflow and step. Cleared by ordinary navigation. */
+  const [reveal, setReveal] = useState<WorkflowReveal | null>(null);
+  /** Bumped to bring the first problem in the shown section into view, after it renders. */
+  const [seek, setSeek] = useState(0);
+  const content = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!seek) return;
+    const target = content.current?.querySelector<HTMLElement>("[data-problem]");
+    // jsdom has no scrollIntoView. Centered, so the sticky save bar does not cover it.
+    target?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    target?.querySelector<HTMLElement>("input, select, textarea, button")?.focus({ preventScroll: true });
+  }, [seek]);
   const usedBy = useMemo(() => {
     const out: Record<string, string[]> = {};
     for (const r of repoDraft) {
@@ -603,6 +621,30 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   // A JSON save sends only the JSON documents and the server validates them, so the visual
   // problems (which point into sections that are inert right now) don't block it.
   const blocking = advancedDirty ? [] : problems;
+  /** The blocking problems per section, and per repository. */
+  const summaries: { key: string; label: string; count: number; section: Section; repo?: number }[] = [];
+  for (const p of blocking) {
+    const key = p.repo === undefined ? p.section : `${p.section}/${p.repo}`;
+    const found = summaries.find((x) => x.key === key);
+    if (found) found.count++;
+    else summaries.push({ key, label: [SECTIONS.find((x) => x.id === p.section)!.label, p.name].filter(Boolean).join(" · "), count: 1, section: p.section, repo: p.repo });
+  }
+  const order = (id: Section) => SECTIONS.findIndex((x) => x.id === id);
+  summaries.sort((a, b) => order(a.section) - order(b.section));
+  // What is on screen lists its own problems: the Workflows and General sections, and the open repository.
+  const offScreen = summaries.filter((x) => x.section !== section || (x.section === "repos" && x.repo !== openRepo));
+  const goToSummary = (x: (typeof summaries)[number]) => {
+    setSection(x.section);
+    if (x.section === "workflow") {
+      const first = workflowIssues.find((p) => p.workflow !== undefined && p.step !== undefined) ?? workflowIssues.find((p) => p.workflow !== undefined);
+      setReveal(first ? { workflow: first.workflow!, step: first.step } : null);
+      if (first?.step === undefined) setSeek((n) => n + 1);
+      return;
+    }
+    setReveal(null);
+    if (x.repo !== undefined) setOpenRepo(x.repo);
+    setSeek((n) => n + 1);
+  };
 
   // A failed refresh keeps the loaded data, so the editor and its drafts stay and the error becomes a banner.
   const failures = Array.from(new Set([config.error, settings.error].filter((e) => e !== null && e !== undefined).map(errorText)));
@@ -617,7 +659,10 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
             key={s.id}
             type="button"
             aria-current={section === s.id ? "page" : undefined}
-            onClick={() => setSection(s.id)}
+            onClick={() => {
+              setSection(s.id);
+              setReveal(null);
+            }}
             className={cn("flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors", section === s.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:bg-state-hover hover:text-foreground")}
           >
             <Icon name={s.icon} fallback="Circle" className="size-4" aria-hidden />
@@ -642,9 +687,9 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         {advancedDirty && visualSection ? <Problems tone="warning" items={["You have unsaved Advanced JSON edits. Save or discard them before editing here."]} /> : null}
         {visualSection ? (
           // Inert, not unmounted, so the editors keep their place while the JSON draft is pending.
-          <div className={cn("flex flex-col gap-3", advancedDirty && "opacity-50")} inert={advancedDirty}>
+          <div ref={content} className={cn("flex flex-col gap-3", advancedDirty && "opacity-50")} inert={advancedDirty}>
             {section === "workflow" && workflowBlocked ? <BlockedDocument title="Workflows" error={workflowError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
-            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} problems={workflowIssues} /> : null}
+            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} problems={workflowIssues} reveal={reveal ?? undefined} /> : null}
             {section === "repos" && reposBlocked ? <BlockedDocument title="Repositories" error={reposError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
             {section === "repos" && !reposBlocked ? (
               <>
@@ -709,49 +754,58 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         ) : null}
 
         {anyDirty || status ? (
-          <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
+          <div role="region" aria-label="Save bar" className="sticky bottom-0 z-10 flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
             {anyDirty ? (
-              <>
-                <span className="flex items-center gap-1.5 text-sm text-foreground">
-                  <span aria-hidden className="size-2 rounded-full" style={{ background: STATUS.warning }} />
-                  Unsaved changes
-                  {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
+              // One row at every width: below sm the label shortens to the count and truncates.
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
+                  <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ background: STATUS.warning }} />
+                  <span className={cn("truncate", blocking.length && "hidden sm:inline")}>Unsaved changes</span>
+                  {blocking.length ? (
+                    <span className="truncate text-xs" style={{ color: STATUS.critical }}>
+                      <span className="hidden sm:inline">· </span>
+                      {blocking.length} to fix<span className="hidden sm:inline"> before saving</span>
+                    </span>
+                  ) : null}
                 </span>
-                <span className="ml-auto flex gap-1.5">
+                {blocking.length ? (
+                  // With nothing off screen there is nothing to expand: Show brings the section's own list into view.
+                  offScreen.length ? (
+                    <Button size="sm" variant="ghost" className="shrink-0 px-2" aria-expanded={barOpen} onClick={() => setBarOpen(!barOpen)}>
+                      {barOpen ? "Hide" : "Show"}
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="ghost" className="shrink-0 px-2" onClick={() => setSeek((n) => n + 1)}>
+                      Show
+                    </Button>
+                  )
+                ) : null}
+                <span className="ml-auto flex shrink-0 gap-1.5">
                   <Button size="sm" variant="outline" disabled={saving} onClick={discard}>
                     Discard
                   </Button>
                   <Button size="sm" disabled={saving || blocking.length > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
-                    <Icon name="Save" fallback="Circle" aria-hidden /> {saving ? "Saving…" : "Save changes"}
+                    <Icon name="Save" fallback="Circle" aria-hidden />
+                    {saving ? "Saving…" : <>Save<span className="hidden sm:inline"> changes</span></>}
                   </Button>
                 </span>
-                {blocking.length ? (
-                  <ul className="flex basis-full flex-col gap-0.5">
-                    {blocking.slice(0, 5).map((p, i) => (
-                      <li key={i}>
-                        <button
-                          type="button"
-                          className="flex items-start gap-1.5 text-left text-xs hover:underline"
-                          style={{ color: STATUS.critical }}
-                          onClick={() => {
-                            setSection(p.section);
-                            if (p.repo !== undefined) setOpenRepo(p.repo);
-                          }}
-                        >
-                          <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3 shrink-0" aria-hidden />
-                          <span>
-                            <b>{SECTIONS.find((x) => x.id === p.section)?.label}</b> · {p.text}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                    {blocking.length > 5 ? <li className="text-xs text-muted-foreground">and {blocking.length - 5} more</li> : null}
-                  </ul>
-                ) : null}
-              </>
+              </div>
+            ) : null}
+            {anyDirty && barOpen && offScreen.length ? (
+              // About three rows, then it scrolls.
+              <ul className="flex max-h-[4.5rem] flex-col gap-0.5 overflow-y-auto">
+                {offScreen.map((x) => (
+                  <li key={x.key}>
+                    <button type="button" className="flex items-center gap-1.5 text-left text-xs hover:underline" style={{ color: STATUS.critical }} onClick={() => goToSummary(x)}>
+                      <Icon name="CircleAlert" fallback="Circle" className="size-3 shrink-0" aria-hidden />
+                      {x.label} · {x.count} to fix
+                    </button>
+                  </li>
+                ))}
+              </ul>
             ) : null}
             {status ? (
-              <span className={cn("text-xs", anyDirty && "basis-full")} style={{ color: status.ok ? STATUS.good : STATUS.critical }}>
+              <span className="text-xs" style={{ color: status.ok ? STATUS.good : STATUS.critical }}>
                 {status.text}
               </span>
             ) : null}

@@ -125,11 +125,16 @@ function ProblemList({ lines, onGo, open }: { lines: ProblemLineItem[]; onGo: (w
   );
 }
 
+/** A workflow (by index) and optionally one of its steps to open on. Each new object is applied once. */
+export type WorkflowReveal = { workflow: number; step?: number };
+
 /**
  * `usedBy` lists the repositories running each workflow; `onDelete` runs after
  * a workflow is removed from the document, so the caller can detach them.
+ * `reveal` opens a workflow and selects a step, e.g. from the save bar while
+ * another section was shown (this editor was not mounted then).
  */
-export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]>; onDelete?: (id: string) => void; problems?: WorkflowProblem[] }) {
+export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, reveal }: { doc: WorkflowsDocument; onChange: (d: WorkflowsDocument) => void; usedBy: Record<string, string[]>; onDelete?: (id: string) => void; problems?: WorkflowProblem[]; reveal?: WorkflowReveal }) {
   const [current, setCurrent] = useState(doc.default);
   const [view, setView] = useState<"canvas" | "list">("canvas");
   const [selected, setSelected] = useState<string | null>(null);
@@ -176,6 +181,11 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
     setSelected(typeof id === "string" ? id : null);
     setRevealed((r) => (typeof id === "string" ? { id, nonce: (r?.nonce ?? 0) + 1 } : null));
   };
+  const goToRef = useRef(goTo);
+  goToRef.current = goTo;
+  useEffect(() => {
+    if (reveal) goToRef.current(reveal.workflow, reveal.step);
+  }, [reveal]);
 
   const setWf = (next: Workflow) => onChange({ ...doc, workflows: doc.workflows.map((w) => (w.id === wf.id ? next : w)) });
   const setStep = (id: string, next: Step) => setWf({ ...wf, steps: wf.steps.map((s) => (s.id === id ? next : s)) });

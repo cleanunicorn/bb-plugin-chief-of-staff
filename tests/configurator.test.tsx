@@ -46,6 +46,9 @@ const SAVED = "Saved. Changes apply on the next intake and sweep.";
 const text = () => container.textContent ?? "";
 const number = (label: string) => (field(label) as HTMLInputElement).value;
 /** The section buttons that carry the unsaved dot. */
+/** The sticky save bar, and the section summaries it lists while expanded. */
+const bar = () => container.querySelector<HTMLElement>('[role="region"][aria-label="Save bar"]')!;
+const summaries = () => Array.from(bar().querySelectorAll("li")).map((li) => li.textContent);
 const unsavedSections = () => Array.from(container.querySelectorAll('nav [aria-label="unsaved"]')).map((dot) => dot.closest("button")!.textContent);
 
 const VALUES = { ...mocks.settings.values };
@@ -191,7 +194,9 @@ it("disables Save and lists the problem while a repository is invalid", async ()
   await click(button("Add repository"));
 
   expect(text()).toContain("1 to fix before saving");
-  expect(text()).toContain("Repositories · acme/app: duplicate of entry 1");
+  // The new entry is open, so its problem shows there and not again in the bar.
+  expect(text()).toContain("duplicate of entry 1");
+  expect(bar().textContent).not.toContain("duplicate");
   expect(container.querySelector('nav [aria-label="1 to fix"]')!.closest("button")!.textContent).toContain("Repositories");
   expect(button("Save changes").disabled).toBe(true);
   await click(button("Save changes"));
@@ -480,7 +485,8 @@ it("lists an empty “Use when” of a new model choice, keeps Save off and call
   await setValue(field("Model"), "haiku");
 
   expect(text()).toContain("1 to fix before saving");
-  expect(text()).toContain('Workflows · Workflow "Plan, build, review, ship" › step "Review" › model choice 1: “Use when” must not be empty');
+  expect(text()).toContain("Review › model choice 1: “Use when” must not be empty");
+  expect(bar().textContent).not.toContain("Use when");
   expect(button("Save changes").disabled).toBe(true);
   await click(button("Save changes"));
   expect(mocks.call).not.toHaveBeenCalled();
@@ -490,7 +496,8 @@ it("lists an over-long default model under General and next to the field, and ke
   await mount(<Configurator initialSection="general" />);
   await setValue(field("Model"), "m".repeat(201));
 
-  expect(text()).toContain("General · Default model is longer than 200 characters");
+  expect(bar().textContent).toContain("1 to fix before saving");
+  expect(bar().textContent).not.toContain("Default model");
   expect(fieldText("Model")).toContain("Default model is longer than 200 characters");
   expect(badge("General")).toBe(true);
   expect(button("Save changes").disabled).toBe(true);
@@ -504,10 +511,89 @@ it("sends neither document while a workflow is invalid, even with a valid genera
   await click(button("General"));
   await setValue(field(MAX_TASKS), "5");
 
-  expect(text()).toContain("Workflows · Workflow 1: name must not be empty");
+  await click(button("Show"));
+  expect(summaries()).toEqual(["Workflows · 1 to fix"]);
   expect(button("Save changes").disabled).toBe(true);
   await click(button("Save changes"));
   expect(mocks.call).not.toHaveBeenCalled();
+});
+
+// ---------- the save bar: a count, and where to go, never the problems themselves ----------
+
+/** In the Workflows list view, give the Review step a model choice without a “Use when”. */
+async function breakReviewStep() {
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]"))[2]!);
+  await click(button("Add a model choice"));
+  await setValue(field("Model"), "haiku");
+}
+
+it("keeps the save bar to one collapsed row with the count and no problem text", async () => {
+  await mount(<Configurator initialSection="workflow" />);
+  await setValue(field("Name"), "");
+  await click(button("General"));
+  await setValue(field("Model"), "m".repeat(201));
+
+  expect(bar().textContent).toContain("2 to fix before saving");
+  expect(bar().textContent).not.toContain("must");
+  expect(bar().querySelector("ul")).toBeNull();
+  expect(button("Show").getAttribute("aria-expanded")).toBe("false");
+});
+
+it("expands to the sections with problems, leaving out the one on screen", async () => {
+  await mount(<Configurator initialSection="workflow" />);
+  await setValue(field("Name"), "");
+  await click(button("General"));
+  await setValue(field("Model"), "m".repeat(201));
+
+  await click(button("Show"));
+  expect(button("Hide").getAttribute("aria-expanded")).toBe("true");
+  expect(summaries()).toEqual(["Workflows · 1 to fix"]);
+  expect(bar().textContent).not.toContain("must");
+
+  await click(button("Workflows · 1 to fix"));
+  expect(container.querySelector('nav [aria-current="page"]')!.textContent).toContain("Workflows");
+  expect(summaries()).toEqual(["General · 1 to fix"]);
+});
+
+it("does not expand when every problem is on screen", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field("Model"), "m".repeat(201));
+  expect(button("Show").hasAttribute("aria-expanded")).toBe(false);
+  await click(button("Show"));
+  expect(bar().querySelector("ul")).toBeNull();
+});
+
+it("opens the repository a summary names", async () => {
+  await mount(<Configurator initialSection="repos" />);
+  await click(button("Add repository"));
+  await click(button("General"));
+  await click(button("Show"));
+  expect(summaries()).toEqual(["Repositories · acme/app · 1 to fix"]);
+
+  await click(button("Repositories · acme/app · 1 to fix"));
+  expect(container.querySelector('nav [aria-current="page"]')!.textContent).toContain("Repositories");
+  const open = Array.from(container.querySelectorAll("article button[aria-expanded]")).map((b) => b.getAttribute("aria-expanded"));
+  expect(open).toEqual(["false", "true"]);
+  expect(text()).toContain("duplicate of entry 1");
+});
+
+it("selects the step of the first workflow problem when its summary is used from another section", async () => {
+  await mount(<Configurator initialSection="workflow" />);
+  await breakReviewStep();
+  await click(button("General"));
+  expect(() => button("Remove Review")).toThrow();
+
+  await click(button("Show"));
+  await click(button("Workflows · 1 to fix"));
+  // Canvas view, with Review's panel shown and its heading focused.
+  expect(button("Remove Review")).toBeDefined();
+  expect(document.activeElement?.closest("article")?.textContent).toContain("Review");
+
+  // Going back by the section list does not select it again.
+  await click(button("General"));
+  await click(Array.from(container.querySelectorAll("nav button")).find((b) => b.textContent!.startsWith("Workflows"))!);
+  expect(() => button("Remove Review")).toThrow();
 });
 
 it("saves a stall threshold typed over the limit as the limit", async () => {
