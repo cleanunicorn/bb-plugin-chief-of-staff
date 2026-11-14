@@ -15,7 +15,7 @@ import {
   blankStep,
   modelMode,
   descendants,
-  newStepId,
+  insertStepAfter,
   topoOrder,
   workflowProblems,
   type ModelChoice,
@@ -215,13 +215,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
                 key={t}
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  const name = `New ${STEP_TYPE_META[t].label.toLowerCase()}`;
-                  const last = topoOrder(wf).at(-1);
-                  const id = newStepId(wf, name);
-                  const steps = wf.steps.map((s) => (s.id === last ? ({ ...s, next: [...s.next, id] } as Step) : s));
-                  setWf({ ...wf, steps: [...steps, blankStep(t, id, name)] });
-                }}
+                onClick={() => setWf(insertStepAfter(wf, t, null).workflow)}
               >
                 <Icon name="Plus" fallback="Circle" aria-hidden /> {STEP_TYPE_META[t].label} step at the end
               </Button>

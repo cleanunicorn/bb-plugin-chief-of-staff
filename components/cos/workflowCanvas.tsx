@@ -24,7 +24,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { blankStep, depths, modelMode, newStepId, topoOrder, type Step, type StepType, type Workflow } from "../../src/workflow";
+import { depths, insertStepAfter, modelMode, topoOrder, type Step, type StepType, type Workflow } from "../../src/workflow";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
@@ -273,11 +273,8 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   );
 
   const add = (type: StepType) => {
-    const name = `New ${STEP_TYPE_META[type].label.toLowerCase()}`;
-    const id = newStepId(workflow, name);
-    const maxY = Math.max(0, ...[...positions.values()].map((p) => p.y));
-    const step = { ...blankStep(type, id, name), position: { x: 0, y: maxY + ROW } } as Step;
-    update({ ...workflow, steps: [...workflow.steps, step] });
+    const { workflow: next, id } = insertStepAfter(workflow, type, selected);
+    update(next);
     onSelect?.(id);
   };
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DOCUMENT, normalizeWorkflow, parseWorkflows, serializeWorkflows, validateDocument, workflowProblems, workflowSchema, type Workflow, type WorkflowsDocument } from "../src/workflow";
+import { DEFAULT_DOCUMENT, DEFAULT_WORKFLOW, STEP_TYPES, blankStep, insertStepAfter, normalizeWorkflow, parseWorkflows, serializeWorkflows, topoOrder, validateDocument, validateWorkflow, workflowProblems, workflowSchema, type Step, type Workflow, type WorkflowsDocument } from "../src/workflow";
 
 type Raw = Record<string, unknown>;
 const wf = (steps: unknown[]) => ({ id: "w", name: "w", steps }) as unknown as Workflow;
@@ -168,5 +168,60 @@ describe("validateDocument", () => {
       "Loop: the arrows form a loop; use “on fail” to go back to an earlier step",
       'the default workflow "nope" does not exist',
     ]);
+  });
+});
+
+describe("insertStepAfter", () => {
+  /** Parallel review branches after Build, joined again at Ship. */
+  const PARALLEL = workflowSchema.parse({
+    id: "parallel",
+    name: "Parallel",
+    steps: [
+      { id: "plan", name: "Plan", type: "agent", next: ["build"] },
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["review", "docs"] },
+      { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", next: ["ship"] },
+      { id: "docs", name: "Docs", type: "agent", next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", onFail: "build" },
+    ],
+  });
+  const next = (w: Workflow) => Object.fromEntries(w.steps.map((s) => [s.id, s.next]));
+  const onFail = (w: Workflow) => w.steps.map((s) => [s.id, s.onFail]);
+
+  it("puts the new step after the selected one, taking over all of its links", () => {
+    const before = structuredClone(PARALLEL);
+    const { workflow, id } = insertStepAfter(PARALLEL, "agent", "build");
+    expect(id).toBe("new-agent");
+    expect(workflow.steps.at(-1)).toEqual({ ...blankStep("agent", "new-agent", "New agent"), next: ["review", "docs"] });
+    expect(next(workflow)).toEqual({ ...next(PARALLEL), build: ["new-agent"], "new-agent": ["review", "docs"] });
+    expect(onFail(workflow)).toEqual([...onFail(PARALLEL), ["new-agent", undefined]]);
+    expect(PARALLEL).toEqual(before);
+  });
+
+  it("appends after the last step in order when nothing, or an unknown step, is selected", () => {
+    for (const after of [null, "gone"]) {
+      const { workflow, id } = insertStepAfter(PARALLEL, "check", after);
+      expect(id).toBe("new-check");
+      expect(next(workflow)).toEqual({ ...next(PARALLEL), ship: ["new-check"], "new-check": [] });
+      expect(onFail(workflow)).toEqual([...onFail(PARALLEL), ["new-check", undefined]]);
+    }
+  });
+
+  it("gives each new step a fresh id", () => {
+    const once = insertStepAfter(DEFAULT_WORKFLOW, "agent", null).workflow;
+    expect(insertStepAfter(once, "agent", null).id).toBe("new-agent-2");
+  });
+
+  it("adds a check after a step that writes code without any problem", () => {
+    expect(validateWorkflow(DEFAULT_WORKFLOW)).toEqual([]);
+    const { workflow } = insertStepAfter(DEFAULT_WORKFLOW, "check", "build");
+    expect(next(workflow)).toMatchObject({ build: ["new-check"], "new-check": ["review"] });
+    expect(validateWorkflow(workflow)).toEqual([]);
+  });
+
+  it.each(STEP_TYPES)("appending a %s step finds what wiring it in by hand at the end would", (type) => {
+    const last = topoOrder(DEFAULT_WORKFLOW).at(-1)!;
+    const byHand = { ...DEFAULT_WORKFLOW, steps: [...DEFAULT_WORKFLOW.steps.map((s) => (s.id === last ? ({ ...s, next: [...s.next, "x"] } as Step) : s)), blankStep(type, "x", `New ${type}`)] };
+    const { workflow } = insertStepAfter(DEFAULT_WORKFLOW, type, null);
+    expect(validateWorkflow(workflow)).toEqual(validateWorkflow(byHand));
   });
 });

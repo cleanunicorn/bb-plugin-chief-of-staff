@@ -770,3 +770,17 @@ export function blankStep(type: StepType, id: string, name: string): Step {
       return modelStepSchema.parse({ id, name, type, mode: "auto", instructions: DEFAULT_MODEL_INSTRUCTIONS });
   }
 }
+
+/**
+ * Add a new step of `type` after the step `after` (or, when that is null or not in the workflow, after the
+ * last step in order): the new step takes over that step's "runs next" links and the step points at it.
+ * Fail arrows are left as they are: inserting a step only lengthens the paths they go back along.
+ */
+export function insertStepAfter(wf: Workflow, type: StepType, after: string | null): { workflow: Workflow; id: string } {
+  const name = `New ${type}`;
+  const id = newStepId(wf, name);
+  const anchor = (after !== null && stepById(wf, after) ? after : topoOrder(wf).at(-1))!;
+  const step = { ...blankStep(type, id, name), next: [...stepById(wf, anchor)!.next] } as Step;
+  const steps = wf.steps.map((s) => (s.id === anchor ? ({ ...s, next: [id] } as Step) : s));
+  return { workflow: { ...wf, steps: [...steps, step] }, id };
+}
