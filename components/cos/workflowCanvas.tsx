@@ -70,7 +70,6 @@ function subtitle(s: Step): string {
   }
 }
 
-/** `problems`: how many things to fix in this step before the workflow can be saved. */
 /** Whether `box` (flow coordinates) lies wholly inside a `frame`-sized canvas panned and zoomed by `viewport`. */
 export function inView(box: { x: number; y: number; width: number; height: number }, viewport: { x: number; y: number; zoom: number }, frame: { width: number; height: number }): boolean {
   const left = box.x * viewport.zoom + viewport.x;
@@ -78,6 +77,7 @@ export function inView(box: { x: number; y: number; width: number; height: numbe
   return left >= 0 && top >= 0 && left + box.width * viewport.zoom <= frame.width && top + box.height * viewport.zoom <= frame.height;
 }
 
+/** `problems`: how many things to fix in this step before the workflow can be saved. */
 type StepNodeData = { step: Step; live?: LiveStatus; selected: boolean; problems?: number };
 
 /** The step a React Flow selection points at: one step, none (`null`), or `undefined` to leave the current one (an arrow or several steps are selected). */
@@ -330,7 +330,8 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
   // added in this render reaches React Flow's store a few frames later, so it is looked for until then.
   const lastReveal = useRef(reveal);
   useEffect(() => {
-    const revealed = reveal !== lastReveal.current;
+    // Only a new token counts: it going away (the user picked a step on the canvas) is no reveal.
+    const revealed = reveal !== undefined && reveal !== lastReveal.current;
     lastReveal.current = reveal;
     if (!editable || !selected) return;
     if (!revealed && reported.current === selected) return;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DOCUMENT, DEFAULT_WORKFLOW, blankStep, normalizeWorkflow, parseWorkflows, serializeWorkflows, validateDocument, workflowProblems, workflowSchema, type Workflow, type WorkflowsDocument } from "../src/workflow";
+import { DEFAULT_DOCUMENT, DEFAULT_WORKFLOW, blankStep, normalizeWorkflow, problemKey, parseWorkflows, serializeWorkflows, validateDocument, workflowProblems, workflowSchema, type Workflow, type WorkflowsDocument } from "../src/workflow";
 
 type Raw = Record<string, unknown>;
 const wf = (steps: unknown[]) => ({ id: "w", name: "w", steps }) as unknown as Workflow;
@@ -133,6 +133,18 @@ describe("workflowProblems", () => {
       [4, "Build and New check could run at the same time, but both change the worktree; connect one after the other"],
       [4, "Ship and New check could run at the same time, but both change the worktree; connect one after the other"],
     ]);
+  });
+
+  it("keys the same words at two steps as two problems", () => {
+    const doc = draft((d) => {
+      d.workflows[0]!.steps[1]!.name = "Same";
+      d.workflows[0]!.steps[2]!.name = "Same";
+      d.workflows[0]!.steps[1]!.instructions = "x".repeat(20_001);
+      d.workflows[0]!.steps[2]!.instructions = "x".repeat(20_001);
+    });
+    const long = workflowProblems(doc).filter((p) => p.field === "instructions");
+    expect(new Set(long.map((p) => p.text)).size).toBe(1);
+    expect(new Set(long.map(problemKey)).size).toBe(2);
   });
 
   it("locates a duplicate step id at the second step and a loop at none", () => {

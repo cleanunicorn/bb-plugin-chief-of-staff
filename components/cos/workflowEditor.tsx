@@ -16,6 +16,7 @@ import {
   modelMode,
   descendants,
   newStepId,
+  problemKey,
   problemLine,
   topoOrder,
   workflowProblems,
@@ -73,7 +74,7 @@ export function problemLines(doc: WorkflowsDocument, problems: readonly Workflow
   const seen = new Set<string>();
   const others = new Map<number, number>();
   for (const p of problems) {
-    const key = `${p.workflow ?? ""}/${p.step ?? ""}/${p.text}`;
+    const key = problemKey(p);
     if (seen.has(key)) continue;
     seen.add(key);
     if (p.workflow === undefined) out.push({ key, text: p.text });

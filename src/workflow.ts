@@ -564,6 +564,11 @@ function schemaProblem(json: unknown, issue: LooseIssue): WorkflowProblem {
   return { ...loc, ...(field ? { field } : {}), text, message };
 }
 
+/** One problem per workflow, step and words: the same words at two steps are two problems to fix. */
+export function problemKey(p: WorkflowProblem): string {
+  return `${p.workflow ?? ""}/${p.step ?? ""}/${p.text}`;
+}
+
 /**
  * A problem as the editor of its own workflow lists it: without the workflow,
  * after the step (and model choice) it is about. Problems with the whole

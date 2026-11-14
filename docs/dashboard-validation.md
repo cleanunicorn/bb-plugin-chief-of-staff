@@ -309,6 +309,7 @@ workflow gave 5); a second Check gives 4 lines and "Show all 4".
 | 1440×1000 | General, same draft | 48 px; expanded 75 px | n/a | n/a | |
 
 At 1440×1000 a step added from the toolbar below the fitted view is panned to
-(its top 233 px into the 520 px canvas); clicking a step on the canvas leaves
-the pan and zoom as they were. No horizontal page overflow at either size, and
+(its top 233 px into the 520 px canvas). After a step is opened from a problem
+line, clicking a step only partly inside the canvas (Review, at 1440×1000 and
+at 390×844) selects it and leaves the pan and zoom as they were. No horizontal page overflow at either size, and
 no error text in the bar in any state. Not checked: a screen reader, Safari, a live BB install.

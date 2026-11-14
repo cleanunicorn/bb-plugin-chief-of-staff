@@ -556,6 +556,18 @@ it("expands to the sections with problems, leaving out the one on screen", async
   expect(summaries()).toEqual(["General · 1 to fix"]);
 });
 
+it("does not reopen the summaries by itself after they ran out", async () => {
+  await mount(<Configurator initialSection="workflow" />);
+  await setValue(field("Name"), "");
+  await click(button("General"));
+  await click(button("Show"));
+  await click(button("Workflows · 1 to fix"));
+  // On Workflows nothing is off screen; coming back to General must not show the list unasked.
+  await click(button("General"));
+  expect(bar().querySelector("ul")).toBeNull();
+  expect(button("Show").getAttribute("aria-expanded")).toBe("false");
+});
+
 it("does not expand when every problem is on screen", async () => {
   await mount(<Configurator initialSection="general" />);
   await setValue(field("Model"), "m".repeat(201));

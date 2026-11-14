@@ -9,7 +9,7 @@ import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
 import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
-import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems } from "../../src/workflow";
+import { DEFAULT_DOCUMENT, parseWorkflows, problemKey, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor, type WorkflowReveal } from "./workflowEditor";
 import { useConfigDrafts } from "./configDrafts";
@@ -444,16 +444,20 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   // Only what would be sent: a loaded value out of range must not block other edits.
   const generalIssues = useMemo(() => generalSettingsProblems(generalChanges), [generalChanges]);
   const generalErrors = useMemo(() => Object.fromEntries(generalIssues.map((p) => [p.key, p.text])) as Partial<Record<keyof GeneralSettings, string>>, [generalIssues]);
-  /** Every blocking problem, with where it is, so the save bar can point at it. `name` is the repository's. */
+  /**
+   * Every blocking problem, by where it is, so the section badges and the save bar can count and point at
+   * them; each section lists the problems themselves. `name` is the repository's. Workflow problems are
+   * counted as the Workflows editor lists them.
+   */
   const problems = useMemo(() => {
-    const out: { section: Section; repo?: number; name?: string; text: string }[] = [];
+    const out: { section: Section; repo?: number; name?: string }[] = [];
     for (const [i, list] of Object.entries(repoIssues)) {
       const r = repoDraft[Number(i)];
       const name = r && r.owner && r.repo ? repoKey(r) : `Repository ${Number(i) + 1}`;
-      for (const text of list) out.push({ section: "repos", repo: Number(i), name, text: `${name}: ${text}` });
+      for (const _ of list) out.push({ section: "repos", repo: Number(i), name });
     }
-    for (const text of new Set(workflowIssues.map((p) => p.text))) out.push({ section: "workflow", text });
-    for (const p of generalIssues) out.push({ section: "general", text: p.text });
+    for (const _ of new Set(workflowIssues.map(problemKey))) out.push({ section: "workflow" });
+    for (const _ of generalIssues) out.push({ section: "general" });
     return out;
   }, [repoIssues, repoDraft, workflowIssues, generalIssues]);
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
@@ -633,6 +637,8 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   summaries.sort((a, b) => order(a.section) - order(b.section));
   // What is on screen lists its own problems: the Workflows and General sections, and the open repository.
   const offScreen = summaries.filter((x) => x.section !== section || (x.section === "repos" && x.repo !== openRepo));
+  // Once nothing is left to list, Show starts collapsed again rather than reopening unasked later.
+  if (barOpen && !offScreen.length) setBarOpen(false);
   const goToSummary = (x: (typeof summaries)[number]) => {
     setSection(x.section);
     if (x.section === "workflow") {
