@@ -527,6 +527,46 @@ it("keeps an Advanced JSON draft across a section switch, and Discard restores t
   expect(mocks.call).not.toHaveBeenCalled();
 });
 
+const REVERT_TITLE = "Revert your Advanced JSON edits?";
+
+it("asks before Revert, and keeps both documents' edits when it is cancelled", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Repositories"), EDITED_REPOS);
+  await setValue(textarea("Workflow"), "{}");
+  button("Revert").focus();
+  await click(button("Revert"));
+  expect(dialog()?.textContent).toContain(REVERT_TITLE);
+  expect(dialog()?.textContent).toContain("Both documents go back to the saved JSON. This cannot be undone.");
+  expect(textarea("Repositories").value).toBe(EDITED_REPOS);
+
+  await click(dialogButton("Keep editing"));
+  await tick();
+  expect(dialog()).toBeNull();
+  expect(textarea("Repositories").value).toBe(EDITED_REPOS);
+  expect(textarea("Workflow").value).toBe("{}");
+  expect(unsavedLabels()).toEqual(["Advanced JSON"]);
+  expect(document.activeElement).toBe(button("Revert"));
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("restores the loaded JSON on a confirmed Revert and hands focus to the Advanced JSON section button", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Repositories"), EDITED_REPOS);
+  await setValue(textarea("Workflow"), "{}");
+  button("Revert").focus();
+  await click(button("Revert"));
+  await click(dialogButton("Revert"));
+  await tick();
+  expect(dialog()).toBeNull();
+  expect(textarea("Repositories").value).toBe(mocks.config.repos);
+  expect(textarea("Workflow").value).toBe(mocks.config.workflow);
+  expect(unsavedLabels()).toEqual([]);
+  expect(unsavedLine()).toBeNull();
+  expect(button("Revert").disabled).toBe(true);
+  expect(document.activeElement).toBe(navButton("Advanced JSON"));
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
 it("locks the visual sections while an Advanced JSON draft is pending", async () => {
   await mount(<Configurator initialSection="advanced" />);
   await setValue(textarea("Repositories"), EDITED_REPOS);

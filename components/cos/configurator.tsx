@@ -315,7 +315,8 @@ function AccessEditor({ token, onSaved }: { token: SettingsData["token"]; onSave
 }
 
 /** The raw documents. Controlled: the drafts live with the other unsaved edits. */
-function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, locked, saving, onSave, onRevert }: { repos: string; workflow: string; draftRepos: string | null; draftWorkflow: string | null; onChange: (doc: "repos" | "workflow", text: string) => void; locked: boolean; saving: boolean; onSave: () => void; onRevert: () => void }) {
+/** `onRevert` gets the Revert button, to return focus to if the user keeps their edits. */
+function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, locked, saving, onSave, onRevert }: { repos: string; workflow: string; draftRepos: string | null; draftWorkflow: string | null; onChange: (doc: "repos" | "workflow", text: string) => void; locked: boolean; saving: boolean; onSave: () => void; onRevert: (opener: HTMLElement) => void }) {
   const dirty = draftRepos !== null || draftWorkflow !== null;
   return (
     <div className="flex flex-col gap-3">
@@ -329,7 +330,7 @@ function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, 
         <Button size="sm" disabled={locked || !dirty || saving} onClick={onSave}>
           {saving ? "Saving…" : "Save JSON"}
         </Button>
-        <Button size="sm" variant="outline" disabled={!dirty || saving} onClick={onRevert}>
+        <Button size="sm" variant="outline" disabled={!dirty || saving} onClick={(e) => onRevert(e.currentTarget)}>
           Revert
         </Button>
       </div>
@@ -391,10 +392,10 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const [retrying, setRetrying] = useState(false);
   const repoKeys = useRowKeys<RepoConfig>();
   // What was asked outlives the opening: the dialog keeps naming the sections while it closes, after their drafts are gone.
-  const [confirming, setConfirming] = useState<{ sections: string[]; open: boolean; confirmed: boolean }>({ sections: [], open: false, confirmed: false });
+  const [confirming, setConfirming] = useState<{ kind: "discard" | "revert"; sections: string[]; open: boolean; confirmed: boolean }>({ kind: "discard", sections: [], open: false, confirmed: false });
   /** The button that asked, where focus returns when the dialog is cancelled. */
   const confirmOpener = useRef<HTMLElement | null>(null);
-  /** The nav button of the section on screen: where focus goes once a confirmed Discard has removed the save bar. */
+  /** The nav button of the section on screen: where focus goes once a confirmed Discard or Revert has removed or disabled the button that asked. */
   const currentSectionButton = useRef<HTMLButtonElement>(null);
 
   // refetch() resolves on failure, so only returned data can confirm a saved document.
@@ -612,10 +613,14 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const banner = loadErrors
     .filter((e) => e.section !== section)
     .map((e) => `${e.title} JSON does not load: ${e.error}. ${section === "advanced" ? "Repair it below." : "Repair it in Advanced JSON; until then the visual editor leaves it unchanged and does not save it."}`);
-  const askDiscard = (opener: HTMLElement) => {
+  /** Discard (the save bar) and Revert (Advanced JSON) drop drafts that cannot be got back, so both ask first. */
+  const ask = (kind: "discard" | "revert", opener: HTMLElement) => {
     confirmOpener.current = opener;
-    setConfirming({ sections: dirtySections, open: true, confirmed: false });
+    setConfirming({ kind, sections: dirtySections, open: true, confirmed: false });
   };
+  const confirmCopy = confirming.kind === "discard"
+    ? { title: `Discard changes to ${joinNames(confirming.sections)}?`, description: "Your edits go back to the saved values, including in sections not on screen. This cannot be undone.", confirmLabel: "Discard" }
+    : { title: "Revert your Advanced JSON edits?", description: "Both documents go back to the saved JSON. This cannot be undone.", confirmLabel: "Revert" };
   const openAdvanced = () => setSection("advanced");
   const visualSection = section === "workflow" || section === "repos" || section === "general";
   // A JSON save sends only the JSON documents and the server validates them, so the visual
@@ -723,7 +728,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
             locked={visualDirty}
             saving={saving}
             onSave={() => void saveAdvanced()}
-            onRevert={revertAdvanced}
+            onRevert={(opener) => ask("revert", opener)}
           />
         ) : null}
 
@@ -737,7 +742,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                   {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
                 </span>
                 <span className="ml-auto flex gap-1.5">
-                  <Button size="sm" variant="outline" disabled={saving} onClick={(e) => askDiscard(e.currentTarget)}>
+                  <Button size="sm" variant="outline" disabled={saving} onClick={(e) => ask("discard", e.currentTarget)}>
                     Discard
                   </Button>
                   <Button size="sm" disabled={saving || blocking.length > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
@@ -779,18 +784,19 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
       </div>
       <ConfirmDialog
         open={confirming.open}
-        title={`Discard changes to ${joinNames(confirming.sections)}?`}
-        description="Your edits go back to the saved values, including in sections not on screen. This cannot be undone."
-        confirmLabel="Discard"
+        title={confirmCopy.title}
+        description={confirmCopy.description}
+        confirmLabel={confirmCopy.confirmLabel}
         cancelLabel="Keep editing"
         tone="destructive"
         onConfirm={() => {
           setConfirming((c) => ({ ...c, open: false, confirmed: true }));
-          discard();
+          if (confirming.kind === "discard") discard();
+          else revertAdvanced();
         }}
         onCancel={() => setConfirming((c) => ({ ...c, open: false }))}
-        // The dialog has no trigger to return focus to. Cancel returns it to the button that asked; a confirmed
-        // Discard removes that button with the save bar, so focus goes to the section's button instead.
+        // The dialog has no trigger to return focus to. Cancel returns it to the button that asked; a confirmed answer
+        // removes Discard with the save bar, or disables Revert, so focus goes to the section's button instead.
         restoreFocus={() => (confirming.confirmed ? currentSectionButton.current : confirmOpener.current)?.focus()}
       />
     </div>
