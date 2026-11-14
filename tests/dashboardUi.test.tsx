@@ -14,7 +14,7 @@ type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: str
 const mocks = vi.hoisted(() => ({
   entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number; tokens?: number | null }[], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } as { totalTokens: number | null; cost: { amount: number; currency: string }[]; counted: number; unreported: number; pending: number; medianTokensPerDone: number | null }, failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
-  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null; finishedTokens?: number | null }),
+  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null; finishedTokens?: number | null; finishedOrder?: "recent" | "tokens" }),
   rosterInputs: [] as RosterInput[],
 }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -542,7 +542,7 @@ it("pages older finished tasks without duplicates and drops them when finished a
 it("orders finished tasks by tokens, resetting older pages, and shows each one's share", async () => {
   const counted = (id: string, title: string, totalTokens: number) => ({ ...finished(id, title), usage: { inputTokens: null, outputTokens: null, totalTokens, cost: null, threads: 2, reportedThreads: 2, counted: true } });
   const recent = [counted("f1", "Small one", 1_000), counted("f2", "Big one", 3_000)];
-  mocks.roster = (input) => (input.includeDone ? { entries: input.finishedOrder === "tokens" ? [...recent].reverse() : recent, nextBefore: input.finishedOrder === "tokens" ? "t1" : "c1", finishedTokens: 400_000 } : { entries: [] });
+  mocks.roster = (input) => (input.includeDone ? { entries: input.finishedOrder === "tokens" ? [...recent].reverse() : recent, nextBefore: input.finishedOrder === "tokens" ? "t1" : "c1", finishedTokens: 400_000, finishedOrder: input.finishedOrder } : { entries: [] });
   mocks.call.mockImplementation(async (_method: string, input: RosterInput) => ({ entries: [finished(input.before === "t1" ? "f4" : "f3", input.before === "t1" ? "Token page" : "Recent page")], nextBefore: null, finishedTokens: 400_000 }));
   await mount();
   expect(container.querySelector('[aria-label="Order finished tasks"]')).toBeNull();
@@ -563,6 +563,18 @@ it("orders finished tasks by tokens, resetting older pages, and shows each one's
   mocks.roster = (input) => ({ entries: input.includeDone ? [counted("f2", "Big one", 100_000)] : [], nextBefore: null, finishedTokens: 400_000 });
   await act(async () => { root.render(<PipelineTab />); });
   expect(container.textContent).toContain("Share25% of finished tasks' tokens");
+});
+
+it("offers no older page while the roster still holds the previous order's cursor", async () => {
+  // The query has not answered for the new order yet: its data and cursor are still the recent order's.
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("f1", "Finished one")] : [], nextBefore: "c1", finishedTokens: null, finishedOrder: "recent" });
+  await mount();
+  await act(async () => buttonLabelled("Show finished").click());
+  expect(hasOlderButton()).toBe(true);
+  await act(async () => buttonLabelled("Most tokens").click());
+  expect(hasOlderButton()).toBe(false);
+  await act(async () => buttonLabelled("Recently finished").click());
+  expect(hasOlderButton()).toBe(true);
 });
 
 it("shows a live task once when an appended page still holds its finished copy", async () => {

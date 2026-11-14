@@ -240,6 +240,8 @@ export const rpcContract = defineRpcContract({
       nextBefore: z.string().nullable(),
       /** With finished items: tokens of every finished task in scope (all pages), for each task's share; null when none reported tokens. */
       finishedTokens: z.number().nullable(),
+      /** The order the finished entries and `nextBefore` follow: a cursor only pages the order it came from. */
+      finishedOrder: z.enum(["recent", "tokens"]),
     }),
   },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },

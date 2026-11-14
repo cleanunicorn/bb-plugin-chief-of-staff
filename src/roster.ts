@@ -157,6 +157,8 @@ export interface Roster {
    * tokens or no finished items were asked for.
    */
   finishedTokens: number | null;
+  /** The order the finished items (and `nextBefore`) follow. */
+  finishedOrder: FinishedOrder;
 }
 
 /** Every active item (newest first), then one page of finished items (most recently finished, or most tokens, first). */
@@ -225,7 +227,7 @@ export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<R
   // Finished items show their stored count: no usage calls for them.
   if (opts.withUsage) (await itemsUsage(cos, items)).forEach((usage, i) => { entries[i]!.usage = usage; });
   const finishedTokens = opts.includeDone || opts.before !== undefined ? cos.store.finishedTokens(opts.repo) : null;
-  return { entries, nextBefore: page.nextBefore, finishedTokens };
+  return { entries, nextBefore: page.nextBefore, finishedTokens, finishedOrder: opts.finishedOrder ?? "recent" };
 }
 
 const OUTPUT_MAX = 6_000;

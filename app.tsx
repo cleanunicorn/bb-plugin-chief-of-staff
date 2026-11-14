@@ -772,7 +772,9 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [older, setOlder] = useState<{ entries: RosterEntry[]; before: string | null } | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const olderRequest = useRef<{ generation: number; inFlight: boolean }>({ generation: 0, inFlight: false });
-  const olderCursor = !includeDone ? null : older ? older.before : (roster.data?.nextBefore ?? null);
+  // Until the roster answers for the order chosen, its cursor belongs to the other order (which the server rejects).
+  const orderLoaded = (roster.data?.finishedOrder ?? "recent") === finishedOrder;
+  const olderCursor = !includeDone || !orderLoaded ? null : older ? older.before : (roster.data?.nextBefore ?? null);
   const entries = useMemo(() => {
     if (!older) return liveEntries;
     const ids = new Set(liveEntries.map((e) => e.id));
