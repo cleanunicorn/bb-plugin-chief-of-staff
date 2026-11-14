@@ -11,8 +11,9 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ da
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({
   ...(await original<typeof import("../components/cos/workflowCanvas")>()),
-  WorkflowCanvas: ({ onSelect, onToggleExpanded }: { onSelect: (id: string) => void; onToggleExpanded: () => void }) => (
+  WorkflowCanvas: ({ onSelect, onToggleExpanded, className }: { onSelect: (id: string) => void; onToggleExpanded: () => void; className?: string }) => (
     <>
+      <div data-testid="canvas" className={className} />
       <button onClick={onToggleExpanded}>Full screen</button>
       <button onClick={() => onSelect("build")}>select build</button>
       <button onClick={() => onSelect("review")}>select review</button>
@@ -206,6 +207,18 @@ it("leaves full screen by button or Escape without editing the selected step", a
   expect(button("Remove Build")).toBeDefined();
   expect(editor.onChange).not.toHaveBeenCalled();
   editor.expectInputUntouched();
+});
+
+it("keeps the canvas in view while the step panel scrolls, in the two-column layout only", async () => {
+  await open();
+  await click(button("select build"));
+  const canvas = () => container.querySelector<HTMLElement>('[data-testid="canvas"]')!.className.split(/\s+/);
+  // xl: canvas and step panel side by side; self-start stops the grid stretching the canvas to the panel's height.
+  expect(canvas()).toEqual(expect.arrayContaining(["h-[520px]", "xl:sticky", "xl:top-3", "xl:self-start"]));
+  // Stacked below xl, a sticky canvas would cover the panel.
+  expect(canvas().filter((c) => /sticky/.test(c) && !c.startsWith("xl:"))).toEqual([]);
+  await click(button("Full screen"));
+  expect(canvas().filter((c) => /sticky|self-start/.test(c))).toEqual([]);
 });
 
 // ---------- problems: what the server would reject, shown where it is ----------
