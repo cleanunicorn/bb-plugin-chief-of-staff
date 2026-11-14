@@ -1,16 +1,18 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type { LogEntry } from "../src/state";
+import type { LogEntry, LogRow } from "../src/state";
+import type { ActivityTask } from "../components/cos/dashboardModel";
 import type { RosterEntry } from "../src/roster";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
 
 type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as LogEntry[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
   roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
   rosterInputs: [] as RosterInput[],
@@ -24,14 +26,17 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     // The host validates JSON before rendering, including absent optional cursors.
     z.json().parse(input);
     if (method === "cos_roster") mocks.rosterInputs.push(input as RosterInput);
+    mocks.queries.push({ method, input });
     const failure = mocks.failing[method];
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
+    const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
-      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : { paused: mocks.paused, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [] } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
+  Markdown: ({ content }: { content: string }) => <span>{content}</span>,
   ThreadTitle: () => null,
   // Like the host's UrlLink: a plain anchor that passes its props through.
   UrlLink: ({ href, children, ...rest }: { href: string; children?: ReactNode }) => <a href={href} {...rest}>{children}</a>,
@@ -40,7 +45,7 @@ vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => 
 vi.mock("../components/cos/configurator", () => ({ Configurator: () => null }));
 vi.mock("../components/cos/question", () => ({ QuestionSheet: () => null }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
-import { PipelineTab, ReposTab, ActivityFeed } from "../app";
+import { PipelineTab, ReposTab, ActivityFeed, Dashboard } from "../app";
 
 const container = document.createElement("div");
 let root: ReturnType<typeof createRoot>;
@@ -50,7 +55,10 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+
+/** An activity row of task "one", #7 Fix login, in acme/app. */
+const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
 
 it("prioritizes active tasks over historical outcomes and keeps failure history out of attention", async () => {
   mocks.entries = [entry()];
@@ -162,21 +170,197 @@ it("opens the Throughput table when the chart is tapped on a coarse pointer", as
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
   mocks.logs = [
-    { id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one" },
-    { id: 2, at: new Date().toISOString(), level: "error", kind: "check", message: "Build failed (exit 1)", actor: "job", repo: "acme/app", workItemId: "two" },
+    logRow(),
+    logRow({ id: 2, level: "error", kind: "check", message: "Build failed (exit 1)", actor: "job", workItemId: "two", issueNumber: 8, issueTitle: "Repair deploy" }),
   ];
   await mount(<ActivityFeed />);
   const row = container.querySelector("li")!;
   expect(row.textContent).toContain("spawn");
-  expect(row.textContent).toContain("app spawned Review thr_abc");
+  expect(row.textContent).toContain("app #7 Fix login spawned Review thr_abc");
   expect(row.textContent).toContain("· event");
-  expect(row.querySelector('[title]')).not.toBeNull();
+  expect(row.querySelector("time[title]")).not.toBeNull();
+  expect(row.querySelector('[data-icon="Info"]')).not.toBeNull();
   expect(container.querySelector("details")).toBeNull();
   await act(async () => Array.from(container.querySelectorAll("button")).find(b => b.textContent?.trim() === "Problems only")!.click());
   expect(container.textContent).not.toContain("spawned Review thr_abc");
   expect(container.textContent).toContain("Build failed (exit 1)");
 });
 
+const taskButtons = () => Array.from(container.querySelectorAll<HTMLButtonElement>("li button[aria-label^='Open task']"));
+
+it("names each row's task: number and title, a standalone title, or nothing without a task", async () => {
+  mocks.logs = [
+    logRow(),
+    logRow({ id: 2, workItemId: "two", issueNumber: null, issueTitle: "Tidy the docs" }),
+    logRow({ id: 3, workItemId: "three", issueNumber: 9, issueTitle: "" }),
+    logRow({ id: 4, workItemId: "four", issueNumber: null, issueTitle: "" }),
+    logRow({ id: 5, kind: "control", workItemId: null, issueNumber: null, issueTitle: null, repo: null, message: "paused", actor: "rpc:client" }),
+    logRow({ id: 6, workItemId: "gone", issueNumber: null, issueTitle: null }),
+  ];
+  await mount(<ActivityFeed />);
+  expect(taskButtons().map((b) => [b.textContent, b.getAttribute("aria-label"), b.title])).toEqual([
+    ["#7 Fix login", "Open task #7 Fix login", "#7 Fix login"],
+    ["Tidy the docs", "Open task Tidy the docs", "Tidy the docs"],
+    ["#9", "Open task #9", "#9"],
+    ["Untitled task", "Open task Untitled task", "Untitled task"],
+  ]);
+  const rows = container.querySelectorAll("li");
+  expect(rows[4]!.querySelector("button[aria-label^='Open task']")).toBeNull();
+  expect(rows[5]!.querySelector("button[aria-label^='Open task']")).toBeNull();
+});
+
+it("opens the task's workflow from its name, and returns focus to the name on close", async () => {
+  mocks.logs = [logRow(), logRow({ id: 2, workItemId: "two", issueNumber: 8, issueTitle: "Repair deploy" })];
+  await mount(<ActivityFeed />);
+  const name = taskButtons()[1]!;
+  await act(async () => { name.focus(); name.click(); });
+  await tick();
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Where this task is");
+  expect(mocks.queries).toContainEqual({ method: "cos_item_workflow", input: { id: "two" } });
+  await act(async () => document.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close"]')!.click());
+  await tick(5);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.activeElement).toBe(taskButtons()[1]);
+});
+
+it("links every thread id in a row's message and actor, and keeps the text as it was", async () => {
+  mocks.logs = [logRow({ kind: "archive", message: "archived 2 threads: thr_a, thr_b", actor: "tool:thr_x" })];
+  await mount(<ActivityFeed />);
+  const row = container.querySelector("li")!;
+  expect(row.textContent).toContain("archived 2 threads: thr_a, thr_b · tool:thr_x");
+  const links = Array.from(row.querySelectorAll<HTMLButtonElement>("button[aria-label^='Open thread']"));
+  expect(links.map((b) => [b.textContent, b.getAttribute("aria-label")])).toEqual([
+    ["thr_a", "Open thread thr_a"],
+    ["thr_b", "Open thread thr_b"],
+    ["thr_x", "Open thread thr_x"],
+  ]);
+  await act(async () => links[1]!.click());
+  expect(mocks.navigate.toThread).toHaveBeenLastCalledWith("thr_b");
+  await act(async () => links[2]!.click());
+  expect(mocks.navigate.toThread).toHaveBeenLastCalledWith("thr_x");
+  expect(mocks.navigate.toThread).toHaveBeenCalledTimes(2);
+});
+
+it("names the repository on each row only when more than one is configured", async () => {
+  mocks.logs = [logRow()];
+  mocks.repos = [{ key: "acme/app" }];
+  await mount(<ActivityFeed />);
+  expect(container.querySelector("li")!.textContent).toMatch(/^spawn.*#7 Fix login spawned Review thr_abc · event/);
+  expect(container.querySelector("li")!.textContent).not.toContain("app #7");
+  // A row from a repository no longer configured keeps its name, so it does not read as the current one.
+  mocks.logs = [logRow({ repo: "acme/old", message: "merged PR" })];
+  await act(async () => { root.render(<ActivityFeed key="removed" />); });
+  expect(container.querySelector("li")!.textContent).toContain("old #7 Fix login merged PR");
+  mocks.logs = [logRow()];
+  mocks.repos = [{ key: "acme/app" }, { key: "acme/web" }];
+  await act(async () => { root.render(<ActivityFeed key="two" />); });
+  expect(container.querySelector("li")!.textContent).toContain("app #7 Fix login spawned Review thr_abc");
+  // Unknown repositories keep the name: nothing is hidden on a guess.
+  mocks.repos = [{ key: "acme/app" }];
+  mocks.failing = { cos_overview: "overview unavailable" };
+  await act(async () => { root.render(<ActivityFeed key="failed" />); });
+  expect(container.querySelector("li")!.textContent).toContain("app #7 Fix login spawned Review thr_abc");
+  expect(container.textContent).not.toContain("overview unavailable");
+});
+
+// ---------- Narrowing the feed to one task ----------
+
+const logQueries = () => mocks.queries.filter((q) => q.method === "cos_log").map((q) => q.input);
+const activityPanel = () => Array.from(container.querySelectorAll("h2")).find((h) => h.textContent === "Activity")!.closest("section")!;
+const rowMessages = () => Array.from(activityPanel().querySelectorAll("ol > li")).map((li) => li.textContent);
+const taskLogs = () => [
+  logRow({ id: 1, message: "spawned Review thr_abc" }),
+  logRow({ id: 2, workItemId: "two", issueNumber: 8, issueTitle: "Repair deploy", message: "Review agent 1 reported done" }),
+  logRow({ id: 3, workItemId: "two", issueNumber: 8, issueTitle: "Repair deploy", level: "error", kind: "check", message: "Build failed (exit 1)" }),
+  logRow({ id: 4, kind: "control", workItemId: null, issueNumber: null, issueTitle: null, repo: null, message: "paused", actor: "rpc:client" }),
+];
+/** Radix menus open on pointerdown or the keyboard, not on click. */
+const openMenuOn = async (trigger: HTMLElement) => {
+  trigger.focus();
+  await act(async () => { trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  await tick();
+};
+const taskMenu = () => Array.from(activityPanel().querySelectorAll<HTMLButtonElement>("button[aria-haspopup='menu']")).find((b) => b.textContent?.startsWith("Task"));
+const menuItemsNow = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+
+it("narrows the feed to a task picked in it, and clears back to all activity", async () => {
+  mocks.logs = taskLogs();
+  await mount(<ActivityFeed />);
+  expect(logQueries().at(-1)).toEqual({ limit: 60 });
+  await openMenuOn(taskMenu()!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["#7 Fix login", "#8 Repair deploy"]);
+  await act(async () => menuItemsNow()[1]!.click());
+  await tick();
+  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "two" });
+  expect(rowMessages()).toHaveLength(2);
+  for (const text of rowMessages()) expect(text).toContain("#8 Repair deploy");
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#8 Repair deploy");
+  expect(document.activeElement).toBe(taskMenu());
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show all activity"]')!.click());
+  expect(logQueries().at(-1)).toEqual({ limit: 60 });
+  expect(rowMessages()).toHaveLength(4);
+  expect(taskMenu()!.textContent).toBe("Task");
+  expect(document.activeElement).toBe(taskMenu());
+  // The tasks seen before filtering are still offered.
+  await openMenuOn(taskMenu()!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["#7 Fix login", "#8 Repair deploy"]);
+});
+
+it("combines the task filter with Problems only, and says when a task has nothing to show", async () => {
+  mocks.logs = taskLogs();
+  await mount(<ActivityFeed task={{ id: "two", label: "#8 Repair deploy" }} onTaskChange={() => {}} />);
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Problems only")!.click());
+  expect(rowMessages()).toHaveLength(1);
+  expect(rowMessages()[0]).toContain("Build failed (exit 1)");
+  await act(async () => { root.render(<ActivityFeed task={{ id: "three", label: "#9 Quiet" }} onTaskChange={() => {}} />); });
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#9 Quiet");
+  expect(container.textContent).toContain("No warnings or errors.");
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Problems only")!.click());
+  expect(container.textContent).toContain("No activity for this task.");
+});
+
+it("moves focus to the Activity heading when clearing leaves no task to offer", async () => {
+  mocks.logs = [];
+  function Held() {
+    const [task, setTask] = useState<ActivityTask | null>({ id: "quiet", label: "#9 Quiet" });
+    return <ActivityFeed task={task} onTaskChange={setTask} />;
+  }
+  await mount(<Held />);
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#9 Quiet");
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show all activity"]')!.click());
+  expect(taskMenu()).toBeUndefined();
+  expect(document.activeElement?.tagName).toBe("H2");
+  expect(document.activeElement?.textContent).toBe("Activity");
+});
+
+it("offers a described task without a title under its card's title", async () => {
+  mocks.entries = [entry({ issueNumber: null, issueTitle: "", threadTitle: "Tidy the docs" })];
+  await mount(<Dashboard subPath="agents" />);
+  await openMenuOn(container.querySelector<HTMLButtonElement>('article [aria-label="More actions"]')!);
+  await act(async () => menuItemsNow()[0]!.click());
+  await tick(5);
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0Tidy the docs");
+});
+
+it("shows a task's activity from its card, finished or not, and moves focus to the Activity heading", async () => {
+  mocks.entries = [entry(), entry({ id: "old", detail: "done", status: "done", issueNumber: 3, issueTitle: "Old work" })];
+  mocks.logs = [...taskLogs(), logRow({ id: 5, workItemId: "old", issueNumber: 3, issueTitle: "Old work", message: "marked done" })];
+  await mount(<Dashboard subPath="agents" />);
+  const [active, done] = Array.from(container.querySelectorAll("article"));
+  await openMenuOn(active!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity", "Retry the stuck step", "Mark done…", "Mark failed…"]);
+  await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await tick();
+  await openMenuOn(done!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity"]);
+  await act(async () => menuItemsNow()[0]!.click());
+  await tick(5);
+  expect(logQueries().at(-1)).toEqual({ limit: 60, workItemId: "old" });
+  expect(rowMessages()).toEqual([expect.stringContaining("marked done")]);
+  expect(taskMenu()!.textContent).toBe("Task:\u00a0#3 Old work");
+  expect(document.activeElement?.tagName).toBe("H2");
+  expect(document.activeElement?.textContent).toBe("Activity");
+});
 
 it("pairs task state pictograms with explicit labels", async () => {
   mocks.entries = [entry({ detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error", current: ["Build"] })];

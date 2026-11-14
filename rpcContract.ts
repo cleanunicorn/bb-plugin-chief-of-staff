@@ -81,7 +81,7 @@ const rosterEntry = z.object({
     .nullable(),
 });
 
-const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), message: z.string(), actor: z.string() });
+const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), issueNumber: z.number().nullable(), issueTitle: z.string().nullable(), message: z.string(), actor: z.string() });
 
 /** Scalar plugin settings the configurator edits (everything except repos/workflow/token). */
 export const generalSettingsSchema = z.object({

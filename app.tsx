@@ -1,6 +1,6 @@
 // Chief of Staff — BB plugin frontend entry: dashboard nav panel + settings section.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { UrlLink, definePluginApp, experimental_useRpcQuery, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "./rpcContract";
@@ -25,7 +25,7 @@ import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
@@ -394,13 +394,16 @@ function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: 
 
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
 /** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
-function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
+function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
   const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
+  const actionable = !finished || entry.detail === "failed";
+  // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
+  const showingActivity = useRef(false);
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
   const tabIndex = tabbable ? undefined : -1;
@@ -529,29 +532,49 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
             </Button>
           ) : null}
         </div>
-        {!finished || entry.detail === "failed" ? (
+        {actionable || onShowActivity ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
                 <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="top">
-              <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
-                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Retry the stuck step
-              </DropdownMenuItem>
-              {/* The confirm lives on the card, not in the menu: the menu closes when an item is chosen. */}
-              <DropdownMenuItem onSelect={() => setConfirming("mark_done")}>
-                <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Mark done…
-              </DropdownMenuItem>
-              {entry.detail === "failed" ? null : (
-                <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
-                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark failed…
+            <DropdownMenuContent
+              align="end"
+              side="top"
+              // Show the activity once the menu has closed: an open menu keeps focus inside itself.
+              onCloseAutoFocus={(event) => {
+                if (!showingActivity.current || !onShowActivity) return;
+                showingActivity.current = false;
+                event.preventDefault();
+                onShowActivity({ id: entry.id, label: taskLabel({ workItemId: entry.id, issueNumber: entry.issueNumber, issueTitle: entry.issueTitle || null }) ?? title });
+              }}
+            >
+              {onShowActivity ? (
+                <DropdownMenuItem onSelect={() => { showingActivity.current = true; }}>
+                  <Icon name="Activity" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Show activity
                 </DropdownMenuItem>
-              )}
+              ) : null}
+              {actionable ? (
+                <>
+                  <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
+                    <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                    Retry the stuck step
+                  </DropdownMenuItem>
+                  {/* The confirm lives on the card, not in the menu: the menu closes when an item is chosen. */}
+                  <DropdownMenuItem onSelect={() => setConfirming("mark_done")}>
+                    <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                    Mark done…
+                  </DropdownMenuItem>
+                  {entry.detail === "failed" ? null : (
+                    <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
+                      <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                      Mark failed…
+                    </DropdownMenuItem>
+                  )}
+                </>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
@@ -582,7 +605,7 @@ const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
 const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
 
-export function PipelineTab() {
+export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
   const now = useNow();
   const [includeDone, setIncludeDone] = useState(false);
@@ -792,7 +815,7 @@ export function PipelineTab() {
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} onShowActivity={onShowActivity} />
               ))}
             </div>
           </div>
@@ -1079,35 +1102,143 @@ const LEVEL: Record<string, { tone: Tone; icon: string; label: string }> = {
 
 const MOBILE_ACTIVITY_ROWS = 12;
 
-export function ActivityFeed() {
+/** Activity text as written, with each thread id a link to its thread. */
+function ThreadLinkedText({ text, onThread }: { text: string; onThread: (id: string) => void }) {
+  return (
+    <>
+      {splitThreadIds(text).map((part, i) =>
+        typeof part === "string" ? (
+          part
+        ) : (
+          <button
+            key={i}
+            type="button"
+            className="rounded underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label={`Open thread ${part.thread}`}
+            onClick={() => onThread(part.thread)}
+          >
+            {part.thread}
+          </button>
+        ),
+      )}
+    </>
+  );
+}
+
+/**
+ * The latest activity, newest first. It can be narrowed to one task: pass `task` and `onTaskChange` to hold that
+ * choice outside (a card's "Show activity" sets it), or leave them out and the feed keeps it itself.
+ */
+export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { task?: ActivityTask | null; onTaskChange?: (task: ActivityTask | null) => void; headingRef?: RefObject<HTMLHeadingElement | null> } = {}) {
   const palette = usePalette();
+  const navigate = useBbNavigate();
+  const toThread = useCallback((id: string) => navigate.toThread(id), [navigate]);
   const now = useNow();
   const [onlyProblems, setOnlyProblems] = useState(false);
+  const [ownTask, setOwnTask] = useState<ActivityTask | null>(null);
+  const task = onTaskChange ? (taskProp ?? null) : ownTask;
+  const setTask = onTaskChange ?? setOwnTask;
+  const taskTrigger = useRef<HTMLButtonElement>(null);
+  // Set by the clear button: once the feed has re-rendered, focus the Task menu, or the heading when it is gone.
+  const focusAfterClear = useRef(false);
   // Phones get no nested scroll box: show the latest rows and expand in place.
   const [showAll, setShowAll] = useState(false);
+  // A task's own rows come from the server, so its older rows are not lost behind the latest 60 of every task.
   const [before, setBefore] = useState<number | undefined>(undefined);
-  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, ...(before === undefined ? {} : { before }) } });
+  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, ...(before === undefined ? {} : { before }), ...(task ? { workItemId: task.id } : {}) } });
+  // A cursor belongs to one task filter: choosing or clearing a task returns to its newest page.
+  useEffect(() => { setBefore(undefined); setShowAll(false); }, [task?.id]);
   useLiveRefresh(log.refetch);
+  // With one repository its name on every row says nothing; rows of any other (removed) repository keep theirs.
+  // Unknown or failed: keep every name (the tab beside the feed shows the error, and refreshes this query).
+  const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  const onlyRepo = overview.data?.repos.length === 1 ? overview.data.repos[0]!.key : null;
+  // The tasks to offer: every task seen while the feed is open, so the list survives narrowing.
+  const [seen, setSeen] = useState<ActivityTask[]>([]);
+  useEffect(() => {
+    if (!log.data) return;
+    setSeen((before) => {
+      const next = recentTasks(log.data!.entries, before);
+      return next.length === before.length && next.every((t, i) => t.id === before[i]!.id && t.label === before[i]!.label) ? before : next;
+    });
+  }, [log.data]);
+  const taskOptions = task && !seen.some((t) => t.id === task.id) ? [task, ...seen] : seen;
+  // The feed opens a task's workflow itself: it sits beside the tabs, not inside the Pipeline tab.
+  const [viewing, setViewing] = useState<string | null>(null);
+  const sheetFocus = useSheetFocus<HTMLHeadingElement>();
+  const heading = useCallback(
+    (element: HTMLHeadingElement | null) => {
+      sheetFocus.fallback.current = element;
+      if (headingRef) headingRef.current = element;
+    },
+    [sheetFocus.fallback, headingRef],
+  );
+  useEffect(() => {
+    if (task || !focusAfterClear.current) return;
+    focusAfterClear.current = false;
+    (taskTrigger.current?.isConnected ? taskTrigger.current : sheetFocus.fallback.current)?.focus();
+  }, [task, sheetFocus.fallback]);
   const entries = log.data?.entries ?? [];
   return (
     <Panel
       title="Activity"
       icon="Activity"
+      headingRef={heading}
       dim={log.isFetching && !log.isLoading}
       actions={
-        <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => { setOnlyProblems((v) => !v); setBefore(undefined); setShowAll(false); }}>
-          <Icon name="TriangleAlert" fallback="Circle" aria-hidden /> Problems only
-        </Button>
+        <>
+          {taskOptions.length ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button ref={taskTrigger} size="sm" variant="ghost" className="max-w-full">
+                  <Icon name="ListFilter" fallback="Filter" aria-hidden />
+                  {task ? (
+                    <span className="flex min-w-0">
+                      Task:&nbsp;<span className="max-w-[12rem] truncate" title={task.label}>{task.label}</span>
+                    </span>
+                  ) : (
+                    "Task"
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-w-[min(24rem,90vw)]">
+                {taskOptions.map((t) => (
+                  <DropdownMenuItem key={t.id} onSelect={() => setTask(t)}>
+                    <span className="truncate" title={t.label}>{t.label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {task ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="w-8 p-0"
+              aria-label="Show all activity"
+              onClick={() => {
+                focusAfterClear.current = true;
+                setTask(null);
+              }}
+            >
+              <Icon name="X" fallback="Circle" aria-hidden />
+            </Button>
+          ) : null}
+          <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => { setOnlyProblems((v) => !v); setBefore(undefined); setShowAll(false); }}>
+            <Icon name="TriangleAlert" fallback="Circle" aria-hidden /> Problems only
+          </Button>
+        </>
       }
     >
       <ErrorLine error={log.error} />
-      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : "No activity yet."}</p> : null}
+      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : task ? "No activity for this task." : "No activity yet."}</p> : null}
       {entries.length > 0 ? <p className="mb-2 text-xs text-muted-foreground">
         {entries.length} entries · {new Date(entries.at(-1)!.at).toLocaleString()} – {new Date(entries[0]!.at).toLocaleString()}
       </p> : null}
       <ol className="sm:max-h-80 sm:overflow-auto">
         {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
+          const rowTask = taskLabel(e);
           return (
             <li key={e.id} className={cn("flex-wrap items-start gap-x-2.5 gap-y-0.5 py-1.5 text-xs sm:flex-nowrap", !showAll && i >= MOBILE_ACTIVITY_ROWS ? "hidden sm:flex" : "flex")}>
               <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
@@ -1116,9 +1247,25 @@ export function ActivityFeed() {
                 {relative(e.at, now)}
               </time>
               <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
-                {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
-                {e.message}
-                <span className="text-muted-foreground"> · {e.actor}</span>
+                {e.repo && e.repo !== onlyRepo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
+                {rowTask && e.workItemId ? (
+                  <>
+                    <button
+                      type="button"
+                      className="inline-block max-w-[16rem] truncate rounded align-bottom font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      title={rowTask}
+                      aria-label={`Open task ${rowTask}`}
+                      onClick={(event) => {
+                        sheetFocus.remember(event.currentTarget);
+                        setViewing(e.workItemId);
+                      }}
+                    >
+                      {rowTask}
+                    </button>{" "}
+                  </>
+                ) : null}
+                <ThreadLinkedText text={e.message} onThread={toThread} />
+                <span className="text-muted-foreground"> · <ThreadLinkedText text={e.actor} onThread={toThread} /></span>
               </span>
             </li>
           );
@@ -1134,6 +1281,7 @@ export function ActivityFeed() {
           Show {entries.length - MOBILE_ACTIVITY_ROWS} more
         </Button>
       ) : null}
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void log.refetch()} restoreFocus={sheetFocus.restore} /> : null}
     </Panel>
   );
 }
@@ -1150,6 +1298,15 @@ export function Dashboard({ subPath }: { subPath: string }) {
   }, [subPath]);
   const goTab = useCallback((t: Tab) => navigate.toPluginPanel("cos", { subPath: t }), [navigate]);
   const [alert, setAlert] = useState<{ title: string; body: string } | null>(null);
+  // Held here so a task card's "Show activity" can narrow the feed, and the choice survives switching tabs.
+  const [activityTask, setActivityTask] = useState<ActivityTask | null>(null);
+  const activityHeading = useRef<HTMLHeadingElement | null>(null);
+  const showActivity = useCallback((task: ActivityTask) => {
+    setActivityTask(task);
+    const heading = activityHeading.current;
+    heading?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    heading?.focus({ preventScroll: true });
+  }, []);
   useRealtime("cos-alert", (payload) => {
     const p = payload as { title?: string; body?: string };
     if (p?.title) setAlert({ title: p.title, body: p.body ?? "" });
@@ -1199,8 +1356,8 @@ export function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
-        {tab === "config" ? null : <ActivityFeed />}
+        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
+        {tab === "config" ? null : <ActivityFeed task={activityTask} onTaskChange={setActivityTask} headingRef={activityHeading} />}
       </div>
     </PaletteProvider>
   );

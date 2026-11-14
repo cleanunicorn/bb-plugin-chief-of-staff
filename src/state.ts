@@ -154,6 +154,12 @@ export interface LogEntry {
   actor: string;
 }
 
+/** A log row as read back, with its task's issue number and title (both null when it has no task, or the task is gone). */
+export interface LogRow extends LogEntry {
+  issueNumber: number | null;
+  issueTitle: string | null;
+}
+
 // Append only: BB records each statement hash by index, including whitespace.
 export const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS work_items (
@@ -834,14 +840,17 @@ export class StateStore {
     return found;
   }
 
-  listLog(opts: { limit?: number; workItemId?: string; onlyProblems?: boolean; before?: number } = {}): LogEntry[] {
+  listLog(opts: { limit?: number; workItemId?: string; onlyProblems?: boolean; before?: number } = {}): LogRow[] {
+    // Both tables have id and repo: every column is named, so the task's never replace the row's.
+    const select = `SELECT l.id, l.at, l.level, l.kind, l.repo, l.work_item_id, l.message, l.actor, w.id AS task_id, w.issue_number, w.issue_title
+      FROM activity_log l LEFT JOIN work_items w ON w.id = l.work_item_id`;
     const where: string[] = [];
     const params: (string | number)[] = [];
-    if (opts.workItemId !== undefined) { where.push("work_item_id = ?"); params.push(opts.workItemId); }
-    if (opts.onlyProblems) where.push("level IN ('warn', 'error')");
-    if (opts.before !== undefined) { where.push("id < ?"); params.push(opts.before); }
+    if (opts.workItemId !== undefined) { where.push("l.work_item_id = ?"); params.push(opts.workItemId); }
+    if (opts.onlyProblems) where.push("l.level IN ('warn', 'error')");
+    if (opts.before !== undefined) { where.push("l.id < ?"); params.push(opts.before); }
     params.push(opts.limit ?? 100);
-    const rows = this.db.prepare(`SELECT * FROM activity_log ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`).all(...params) as Row[];
+    const rows = this.db.prepare(`${select} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY l.id DESC LIMIT ?`).all(...params) as Row[];
     return rows.map((row) => ({
       id: row.id as number,
       at: row.at as string,
@@ -849,6 +858,9 @@ export class StateStore {
       kind: row.kind as string,
       repo: (row.repo as string | null) ?? null,
       workItemId: (row.work_item_id as string | null) ?? null,
+      issueNumber: (row.issue_number as number | null) ?? null,
+      // A found task keeps its title even when empty; null means no task.
+      issueTitle: row.task_id == null ? null : ((row.issue_title as string | null) ?? ""),
       message: row.message as string,
       actor: row.actor as string,
     }));
