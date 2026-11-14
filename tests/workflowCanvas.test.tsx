@@ -2,12 +2,12 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { DEFAULT_WORKFLOW, workflowSchema } from "../src/workflow";
+import { DEFAULT_WORKFLOW, insertStepAfter, workflowSchema, type Step } from "../src/workflow";
 import { stubReactFlowDom } from "./helpers/reactFlow";
 
 vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
 vi.mock("@xyflow/react/dist/style.css", () => ({}));
-import { WorkflowCanvas, layout, liveTone, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
+import { WorkflowCanvas, layout, liveTone, placeNewStep, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
 
 const live = (extra: Partial<LiveStatus>): LiveStatus => ({ status: "pending", phase: null, reported: 0, agents: 1, waitingKind: null, retrying: false, attempts: 0, round: 1, ...extra });
 
@@ -205,3 +205,69 @@ for (const [label, wf, editable] of [
     expect(fitted.y).toBeCloseTo(opened.y, 1);
   });
 }
+
+// Adding a step (#122): it goes below the step it follows, and the steps after it make room.
+const COL = 320, ROW = 130;
+const tidied = (wf: typeof DEFAULT_WORKFLOW) => {
+  const at = layout(wf, true);
+  return { ...wf, steps: wf.steps.map((s) => ({ ...s, position: at.get(s.id) }) as Step) };
+};
+const expectNoOverlap = (wf: typeof DEFAULT_WORKFLOW) => {
+  const at = [...layout(wf)];
+  for (const [i, [a, p]] of at.entries()) for (const [b, q] of at.slice(i + 1)) expect({ a, b, overlap: Math.abs(p.x - q.x) < COL && Math.abs(p.y - q.y) < ROW }).toEqual({ a, b, overlap: false });
+};
+
+for (const [label, wf] of [["every step placed (after Tidy)", tidied(SIX_STEPS)], ["no step placed", SIX_STEPS]] as const) {
+  it(`places a step inserted mid-flow directly below the one it follows, with ${label}`, () => {
+    const { workflow, id } = insertStepAfter(wf, "agent", "build");
+    const placed = placeNewStep(workflow, id);
+    expectNoOverlap(placed);
+    const at = layout(placed);
+    expect(at.get(id)).toEqual({ x: at.get("build")!.x, y: at.get("build")!.y + ROW });
+    // Steps before it stay where they were.
+    for (const before of ["model", "plan", "review-plan", "build"]) expect(at.get(before)).toEqual(layout(wf).get(before));
+  });
+}
+
+it("moves a new step aside when the spot below the step it follows is taken by a parallel branch", () => {
+  const branches = tidied(workflowSchema.parse({
+    id: "b",
+    name: "b",
+    steps: [
+      { id: "a", name: "A", type: "agent", next: ["b", "c"] },
+      { id: "b", name: "B", type: "agent" },
+      { id: "c", name: "C", type: "agent", next: ["d"] },
+      { id: "d", name: "D", type: "agent" },
+    ],
+  }));
+  const { workflow, id } = insertStepAfter(branches, "agent", "b");
+  expectNoOverlap(placeNewStep(workflow, id));
+});
+
+it("makes room below a step without a stored position when later steps have one", () => {
+  // The old toolbar stored a position on the added step only, so saved workflows mix placed and unplaced steps.
+  const mixed = { ...SIX_STEPS, steps: SIX_STEPS.steps.map((s) => (s.id === "ship" ? ({ ...s, position: { x: 0, y: 5 * ROW } } as Step) : s)) };
+  const { workflow, id } = insertStepAfter(mixed, "agent", "build");
+  const placed = placeNewStep(workflow, id);
+  expectNoOverlap(placed);
+  expect(layout(placed).get(id)).toEqual({ x: 0, y: 4 * ROW });
+});
+
+it("does not move a later step onto a parallel branch", () => {
+  const branches = tidied(workflowSchema.parse({
+    id: "b",
+    name: "b",
+    steps: [
+      { id: "a", name: "A", type: "agent", next: ["b", "c"] },
+      { id: "b", name: "B", type: "agent", next: ["d"] },
+      { id: "c", name: "C", type: "agent", next: ["e"] },
+      { id: "d", name: "D", type: "agent" },
+      { id: "e", name: "E", type: "agent", next: ["f"] },
+      { id: "f", name: "F", type: "agent" },
+    ],
+  }));
+  const { workflow, id } = insertStepAfter(branches, "agent", "b");
+  const placed = placeNewStep(workflow, id);
+  expectNoOverlap(placed);
+  expect(layout(placed).get(id)).toEqual({ x: 0, y: 2 * ROW });
+});

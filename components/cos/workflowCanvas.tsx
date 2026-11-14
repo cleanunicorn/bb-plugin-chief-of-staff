@@ -57,6 +57,24 @@ export function layout(wf: Workflow, force = false): Map<string, { x: number; y:
   return out;
 }
 
+/**
+ * Make room for step `id`, just inserted after another (`insertStepAfter`): every placed step below that one
+ * moves down a row, so the rows keep their arrangement, and the new step goes directly below it (or in the
+ * next free column to the right). When the step it follows has no stored position, the new step gets none
+ * either and `layout` places it by depth.
+ */
+export function placeNewStep(wf: Workflow, id: string): Workflow {
+  const anchor = wf.steps.find((s) => s.next.includes(id));
+  if (!anchor) return wf;
+  const from = layout(wf).get(anchor.id)!;
+  const moved = wf.steps.map((s) => (s.id !== id && s.position && s.position.y > from.y ? ({ ...s, position: { x: s.position.x, y: s.position.y + ROW } } as Step) : s));
+  if (!anchor.position) return { ...wf, steps: moved };
+  const taken = [...layout({ ...wf, steps: moved })].filter(([other]) => other !== id).map(([, p]) => p);
+  const spot = { x: anchor.position.x, y: anchor.position.y + ROW };
+  while (taken.some((p) => Math.abs(p.x - spot.x) < COL && Math.abs(p.y - spot.y) < ROW)) spot.x += COL;
+  return { ...wf, steps: moved.map((s) => (s.id === id ? ({ ...s, position: spot } as Step) : s)) };
+}
+
 function subtitle(s: Step): string {
   switch (s.type) {
     case "agent":
@@ -274,7 +292,7 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
 
   const add = (type: StepType) => {
     const { workflow: next, id } = insertStepAfter(workflow, type, selected);
-    update(next);
+    update(placeNewStep(next, id));
     onSelect?.(id);
   };
 
