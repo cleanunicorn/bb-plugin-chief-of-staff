@@ -142,7 +142,7 @@ describe("project-inferred repository", () => {
 describe("generalSettingsProblems", () => {
   it("finds nothing in valid changes or none", () => {
     expect(generalSettingsProblems({})).toEqual([]);
-    // A total of 0 is deliberate: it starts no new tasks while running ones finish (#125).
+    // A total of 0 is deliberate: it starts no new tasks, unlike Pause everything it holds no running step (#125).
     expect(generalSettingsProblems({ stallThresholdMinutes: 1440, maxConcurrentTotal: 0, defaultModel: "m".repeat(200), notifyPush: false })).toEqual([]);
   });
 
