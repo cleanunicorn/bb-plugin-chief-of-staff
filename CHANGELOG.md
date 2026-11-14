@@ -17,6 +17,12 @@
   capacity fields and "Intake every" have hint text, and the save bar warns
   before a limit of 0 is saved. Saving it is still allowed.
 
+- **Discard in Configure asks first.** Discard in the save bar, and Revert in
+  Advanced JSON, now open a confirmation that names what will be lost
+  ("Discard changes to Workflows and General?") instead of dropping every
+  unsaved draft at once. The save bar also says which sections have unsaved
+  changes, and on phones Discard and Save sit at opposite ends of the bar.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

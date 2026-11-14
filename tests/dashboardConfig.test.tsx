@@ -4,7 +4,7 @@
 // Configure's sections live in the page address (#126).
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
-import { button, click, container, field, mount, setValue, unmount } from "./dom";
+import { button, click, container, dialog, dialogButton, field, mount, setValue, tick, unmount } from "./dom";
 
 const mocks = vi.hoisted(() => ({
   config: { repos: "", workflow: "" },
@@ -49,6 +49,13 @@ const MAX_TASKS = "Max tasks across all repos";
 const text = () => container.textContent ?? "";
 const unsavedSections = () => Array.from(container.querySelectorAll('nav[aria-label="Configuration sections"] [aria-label="unsaved"]')).map((dot) => dot.closest("button")!.textContent);
 const show = (subPath: string) => mount(<Dashboard subPath={subPath} />);
+/** Discard in the save bar, confirmed in the dialog it opens. */
+async function confirmDiscard() {
+  await click(button("Discard"));
+  expect(dialog()?.textContent).toContain("Discard changes to General?");
+  await click(dialogButton("Discard"));
+  await tick();
+}
 
 beforeEach(() => {
   mocks.config = { repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }), workflow: serializeWorkflows(DEFAULT_DOCUMENT) };
@@ -111,7 +118,7 @@ it("shows neither unsaved changes nor a stale Saved. after saving and switching 
 it("Discard clears the lifted drafts", async () => {
   await show("config/general");
   await setValue(field(MAX_TASKS), "5");
-  await click(button("Discard"));
+  await confirmDiscard();
   await show("agents");
   await show("config/general");
 
@@ -152,7 +159,7 @@ it("marks the Configure tab on every tab while a draft is pending, and warns bef
   expect(leaveWarns()).toBe(true);
 
   await show("config/general");
-  await click(button("Discard"));
+  await confirmDiscard();
   expect(configureTabDot()).toBeNull();
   expect(leaveWarns()).toBe(false);
 });
