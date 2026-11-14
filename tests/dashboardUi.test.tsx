@@ -12,7 +12,7 @@ import { clickOutside, tick } from "./dom";
 
 type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string; active?: number; maxConcurrent?: number }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
   roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
   rosterInputs: [] as RosterInput[],
@@ -996,4 +996,22 @@ it("keeps a failed task's Mark done text while the roster changes under the open
   await act(async () => { root.render(<PipelineTab />); });
   expect(container.querySelector("article")!.textContent).not.toContain("failed");
   expect(confirmDialog()!.textContent).toContain("recorded as done instead of failed");
+});
+
+// ---------- dashboard experience (#110) ----------
+
+const meters = () => Array.from(container.querySelectorAll('[role="meter"]')).map((m) => m.getAttribute("aria-label"));
+
+it("shows one Capacity meter, named after the repository, when only one repository is configured", async () => {
+  mocks.repos = [{ key: "acme/app", active: 2, maxConcurrent: 4 }];
+  await mount();
+  expect(meters()).toEqual(["acme/app"]);
+  // The global cap is still on screen, in the filter row.
+  expect(container.querySelector('[aria-label="Filter active tasks"]')!.textContent).toContain("Task slots: 1 / 8");
+});
+
+it("keeps the All repos meter above one meter per repository with two or more repositories", async () => {
+  mocks.repos = [{ key: "acme/app", active: 2, maxConcurrent: 4 }, { key: "acme/web", active: 1, maxConcurrent: 2 }];
+  await mount();
+  expect(meters()).toEqual(["All repos", "acme/app", "acme/web"]);
 });

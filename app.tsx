@@ -909,7 +909,8 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         </Panel>
         <Panel className="lg:col-span-2" title="Capacity" icon="Gauge" dim={overview.isFetching && !overview.isLoading}>
           <div className="flex flex-col gap-3">
-            {maxTotal ? (
+            {/* With one repository its own meter says the same; the global cap stays in Task slots (#110). */}
+            {maxTotal && overview.data?.repos.length !== 1 ? (
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-baseline justify-between text-xs">
                   <span className="font-medium text-foreground">All repos</span>
