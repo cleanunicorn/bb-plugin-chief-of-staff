@@ -15,7 +15,7 @@ const rosterEntry = z.object({
       name: z.string(),
       type: z.enum(["agent", "check", "ship", "model"]),
       depth: z.number(),
-      status: z.enum(["pending", "running", "waiting", "done"]),
+      status: z.enum(["pending", "running", "waiting", "done", "stopped"]),
       phase: z.string().nullable(),
       agents: z.number(),
       reported: z.number(),
@@ -51,6 +51,10 @@ const rosterEntry = z.object({
     })
     .nullable(),
   startedAt: z.string(),
+  /** When a done or failed task finished; null while it runs (and on some legacy rows). */
+  finishedAt: z.string().nullable(),
+  /** How a finished task ended (src/outcome.ts); null while it runs. */
+  outcome: z.enum(["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"]).nullable(),
   lastActivityAt: z.string().nullable(),
   stalled: z.boolean(),
   fixAttempts: z.number(),
@@ -211,7 +215,7 @@ export const rpcContract = defineRpcContract({
       title: z.string(),
       /** The workflow the task runs (a Workflow document). */
       workflow: z.any(),
-      live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number(), picked: z.string().nullable().optional() })),
+      live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done", "stopped"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number(), picked: z.string().nullable().optional() })),
       /** The task itself. */
       task: taskDetail.optional(),
       /** Each step's current round: what it received, what it produced, who works on it. */

@@ -460,3 +460,93 @@ it("pages older activity and resets the cursor when changing the server filter",
   expect(container.textContent).toContain("entry 1");
   expect(container.textContent).not.toContain("Back to newest");
 });
+
+// ---------- Finished cards: how the task ended ----------
+
+const finishedCard = (over: Partial<RosterEntry>) => entry({ detail: "done", status: "done", actor: "none", current: [], threadStatus: "idle", startedAt: "2026-11-05T10:00:00.000Z", finishedAt: "2026-11-05T11:12:00.000Z", ...over });
+
+it.each([
+  { outcome: "merged", label: "Merged", icon: "GitMerge" },
+  { outcome: "pr_opened", label: "PR opened", icon: "GitPullRequest" },
+  { outcome: "completed", label: "Completed", icon: "CircleCheck" },
+  { outcome: "marked_done", label: "Marked done", icon: "UserCheck" },
+  { outcome: "failed", label: "Failed", icon: "CircleX" },
+  { outcome: "marked_failed", label: "Marked failed", icon: "UserX" },
+  { outcome: "pr_closed", label: "PR closed", icon: "GitPullRequestClosed" },
+] as const)("labels a finished card by how it ended: $outcome", async ({ outcome, label, icon }) => {
+  const failed = outcome === "failed" || outcome === "marked_failed" || outcome === "pr_closed";
+  mocks.entries = [finishedCard({ outcome, detail: failed ? "failed" : "done", status: failed ? "failed" : "done" })];
+  await mount();
+  const card = container.querySelector("article")!;
+  const pill = card.querySelector("header + div span.rounded-full")!;
+  expect(pill.textContent).toBe(label);
+  expect(pill.querySelector("[data-icon]")!.getAttribute("data-icon")).toBe(icon);
+  expect(card.querySelector("header [data-icon]")!.getAttribute("data-icon")).toBe(icon);
+});
+
+it("never calls a delivered task Closed and hides its stale error", async () => {
+  mocks.entries = [finishedCard({ outcome: "pr_opened", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7", lastError: "Cannot read properties of undefined (reading 'length')" })];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.textContent).toContain("PR opened");
+  expect(card.textContent).not.toContain("Closed");
+  expect(card.textContent).not.toContain("Cannot read properties");
+  expect(card.textContent).not.toContain("Why it ended");
+});
+
+it.each([
+  { outcome: "failed", reason: "thread archived" },
+  { outcome: "pr_closed", reason: "PR closed without merge" },
+] as const)("shows why a $outcome task ended without opening the workflow", async ({ outcome, reason }) => {
+  mocks.entries = [finishedCard({ outcome, detail: "failed", status: "failed", lastError: reason })];
+  await mount();
+  const line = Array.from(container.querySelectorAll("article p")).find((p) => p.textContent?.startsWith("Why it ended:"))!;
+  expect(line.textContent).toBe(`Why it ended: ${reason}`);
+  expect(line.querySelector("[title]")!.getAttribute("title")).toBe(reason);
+});
+
+it("does not present an old error as the cause of a task marked failed by hand", async () => {
+  const stale = "Cannot read properties of undefined (reading 'length')";
+  mocks.entries = [finishedCard({ outcome: "marked_failed", detail: "failed", status: "failed", lastError: stale })];
+  await mount();
+  const card = container.querySelector("article")!;
+  expect(card.textContent).not.toContain("Why it ended");
+  const line = Array.from(card.querySelectorAll("p")).find((p) => p.textContent?.startsWith("Last error:"))!;
+  expect(line.textContent).toBe(`Last error: ${stale}`);
+});
+
+it("labels finished pull requests by how they ended", async () => {
+  mocks.entries = [finishedCard({ outcome: "pr_closed", detail: "failed", status: "failed", prNumber: 7, lastError: "PR closed without merge" }), finishedCard({ id: "two", outcome: "merged", prNumber: 8 })];
+  await mount(<ReposTab />);
+  const rows = Array.from(container.querySelectorAll("li")).map((li) => li.textContent);
+  expect(rows.some((r) => r?.startsWith("PR closed#7"))).toBe(true);
+  expect(rows.some((r) => r?.startsWith("Merged#8"))).toBe(true);
+});
+
+it("says when a finished task finished and how long it took", async () => {
+  const finishedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+  const startedAt = new Date(Date.parse(finishedAt) - 72 * 60_000).toISOString();
+  mocks.entries = [finishedCard({ outcome: "pr_opened", startedAt, finishedAt })];
+  await mount();
+  const timer = container.querySelector('article [aria-label^="Finished"]')!;
+  expect(timer.getAttribute("aria-label")).toBe("Finished 2h ago, took 1.2h");
+  expect(timer.textContent).toBe("Finished 2h ago · took 1.2h");
+  expect(timer.getAttribute("title")).toBe(`Finished ${new Date(finishedAt).toLocaleString()} · started ${new Date(startedAt).toLocaleString()}`);
+  expect(container.querySelector('article [aria-label^="Task age"]')).toBeNull();
+});
+
+it("says only when a finished task started when its finish time is unknown", async () => {
+  mocks.entries = [finishedCard({ outcome: "completed", startedAt: new Date(Date.now() - 8 * 86_400_000).toISOString(), finishedAt: null })];
+  await mount();
+  const timer = container.querySelector('article [aria-label^="Started"]')!;
+  expect(timer.getAttribute("aria-label")).toBe("Started 8d ago");
+  expect(timer.textContent).toBe("Started 8d ago");
+});
+
+it("keeps the task age on active cards", async () => {
+  mocks.entries = [entry({ startedAt: new Date(Date.now() - 30 * 60_000).toISOString() })];
+  await mount();
+  const timer = container.querySelector('article [aria-label^="Task age"]')!;
+  expect(timer.getAttribute("aria-label")).toBe("Task age 30m");
+  expect(timer.textContent).toBe("30m");
+});

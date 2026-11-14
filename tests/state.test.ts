@@ -290,3 +290,22 @@ describe("latest task for an issue (#48)", () => {
     expect(store.latestForIssue("a/b", 12)?.id).toBe("second");
   });
 });
+
+describe("latestManualActions", () => {
+  it("returns the newest manual row per item and ignores other kinds and items", () => {
+    const { store, setClock } = storeSetup();
+    const log = (workItemId: string, kind: string, message: string, at: string) => {
+      setClock(at);
+      store.log({ level: "info", kind, repo: "a/b", workItemId, message, actor: "test" });
+    };
+    log("a", "manual", "marked failed", "2026-11-12T10:00:00Z");
+    log("a", "manual", "marked done", "2026-11-12T10:05:00Z");
+    log("a", "transition", "later, not manual", "2026-11-12T10:06:00Z");
+    log("b", "transition", "no manual row", "2026-11-12T10:00:00Z");
+    log("c", "manual", "marked done", "2026-11-12T09:00:00Z");
+    const found = store.latestManualActions(["a", "b"]);
+    expect([...found.keys()]).toEqual(["a"]);
+    expect(found.get("a")).toEqual({ message: "marked done", at: "2026-11-12T10:05:00.000Z" });
+    expect(store.latestManualActions([]).size).toBe(0);
+  });
+});

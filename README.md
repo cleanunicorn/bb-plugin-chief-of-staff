@@ -99,6 +99,11 @@ Every task has one status, derived from its steps:
 | `blocked` | You | Stalled: no activity past the stall threshold. |
 | `done` / `failed` | Nobody | Finished. Shown with **Show finished**. |
 
+A finished card says how the task ended: **Merged**, **PR opened**,
+**Completed**, **Marked done**, **Failed**, **Marked failed** or **PR closed**.
+It also says when the task finished and how long it took, and why it ended if it
+did not deliver. Steps it left unfinished show as **stopped**.
+
 ### Read a task card
 
 Each card shows the task's workflow as a bar with one segment per step, in
@@ -611,3 +616,7 @@ continues through retained history; **Back to newest** returns to live recent
 activity. **Problems only** selects warnings and errors on the server, including
 those older than the newest 60 entries. Changing the filter returns to its newest
 page. Retention still applies: paging cannot recover pruned entries.
+
+The icons in [assets/user-check.svg](assets/user-check.svg) and
+[assets/user-x.svg](assets/user-x.svg) come from [Lucide](https://lucide.dev)
+(ISC License, Copyright (c) Lucide Contributors).

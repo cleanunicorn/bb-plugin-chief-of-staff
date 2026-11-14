@@ -242,7 +242,7 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText });
     await settleJobs();
   };
-  type Entry = { id: string; status: string; detail: string; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; issueUrl: string | null; fixAttempts: number; counters: Record<string, number> };
+  type Entry = { id: string; status: string; detail: string; outcome: string | null; finishedAt: string | null; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; issueUrl: string | null; fixAttempts: number; counters: Record<string, number> };
   const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
   const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
   const sentTexts = () => (sent as { input: { text: string }[] }[]).map((s) => s.input[0].text);
@@ -2294,6 +2294,53 @@ describe("chief-of-staff server", () => {
     }
   });
 
+  it("shows the steps a finished task left running or waiting as stopped, without rewriting them", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0]!;
+    type Step = { id: string; status: string; phase: string | null; retrying: boolean; waitingKind: string | null };
+    const steps = async () => ((await roster()) as unknown as { steps: Step[] }).steps;
+    // Active: live states pass through untouched.
+    expect((await steps()).find((st) => st.id === "build")).toMatchObject({ status: "running" });
+    const nodes = {
+      ...item.nodes,
+      build: { ...item.nodes.build!, status: "waiting" as const, waiting: { kind: "question" as const, reason: "Which login?" } },
+      ship: { ...item.nodes.ship!, status: "running" as const, phase: "ci" as const, retry: { effect: { type: "merge", step: "ship" }, at: new Date().toISOString(), count: 1 } },
+    } as typeof item.nodes;
+    store.updateWorkItem(item.id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString(), nodes, waitingReason: "Build: Which login?" });
+    const settled = { status: "stopped", phase: null, retrying: false, waitingKind: null };
+    expect(await roster()).toMatchObject({ current: [], outcome: "failed", activity: "Failed: thread archived" });
+    expect((await steps()).find((st) => st.id === "ship")).toMatchObject(settled);
+    expect((await steps()).find((st) => st.id === "build")).toMatchObject(settled);
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id: item.id }) as { live: Record<string, Step>; task: { waitingReason: string | null }; steps: Record<string, { waitingReason: string | null }> };
+    // Nobody is waiting on a finished task: no "needs you" callouts in the sheet.
+    expect(view.task.waitingReason).toBeNull();
+    expect(view.steps.build!.waitingReason).toBeNull();
+    expect(view.live.ship).toMatchObject(settled);
+    expect(view.live.build).toMatchObject(settled);
+    // Pending steps never ran: they stay pending.
+    expect(Object.values(view.live).map((l) => l.status)).not.toContain("running");
+    const stored = store.getWorkItem(item.id)!.nodes;
+    expect(stored.ship).toMatchObject({ status: "running", phase: "ci" });
+    expect(stored.build).toMatchObject({ status: "waiting" });
+  });
+
+  it("says a task marked done by hand ended that way, and when", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const before = await roster();
+    expect(before).toMatchObject({ outcome: null, finishedAt: null });
+    await host.harness.behavior.callRpc("cos_item_action", { id: before.id, action: "mark_done" });
+    expect(await roster()).toMatchObject({ detail: "done", outcome: "marked_done", finishedAt: expect.any(String), activity: "Marked done" });
+  });
+
+  it("reads a task marked failed by hand from its log, even with an error stored", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const { id } = await roster();
+    new StateStore(host.bb.storage.database()).updateWorkItem(id, { lastError: "push rejected" });
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+    expect(await roster()).toMatchObject({ detail: "failed", outcome: "marked_failed", lastError: "push rejected", activity: "Marked failed (last error: push rejected)" });
+  });
+
   it.each([
     { phase: "ci", merged: false, state: "open", expected: "done" },
     { phase: "ready", merged: true, state: "closed", expected: "done" },
@@ -2312,6 +2359,7 @@ describe("chief-of-staff server", () => {
     if (expected === "failed") expect((await roster()).lastError).toBe("PR closed without merge");
     // CI watching records what it saw on its merged and closed exits.
     if (state === "closed") expect(new StateStore(host.bb.storage.database()).getWorkItem(item.id)!.prState).toMatchObject({ number: 7, state: merged ? "merged" : "closed" });
+    expect(await roster()).toMatchObject({ outcome: expected === "failed" ? "pr_closed" : "pr_opened", finishedAt: expect.any(String) });
     expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(1);
     const count = archivedIds.length;
     await host.harness.behavior.runService("cos-reconcile").done;

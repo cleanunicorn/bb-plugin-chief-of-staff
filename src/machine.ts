@@ -8,6 +8,7 @@
 // step's `onFail` target and everything downstream of it, and the work re-runs
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
+import { PR_CLOSED_ERROR } from "./outcome";
 import type { WaitingKind, WorkItem } from "./state";
 import { agentWork, chosenModel, descendants, finalSteps, isWriter, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
 
@@ -239,8 +240,8 @@ const WAIT_TITLE: Record<WaitingKind, string> = {
   stalled: "Agent stalled",
 };
 
-/** lastError of a task failed because its pull request was closed without merging. */
-export const PR_CLOSED_ERROR = "PR closed without merge";
+/** lastError of a task failed because its pull request was closed without merging (defined in ./outcome). */
+export { PR_CLOSED_ERROR };
 
 export function transition(item: WorkItem, event: MachineEvent, policy: MachinePolicy = DEFAULT_POLICY, now: Date = new Date()): Transition {
   const wf = item.workflow;

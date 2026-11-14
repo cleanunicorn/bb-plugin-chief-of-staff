@@ -12,6 +12,7 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
+import { FAILED_OUTCOMES, OUTCOME_META } from "./src/outcome";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
@@ -111,7 +112,9 @@ function repoName(repo: string): string {
 }
 
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
-  if (e.detail === "done") return { tone: "good", label: e.lastError ? "Closed" : "Shipped", icon: "CircleCheck" };
+  // A finished task reads by how it ended, never by whether an old error is still stored.
+  if (e.outcome) return OUTCOME_META[e.outcome];
+  if (e.detail === "done") return { tone: "good", label: "Done", icon: "CircleCheck" };
   if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
   if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
   if (e.detail === "waiting_on_human") {
@@ -377,6 +380,23 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
 
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
+/** Active cards count the task's age; finished cards say when it finished and how long it took. */
+function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: string; label: string; title: string } {
+  const started = new Date(entry.startedAt).toLocaleString();
+  if (!finished) {
+    const age = duration((now - Date.parse(entry.startedAt)) / 60_000);
+    return { text: age, label: `Task age ${age}`, title: `Task started ${started}` };
+  }
+  // Some legacy rows have no finish time: say only what is known.
+  if (!entry.finishedAt) {
+    const text = `Started ${relative(entry.startedAt, now)}`;
+    return { text, label: text, title: `Task started ${started}` };
+  }
+  const ago = relative(entry.finishedAt, now);
+  const took = duration((Date.parse(entry.finishedAt) - Date.parse(entry.startedAt)) / 60_000);
+  return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
+}
+
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
 /** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
 function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
@@ -386,10 +406,14 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
-  const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
   const tabIndex = tabbable ? undefined : -1;
+  const timer = cardTimer(entry, finished, now);
+  // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
+  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) ? entry.lastError : null;
+  // mark_failed writes no error: on a hand-failed task the stored one is the last seen, not the cause.
+  const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   return (
     <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
@@ -409,17 +433,24 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
           </p>
         </div>
       </header>
-      <div className="flex items-start justify-between gap-2">
+      <div className={cn("flex items-start justify-between gap-2", finished && "flex-wrap gap-y-1")}>
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
           {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
         </div>
-        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums" title={`Task started ${new Date(entry.startedAt).toLocaleString()}`} aria-label={`Task age ${duration(elapsedMin)}`}>
-          <Icon name="Timer" fallback="Clock" className="size-3.5" aria-hidden />
-          {finished ? relative(entry.startedAt, now) : duration(elapsedMin)}
+        <span className={cn("flex items-center gap-1 text-xs text-muted-foreground tabular-nums", finished ? "min-w-0" : "shrink-0")} title={timer.title} aria-label={timer.label}>
+          <Icon name={finished ? "CalendarCheck" : "Timer"} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
+          {timer.text}
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
+      {endReason ? (
+        <p className="flex items-start gap-1.5 text-sm text-foreground">
+          {/* Muted: a failed run is history, not an alarm (#22). */}
+          <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">{reasonLead}</span> {endReason}</span>
+        </p>
+      ) : null}
       {entry.steps.length ? <details className="group text-xs">
         <summary {...{ [ENTRY_ATTRIBUTE]: "" }} tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />

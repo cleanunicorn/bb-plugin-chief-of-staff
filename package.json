@@ -13,7 +13,9 @@
     "branding": {
       "icon": "./assets/chef-hat.svg",
       "experimental_icons": {
-        "chef-hat": "./assets/chef-hat.svg"
+        "chef-hat": "./assets/chef-hat.svg",
+        "user-check": "./assets/user-check.svg",
+        "user-x": "./assets/user-x.svg"
       }
     },
     "server": "./server.ts",
