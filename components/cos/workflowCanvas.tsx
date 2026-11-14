@@ -169,7 +169,7 @@ export interface WorkflowCanvasProps {
   className?: string;
   /** Full screen is on. The parent shows the way out (a labelled bar), away from the step panel's Remove button. */
   expanded?: boolean;
-  /** Shows a labelled "Full screen" button at the canvas's top right while not expanded. */
+  /** Shows a labelled "Full screen" button while not expanded: the toolbar's last button in edit mode, the canvas's top right when read-only. */
   onToggleExpanded?: () => void;
   /** Read-only: how often each arrow was taken, by edge id (`next:a:b`, `fail:a:b`); shown from 1 for fail arrows, from 2 otherwise. */
   edgeCounts?: Record<string, number>;
@@ -335,9 +335,9 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
 
   return (
     <div className={cn("relative flex h-[420px] w-full flex-col overflow-hidden rounded-lg border border-border bg-background", className)}>
-      {/* On phones the add-step toolbar sits above the canvas instead of covering its nodes. */}
+      {/* The toolbar is a wrapping bar above the canvas, so no button covers another or a step, and Fit frames only the canvas below it. */}
       {editable ? (
-        <div className="flex shrink-0 flex-wrap gap-1 border-b border-border bg-card p-1 sm:absolute sm:top-2 sm:left-2 sm:z-10 sm:rounded-md sm:border sm:shadow-sm">
+        <div role="group" aria-label="Canvas tools" className="flex shrink-0 flex-wrap gap-1 border-b border-border bg-card p-1">
           {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
             <Button key={t} size="sm" variant="ghost" className="h-7 px-2" aria-label={`Add ${STEP_TYPE_META[t].label} step after the selected one (or at the end): ${STEP_TYPE_META[t].hint}`} onClick={() => add(t)}>
               <Icon name="Plus" fallback="Circle" aria-hidden /> {STEP_TYPE_META[t].label}
@@ -346,10 +346,15 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
           <Button size="sm" variant="ghost" className="h-7 px-2" aria-label="Arrange steps by order" onClick={relayout}>
             <Icon name="LayoutGrid" fallback="Circle" aria-hidden /> Tidy
           </Button>
+          {onToggleExpanded && !expanded ? (
+            <Button size="sm" variant="outline" className="ml-auto h-7 gap-1.5 px-2" onClick={onToggleExpanded}>
+              <ExpandGlyph /> Full screen
+            </Button>
+          ) : null}
         </div>
       ) : null}
       <div ref={frame} className="relative min-h-0 flex-1">
-        {onToggleExpanded && !expanded ? (
+        {!editable && onToggleExpanded && !expanded ? (
           <Button size="sm" variant="outline" className="absolute top-2 right-2 z-10 h-7 gap-1.5 bg-card px-2 shadow-sm" onClick={onToggleExpanded}>
             <ExpandGlyph /> Full screen
           </Button>

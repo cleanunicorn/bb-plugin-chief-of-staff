@@ -32,6 +32,16 @@
   agent step with no instructions now says so under its Instructions field; it
   still runs on the task and earlier reports, and Save is not blocked.
 
+- **The workflow editor's Full screen button no longer hides Tidy.** In
+  Configure → Workflows the add-step toolbar floated over the canvas's top
+  left and Full screen over its top right, so on a narrow canvas Full screen
+  covered Tidy (or Model), and the toolbar covered the first step after "Fit
+  all steps in view". The toolbar is now a bar above the canvas that wraps when
+  it runs out of room, with Full screen as its last button. On windows at
+  least 1280 px wide and 720 px tall, where the canvas and the step panel sit
+  side by side, the canvas now stays in view while you scroll down a long step
+  panel to edit "Runs next" or "On fail, go back to". The task workflow sheet is unchanged.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

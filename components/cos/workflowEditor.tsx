@@ -191,8 +191,10 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems }: {
               </Button>
             </div>
           ) : null}
+          {/* Side by side (xl), the canvas sticks to the top of the page's scroller, so the graph stays in view while a long step panel scrolls.
+              Only on windows at least 45rem tall: on shorter ones the Save bar (sticky bottom-0) would cover the pinned canvas's zoom and Fit controls. */}
           <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
-            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setFocusNameOf(null); }} onAdd={setFocusNameOf} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
+            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setFocusNameOf(null); }} onAdd={setFocusNameOf} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px] xl:self-start [@media(min-width:80rem)_and_(min-height:45rem)]:sticky [@media(min-width:80rem)_and_(min-height:45rem)]:top-3"} />
             <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
               {selectedStep ? (
                 <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow focusName={focusNameOf === selectedStep.id} />
