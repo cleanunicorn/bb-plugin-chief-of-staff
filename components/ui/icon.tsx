@@ -66,7 +66,8 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   Gauge: "ChartColumn",
   Hand: "UserRound",
   History: "TimeSchedule",
-  Hourglass: "Clock",
+  // Stalled needs the user; the host has no hourglass, and its Clock is a task's age and Pause means paused.
+  Hourglass: "chief-of-staff/hourglass",
   Inbox: "PackageReceive",
   KeyRound: "Lock",
   LayoutGrid: "GridView",
@@ -74,10 +75,12 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   ListChecks: "LayoutList",
   ListFilter: "FilterHorizontal",
   MessageCircleQuestion: "MessageQuestion",
-  MessageSquareWarning: "MessageQuestion",
+  // "No report": the step ended without its report. MessageQuestion stays the agent's question.
+  MessageSquareWarning: "FileQuestion",
   MousePointerClick: "Target",
   Network: "Workflow",
-  OctagonAlert: "AlertCircle",
+  // "CoS stuck". AlertCircle stays a card's error line and the serious tone.
+  OctagonAlert: "chief-of-staff/octagon-alert",
   RefreshCw: "ArrowReloadHorizontal",
   Rocket: "ArrowUpRight",
   Save: "Check",

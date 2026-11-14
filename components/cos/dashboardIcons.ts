@@ -6,7 +6,7 @@ export const STALLED_ICON = "Hourglass";
 
 /** The dashboard groups (stages.ts STAGES) and their filter chips. */
 export const STAGE_ICON = {
-  queued: "Clock",
+  queued: "ListEnd", // waiting its turn; Clock is a task's age
   agent: "Bot",
   cos: "Cog",
   pr: "GitPullRequest",
@@ -27,7 +27,7 @@ export const WAITING_LABEL: Record<string, { label: string; icon: string }> = {
 export const DETAIL_ICON = {
   done: "CircleCheck",
   failed: "CircleX",
-  blocked: "OctagonAlert",
+  blocked: STALLED_ICON, // shown as "Stalled"
   retrying: "RefreshCw",
   agent: "Bot",
   ready: "GitMerge",

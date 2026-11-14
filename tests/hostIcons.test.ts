@@ -7,6 +7,9 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_Icon: () => null }));
 import { HOST_ICON_CATALOG, HOST_ICON_NAMES, hostIconName } from "../components/ui/icon";
 import * as dashboardIcons from "../components/cos/dashboardIcons";
+import { STAGES } from "../components/cos/stages";
+import { TONE_ICON } from "../components/cos/viz";
+import { OUTCOME_META } from "../src/outcome";
 
 const ROOT = join(__dirname, "..");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { bb: { branding: { experimental_icons: Record<string, string> } } };
@@ -113,4 +116,68 @@ describe("host icon catalog", () => {
 it("maps names the host lacks and passes the rest through", () => {
   expect(hostIconName("ListChecks")).toBe("LayoutList");
   expect(hostIconName("GitMerge")).toBe("GitMerge");
+});
+
+// ---------- meaning groups: things shown side by side must not share a picture ----------
+
+type Meanings = Record<string, string>; // meaning → requested icon name
+
+/** Pairs of meanings that resolve to the same host icon, unless an allowed class holds both. */
+function collisions(meanings: Meanings, allowed: string[][] = []): string[] {
+  const entries = Object.entries(meanings).map(([meaning, name]) => [meaning, hostIconName(name)] as const);
+  const out: string[] = [];
+  for (let i = 0; i < entries.length; i++)
+    for (let j = i + 1; j < entries.length; j++) {
+      const [a, ha] = entries[i]!;
+      const [b, hb] = entries[j]!;
+      if (ha === hb && !allowed.some((c) => c.includes(a) && c.includes(b))) out.push(`${a} = ${b} (${ha})`);
+    }
+  return out;
+}
+
+const prefixed = (prefix: string, table: Record<string, string | { icon: string }>): Meanings =>
+  Object.fromEntries(Object.entries(table).map(([k, v]) => [`${prefix}.${k}`, typeof v === "string" ? v : v.icon]));
+
+const { ATTENTION_ICON, DETAIL_ICON, STALLED_ICON, WAITING_LABEL } = dashboardIcons;
+
+/** Every icon a card's state mark can show (app.tsx entryTone, plus the stalled override). */
+const STATE_MARKS: Meanings = {
+  ...prefixed("outcome", OUTCOME_META),
+  ...prefixed("detail", DETAIL_ICON),
+  ...prefixed("waiting", WAITING_LABEL),
+  ...prefixed("stage", Object.fromEntries(STAGES.map((s) => [s.key, s.icon]))),
+  stalled: STALLED_ICON,
+};
+
+/** Meanings that may share a state mark, each with the reason. */
+const SAME_STATE: string[][] = [
+  ["detail.done", "outcome.completed"], // a finished task with no outcome reads as completed
+  ["detail.failed", "outcome.failed"],
+  ["detail.blocked", "waiting.stalled", "stalled"], // all three are "stalled"
+  ["detail.ci", "stage.pr", "outcome.pr_opened"], // all mean "a PR is open"
+  ["detail.agent", "stage.agent"],
+  ["stage.human", "waiting.escalation"], // "Needs you" is the hand-off; "Your call" is the plain hand-off
+  // Pre-existing and not a host substitution: Ready to merge shows GitMerge like Merged. Follow-up, out of scope here.
+  ["detail.ready", "outcome.merged"],
+];
+
+describe("state marks", () => {
+  it("gives every state its own host icon, outside the allowed same-meaning classes", () => {
+    expect(collisions(STATE_MARKS, SAME_STATE)).toEqual([]);
+  });
+
+  it("never draws a stalled task like a queued one", () => {
+    expect(hostIconName(STALLED_ICON)).not.toBe(hostIconName(STAGES.find((s) => s.key === "queued")!.icon));
+  });
+
+  it("keeps the Needs-attention chips apart", () => {
+    expect(collisions(prefixed("attention", { failures: ATTENTION_ICON.failures, stalled: ATTENTION_ICON.stalled, input: ATTENTION_ICON.input }))).toEqual([]);
+  });
+
+  it("keeps the status pill tones apart, and away from the stalled and CoS-stuck marks", () => {
+    expect(collisions(prefixed("tone", TONE_ICON))).toEqual([]);
+    const tones = new Set(Object.values(TONE_ICON).map(hostIconName));
+    expect(tones.has(hostIconName(STALLED_ICON))).toBe(false);
+    expect(tones.has(hostIconName(WAITING_LABEL.cos_error!.icon))).toBe(false);
+  });
 });

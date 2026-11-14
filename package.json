@@ -15,7 +15,9 @@
       "experimental_icons": {
         "chef-hat": "./assets/chef-hat.svg",
         "user-check": "./assets/user-check.svg",
-        "user-x": "./assets/user-x.svg"
+        "user-x": "./assets/user-x.svg",
+        "hourglass": "./assets/hourglass.svg",
+        "octagon-alert": "./assets/octagon-alert.svg"
       }
     },
     "server": "./server.ts",
