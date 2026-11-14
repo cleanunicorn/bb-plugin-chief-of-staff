@@ -102,3 +102,25 @@ export function finishedTimer(entry: { startedAt: string; finishedAt: string | n
   const took = duration((Date.parse(entry.finishedAt) - Date.parse(entry.startedAt)) / 60_000);
   return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
 }
+
+/** What the Finished section shows. No outcome picked means every outcome. */
+export type FinishedFilter = { outcomes: readonly OutcomeGroup[]; repo: string | null; query: string };
+export const NO_FILTER: FinishedFilter = { outcomes: [], repo: null, query: "" };
+
+export const isFiltering = (f: FinishedFilter) => f.outcomes.length > 0 || f.repo !== null || f.query.trim() !== "";
+
+type Filterable = { outcome: Outcome | null; detail: string; repo: string; issueTitle: string; threadTitle: string | null; issueNumber: number | null; prNumber: number | null };
+
+/** Outcome, repository and search all match. The search finds the title, and "12" or "#12" the issue or PR number too. */
+export function matchesFinishedFilter(entry: Filterable, f: FinishedFilter): boolean {
+  if (f.outcomes.length) {
+    const group = outcomeGroup(entry);
+    if (!group || !f.outcomes.includes(group)) return false;
+  }
+  if (f.repo !== null && entry.repo !== f.repo) return false;
+  const q = f.query.trim().toLowerCase();
+  if (!q) return true;
+  if ((entry.issueTitle || entry.threadTitle || "").toLowerCase().includes(q)) return true;
+  const number = /^#?(\d+)$/.exec(q);
+  return number !== null && (entry.issueNumber === Number(number[1]) || entry.prNumber === Number(number[1]));
+}

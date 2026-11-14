@@ -18,7 +18,7 @@ import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { FinishedSection, useFinishedTasks } from "@/components/cos/finished";
+import { FinishedSection, useFinishedTasks, useFinishedView } from "@/components/cos/finished";
 import { TaskActionsMenu, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
@@ -527,7 +527,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const active = useMemo(() => (live ?? []).filter((e) => !isFinished(e)), [live]);
   const activeIds = useMemo(() => new Set(active.map((e) => e.id)), [active]);
   const finished = useFinishedTasks(activeIds, setActionError);
-  const [finishedOpen, setFinishedOpen] = useState(true);
+  const finishedView = useFinishedView();
   const finishedHeading = useRef<HTMLHeadingElement>(null);
   const finishedQuery = finished.query;
   const refetchAll = useCallback(async () => {
@@ -693,8 +693,9 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         finished={finished}
         now={now}
         busy={busy}
-        open={finishedOpen}
-        onOpenChange={setFinishedOpen}
+        view={finishedView.view}
+        onViewChange={finishedView.update}
+        repos={(overview.data?.repos ?? []).map((r) => r.key)}
         headingRef={finishedHeading}
         onAction={(id, action) => void act(id, action)}
         onAsk={confirm.ask}

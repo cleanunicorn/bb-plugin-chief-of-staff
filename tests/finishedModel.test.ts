@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FINISHED_FIRST, FINISHED_STEP, dayLabel, finishDay, finishedTimer, groupByDay, mergePages, outcomeGroup, visibleSlice } from "../components/cos/finishedModel";
+import type { Outcome } from "../src/outcome";
+import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, dayLabel, finishDay, finishedTimer, groupByDay, isFiltering, matchesFinishedFilter, mergePages, outcomeGroup, visibleSlice } from "../components/cos/finishedModel";
 
 const NOW = Date.parse("2026-11-14T15:00:00.000Z");
 
@@ -111,5 +112,58 @@ describe("finishedTimer", () => {
     const timer = finishedTimer({ startedAt: new Date(NOW - 8 * 86_400_000).toISOString(), finishedAt: null }, NOW);
     expect(timer.text).toBe("Started 8d ago");
     expect(timer.label).toBe("Started 8d ago");
+  });
+});
+
+describe("matchesFinishedFilter", () => {
+  type Row = { outcome: Outcome | null; detail: string; repo: string; issueTitle: string; threadTitle: string | null; issueNumber: number | null; prNumber: number | null };
+  const row = (over: Partial<Row> = {}): Row => ({ outcome: "merged", detail: "done", repo: "acme/app", issueTitle: "Fix login redirect", threadTitle: null, issueNumber: 12, prNumber: 34, ...over });
+
+  it("matches everything without a filter", () => {
+    expect(isFiltering(NO_FILTER)).toBe(false);
+    expect(matchesFinishedFilter(row(), NO_FILTER)).toBe(true);
+  });
+
+  it.each([
+    ["merged", "shipped"],
+    ["pr_opened", "shipped"],
+    ["completed", "shipped"],
+    ["marked_done", "marked_done"],
+    ["failed", "failed"],
+    ["marked_failed", "failed"],
+    ["pr_closed", "failed"],
+  ] as const)("filters %s by its outcome group %s", (outcome, group) => {
+    const r = row({ outcome, detail: group === "failed" ? "failed" : "done" });
+    expect(matchesFinishedFilter(r, { ...NO_FILTER, outcomes: [group] })).toBe(true);
+    const others = (["shipped", "marked_done", "failed"] as const).filter((g) => g !== group);
+    expect(matchesFinishedFilter(r, { ...NO_FILTER, outcomes: others })).toBe(false);
+  });
+
+  it("filters by repository", () => {
+    expect(matchesFinishedFilter(row(), { ...NO_FILTER, repo: "acme/app" })).toBe(true);
+    expect(matchesFinishedFilter(row(), { ...NO_FILTER, repo: "acme/api" })).toBe(false);
+  });
+
+  it("finds a title, case-insensitively, falling back to the thread title", () => {
+    expect(matchesFinishedFilter(row(), { ...NO_FILTER, query: "  LOGIN " })).toBe(true);
+    expect(matchesFinishedFilter(row(), { ...NO_FILTER, query: "logout" })).toBe(false);
+    expect(matchesFinishedFilter(row({ issueTitle: "", threadTitle: "Tidy the docs" }), { ...NO_FILTER, query: "docs" })).toBe(true);
+  });
+
+  it("finds an issue or PR number, with or without #", () => {
+    for (const query of ["12", "#12", "34", "#34"]) expect(matchesFinishedFilter(row(), { ...NO_FILTER, query })).toBe(true);
+    expect(matchesFinishedFilter(row(), { ...NO_FILTER, query: "#1" })).toBe(false);
+    expect(matchesFinishedFilter(row({ issueNumber: null, prNumber: null }), { ...NO_FILTER, query: "#12" })).toBe(false);
+    // A number in the title still matches.
+    expect(matchesFinishedFilter(row({ issueTitle: "Bump to v2026" }), { ...NO_FILTER, query: "2026" })).toBe(true);
+  });
+
+  it("combines filters: every one must match", () => {
+    const filter = { ...NO_FILTER, outcomes: ["shipped", "marked_done"] as const, repo: "acme/app", query: "#12" };
+    expect(isFiltering(filter)).toBe(true);
+    expect(matchesFinishedFilter(row(), filter)).toBe(true);
+    expect(matchesFinishedFilter(row({ repo: "acme/api" }), filter)).toBe(false);
+    expect(matchesFinishedFilter(row({ outcome: "failed", detail: "failed" }), filter)).toBe(false);
+    expect(matchesFinishedFilter(row({ issueNumber: 13, prNumber: null }), filter)).toBe(false);
   });
 });

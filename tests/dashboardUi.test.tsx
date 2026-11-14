@@ -8,7 +8,7 @@ import type { ActivityTask } from "../components/cos/dashboardModel";
 import type { RosterEntry } from "../src/roster";
 import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { entry } from "./helpers/roster";
-import { clickOutside, tick } from "./dom";
+import { clickOutside, setValue, tick } from "./dom";
 
 type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
 const mocks = vi.hoisted(() => ({
@@ -593,6 +593,102 @@ it("collapses and expands the Finished section", async () => {
   expect(finishedPanel().querySelector("h2")!.textContent).toBe("Finished · 1");
   await act(async () => buttonLabelled("Expand").click());
   expect(rowTitles()).toEqual(["Finished one"]);
+});
+
+// ---------- Finished filters (#105) ----------
+
+const searchBox = () => container.querySelector<HTMLInputElement>('input[aria-label="Search finished tasks"]')!;
+const outcomeToggle = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Outcome"] button')).find((b) => b.textContent?.trim() === label)!;
+const mixedHistory = () => [
+  finished("m", "Merged login fix", "done", { outcome: "merged", issueNumber: 12, prNumber: 40 }),
+  finished("d", "Marked docs", "done", { outcome: "marked_done", issueNumber: 13, repo: "acme/api" }),
+  finished("x", "Broken deploy", "failed", { outcome: "pr_closed", issueNumber: 14, prNumber: 41 }),
+  finished("y", "Hand failed", "failed", { outcome: "marked_failed", issueNumber: 15, repo: "acme/api" }),
+];
+
+it("filters finished tasks by outcome, several at once", async () => {
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory() : [], nextBefore: null });
+  await mount();
+  await act(async () => outcomeToggle("Failed").click());
+  expect(outcomeToggle("Failed").getAttribute("aria-pressed")).toBe("true");
+  expect(rowTitles()).toEqual(["Broken deploy", "Hand failed"]);
+  await act(async () => outcomeToggle("Marked done").click());
+  expect(rowTitles()).toEqual(["Marked docs", "Broken deploy", "Hand failed"]);
+  await act(async () => outcomeToggle("Failed").click());
+  await act(async () => outcomeToggle("Marked done").click());
+  await act(async () => outcomeToggle("Shipped").click());
+  expect(rowTitles()).toEqual(["Merged login fix"]);
+});
+
+it("filters finished tasks by repository, listing configured and loaded repositories", async () => {
+  mocks.repos = [{ key: "acme/app" }, { key: "acme/web" }];
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory() : [], nextBefore: null });
+  await mount();
+  const select = container.querySelector<HTMLSelectElement>('select[aria-label="Repository"]')!;
+  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["All repositories", "acme/api", "acme/app", "acme/web"]);
+  await setValue(select, "acme/api");
+  expect(rowTitles()).toEqual(["Marked docs", "Hand failed"]);
+  await setValue(select, "acme/web");
+  expect(rowTitles()).toEqual([]);
+  expect(finishedPanel().textContent).toContain("No finished tasks match");
+});
+
+it("finds finished tasks by title, issue number or PR number", async () => {
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory() : [], nextBefore: null });
+  await mount();
+  await setValue(searchBox(), "deploy");
+  expect(rowTitles()).toEqual(["Broken deploy"]);
+  await setValue(searchBox(), "#13");
+  expect(rowTitles()).toEqual(["Marked docs"]);
+  await setValue(searchBox(), "40");
+  expect(rowTitles()).toEqual(["Merged login fix"]);
+});
+
+it("says when no finished task matches, and clears the filters", async () => {
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory() : [], nextBefore: null });
+  await mount();
+  await setValue(searchBox(), "nothing like this");
+  expect(finishedGroup()).toBeNull();
+  expect(finishedPanel().textContent).toContain("No finished tasks match");
+  expect(finishedPanel().textContent).not.toContain("No finished tasks yet");
+  expect(hasButton("Search older")).toBe(false);
+  await act(async () => buttonLabelled("Clear filters").click());
+  expect(searchBox().value).toBe("");
+  expect(rowTitles()).toHaveLength(4);
+});
+
+it("says only the loaded finished tasks were searched, and searches older pages on request", async () => {
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory() : [], nextBefore: input.includeDone ? "c1" : null });
+  mocks.call.mockImplementation(async (method: string, input: RosterInput) => {
+    if (method !== "cos_roster") return {};
+    if (input.before === "c1") return { entries: [finished("o", "Old migration", "done", { outcome: "completed" })], nextBefore: "c2" };
+    return { entries: [], nextBefore: null };
+  });
+  await mount();
+  await setValue(searchBox(), "migration");
+  expect(finishedPanel().textContent).toContain("No finished tasks match");
+  expect(finishedPanel().textContent).toContain("Searched the 4 most recently finished tasks.");
+  await act(async () => buttonLabelled("Search older").click());
+  expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: false });
+  expect(rowTitles()).toEqual(["Old migration"]);
+  // More pages remain: the note stays under the list, with the button.
+  expect(finishedPanel().textContent).toContain("Searched the 5 most recently finished tasks.");
+  expect(hasButton("Search older")).toBe(true);
+  expect(hasButton("Show 20 more")).toBe(false);
+});
+
+it("starts paging over when a filter changes", async () => {
+  const many = Array.from({ length: 40 }, (_, i) => finished(`f${i}`, `Task ${i}`, i % 2 ? "failed" : "done", { outcome: i % 2 ? "failed" : "merged" }));
+  mocks.roster = (input) => ({ entries: input.includeDone ? many : [], nextBefore: null });
+  await mount();
+  await act(async () => buttonLabelled("Show 20 more").click());
+  expect(rowTitles()).toHaveLength(30);
+  await act(async () => outcomeToggle("Shipped").click());
+  expect(rowTitles()).toHaveLength(10);
+  expect(rowTitles()[0]).toBe("Task 0");
+  await act(async () => buttonLabelled("Show 20 more").click());
+  expect(rowTitles()).toHaveLength(20);
+  expect(hasButton("Show 20 more")).toBe(false);
 });
 
 it("lists the pull request of an active task on Repos & PRs, with a deep finished page", async () => {

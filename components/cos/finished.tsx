@@ -8,13 +8,15 @@ import { rpcContract } from "../../rpcContract";
 import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "../../src/outcome";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { cn } from "@/lib/utils";
 import { Panel, StatusPill } from "./viz";
 import type { Tone } from "./viz";
 import { PrStatePill } from "./prState";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "./rovingCards";
 import { TaskActionsMenu, taskTitle, type Confirmable, type ItemAction, type MenuTask } from "./taskActions";
 import type { ActivityTask } from "./dashboardModel";
-import { FINISHED_FIRST, FINISHED_STEP, finishedTimer, groupByDay, mergePages, visibleSlice } from "./finishedModel";
+import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, finishedTimer, groupByDay, isFiltering, matchesFinishedFilter, mergePages, visibleSlice, type FinishedFilter, type OutcomeGroup } from "./finishedModel";
+import { inputClass } from "./fields";
 
 type Contract = typeof rpcContract;
 export type FinishedEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -143,30 +145,97 @@ function FinishedRow({ entry, now, busy, tabbable, onAction, onAsk, onWorkflow, 
   );
 }
 
+/** What the Finished section shows: open or collapsed, and its filters. */
+export type FinishedView = FinishedFilter & { open: boolean };
+export const DEFAULT_FINISHED_VIEW: FinishedView = { open: true, ...NO_FILTER };
+
+export function useFinishedView(): { view: FinishedView; update: (patch: Partial<FinishedView>) => void } {
+  const [view, setView] = useState<FinishedView>(DEFAULT_FINISHED_VIEW);
+  const update = useCallback((patch: Partial<FinishedView>) => setView((v) => ({ ...v, ...patch })), []);
+  return { view, update };
+}
+
+const OUTCOME_FILTERS: { key: OutcomeGroup; label: string; icon: string }[] = [
+  { key: "shipped", label: "Shipped", icon: "CircleCheck" },
+  { key: "marked_done", label: "Marked done", icon: "UserCheck" },
+  { key: "failed", label: "Failed", icon: "CircleX" },
+];
+
+function FinishedFilters({ view, repos, onChange }: { view: FinishedView; repos: string[]; onChange: (patch: Partial<FinishedView>) => void }) {
+  const toggle = (key: OutcomeGroup) => onChange({ outcomes: view.outcomes.includes(key) ? view.outcomes.filter((k) => k !== key) : [...view.outcomes, key] });
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      <input
+        type="search"
+        aria-label="Search finished tasks"
+        placeholder="Search title or #number"
+        className={cn(inputClass, "w-full sm:w-56 pointer-coarse:h-10")}
+        value={view.query}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(event) => onChange({ query: event.target.value })}
+      />
+      <div role="group" aria-label="Outcome" className="flex flex-wrap items-center gap-1">
+        {OUTCOME_FILTERS.map((o) => (
+          <Button key={o.key} size="sm" variant="ghost" className="pointer-coarse:h-10" aria-pressed={view.outcomes.includes(o.key)} onClick={() => toggle(o.key)}>
+            <Icon name={o.icon} fallback="Circle" aria-hidden />{o.label}
+          </Button>
+        ))}
+      </div>
+      {repos.length > 1 ? (
+        <select aria-label="Repository" className={cn(inputClass, "w-auto pr-7 pointer-coarse:h-10")} value={view.repo ?? ""} onChange={(event) => onChange({ repo: event.target.value || null })}>
+          <option value="">All repositories</option>
+          {repos.map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+      ) : null}
+      {isFiltering(view) ? (
+        <Button size="sm" variant="ghost" className="pointer-coarse:h-10" onClick={() => onChange(NO_FILTER)}>
+          <Icon name="X" fallback="Circle" aria-hidden />Clear filters
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 export type FinishedSectionProps = {
   finished: ReturnType<typeof useFinishedTasks>;
   now: number;
   busy: ReadonlySet<string>;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  view: FinishedView;
+  onViewChange: (patch: Partial<FinishedView>) => void;
+  /** Repositories to filter by, besides those of the loaded tasks. */
+  repos: readonly string[];
   headingRef?: Ref<HTMLHeadingElement>;
 } & RowHandlers;
 
 /** Finished tasks as compact rows, newest first, by day: 10 at first, then 20 more per click. */
-export function FinishedSection({ finished, now, busy, open, onOpenChange, headingRef, ...handlers }: FinishedSectionProps) {
+export function FinishedSection({ finished, now, busy, view, onViewChange, repos, headingRef, ...handlers }: FinishedSectionProps) {
   const { query, entries, cursor, loadingOlder, loadOlder } = finished;
-  const [shown, setShown] = useState(FINISHED_FIRST);
-  const slice = visibleSlice(entries, shown);
+  const filtering = isFiltering(view);
+  const matching = useMemo(() => entries.filter((e) => matchesFinishedFilter(e, view)), [entries, view]);
+  // Paging starts over when a filter changes.
+  const filterKey = JSON.stringify([view.outcomes, view.repo, view.query.trim()]);
+  const [paging, setPaging] = useState({ key: filterKey, shown: FINISHED_FIRST });
+  const shown = paging.key === filterKey ? paging.shown : FINISHED_FIRST;
+  const slice = visibleSlice(matching, shown);
   const roving = useRovingCards(slice.rows.map((e) => e.id));
   const groups = groupByDay(slice.rows, now);
+  const repoOptions = useMemo(() => [...new Set([...repos, ...entries.map((e) => e.repo)])].sort(), [repos, entries]);
   const bodyId = "cos-finished-list";
   const count = query.data ? `${entries.length}${cursor ? "+" : ""}` : null;
   const showMore = () => {
     const next = shown + FINISHED_STEP;
-    setShown(next);
+    setPaging({ key: filterKey, shown: next });
     // Rendering runs past what is loaded: fetch the next page.
-    if (entries.length < next && cursor) void loadOlder();
+    if (matching.length < next && cursor) void loadOlder();
   };
+  const searchOlder = (
+    <Button size="sm" variant="outline" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => void loadOlder()}>
+      <Icon name="History" fallback="Circle" aria-hidden />Search older
+    </Button>
+  );
+  // Filters run over the loaded pages; older ones are fetched on request.
+  const searchedNote = `Searched the ${entries.length} most recently finished ${entries.length === 1 ? "task" : "tasks"}.`;
   return (
     <Panel
       title={count === null ? "Finished" : `Finished · ${count}`}
@@ -174,19 +243,32 @@ export function FinishedSection({ finished, now, busy, open, onOpenChange, headi
       headingRef={headingRef}
       dim={query.isFetching && !query.isLoading}
       actions={
-        <Button size="sm" variant="ghost" aria-expanded={open} aria-controls={bodyId} onClick={() => onOpenChange(!open)}>
-          <Icon name={open ? "ChevronDown" : "ChevronRight"} fallback="Circle" aria-hidden />
-          {open ? "Collapse" : "Expand"}
+        <Button size="sm" variant="ghost" aria-expanded={view.open} aria-controls={bodyId} onClick={() => onViewChange({ open: !view.open })}>
+          <Icon name={view.open ? "ChevronDown" : "ChevronRight"} fallback="Circle" aria-hidden />
+          {view.open ? "Collapse" : "Expand"}
         </Button>
       }
     >
-      <div id={bodyId} hidden={!open}>
+      <div id={bodyId} hidden={!view.open}>
         {query.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
         {query.data && !entries.length && !cursor ? (
           <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
             <span className="block font-medium text-foreground">No finished tasks yet</span>
             Tasks show here once they ship, fail or are marked done.
           </p>
+        ) : null}
+        {entries.length || cursor || filtering ? <FinishedFilters view={view} repos={repoOptions} onChange={onViewChange} /> : null}
+        {query.data && filtering && !matching.length && (entries.length || cursor) ? (
+          <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">No finished tasks match</span>
+            {cursor ? <span>{searchedNote}</span> : <span>Change or clear the filters.</span>}
+            <div className="flex flex-wrap justify-center gap-2">
+              {cursor ? searchOlder : null}
+              <Button size="sm" variant="ghost" onClick={() => onViewChange(NO_FILTER)}>
+                <Icon name="X" fallback="Circle" aria-hidden />Clear filters
+              </Button>
+            </div>
+          </div>
         ) : null}
         {slice.rows.length ? (
           // One tab stop group, like the active grid (#115): Tab visits the current row's controls only.
@@ -206,11 +288,17 @@ export function FinishedSection({ finished, now, busy, open, onOpenChange, headi
             ))}
           </div>
         ) : null}
-        {slice.more || cursor ? (
+        {slice.more || (cursor && !filtering) ? (
           <div className="mt-3 flex justify-center">
             <Button size="sm" variant="outline" disabled={loadingOlder} aria-busy={loadingOlder} onClick={showMore}>
               <Icon name="ChevronDown" fallback="Circle" aria-hidden />Show {FINISHED_STEP} more
             </Button>
+          </div>
+        ) : null}
+        {filtering && cursor && slice.rows.length && !slice.more ? (
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs text-muted-foreground">
+            <span>{searchedNote}</span>
+            {searchOlder}
           </div>
         ) : null}
       </div>

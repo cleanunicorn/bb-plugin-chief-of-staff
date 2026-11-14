@@ -264,11 +264,11 @@ it("keeps Throughput a few tab stops past the tasks, with 50 finished tasks", as
   expect(rows()).toHaveLength(10);
   expect(tabbables(finishedGroup())).toHaveLength(5);
   expect(rows().slice(1).every((row) => tabbables(row).length === 0)).toBe(true);
-  // From the last active card's stop to Throughput: Collapse, the row's five, Show 20 more.
+  // From the last active card's stop to Throughput: Collapse, search, three outcome toggles, the row's five, Show 20 more.
   const lastActive = tabbables(group()).at(-1)!;
   const throughput = heading("Throughput · last 14 days");
   const between = tabbablesAfter(lastActive).filter((el) => el.compareDocumentPosition(throughput) & Node.DOCUMENT_POSITION_FOLLOWING);
-  expect(between.length).toBeLessThanOrEqual(8);
+  expect(between.map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim())).toEqual(["Collapse", "Search finished tasks", "Shipped", "Marked done", "Failed", "app issue #100", "PR #100", "Open thread", "Workflow", "More actions", "Show 20 more"]);
 });
 
 it("moves between finished rows with the arrow keys, landing on Workflow", async () => {
