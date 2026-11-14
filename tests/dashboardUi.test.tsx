@@ -961,7 +961,9 @@ it("opens a done task's workflow at the step list, and returns focus to More act
   await act(async () => menuItem("Run a step again").click());
   await tick(5);
   const sheet = confirmDialog()!;
-  expect(sheet.textContent).toContain("Where this task is");
+  // A finished task's sheet reads as a record (#117).
+  expect(sheet.textContent).toContain("How this task went");
+  expect(sheet.textContent).not.toContain("Where this task is");
   const toggle = (label: string) => Array.from(sheet.querySelectorAll('[aria-label="View"] button')).find((b) => b.textContent?.trim() === label)!;
   expect(toggle("List").getAttribute("aria-pressed")).toBe("true");
   expect(toggle("Canvas").getAttribute("aria-pressed")).toBe("false");
