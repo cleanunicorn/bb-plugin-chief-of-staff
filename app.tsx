@@ -1,6 +1,6 @@
 // Chief of Staff — BB plugin frontend entry: dashboard nav panel + settings section.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { UrlLink, definePluginApp, experimental_useRpcQuery, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "./rpcContract";
@@ -12,6 +12,7 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
+import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
@@ -24,11 +25,12 @@ import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
+import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -42,12 +44,6 @@ const TABS = [
 type Tab = (typeof TABS)[number]["id"];
 
 const WINDOW_DAYS = 14;
-
-function useLiveRefresh(refetch: () => Promise<void>) {
-  useRealtime("cos-changed", () => {
-    void refetch();
-  });
-}
 
 function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
@@ -111,7 +107,9 @@ function repoName(repo: string): string {
 }
 
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
-  if (e.detail === "done") return { tone: "good", label: e.lastError ? "Closed" : "Shipped", icon: "CircleCheck" };
+  // A finished task reads by how it ended, never by whether an old error is still stored.
+  if (e.outcome) return OUTCOME_META[e.outcome];
+  if (e.detail === "done") return { tone: "good", label: "Done", icon: "CircleCheck" };
   if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
   if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
   if (e.detail === "waiting_on_human") {
@@ -171,15 +169,16 @@ export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)"
  * as icons, and scrolls the canvas and the overview as one column instead of squeezing the overview into a box (#118).
  */
 export const PHONE_VIEWPORT_QUERY = "not all and (min-width: 40rem)";
+type SheetMode = "canvas" | "list";
 
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
-function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
+function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [mode, setMode] = useState<"canvas" | "list">("canvas");
+  const [mode, setMode] = useState<SheetMode>(initialMode);
   const [busy, setBusy] = useState(false);
   const [confirmRerun, setConfirmRerun] = useState(false);
   const rerunButton = useRef<HTMLButtonElement>(null);
@@ -376,19 +375,83 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
 // ---------- agent card ----------
 
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
+type Confirmable = "mark_done" | "mark_failed" | "restart";
+
+/** Active cards count the task's age; finished cards say when it finished and how long it took. */
+function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: string; label: string; title: string } {
+  const started = new Date(entry.startedAt).toLocaleString();
+  if (!finished) {
+    const age = duration((now - Date.parse(entry.startedAt)) / 60_000);
+    return { text: age, label: `Task age ${age}`, title: `Task started ${started}` };
+  }
+  // Some legacy rows have no finish time: say only what is known.
+  if (!entry.finishedAt) {
+    const text = `Started ${relative(entry.startedAt, now)}`;
+    return { text, label: text, title: `Task started ${started}` };
+  }
+  const ago = relative(entry.finishedAt, now);
+  const took = duration((Date.parse(entry.finishedAt) - Date.parse(entry.startedAt)) / 60_000);
+  return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
+}
+
+/**
+ * What each confirm on a card says and sends. A failed task is no longer worked on, so its copy differs.
+ * `archivesOnDone`: marking done archives the task's threads ("Archive threads when a task is done").
+ */
+function cardConfirm(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
+  switch (kind) {
+    case "restart":
+      return {
+        title: `Restart ‘${title}’ on a new thread?`,
+        // Server `retry` on a failed item reopens it, which usually takes a slot whether or not an agent starts. It
+        // restarts an unfinished writing step on a fresh thread; steps not yet started then run through the scheduler.
+        description: "This reopens the task, so it usually takes one of the task slots again, or waits for one to free up. Chief of Staff carries on from where it stopped: an unfinished writing step restarts on a new thread, and steps that had not started run as usual. The old thread is left as it is.",
+        confirmLabel: "Restart",
+        action: "retry",
+      };
+    case "mark_done":
+      return {
+        title: `Mark ‘${title}’ done?`,
+        description: `${failed ? "The task is recorded as done instead of failed. No agent work starts." : "Chief of Staff stops working on this task and its workflow ends."} ${archivesOnDone ? "Its threads are archived and their workspace is removed: changes not pushed are lost." : "Its threads are left as they are."}`,
+        confirmLabel: "Mark done",
+        action: "mark_done",
+      };
+    case "mark_failed":
+      return {
+        title: `Mark ‘${title}’ failed?`,
+        description: "Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is.",
+        confirmLabel: "Mark failed",
+        tone: "destructive",
+        action: "mark_failed",
+      };
+  }
+}
 
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
-function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
+/** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
+function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
-  const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
+  // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
+  // refetch has changed the task's outcome under it.
+  const [confirming, setConfirming] = useState<{ kind: Confirmable; failed: boolean; open: boolean }>({ kind: "mark_done", failed: false, open: false });
+  const ask = (kind: Confirmable) => setConfirming({ kind, failed: entry.detail === "failed", open: true });
+  const closeConfirm = () => setConfirming((c) => ({ ...c, open: false }));
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
-  const elapsedMin = (now - Date.parse(entry.startedAt)) / 60_000;
+  // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
+  const showingActivity = useRef(false);
+  const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed, archivesOnDone);
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
   const tabIndex = tabbable ? undefined : -1;
+  const timer = cardTimer(entry, finished, now);
+  // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
+  // MARKED_FAILED only repeats the outcome label.
+  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) && entry.lastError !== MARKED_FAILED ? entry.lastError : null;
+  // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
+  const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   return (
     <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
@@ -408,17 +471,24 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
           </p>
         </div>
       </header>
-      <div className="flex items-start justify-between gap-2">
+      <div className={cn("flex items-start justify-between gap-2", finished && "flex-wrap gap-y-1")}>
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
           {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
         </div>
-        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums" title={`Task started ${new Date(entry.startedAt).toLocaleString()}`} aria-label={`Task age ${duration(elapsedMin)}`}>
-          <Icon name="Timer" fallback="Clock" className="size-3.5" aria-hidden />
-          {finished ? relative(entry.startedAt, now) : duration(elapsedMin)}
+        <span className={cn("flex items-center gap-1 text-xs text-muted-foreground tabular-nums", finished ? "min-w-0" : "shrink-0")} title={timer.title} aria-label={timer.label}>
+          <Icon name={finished ? "CalendarCheck" : "Timer"} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
+          {timer.text}
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
+      {endReason ? (
+        <p className="flex items-start gap-1.5 text-sm text-foreground">
+          {/* Muted: a failed run is history, not an alarm (#22). */}
+          <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">{reasonLead}</span> {endReason}</span>
+        </p>
+      ) : null}
       {entry.steps.length ? <details className="group text-xs">
         <summary {...{ [ENTRY_ATTRIBUTE]: "" }} tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
@@ -502,42 +572,77 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
             </Button>
           ) : null}
         </div>
-        {!finished || entry.detail === "failed" ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
-                <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" side="top">
-              <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
+              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            side="top"
+            // Show the activity once the menu has closed: an open menu keeps focus inside itself.
+            onCloseAutoFocus={(event) => {
+              if (!showingActivity.current || !onShowActivity) return;
+              showingActivity.current = false;
+              event.preventDefault();
+              onShowActivity({ id: entry.id, label: taskLabel({ workItemId: entry.id, issueNumber: entry.issueNumber, issueTitle: entry.issueTitle || null }) ?? title });
+            }}
+          >
+            {onShowActivity ? (
+              <DropdownMenuItem onSelect={() => { showingActivity.current = true; }}>
+                <Icon name="Activity" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                Show activity
+              </DropdownMenuItem>
+            ) : null}
+            {entry.detail === "done" ? (
+              // A re-run puts a done task back to work; the sheet asks before running it. Focus returns to More actions,
+              // because this item is gone once the menu closes.
+              <DropdownMenuItem onSelect={() => onWorkflow(entry.id, menuTrigger.current!, "list")}>
                 <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Retry the stuck step
+                Run a step again…
               </DropdownMenuItem>
-              {/* The confirm lives on the card, not in the menu: the menu closes when an item is chosen. */}
-              <DropdownMenuItem onSelect={() => setConfirming("mark_done")}>
-                <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Mark done…
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
-                <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Mark failed…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
+            ) : entry.detail === "failed" ? (
+              <>
+                <DropdownMenuItem onSelect={() => ask("restart")}>
+                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Restart on a new thread…
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => ask("mark_done")}>
+                  <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Mark done…
+                </DropdownMenuItem>
+              </>
+            ) : (
+              <>
+                <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
+                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Retry the stuck step
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => ask("mark_done")}>
+                  <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Mark done…
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => ask("mark_failed")}>
+                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Mark failed…
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <ConfirmDialog
-        open={confirming !== null}
-        title={`Mark ‘${title}’ ${confirming === "mark_failed" ? "failed" : "done"}?`}
-        description="Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is."
-        confirmLabel={confirming === "mark_failed" ? "Mark failed" : "Mark done"}
-        tone={confirming === "mark_failed" ? "destructive" : undefined}
+        open={confirming.open}
+        title={confirmCopy.title}
+        description={confirmCopy.description}
+        confirmLabel={confirmCopy.confirmLabel}
+        tone={confirmCopy.tone}
         onConfirm={() => {
-          if (confirming) onAction(entry.id, confirming);
-          setConfirming(null);
+          onAction(entry.id, confirmCopy.action);
+          closeConfirm();
         }}
-        onCancel={() => setConfirming(null)}
+        onCancel={closeConfirm}
         restoreFocus={focusTrigger}
       />
     </article>
@@ -551,8 +656,9 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
+const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
 
-export function PipelineTab() {
+export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
   const now = useNow();
   const [includeDone, setIncludeDone] = useState(false);
@@ -570,7 +676,7 @@ export function PipelineTab() {
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
-  const [viewing, setViewing] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ id: string; mode: SheetMode } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
@@ -595,8 +701,50 @@ export function PipelineTab() {
     [rpc, refetchAll],
   );
 
-  const entries = roster.data?.entries ?? [];
-  const active = entries.filter((e) => e.detail !== "done" && e.detail !== "failed");
+  const live = roster.data?.entries;
+  const liveEntries = useMemo(() => live ?? [], [live]);
+  // Counts and attention come from the live query's active items, never from finished pages.
+  const active = liveEntries.filter((e) => !isFinished(e));
+  // Finished pages loaded with "Show older finished": the live query's finished
+  // items at the first click, then each older page. The live query wins on
+  // duplicates (a retried item is active again).
+  const [older, setOlder] = useState<{ entries: RosterEntry[]; before: string | null } | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderRequest = useRef<{ generation: number; inFlight: boolean }>({ generation: 0, inFlight: false });
+  const olderCursor = !includeDone ? null : older ? older.before : (roster.data?.nextBefore ?? null);
+  const entries = useMemo(() => {
+    if (!older) return liveEntries;
+    const ids = new Set(liveEntries.map((e) => e.id));
+    return [...liveEntries, ...older.entries.filter((e) => !ids.has(e.id))];
+  }, [liveEntries, older]);
+  const toggleFinished = () => {
+    olderRequest.current = { generation: olderRequest.current.generation + 1, inFlight: false };
+    setOlder(null);
+    setLoadingOlder(false);
+    setIncludeDone((v) => !v);
+  };
+  const loadOlder = async () => {
+    const request = olderRequest.current;
+    if (!olderCursor || request.inFlight) return;
+    request.inFlight = true;
+    setLoadingOlder(true);
+    setActionError(null);
+    const snapshot = liveEntries.filter(isFinished);
+    try {
+      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true });
+      if (olderRequest.current !== request) return;
+      setOlder((prev) => {
+        const base = prev?.entries ?? snapshot;
+        const seen = new Set(base.map((e) => e.id));
+        return { entries: [...base, ...page.entries.filter((e) => !seen.has(e.id))], before: page.nextBefore ?? null };
+      });
+    } catch (error) {
+      if (olderRequest.current === request) setActionError(errorText(error));
+    } finally {
+      request.inFlight = false;
+      if (olderRequest.current === request) setLoadingOlder(false);
+    }
+  };
   const byStage = useMemo(() => {
     const counts = Object.fromEntries(STAGES.map((s) => [s.key, 0])) as Record<StageKey, number>;
     for (const e of active) {
@@ -607,6 +755,8 @@ export function PipelineTab() {
   }, [active]);
   const s = stats.data;
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
+  // The setting defaults to on; until the overview loads, assume it.
+  const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const stalled = active.filter((e) => attentionKind(e) === "stalled").length;
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
@@ -697,7 +847,7 @@ export function PipelineTab() {
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
-            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={() => setIncludeDone((v) => !v)}>
+            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
             </Button>
@@ -718,9 +868,17 @@ export function PipelineTab() {
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
               ))}
             </div>
+          </div>
+        ) : null}
+        {/* Stage and attention filters never match finished tasks. */}
+        {olderCursor && filter === "all" ? (
+          <div className="mt-3 flex justify-center">
+            <Button size="sm" variant="outline" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => void loadOlder()}>
+              <Icon name="History" fallback="Circle" aria-hidden />Show older finished
+            </Button>
           </div>
         ) : null}
       </Panel>
@@ -778,7 +936,7 @@ export function PipelineTab() {
       </div>
 
       {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
-      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
+      {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }
@@ -838,7 +996,7 @@ export function ReposTab() {
   const rpc = useRpc<Contract>();
   const now = useNow();
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
-  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone: true, withUsage: false } });
+  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone: true, finishedLimit: 200, withUsage: false } });
   const refetchAll = useCallback(async () => {
     await Promise.all([overview.refetch(), roster.refetch()]);
   }, [overview, roster]);
@@ -997,35 +1155,147 @@ const LEVEL: Record<string, { tone: Tone; icon: string; label: string }> = {
 
 const MOBILE_ACTIVITY_ROWS = 12;
 
-export function ActivityFeed() {
+/** Activity text as written, with each thread id a link to its thread. */
+function ThreadLinkedText({ text, onThread }: { text: string; onThread: (id: string) => void }) {
+  return (
+    <>
+      {splitThreadIds(text).map((part, i) =>
+        typeof part === "string" ? (
+          part
+        ) : (
+          <button
+            key={i}
+            type="button"
+            className="rounded underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            aria-label={`Open thread ${part.thread}`}
+            onClick={() => onThread(part.thread)}
+          >
+            {part.thread}
+          </button>
+        ),
+      )}
+    </>
+  );
+}
+
+/**
+ * The latest activity, newest first. It can be narrowed to one task: pass `task` and `onTaskChange` to hold that
+ * choice outside (a card's "Show activity" sets it), or leave them out and the feed keeps it itself.
+ */
+export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { task?: ActivityTask | null; onTaskChange?: (task: ActivityTask | null) => void; headingRef?: RefObject<HTMLHeadingElement | null> } = {}) {
   const palette = usePalette();
+  const navigate = useBbNavigate();
+  const toThread = useCallback((id: string) => navigate.toThread(id), [navigate]);
   const now = useNow();
   const [onlyProblems, setOnlyProblems] = useState(false);
+  const [ownTask, setOwnTask] = useState<ActivityTask | null>(null);
+  const task = onTaskChange ? (taskProp ?? null) : ownTask;
+  const setTask = onTaskChange ?? setOwnTask;
+  const taskTrigger = useRef<HTMLButtonElement>(null);
+  // Set by the clear button: once the feed has re-rendered, focus the Task menu, or the heading when it is gone.
+  const focusAfterClear = useRef(false);
   // Phones get no nested scroll box: show the latest rows and expand in place.
   const [showAll, setShowAll] = useState(false);
-  const [before, setBefore] = useState<number | undefined>(undefined);
-  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, ...(before === undefined ? {} : { before }) } });
+  // A cursor belongs to the task filter it was read under: choosing or clearing a task (here or from a card)
+  // returns to that filter's newest page in the same render, so no request goes out with another filter's cursor.
+  const taskId = task?.id ?? null;
+  const [cursor, setCursor] = useState<{ taskId: string | null; before: number } | null>(null);
+  const before = cursor && cursor.taskId === taskId ? cursor.before : undefined;
+  const setBefore = (next: number | undefined) => setCursor(next === undefined ? null : { taskId, before: next });
+  // A task's own rows come from the server, so its older rows are not lost behind the latest 60 of every task.
+  const log = experimental_useRpcQuery<Contract, "cos_log">({ contract: rpcContract, method: "cos_log", input: { limit: 60, onlyProblems, ...(before === undefined ? {} : { before }), ...(task ? { workItemId: task.id } : {}) } });
+  useEffect(() => setShowAll(false), [taskId]);
   useLiveRefresh(log.refetch);
+  // With one repository its name on every row says nothing; rows of any other (removed) repository keep theirs.
+  // Unknown or failed: keep every name (the tab beside the feed shows the error, and refreshes this query).
+  const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  const onlyRepo = overview.data?.repos.length === 1 ? overview.data.repos[0]!.key : null;
+  // The tasks to offer: every task seen while the feed is open, so the list survives narrowing.
+  const [seen, setSeen] = useState<ActivityTask[]>([]);
+  useEffect(() => {
+    if (!log.data) return;
+    setSeen((before) => {
+      const next = recentTasks(log.data!.entries, before);
+      return next.length === before.length && next.every((t, i) => t.id === before[i]!.id && t.label === before[i]!.label) ? before : next;
+    });
+  }, [log.data]);
+  const taskOptions = task && !seen.some((t) => t.id === task.id) ? [task, ...seen] : seen;
+  // The feed opens a task's workflow itself: it sits beside the tabs, not inside the Pipeline tab.
+  const [viewing, setViewing] = useState<string | null>(null);
+  const sheetFocus = useSheetFocus<HTMLHeadingElement>();
+  const heading = useCallback(
+    (element: HTMLHeadingElement | null) => {
+      sheetFocus.fallback.current = element;
+      if (headingRef) headingRef.current = element;
+    },
+    [sheetFocus.fallback, headingRef],
+  );
+  useEffect(() => {
+    if (task || !focusAfterClear.current) return;
+    focusAfterClear.current = false;
+    (taskTrigger.current?.isConnected ? taskTrigger.current : sheetFocus.fallback.current)?.focus();
+  }, [task, sheetFocus.fallback]);
   const entries = log.data?.entries ?? [];
   return (
     <Panel
       title="Activity"
       icon="Activity"
+      headingRef={heading}
       dim={log.isFetching && !log.isLoading}
       actions={
-        <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => { setOnlyProblems((v) => !v); setBefore(undefined); setShowAll(false); }}>
-          <Icon name="TriangleAlert" fallback="Circle" aria-hidden /> Problems only
-        </Button>
+        <>
+          {taskOptions.length ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button ref={taskTrigger} size="sm" variant="ghost" className="max-w-full">
+                  <Icon name="ListFilter" fallback="Filter" aria-hidden />
+                  {task ? (
+                    <span className="flex min-w-0">
+                      Task:&nbsp;<span className="max-w-[12rem] truncate" title={task.label}>{task.label}</span>
+                    </span>
+                  ) : (
+                    "Task"
+                  )}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-w-[min(24rem,90vw)]">
+                {taskOptions.map((t) => (
+                  <DropdownMenuItem key={t.id} onSelect={() => setTask(t)}>
+                    <span className="truncate" title={t.label}>{t.label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {task ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="w-8 p-0"
+              aria-label="Show all activity"
+              onClick={() => {
+                focusAfterClear.current = true;
+                setTask(null);
+              }}
+            >
+              <Icon name="X" fallback="Circle" aria-hidden />
+            </Button>
+          ) : null}
+          <Button size="sm" variant="ghost" aria-pressed={onlyProblems} onClick={() => { setOnlyProblems((v) => !v); setBefore(undefined); setShowAll(false); }}>
+            <Icon name="TriangleAlert" fallback="Circle" aria-hidden /> Problems only
+          </Button>
+        </>
       }
     >
       <ErrorLine error={log.error} />
-      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : "No activity yet."}</p> : null}
+      {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : task ? "No activity for this task." : "No activity yet."}</p> : null}
       {entries.length > 0 ? <p className="mb-2 text-xs text-muted-foreground">
         {entries.length} entries · {new Date(entries.at(-1)!.at).toLocaleString()} – {new Date(entries[0]!.at).toLocaleString()}
       </p> : null}
       <ol className="sm:max-h-80 sm:overflow-auto">
         {entries.map((e, i) => {
           const l = LEVEL[e.level] ?? LEVEL.info!;
+          const rowTask = taskLabel(e);
           return (
             <li key={e.id} className={cn("flex-wrap items-start gap-x-2.5 gap-y-0.5 py-1.5 text-xs sm:flex-nowrap", !showAll && i >= MOBILE_ACTIVITY_ROWS ? "hidden sm:flex" : "flex")}>
               <Icon name={l.icon} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: toneColor(l.tone, palette) }} aria-label={l.label} />
@@ -1034,9 +1304,25 @@ export function ActivityFeed() {
                 {relative(e.at, now)}
               </time>
               <span className="min-w-0 basis-full pl-6 text-foreground [overflow-wrap:anywhere] sm:flex-1 sm:basis-0 sm:pl-0">
-                {e.repo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
-                {e.message}
-                <span className="text-muted-foreground"> · {e.actor}</span>
+                {e.repo && e.repo !== onlyRepo ? <span className="font-medium">{e.repo.split("/")[1] ?? e.repo} </span> : null}
+                {rowTask && e.workItemId ? (
+                  <>
+                    <button
+                      type="button"
+                      className="inline-block max-w-[16rem] truncate rounded align-bottom font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      title={rowTask}
+                      aria-label={`Open task ${rowTask}`}
+                      onClick={(event) => {
+                        sheetFocus.remember(event.currentTarget);
+                        setViewing(e.workItemId);
+                      }}
+                    >
+                      {rowTask}
+                    </button>{" "}
+                  </>
+                ) : null}
+                <ThreadLinkedText text={e.message} onThread={toThread} />
+                <span className="text-muted-foreground"> · <ThreadLinkedText text={e.actor} onThread={toThread} /></span>
               </span>
             </li>
           );
@@ -1052,6 +1338,7 @@ export function ActivityFeed() {
           Show {entries.length - MOBILE_ACTIVITY_ROWS} more
         </Button>
       ) : null}
+      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void log.refetch()} restoreFocus={sheetFocus.restore} /> : null}
     </Panel>
   );
 }
@@ -1068,6 +1355,15 @@ export function Dashboard({ subPath }: { subPath: string }) {
   }, [subPath]);
   const goTab = useCallback((t: Tab) => navigate.toPluginPanel("cos", { subPath: t }), [navigate]);
   const [alert, setAlert] = useState<{ title: string; body: string } | null>(null);
+  // Held here so a task card's "Show activity" can narrow the feed, and the choice survives switching tabs.
+  const [activityTask, setActivityTask] = useState<ActivityTask | null>(null);
+  const activityHeading = useRef<HTMLHeadingElement | null>(null);
+  const showActivity = useCallback((task: ActivityTask) => {
+    setActivityTask(task);
+    const heading = activityHeading.current;
+    heading?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    heading?.focus({ preventScroll: true });
+  }, []);
   useRealtime("cos-alert", (payload) => {
     const p = payload as { title?: string; body?: string };
     if (p?.title) setAlert({ title: p.title, body: p.body ?? "" });
@@ -1117,8 +1413,8 @@ export function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
-        {tab === "config" ? null : <ActivityFeed />}
+        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
+        {tab === "config" ? null : <ActivityFeed task={activityTask} onTaskChange={setActivityTask} headingRef={activityHeading} />}
       </div>
     </PaletteProvider>
   );

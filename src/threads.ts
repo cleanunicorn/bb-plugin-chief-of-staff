@@ -124,33 +124,38 @@ export interface ThreadUsage {
   cost: { amount: number; currency: string } | null;
 }
 
+/** A thread's usage, and whether both usage queries answered (an empty answer or a deleted thread counts: nothing is reported). */
+export interface UsageRead {
+  usage: ThreadUsage;
+  complete: boolean;
+}
+
+const pick = (obj: unknown, path: string[]): unknown => path.reduce<unknown>((acc, key) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[key] : undefined), obj);
+
 /** Token usage / cost from the thread's latest usage events, when the provider reports them. */
-export async function readThreadUsage(cos: Cos, threadId: string): Promise<ThreadUsage> {
+export async function readThreadUsage(cos: Cos, threadId: string): Promise<UsageRead> {
   const usage: ThreadUsage = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null };
-  const pick = (obj: unknown, path: string[]): unknown => path.reduce<unknown>((acc, key) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[key] : undefined), obj);
-  try {
-    const result = await cos.bb.sdk.threads.events.list({ threadId, types: ["thread/tokenUsage/updated"], order: "desc", limit: "1" });
+  const latest = async (type: "thread/tokenUsage/updated" | "thread/contextWindowUsage/updated") => {
+    const result = await cos.bb.sdk.threads.events.list({ threadId, types: [type], order: "desc", limit: "1" });
     const event = (result as unknown[])[0] as Record<string, unknown> | undefined;
-    const payload = (event?.data ?? event) as unknown;
-    const total = pick(payload, ["tokenUsage", "total"]) as Record<string, unknown> | undefined;
+    return (event?.data ?? event) as unknown;
+  };
+  const [tokens, cost] = await Promise.allSettled([latest("thread/tokenUsage/updated"), latest("thread/contextWindowUsage/updated")]);
+  if (tokens.status === "fulfilled") {
+    const total = pick(tokens.value, ["tokenUsage", "total"]) as Record<string, unknown> | undefined;
     if (total) {
       usage.inputTokens = typeof total.inputTokens === "number" ? total.inputTokens : null;
       usage.outputTokens = typeof total.outputTokens === "number" ? total.outputTokens : null;
       usage.totalTokens = typeof total.totalTokens === "number" ? total.totalTokens : null;
     }
-  } catch {
-    /* provider does not report usage */
   }
-  try {
-    const result = await cos.bb.sdk.threads.events.list({ threadId, types: ["thread/contextWindowUsage/updated"], order: "desc", limit: "1" });
-    const event = (result as unknown[])[0] as Record<string, unknown> | undefined;
-    const payload = (event?.data ?? event) as unknown;
-    const cost = pick(payload, ["contextWindowUsage", "cost"]) as Record<string, unknown> | undefined;
-    if (cost && typeof cost.amount === "number") usage.cost = { amount: cost.amount, currency: typeof cost.currency === "string" ? cost.currency : "USD" };
-  } catch {
-    /* no cost info */
+  if (cost.status === "fulfilled") {
+    const amount = pick(cost.value, ["contextWindowUsage", "cost"]) as Record<string, unknown> | undefined;
+    if (amount && typeof amount.amount === "number") usage.cost = { amount: amount.amount, currency: typeof amount.currency === "string" ? amount.currency : "USD" };
   }
-  return usage;
+  // A deleted thread answers 404: it has nothing more to report, so the read is complete.
+  const answered = (r: PromiseSettledResult<unknown>) => r.status === "fulfilled" || (r.reason as { status?: number } | null)?.status === 404;
+  return { usage, complete: answered(tokens) && answered(cost) };
 }
 
 export async function sendToThread(cos: Cos, threadId: string, text: string, mentions: SkillMention[] = [], delivery?: DeliveryHooks): Promise<void> {

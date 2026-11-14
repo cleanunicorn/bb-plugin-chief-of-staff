@@ -2,8 +2,70 @@
 
 ## Unreleased
 
+- **A task waits out a Claude or Codex usage limit instead of failing.** When
+  an agent's turn stops on the provider's subscription window (the 5-hour
+  limit), its step keeps running and shows "usage limit reached; continues
+  after 14:05 UTC". Once the window resets BB retries the failed turn and the
+  agent carries on where it stopped, in the same thread, with no new prompt.
+  You get one notification when the limit is hit. BB's provider-retry usually
+  queues that retry, and Chief of Staff queues one itself when it did not. A
+  reset more than 6 hours away (a weekly cap), a limit hit 5 times on one step,
+  or one still in force 2 hours after its reset goes to you as a failure, as
+  before. Credit and spend limits are still failures.
+
+- **Intake no longer restarts an issue whose task failed or finished.** A
+  failed task, a task marked done, a pushed or merged delivery and a PR closed
+  without merging used to start the issue again from scratch at the next
+  intake. The issue now stays stopped until someone relabels it (or assigns
+  the filter's user again) or retries the task, and the intake result shows
+  why it was skipped.
+
+- **Overlapping intake runs no longer start the same issue twice.** Pressing
+  "Run intake" (or `bb cos intake`) while the scheduled intake is running, or
+  from two dashboards at once, used to create two tasks, two threads and two
+  issue comments for one issue. Intake runs now take turns, and an issue is
+  checked again just before it starts. Dry runs still answer straight away.
+
+- **Mark done sticks.** A task marked done while its agent was still working
+  went back to active, and the agent was nudged, when its turn ended. Now the
+  task stays done: its agents get no more prompts, and the result of a check,
+  push or merge still running is ignored (a push or merge already under way
+  still completes on GitHub). Its threads are archived unless "Archive threads
+  when a task is done" is off, which removes their workspace, so changes not
+  pushed are lost; the confirmation says so. **Run again from here** on a done
+  task unarchives its threads first. **Mark failed** also sticks while the
+  agent is still working, a check it interrupts runs again on retry, and it is
+  no longer offered on a task that has already failed. A task marked done
+  reads "Closed" rather than "Shipped".
+
+- **Auto-merge waits for CI to start.** In merge mode, a pull request whose
+  head has no checks reported yet is no longer merged straight away: GitHub
+  shows no checks until CI registers them. A head counts as having no CI only
+  after about 5 minutes without checks, timed again after each push. Check runs
+  past the first 100 are now read, so a failure there blocks the merge. A
+  repository whose CI reports only check runs (GitHub Actions) no longer shows
+  its checks as pending forever: GitHub's empty commit status is not counted.
+
 - **Chief of Staff opens without crashing.** The activity feed omits its
   pagination cursor until viewing older entries, keeping query inputs valid JSON.
+
+- **A task whose repository is not configured says so.** When a task's
+  repository is missing from the `repos` setting (removed, renamed, or the
+  setting has an error), a task waiting to start now reads "Repository
+  owner/repo is not in the repos setting …" instead of "Waiting for task
+  capacity", with one warning in the activity log. It keeps its place and
+  starts on the next sweep after the repository is configured again. The
+  overview and `bb cos status` show a warning naming the open tasks of
+  repositories that are not configured, so you can fix the setting or close
+  them.
+
+- **Older tasks keep being tracked once you have more than 200.** Thread sync,
+  retries, stall detection and restart recovery only reached the 200 newest
+  tasks, so an older active task could miss turn ends, answered questions or
+  deleted threads, and an older failed task was not revived when you resumed
+  its thread. Every active task is now covered, and thread sync also checks
+  every task that failed in the last 3 days; the roster still shows the 200
+  newest.
 
 - **Task cards and pull requests link to their GitHub issue.** A card's
   "repo #N" opens the issue in the browser, and its PR chip reads "PR #N" so
@@ -56,6 +118,64 @@
 - **More actions stays on the first row of a task card.** It no longer wraps
   onto a line of its own; when the actions don't fit, the last one before it
   wraps instead. This also applies to narrow desktop windows.
+
+- **Finished cards say how a task ended, when, and why.** With **Show
+  finished**, a card and its Pull requests row read Merged, PR opened,
+  Completed, Marked done, Failed, Marked failed or PR closed, each with its own
+  icon. A delivered task no longer reads "Closed" because of an old error,
+  and a task marked done by hand no longer reads "Shipped". Failed and
+  PR-closed cards show why they ended (for example "thread archived") without
+  opening the workflow; a task marked failed by hand shows its last error as
+  such, not as the cause. The timer says "Finished 2h ago · took 1.2h"
+  instead of the start time. Steps a finished task left running, waiting or
+  in CI show as stopped in the card, the step list and the workflow view, and
+  the workflow view no longer shows a finished task as waiting on you. A
+  finished task with no history no longer says "No history yet".
+
+- **Issue text in agent prompts is marked untrusted, and only maintainers'
+  comments are quoted.** The issue's title, body and comments now sit in a
+  delimited block that tells the agent they are user-supplied data that
+  cannot override the workflow. Every line in it is quoted and each comment
+  shows its author's association, so issue text cannot fake the block's end
+  or a maintainer's comment. By default the brief quotes only comments by the repository's
+  owner, members and collaborators and says how many others it left out. The
+  new per-repository `briefComments` option (`trusted`, `all` or `none`)
+  changes that. The README has a new Trust model section.
+
+- **Active tasks always show, and finished history is paged.** The roster
+  used to list the 200 most recently created tasks, so with **Show finished**
+  on, an active task older than those (one waiting on your approval, say)
+  vanished from the Pipeline, its Needs-attention and stage counts, and its PR
+  from Repos & PRs. Now every active task is listed first, newest first,
+  followed by the 50 most recently finished; **Show older finished** loads the
+  next page. Repos & PRs shows every active task's PR plus the 200 most
+  recently finished. `bb cos status --all` takes `--finished-limit` and
+  `--before <cursor>` and prints the command for the next page;
+  `cos_roster` and `chief_of_staff_status` take `finishedLimit` and `before`
+  and return the next cursor (`nextBefore`). `bb cos` JSON output is no
+  longer cut off at 60,000 characters, so it always parses.
+
+- **The Pipeline tab stops re-reading token usage of finished tasks.** A
+  finished task's usage is read from its thread once and stored; later
+  refreshes reuse it, so **Show finished** costs about the same as active work.
+  Usage of unfinished tasks is read concurrently instead of one task at a
+  time. The dashboard's own refresh after a burst of updates now runs once,
+  500 ms after the burst ends, or every 2 s while updates keep coming.
+
+- **Activity rows name their task.** Each row that belongs to a task shows its
+  issue number and title, or a described task's title, also for finished
+  tasks; selecting it opens the task's workflow. Thread ids in messages and
+  actors open their threads. A Task menu next to Problems only narrows the
+  feed to one task, and so does Show activity in a task card's More actions,
+  including on finished cards; both filters combine. With a single
+  repository configured, rows no longer repeat its name. Message text is
+  unchanged.
+
+- **Finished task cards offer actions that fit how the task ended.** Failed
+  cards offer "Restart on a new thread…", which asks first because it can
+  start an agent and take a task slot, and "Mark done…"; they no longer offer
+  "Mark failed…". Done cards offer "Run a step again…", which opens the
+  workflow at its step list.
 
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by

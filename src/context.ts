@@ -6,7 +6,7 @@ import { parseRepos, type ProjectRemotes, type RepoConfig } from "./config";
 import { GitHubClient, GitHubLimiter, describeReset, redact } from "./github";
 import type { StateStore } from "./state";
 import type { SettingsHandle, SettingsValues } from "./settings";
-import { DEFAULT_POLICY, type MachinePolicy } from "./machine";
+import { DEFAULT_POLICY, label, type MachinePolicy } from "./machine";
 import { DEFAULT_DOCUMENT, fromStages, mergeStages, parseWorkflows, type LegacyStages, type Workflow, type WorkflowsDocument } from "./workflow";
 
 export interface LoadedConfig {
@@ -208,11 +208,27 @@ export function createContext(bb: BbPluginApi, store: StateStore, settings: Sett
   return cos;
 }
 
-/** The config warnings plus what is true right now (a GitHub rate limit), for the overview and `status`. */
-export function liveWarnings(cos: Pick<Cos, "githubLimit" | "now">, config: Pick<LoadedConfig, "warnings">): string[] {
+/** How many tasks the "repository not configured" warning names before "and N more". */
+const UNCONFIGURED_NAMED = 5;
+
+/**
+ * The config warnings plus what is true right now (a GitHub rate limit, open
+ * tasks whose repository left the `repos` setting), for the overview and `status`.
+ */
+export function liveWarnings(cos: Pick<Cos, "githubLimit" | "now" | "store">, config: Pick<LoadedConfig, "warnings" | "repos">): string[] {
+  const warnings = [...config.warnings];
+  const configured = new Set(config.repos.map((r) => `${r.owner}/${r.repo}`));
+  const orphaned = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => !configured.has(i.repo));
+  if (orphaned.length) {
+    const named = orphaned.slice(0, UNCONFIGURED_NAMED).map(label).join(", ");
+    const more = orphaned.length > UNCONFIGURED_NAMED ? ` and ${orphaned.length - UNCONFIGURED_NAMED} more` : "";
+    const repoCount = new Set(orphaned.map((i) => i.repo)).size;
+    const repository = repoCount === 1 ? "repository" : "repositories";
+    warnings.push(`${repoCount === 1 ? "Repository" : "Repositories"} not in the repos setting for ${orphaned.length === 1 ? "this task" : "these tasks"}: ${named}${more}. Add the ${repository} back to repos (or fix the setting's error), or close the ${orphaned.length === 1 ? "task" : "tasks"}.`);
+  }
   const limit = cos.githubLimit();
-  if (!limit) return config.warnings;
-  return [...config.warnings, `${limit.reason} reached: intake, CI polling and GitHub steps resume at ${describeReset(limit.until, cos.now())}.`];
+  if (limit) warnings.push(`${limit.reason} reached: intake, CI polling and GitHub steps resume at ${describeReset(limit.until, cos.now())}.`);
+  return warnings;
 }
 
 /** The workflow a repository runs: its chosen id, its converted stage overrides, or the default. */

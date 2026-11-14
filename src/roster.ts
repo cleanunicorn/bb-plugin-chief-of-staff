@@ -2,12 +2,16 @@
 // state, stall detection, and reconciliation after a restart (including
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
-import { actorOf, freshNode, initialNodes, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
-import { occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
+import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
+import { isActiveStatus, occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
+import { FAILED_OUTCOMES, finishedOutcome, MARKED_FAILED, OUTCOME_META, type Outcome } from "./outcome";
+import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
 import { agentWork, describePick, isAuthoredAgent, isWriter, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
+
+const isFinished = (item: Pick<WorkItem, "status">) => item.status === "done" || item.status === "failed";
 
 export interface RosterStep {
   id: string;
@@ -15,7 +19,8 @@ export interface RosterStep {
   type: StepType;
   /** Longest-path depth: steps with the same depth can run in parallel. */
   depth: number;
-  status: NodeStatus;
+  /** "stopped": a finished task left this step running or waiting (display only; the stored node keeps its state). */
+  status: NodeStatus | "stopped";
   phase: ShipPhase | null;
   agents: number;
   /** Agents that have reported this round. */
@@ -26,6 +31,8 @@ export interface RosterStep {
   round: number;
   waitingKind: WaitingKind | null;
   retrying: boolean;
+  /** Its agents wait out the provider's usage limit until then (ISO); null otherwise. */
+  limitedUntil?: string | null;
   /** An automatic model step: what its agent picked ("provider · model · reasoning"), once it has. */
   picked?: string | null;
 }
@@ -58,6 +65,10 @@ export interface RosterEntry {
   /** The pull request's last read state, when it was read for this prNumber. */
   pr: Omit<PrState, "number"> | null;
   startedAt: string;
+  /** When a done or failed task finished; null while it runs. */
+  finishedAt: string | null;
+  /** How a finished task ended; null while it runs. */
+  outcome: Outcome | null;
   lastActivityAt: string | null;
   stalled: boolean;
   fixAttempts: number;
@@ -70,25 +81,34 @@ export interface RosterEntry {
   usage: ThreadUsage | null;
 }
 
+/**
+ * Each step's state for display. A finished task's steps are settled: one it
+ * left running or waiting reads "stopped", without the phase, retry or
+ * waiting kind that would make it look live. Pending steps never ran and stay
+ * pending. The stored nodes keep their raw state (rerun depends on it).
+ */
 export function rosterSteps(item: WorkItem): RosterStep[] {
   const depth = depths(item.workflow);
+  const finished = isFinished(item);
   return topoOrder(item.workflow).map((id) => {
     const s = stepById(item.workflow, id)!;
     const n = item.nodes[id] ?? freshNode();
+    const stopped = finished && (n.status === "running" || n.status === "waiting");
     return {
       id,
       name: s.name,
       type: s.type,
       depth: depth.get(id) ?? 0,
-      status: n.status,
-      phase: n.phase,
+      status: stopped ? "stopped" : n.status,
+      phase: stopped ? null : n.phase,
       agents: agentWork(s)?.agents ?? 1,
       reported: n.reports.filter(Boolean).length,
       nudged: Math.max(0, ...n.nudges),
       attempts: n.attempts,
       round: n.round,
-      waitingKind: n.waiting?.kind ?? null,
-      retrying: Boolean(n.retry?.at),
+      waitingKind: stopped ? null : (n.waiting?.kind ?? null),
+      retrying: !stopped && (Boolean(n.retry?.at) || limitedNode(n)),
+      limitedUntil: !stopped && limitedNode(n) ? Object.values(n.limits ?? {}).map((l) => l.until).sort().at(-1)! : null,
       picked: agentWork(s)?.picksModel ? describePick(pickedModel(n)) : null,
     };
   });
@@ -102,30 +122,59 @@ function issueUrlFor(repo: string, issueNumber: number | null): string | null {
 /** The item's PR state, unless it belongs to an earlier PR than the one it has now. */
 function rosterPr(item: WorkItem): RosterEntry["pr"] {
   if (!item.prState || item.prState.number !== item.prNumber) return null;
-  const { number: _number, ...pr } = item.prState;
+  const { number: _number, closedAt: _closedAt, ...pr } = item.prState;
   return pr;
 }
 
-export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?: boolean; withUsage?: boolean } = {}): Promise<RosterEntry[]> {
+/** Thread ids per threads.list call. */
+const THREAD_BATCH = 200;
+
+export interface RosterOptions {
+  repo?: string;
+  /** Add a page of finished items after the active ones. */
+  includeDone?: boolean;
+  /** Finished items per page (default 50, at most 500). */
+  finishedLimit?: number;
+  /** Cursor from an earlier page's `nextBefore`: return only the next page of finished items. */
+  before?: string;
+  withUsage?: boolean;
+}
+
+export interface Roster {
+  entries: RosterEntry[];
+  /** Pass as `before` for the next page of finished items; null when there are no more. */
+  nextBefore: string | null;
+}
+
+/** Every active item (newest first), then one page of finished items (most recently finished first). */
+export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<Roster> {
   const { values } = await cos.config();
-  const items = cos.store.listWorkItems({ repo: opts.repo, activeOnly: !opts.includeDone, limit: 200 });
-  const threadIds = items.map((i) => i.threadId).filter((id): id is string => Boolean(id));
+  const finishedLimit = Math.min(ROSTER_FINISHED_MAX, Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT)));
+  const page = cos.store.listRosterItems({ repo: opts.repo, includeDone: opts.includeDone, finishedLimit, before: opts.before });
+  const items = [...page.active, ...page.finished];
+  const threadIds = [...new Set(items.map((i) => i.threadId).filter((id): id is string => Boolean(id)))];
   const threads = new Map<string, { status: string; title: string | null }>();
-  if (threadIds.length) {
+  /** The thread states were read; without them a finished item's thread may still be running. */
+  let threadsKnown = true;
+  for (let i = 0; i < threadIds.length; i += THREAD_BATCH) {
+    const batch = threadIds.slice(i, i + THREAD_BATCH);
     try {
-      const list = await cos.bb.sdk.threads.list({ threadIds: threadIds.slice(0, 200), includeHidden: true, limit: 200 });
+      const list = await cos.bb.sdk.threads.list({ threadIds: batch, includeHidden: true, limit: batch.length });
       for (const t of list) threads.set(t.id, { status: t.runtime?.displayStatus ?? t.status, title: t.title ?? t.titleFallback ?? null });
     } catch (error) {
+      threadsKnown = false;
       cos.bb.log.debug(`threads.list failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   const stallMs = Math.max(1, values.stallThresholdMinutes) * 60_000;
   const now = cos.now().getTime();
+  const manual = cos.store.latestManualActions(items.filter(isFinished).map((i) => i.id));
   const entries: RosterEntry[] = [];
   for (const item of items) {
     const thread = item.threadId ? threads.get(item.threadId) : undefined;
     const last = item.lastActivityAt ?? item.createdAt;
     const steps = rosterSteps(item);
+    const outcome = finishedOutcome(item, manual.get(item.id) ?? null);
     entries.push({
       id: item.id,
       occupiesCapacity: occupiesCapacity(item),
@@ -135,7 +184,7 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       steps,
       current: steps.filter((s) => s.status === "running" || s.status === "waiting").map((s) => s.name),
       actor: actorOf(item),
-      activity: describeActivity(item, steps),
+      activity: describeActivity(item, steps, outcome),
       waitingKind: item.waitingKind,
       repo: item.repo,
       issueNumber: item.issueNumber,
@@ -149,6 +198,8 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       prUrl: item.prUrl,
       pr: rosterPr(item),
       startedAt: item.createdAt,
+      finishedAt: item.finishedAt,
+      outcome,
       lastActivityAt: item.lastActivityAt,
       stalled: item.status === "agent" && now - Date.parse(last) > stallMs,
       fixAttempts: item.fixAttempts,
@@ -158,10 +209,45 @@ export async function buildRoster(cos: Cos, opts: { repo?: string; includeDone?:
       providerId: item.providerId,
       model: item.model,
       source: item.source,
-      usage: opts.withUsage && item.threadId ? await readThreadUsage(cos, item.threadId) : null,
+      usage: null,
     });
   }
-  return entries;
+  if (opts.withUsage) {
+    const toRead: { entry: RosterEntry; item: WorkItem }[] = [];
+    items.forEach((item, i) => {
+      const entry = entries[i]!;
+      if (!item.threadId) return;
+      // A finished item's usage no longer changes: once stored, it is not read again.
+      if (item.finalUsage && !isActiveStatus(item.status)) entry.usage = item.finalUsage;
+      else toRead.push({ entry, item });
+    });
+    await mapLimit(toRead, USAGE_CONCURRENCY, async ({ entry, item }) => {
+      const threadId = item.threadId!;
+      const { usage, complete } = await readThreadUsage(cos, threadId);
+      entry.usage = usage;
+      // Store it once final: the item finished, both queries answered, and the
+      // thread is not running (an item can be marked done while it still is).
+      if (isActiveStatus(item.status) || !complete || !threadsKnown || isBusy(threads.get(threadId)?.status ?? "")) return;
+      try {
+        cos.store.setFinalUsage(item.id, threadId, usage);
+      } catch (error) {
+        cos.bb.log.warn(`storing usage of ${item.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  }
+  return { entries, nextBefore: page.nextBefore };
+}
+
+/** Threads whose usage the roster reads at once (each read makes two SDK calls). */
+export const USAGE_CONCURRENCY = 4;
+
+/** Run `fn` over `items`, at most `limit` at a time. */
+async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 const OUTPUT_MAX = 6_000;
@@ -180,6 +266,8 @@ function previewEntry<E extends { kind: string; detail: string | null }>(e: E): 
 /** The task, each step's current inputs and outputs, and its journal, for the task's workflow view. */
 export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
   const threads = cos.store.listThreads(item.id);
+  // Nobody waits on a finished task: its stopped steps keep no "needs you" reason.
+  const finished = isFinished(item);
   const steps = Object.fromEntries(item.workflow.steps.map((s) => {
     const n = item.nodes[s.id] ?? freshNode();
     const own = threads.filter((t) => t.role === "step" ? t.stepId === s.id : agentWork(s)?.writes).map((t) => ({ threadId: t.threadId, agent: t.role === "step" ? t.agent : 0 }));
@@ -190,7 +278,7 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
       finishedAt: n.finishedAt,
       feedback: tail(n.feedback),
       output: tail(n.output),
-      waitingReason: n.waiting?.reason ?? null,
+      waitingReason: finished ? null : (n.waiting?.reason ?? null),
       reports: n.reports.flatMap((r, agent) => (r ? [{ agent, outcome: r.outcome, summary: tail(r.summary)!, at: r.at }] : [])),
       threads: own,
     }];
@@ -206,7 +294,7 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
       prNumber: item.prNumber,
       prUrl: item.prUrl,
       threadId: item.threadId,
-      waitingReason: item.waitingReason,
+      waitingReason: finished ? null : item.waitingReason,
       lastError: item.lastError,
       createdAt: item.createdAt,
       lastActivityAt: item.lastActivityAt,
@@ -217,15 +305,23 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
   };
 }
 
+/** How a finished task ended, with why when it did not deliver ("Failed: thread archived"). */
+export function describeOutcome(outcome: Outcome, lastError: string | null): string {
+  const label = OUTCOME_META[outcome].label;
+  if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return label;
+  // A person ended it: mark_failed stores MARKED_FAILED; any other stored error is only the last seen, not the cause.
+  if (outcome === "marked_failed") return lastError === MARKED_FAILED ? label : `${label} (last error: ${lastError})`;
+  // "PR closed without merge" already says it.
+  return lastError.toLowerCase().startsWith(label.toLowerCase()) ? lastError : `${label}: ${lastError}`;
+}
+
 /** One line on what is happening right now, for the roster. */
-export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSteps(item)): string {
+export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSteps(item), outcome: Outcome | null = finishedOutcome(item, null)): string {
+  if (outcome) return describeOutcome(outcome, item.lastError);
   switch (item.status) {
-    case "done":
-      return item.lastError ?? "Done";
-    case "failed":
-      return item.lastError ?? "Failed";
     case "queued":
-      return item.queuedEvent?.type === "ci_failing" ? "CI repair waiting for task capacity" : item.queuedEvent ? "Waiting for task capacity" : "Waiting to start";
+      if (item.queuedEvent && item.waitingReason === repoNotConfiguredReason(item.repo)) return item.waitingReason;
+      return item.queuedEvent?.type === "ci_failing" ? "CI repair waiting for task capacity" : item.queuedEvent ? CAPACITY_REASON : "Waiting to start";
     case "waiting_on_human":
     case "blocked":
       return item.waitingReason ?? "Waiting on you";
@@ -235,6 +331,7 @@ export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSte
   const parts = steps
     .filter((s) => s.status === "running")
     .map((s) => {
+      if (s.limitedUntil) return `${s.name}: usage limit reached; continues after ${resetTime(s.limitedUntil)}`;
       if (s.retrying) return `${s.name}: Chief of Staff retrying after an error`;
       if (s.type === "check") return `${s.name}: running the check`;
       if (s.type === "ship") {

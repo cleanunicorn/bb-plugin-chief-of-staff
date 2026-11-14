@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MAX_RATE_LIMIT_DEFERRALS, deriveStatus, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, MAX_RATE_LIMIT_DEFERRALS, limitedNode, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
 import { nudgePrompt, pipelineLine, stepPrompt } from "../src/prompts";
 import { stepForStage } from "../src/roster";
-import { leadReport } from "../src/delivery";
+import { applyTransition, leadReport } from "../src/delivery";
 
 const NOW = new Date("2026-11-07T10:00:00.000Z");
 
@@ -47,10 +47,7 @@ const report = (outcome: StepReport["outcome"] = "done", summary = "ok"): StepRe
 /** Apply an event the way the dispatcher does; returns the new item and the effects. */
 function run(item: WorkItem, event: MachineEvent): [WorkItem, Effect[]] {
   const t = transition(item, event, DEFAULT_POLICY, NOW);
-  const explicit = "status" in t.patch ? t.patch.status : item.status;
-  const derived = deriveStatus({ status: explicit === "failed" ? "failed" : "queued", workflow: item.workflow }, t.nodes);
-  const status = explicit === "failed" ? "failed" : t.patch.status === "done" ? "done" : derived.status;
-  return [{ ...item, ...t.patch, nodes: t.nodes, status, waitingKind: derived.waitingKind, waitingReason: derived.waitingReason }, t.effects];
+  return [{ ...item, ...applyTransition(item, t.nodes, t.patch) }, t.effects];
 }
 const ended = (step: string, r: StepReport | null, item: WorkItem, agent = 0, question: string | null = null): MachineEvent => ({ type: "turn_ended", step, agent, round: item.nodes[step]!.round, report: r, question });
 const agentFx = (e: Effect[]) => e.filter((x) => x.type === "agent");
@@ -783,6 +780,106 @@ describe("stale errors (#24)", () => {
   });
 });
 
+describe("usage limits", () => {
+  const RESET = "2026-11-07T14:05:00.000Z";
+  const limited = (step: string, agent = 0, threadId = "thr_1"): MachineEvent => ({ type: "usage_limited", step, agent, until: RESET, threadId });
+
+  it("keeps the step running while the agent waits out a usage limit, then takes its report", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]), { threadId: "thr_1" });
+    [item] = run(item, { type: "start" });
+    let fx: Effect[];
+    [item, fx] = run(item, limited("build"));
+    expect(item.nodes.build).toMatchObject({ status: "running", round: 1, limits: { 0: { until: RESET, threadId: "thr_1" } }, limitCount: 1 });
+    expect(item.status).toBe("retrying");
+    expect(fx).toEqual([{ type: "notify", title: "Usage limit reached: acme/app#12", body: "Build waits for the provider's usage limit to reset at 14:05 UTC, then continues on its own." }]);
+    // The sweep sees the same limit again: no second notification or count.
+    [item, fx] = run(item, limited("build"));
+    expect(fx).toEqual([]);
+    expect(item.nodes.build!.limitCount).toBe(1);
+    // BB retries the turn at the reset; the agent carries on and reports.
+    [item] = run(item, { type: "turn_started", step: "build", agent: 0 });
+    expect(item.status).toBe("agent");
+    expect(item.nodes.build!.limits).toEqual({});
+    [item, fx] = run(item, ended("build", report(), item));
+    expect(item.status).toBe("done");
+    expect(agentFx(fx)).toEqual([]);
+  });
+
+  it("counts a new limit after the agent resumed", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, limited("build"));
+    [item] = run(item, { type: "turn_started", step: "build", agent: 0 });
+    const [again, fx] = run(item, limited("build"));
+    expect(again.nodes.build!.limitCount).toBe(2);
+    expect(fx.map((e) => e.type)).toEqual(["notify"]);
+  });
+
+  it("stays with the agents while a sibling on the same step still works", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, limited("review", 1, "thr_r2"));
+    expect(item.status).toBe("agent");
+    expect(limitedNode(item.nodes.review!)).toBe(false);
+    [item] = run(item, ended("review", report(), item, 0));
+    expect(item.status).toBe("retrying");
+    expect(limitedNode(item.nodes.review!)).toBe(true);
+  });
+
+  it("revives a builder whose failure was recorded before the limit was known", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]), { threadId: "thr_1" });
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "thread_failed", step: null, agent: 0, error: "Claude usage limit reached" });
+    expect(item.status).toBe("failed");
+    [item] = run(item, limited("build"));
+    expect([item.status, item.lastError, item.finishedAt]).toEqual(["retrying", null, null]);
+    expect(item.nodes.build).toMatchObject({ status: "running", limits: { 0: { until: RESET } } });
+  });
+
+  it("does not revive a task marked failed by hand", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]), { threadId: "thr_1" });
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "close", outcome: "failed" });
+    expect(item.nodes.build!.status).toBe("running");
+    [item] = run(item, limited("build"));
+    expect([item.status, item.lastError]).toEqual(["failed", MARKED_FAILED]);
+    expect(limitedNode(item.nodes.build!)).toBe(false);
+  });
+
+  it("does not revive a task whose PR was closed", () => {
+    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "pr_closed" });
+    [item] = run(item, limited("build"));
+    expect(item.status).toBe("failed");
+  });
+
+  it("un-parks a step thread whose failure turned out to be a usage limit", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "usage limit" });
+    expect(item.status).toBe("waiting_on_human");
+    [item] = run(item, limited("review", 0, "thr_review"));
+    expect(item.status).toBe("retrying");
+    expect(item.nodes.review).toMatchObject({ status: "running", waiting: null, retry: null, agentRetries: {} });
+    [item] = run(item, ended("review", report(), item));
+    expect(item.status).toBe("done");
+  });
+
+  it("drops the wait when the thread then fails for good, and when the step restarts", () => {
+    let item = itemFor(wf([{ id: "review", name: "Review", type: "agent" }]));
+    [item] = run(item, { type: "start" });
+    [item] = run(item, limited("review"));
+    const [dead] = run(item, { type: "thread_failed", step: "review", agent: 0, error: "the usage limit did not lift" });
+    expect(dead.nodes.review!.limits).toEqual({});
+    expect(dead.status).toBe("waiting_on_human");
+    const [rerun] = run(item, { type: "rerun", step: "review" });
+    expect(rerun.nodes.review).toMatchObject({ status: "running", round: 2 });
+    expect(rerun.nodes.review!.limits).toBeUndefined();
+    expect(rerun.nodes.review!.limitCount).toBeUndefined();
+  });
+});
+
 describe("per-agent delivery retries", () => {
   it.each([false, true])("preserves thread-failure precedence over a sibling's interrupted send (legacy=%s)", (legacy) => {
     let item = itemFor(wf([{ id: "review", name: "Review", type: "agent", agents: 2 }]));
@@ -847,5 +944,116 @@ describe("per-agent delivery retries", () => {
     [item] = run(item, { type: "delivery_ack", step: "review", agent: 1, round: 1 });
     [item] = run(item, ended("review", report(), item, 1));
     expect(item.status).toBe("done");
+  });
+});
+
+describe("closing a task by hand (#47)", () => {
+  const checked = wf([
+    { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
+    { id: "test", name: "Tests", type: "check", command: "npm test", onFail: "build", maxAttempts: 2, next: ["ship"] },
+    { id: "ship", name: "Ship", type: "ship", action: "merge", onFail: "build" },
+  ]);
+  /** The default workflow with Plan approved and Build running. */
+  const building = () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("plan", report(), item));
+    [item] = run(item, { type: "approve" });
+    expect(st(item)).toMatchObject({ plan: "done", build: "running" });
+    return item;
+  };
+  /** Build reported; the Tests check is running. */
+  const testing = () => {
+    let item = itemFor(checked);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, ended("build", report(), item));
+    expect([st(item).test, item.jobStartedAt]).toEqual(["running", NOW.toISOString()]);
+    return item;
+  };
+  const live = (item: WorkItem) => Object.values(item.nodes).filter((n) => n.status === "running" || n.status === "waiting");
+
+  it("marks done while Build runs: every live step completes, nothing starts and nothing is sent", () => {
+    const item = building();
+    const t = transition(item, { type: "close", outcome: "done" }, DEFAULT_POLICY, NOW);
+    expect(t.effects).toEqual([]);
+    const [after] = run(item, { type: "close", outcome: "done" });
+    expect(after.status).toBe("done");
+    expect(live(after)).toEqual([]);
+    expect(st(after)).toEqual({ plan: "done", build: "done", review: "pending", ship: "pending" });
+    expect([after.jobStartedAt, after.lastError, after.finishedAt]).toEqual([null, MARKED_DONE, NOW.toISOString()]);
+    expect(t.journal).toEqual([expect.objectContaining({ kind: "passed", step: "build", detail: "Marked done" })]);
+  });
+
+  it("ignores engine events on a done task", () => {
+    let item = building();
+    [item] = run(item, { type: "close", outcome: "done" });
+    const events: MachineEvent[] = [
+      { type: "turn_ended", step: "build", agent: 0, round: 1, report: null, question: null },
+      { type: "turn_ended", step: "build", agent: 0, round: 1, report: report(), question: null },
+      { type: "check_result", step: "build", ok: true, output: "ok" },
+      { type: "ci_passing" },
+      { type: "pr_merged" },
+      { type: "approve" },
+      { type: "retry" },
+      { type: "start" },
+      { type: "thread_failed", step: null, agent: 0, error: "gone" },
+      { type: "thread_failed", step: "build", agent: 0, error: "gone" },
+    ];
+    for (const event of events) {
+      const t = transition(item, event, DEFAULT_POLICY, NOW);
+      expect([event.type, t.patch, t.effects, t.journal]).toEqual([event.type, {}, [], []]);
+      expect(t.nodes).toEqual(item.nodes);
+      expect(run(item, event)[0].status).toBe("done");
+    }
+  });
+
+  it("marks failed: the writer keeps its state, an in-flight check goes back to pending, and retry runs it again", () => {
+    let item = testing();
+    const t = transition(item, { type: "close", outcome: "failed" }, DEFAULT_POLICY, NOW);
+    expect(t.effects).toEqual([]);
+    expect(t.journal).toEqual([expect.objectContaining({ kind: "stopped", step: "test", detail: "Marked failed" })]);
+    [item] = run(item, { type: "close", outcome: "failed" });
+    expect([item.status, item.lastError, item.jobStartedAt]).toEqual(["failed", MARKED_FAILED, null]);
+    expect(st(item)).toEqual({ build: "done", test: "pending", ship: "pending" });
+    // The stale check result is ignored.
+    expect(transition(item, { type: "check_result", step: "test", ok: true, output: "ok" }, DEFAULT_POLICY, NOW).effects).toEqual([]);
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "retry" });
+    expect(fx).toEqual([{ type: "check", step: "test" }]);
+    expect([item.status, item.lastError, item.jobStartedAt]).toEqual(["cos", null, NOW.toISOString()]);
+  });
+
+  it("marks failed while Build runs: retry restarts the writer in a fresh thread", () => {
+    let item = building();
+    const t = transition(item, { type: "close", outcome: "failed" }, DEFAULT_POLICY, NOW);
+    expect(t.journal).toEqual([expect.objectContaining({ kind: "stopped", step: "build", detail: "Marked failed" })]);
+    [item] = run(item, { type: "close", outcome: "failed" });
+    expect(st(item)).toMatchObject({ build: "running" });
+    let fx: Effect[];
+    // A turn ending on a failed task is not nudged.
+    [item, fx] = run(item, ended("build", null, item));
+    expect([item.status, fx]).toEqual(["failed", []]);
+    [item, fx] = run(item, { type: "retry" });
+    expect(item.status).toBe("agent");
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "build", agent: 0, kind: "start", fresh: true }]);
+  });
+
+  it("reopens a done task when a step is run again", () => {
+    let item = building();
+    [item] = run(item, { type: "close", outcome: "done" });
+    let fx: Effect[];
+    [item, fx] = run(item, { type: "rerun", step: "build" });
+    expect([item.status, item.lastError, item.finishedAt]).toEqual(["agent", null, null]);
+    expect(st(item)).toMatchObject({ build: "running", review: "pending" });
+    expect(agentFx(fx)).toHaveLength(1);
+  });
+
+  it("marks a failed task done, and does nothing when the task already has that status", () => {
+    let item = building();
+    [item] = run(item, { type: "thread_failed", step: null, agent: 0, error: "provider crashed" });
+    [item] = run(item, { type: "close", outcome: "done" });
+    expect([item.status, live(item)]).toEqual(["done", []]);
+    const again = transition(item, { type: "close", outcome: "done" }, DEFAULT_POLICY, NOW);
+    expect([again.patch, again.effects, again.journal]).toEqual([{}, [], []]);
   });
 });

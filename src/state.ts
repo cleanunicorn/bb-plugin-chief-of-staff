@@ -5,12 +5,17 @@
 // feature are left in place and unused.
 // work_items also stores occupies_capacity (occupiesCapacity of the row, kept
 // by every write and counted in SQL) and detail_pruned_at (when retention
-// removed a finished item's step details; cleared when the item is active again).
+// removed a finished item's step details; cleared when the item is active again)
+// and final_usage_json (the builder thread's token usage, read once after the
+// item finished; NULL until read, cleared when the item is active again or
+// its builder thread changes).
 // The pr_state* columns and pr_checked_at cache the item's pull request state
 // (see PrState); only setPrState and touchPrChecked write them.
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { ROSTER_FINISHED_LIMIT } from "../rpcContract";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
+import type { ThreadUsage } from "./threads";
 import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
@@ -73,6 +78,8 @@ export interface WorkItem {
    * by insertWorkItem or updateWorkItem.
    */
   prState: PrState | null;
+  /** A finished item's usage, stored once read (all-null: the provider reports none); null until then. */
+  finalUsage?: ThreadUsage | null;
 }
 
 /** A pull request's state as last read from GitHub. */
@@ -86,6 +93,8 @@ export interface PrState {
   review: "approved" | "changes_requested" | null;
   /** When it was last read successfully. */
   checkedAt: string;
+  /** When GitHub merged or closed it (absent while open, or when GitHub gave no time). */
+  closedAt?: string;
 }
 
 /** A work item whose pull request state may need reading (see listPrItemsDue). */
@@ -143,6 +152,12 @@ export interface LogEntry {
   workItemId: string | null;
   message: string;
   actor: string;
+}
+
+/** A log row as read back, with its task's issue number and title (both null when it has no task, or the task is gone). */
+export interface LogRow extends LogEntry {
+  issueNumber: number | null;
+  issueTitle: string | null;
 }
 
 // Append only: BB records each statement hash by index, including whitespace.
@@ -280,6 +295,8 @@ export const MIGRATIONS = [
   `ALTER TABLE work_items ADD COLUMN pr_state_number INTEGER`,
   `ALTER TABLE work_items ADD COLUMN pr_state_json TEXT`,
   `ALTER TABLE work_items ADD COLUMN pr_checked_at TEXT`,
+  // A finished item's token usage, so the roster reads it from its thread once.
+  `ALTER TABLE work_items ADD COLUMN final_usage_json TEXT`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -298,6 +315,22 @@ const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", 
 const activeIn = (expr: string) => `${expr} IN (${ACTIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`;
 const ACTIVE_IN = activeIn("status");
 const FINISHED_IN = "status IN ('done', 'failed')";
+
+/** Opaque roster cursor: the last finished item's sort key and id. */
+function encodeRosterCursor(at: string, id: string): string {
+  return Buffer.from(JSON.stringify([at, id])).toString("base64url");
+}
+function decodeRosterCursor(cursor: string): [string, string] {
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    value = null;
+  }
+  if (!Array.isArray(value) || value.length !== 2 || !value.every((v) => typeof v === "string" && v)) throw new Error("invalid cursor");
+  return value as [string, string];
+}
+
 export function isActiveStatus(status: WorkStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
 }
@@ -357,7 +390,7 @@ function readPrState(row: Row): PrState | null {
   if (!state || !PR_STATES.includes(state) || typeof number !== "number") return null;
   const details = parseJson<Partial<PrState> | null>(row.pr_state_json, null);
   if (!details || typeof details !== "object" || typeof details.checkedAt !== "string") return null;
-  return { number, state, draft: Boolean(details.draft), checks: details.checks ?? null, review: details.review ?? null, checkedAt: details.checkedAt };
+  return { number, state, draft: Boolean(details.draft), checks: details.checks ?? null, review: details.review ?? null, checkedAt: details.checkedAt, ...(typeof details.closedAt === "string" ? { closedAt: details.closedAt } : {}) };
 }
 
 function rowToWorkItem(row: Row): WorkItem {
@@ -390,6 +423,7 @@ function rowToWorkItem(row: Row): WorkItem {
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
     prState: readPrState(row),
+    finalUsage: parseJson<ThreadUsage | null>(row.final_usage_json, null),
   };
 }
 
@@ -408,11 +442,12 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END`;
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END, final_usage_json=CASE WHEN ${activeIn("@status")} OR thread_id IS NOT @threadId THEN NULL ELSE final_usage_json END`;
 
 // The pr_state* columns are not here: only setPrState and touchPrChecked write them.
 function toRow(item: WorkItem): Record<string, unknown> {
-  const { workflow, nodes, queuedEvent, prState: _prState, ...rest } = item;
+  // finalUsage is written only by setFinalUsage, and cleared by ITEM_COLUMNS.
+  const { workflow, nodes, queuedEvent, prState: _prState, finalUsage: _finalUsage, ...rest } = item;
   return {
     ...rest,
     queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null,
@@ -449,7 +484,7 @@ export function compactNodes(nodes: Nodes): Nodes {
   return out;
 }
 
-export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "prState" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
+export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "prState" | "finalUsage" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
 
 export class StateStore {
@@ -504,10 +539,13 @@ export class StateStore {
 
   deleteDeferredEvent(id: number): void { this.db.prepare("DELETE FROM deferred_events WHERE id = ?").run(id); }
 
+  /** Drop every event a pause held for this item. */
+  deleteDeferredEventsFor(itemId: string): void { this.db.prepare("DELETE FROM deferred_events WHERE item_id = ?").run(itemId); }
+
   // ---- work items ----
   insertWorkItem(item: NewWorkItem): WorkItem {
     const at = this.now().toISOString();
-    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at, prState: null };
+    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at, prState: null, finalUsage: null };
     this.db
       .prepare(
         `INSERT INTO work_items (id, created_at, updated_at, status, repo) VALUES (@id, @createdAt, @createdAt, @status, @repo)`,
@@ -517,10 +555,11 @@ export class StateStore {
     return full;
   }
 
-  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt" | "prState">>): WorkItem | null {
+  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt" | "prState" | "finalUsage">>): WorkItem | null {
     const current = this.getWorkItem(id);
     if (!current) return null;
     const next: WorkItem = { ...current, ...patch, updatedAt: this.now().toISOString() };
+    next.finalUsage = isActiveStatus(next.status) || next.threadId !== current.threadId ? null : (current.finalUsage ?? null);
     this.db.prepare(`UPDATE work_items SET ${ITEM_COLUMNS} WHERE id=@id`).run(toRow(next));
     return next;
   }
@@ -555,6 +594,15 @@ export class StateStore {
       ORDER BY pr_checked_at IS NOT NULL, pr_checked_at, created_at DESC`).all(staleBeforeIso) as Row[];
     return rows.map((row) => ({ id: row.id as string, repo: row.repo as string, prNumber: row.pr_number as number, prState: readPrState(row) }));
   }
+  /**
+   * Store a finished item's usage, read from its builder thread. Leaves
+   * updated_at alone (stats key on it) and sends no change event: the value
+   * only saves the roster a read. False when the item is active or its
+   * builder thread changed.
+   */
+  setFinalUsage(id: string, threadId: string, usage: ThreadUsage): boolean {
+    return this.db.prepare(`UPDATE work_items SET final_usage_json = ? WHERE id = ? AND thread_id = ? AND ${FINISHED_IN}`).run(JSON.stringify(usage), id, threadId).changes > 0;
+  }
 
   getWorkItem(id: string): WorkItem | null {
     const row = this.db.prepare(`SELECT * FROM work_items WHERE id = ?`).get(id) as Row | undefined;
@@ -584,7 +632,18 @@ export class StateStore {
     return null;
   }
 
-  listWorkItems(opts: { repo?: string; activeOnly?: boolean; limit?: number } = {}): WorkItem[] {
+  /** The issue's newest task, whatever its status (intake uses it to leave a finished issue alone). */
+  latestForIssue(repo: string, issueNumber: number): WorkItem | null {
+    const row = this.db.prepare(`SELECT * FROM work_items WHERE repo = ? AND issue_number = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(repo, issueNumber) as Row | undefined;
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  /**
+   * Work items, newest first. No limit unless `limit` is given: the engine
+   * loops must reach every item. With `activeOnly`, `failedSince` (ISO) also
+   * selects failed items that finished at or after it.
+   */
+  listWorkItems(opts: { repo?: string; activeOnly?: boolean; failedSince?: string; limit?: number } = {}): WorkItem[] {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts.repo) {
@@ -592,12 +651,47 @@ export class StateStore {
       params.push(opts.repo);
     }
     if (opts.activeOnly) {
-      where.push(`status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`);
+      const active = `status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`;
       params.push(...ACTIVE_STATUSES);
+      if (opts.failedSince === undefined) where.push(active);
+      else {
+        where.push(`(${active} OR (status = 'failed' AND finished_at >= ?))`);
+        params.push(opts.failedSince);
+      }
     }
-    const sql = `SELECT * FROM work_items ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`;
-    params.push(opts.limit ?? 200);
+    let sql = `SELECT * FROM work_items ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
+    if (opts.limit !== undefined) {
+      sql += " LIMIT ?";
+      params.push(opts.limit);
+    }
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
+  }
+
+  /**
+   * The roster's items: every active item (newest created first), then one
+   * page of finished items (most recently finished first). A `before` cursor
+   * from an earlier page returns only the next finished page. Finished items
+   * are keyed by COALESCE(finished_at, updated_at), with the id as the
+   * tie-break so items finished in the same tick are neither skipped nor
+   * repeated. SQLite filters by the status index and sorts the finished rows
+   * for each page; a (status, key, id) index would avoid that if history grows large.
+   */
+  listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
+    const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before);
+    // Bind exactly the parameters each statement names.
+    const repo = opts.repo ? " AND repo = @repo" : "";
+    const repoParams = opts.repo ? { repo: opts.repo } : {};
+    const active = cursor ? [] : (this.db.prepare(`SELECT * FROM work_items WHERE ${ACTIVE_IN}${repo} ORDER BY created_at DESC`).all(repoParams) as Row[]).map(rowToWorkItem);
+    if (!cursor && !opts.includeDone) return { active, finished: [], nextBefore: null };
+    const limit = Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT));
+    const key = "COALESCE(finished_at, updated_at)";
+    const after = cursor ? ` AND (${key} < @at OR (${key} = @at AND id < @id))` : "";
+    const rows = this.db.prepare(`SELECT *, ${key} AS finished_key FROM work_items WHERE ${FINISHED_IN}${repo}${after} ORDER BY ${key} DESC, id DESC LIMIT @limit`)
+      .all({ ...repoParams, ...(cursor ? { at: cursor[0], id: cursor[1] } : {}), limit: limit + 1 }) as Row[];
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    const nextBefore = rows.length > limit && last ? encodeRosterCursor(last.finished_key as string, last.id as string) : null;
+    return { active, finished: page.map(rowToWorkItem), nextBefore };
   }
 
   /**
@@ -735,14 +829,28 @@ export class StateStore {
     this.prune("activity_log", 1, this.caps.logMaxRows);
   }
 
-  listLog(opts: { limit?: number; workItemId?: string; onlyProblems?: boolean; before?: number } = {}): LogEntry[] {
+  /** The newest manual action ("marked done", "marked failed") logged for each of these items. */
+  latestManualActions(ids: readonly string[]): Map<string, { message: string; at: string }> {
+    const found = new Map<string, { message: string; at: string }>();
+    if (!ids.length) return found;
+    const rows = this.db
+      .prepare(`SELECT work_item_id, message, at FROM activity_log WHERE id IN (SELECT MAX(id) FROM activity_log WHERE kind = 'manual' AND work_item_id IN (${ids.map(() => "?").join(", ")}) GROUP BY work_item_id)`)
+      .all(...ids) as { work_item_id: string; message: string; at: string }[];
+    for (const row of rows) found.set(row.work_item_id, { message: row.message, at: row.at });
+    return found;
+  }
+
+  listLog(opts: { limit?: number; workItemId?: string; onlyProblems?: boolean; before?: number } = {}): LogRow[] {
+    // Both tables have id and repo: every column is named, so the task's never replace the row's.
+    const select = `SELECT l.id, l.at, l.level, l.kind, l.repo, l.work_item_id, l.message, l.actor, w.id AS task_id, w.issue_number, w.issue_title
+      FROM activity_log l LEFT JOIN work_items w ON w.id = l.work_item_id`;
     const where: string[] = [];
     const params: (string | number)[] = [];
-    if (opts.workItemId !== undefined) { where.push("work_item_id = ?"); params.push(opts.workItemId); }
-    if (opts.onlyProblems) where.push("level IN ('warn', 'error')");
-    if (opts.before !== undefined) { where.push("id < ?"); params.push(opts.before); }
+    if (opts.workItemId !== undefined) { where.push("l.work_item_id = ?"); params.push(opts.workItemId); }
+    if (opts.onlyProblems) where.push("l.level IN ('warn', 'error')");
+    if (opts.before !== undefined) { where.push("l.id < ?"); params.push(opts.before); }
     params.push(opts.limit ?? 100);
-    const rows = this.db.prepare(`SELECT * FROM activity_log ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`).all(...params) as Row[];
+    const rows = this.db.prepare(`${select} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY l.id DESC LIMIT ?`).all(...params) as Row[];
     return rows.map((row) => ({
       id: row.id as number,
       at: row.at as string,
@@ -750,6 +858,9 @@ export class StateStore {
       kind: row.kind as string,
       repo: (row.repo as string | null) ?? null,
       workItemId: (row.work_item_id as string | null) ?? null,
+      issueNumber: (row.issue_number as number | null) ?? null,
+      // A found task keeps its title even when empty; null means no task.
+      issueTitle: row.task_id == null ? null : ((row.issue_title as string | null) ?? ""),
       message: row.message as string,
       actor: row.actor as string,
     }));

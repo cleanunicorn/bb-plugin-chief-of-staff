@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type PrState, type WorkItem } from "../src/state";
-import { freshNode, type Nodes } from "../src/machine";
+import { freshNode, transition, type Nodes } from "../src/machine";
+import { applyTransition } from "../src/delivery";
 import { normalizeWorkflow, workflowSchema } from "../src/workflow";
 import { computeStats, statsWindowStart } from "../src/stats";
 
@@ -38,7 +39,7 @@ const nodes = (build: Partial<Nodes[string]>, ship: Partial<Nodes[string]> = {})
 
 describe("capacity reservations counted in SQL", () => {
   function jsCount(store: StateStore, repo?: string, excludeId?: string) {
-    return store.listWorkItems({ limit: 1e6 }).filter((i) => (!repo || i.repo === repo) && i.id !== excludeId && occupiesCapacity(i)).length;
+    return store.listWorkItems().filter((i) => (!repo || i.repo === repo) && i.id !== excludeId && occupiesCapacity(i)).length;
   }
   function expectSame(store: StateStore) {
     for (const [repo, exclude] of [[undefined, undefined], ["a/b", undefined], ["c/d", undefined], [undefined, "x"], ["a/b", "x"]] as const) {
@@ -128,7 +129,7 @@ describe("stats from scalar columns", () => {
     for (const windowDays of [undefined, 1, 14, 90]) {
       const since = statsWindowStart(now, windowDays);
       const rows = store.statsRows(since);
-      expect(computeStats(rows, now, windowDays, store.countWorkItems())).toEqual(computeStats(store.listWorkItems({ limit: 1e6 }), now, windowDays));
+      expect(computeStats(rows, now, windowDays, store.countWorkItems())).toEqual(computeStats(store.listWorkItems(), now, windowDays));
     }
     expect(statsWindowStart(now, 14)).toBe("2026-10-30T00:00:00.000Z");
     expect(store.statsRows(statsWindowStart(now, 14)).length).toBe(6);
@@ -149,6 +150,22 @@ describe("bounded log and journal", () => {
     expect(messages[0]).toBe("m35");
     expect(messages).toContain("m26");
     expect(messages).not.toContain("m1");
+  });
+
+  it("names each row's task from its work item, without overwriting the row's own id and repo", () => {
+    const { store, add } = storeSetup();
+    add("issue", { repo: "acme/app", issueNumber: 7, issueTitle: "Fix login" });
+    add("standalone", { repo: "acme/app", issueNumber: null, issueTitle: "Tidy the docs" });
+    store.log({ level: "info", kind: "spawn", repo: "other/repo", workItemId: "issue", message: "spawned", actor: "event" });
+    store.log({ level: "info", kind: "spawn", repo: "acme/app", workItemId: "standalone", message: "spawned", actor: "event" });
+    store.log({ level: "info", kind: "control", repo: null, workItemId: null, message: "paused", actor: "rpc:client" });
+    store.log({ level: "info", kind: "spawn", repo: "acme/app", workItemId: "gone", message: "spawned", actor: "event" });
+    const [gone, control, standalone, issue] = store.listLog();
+    expect(issue).toMatchObject({ id: 1, repo: "other/repo", workItemId: "issue", issueNumber: 7, issueTitle: "Fix login" });
+    expect(standalone).toMatchObject({ id: 2, workItemId: "standalone", issueNumber: null, issueTitle: "Tidy the docs" });
+    expect(control).toMatchObject({ id: 3, repo: null, workItemId: null, issueNumber: null, issueTitle: null });
+    expect(gone).toMatchObject({ id: 4, workItemId: "gone", issueNumber: null, issueTitle: null });
+    expect(store.listLog({ workItemId: "issue" })).toEqual([issue]);
   });
 
   it("keeps the newest journal rows when several are written at once", () => {
@@ -189,6 +206,15 @@ describe("cached pull request state", () => {
     store.updateWorkItem("x", { lastError: "boom" });
     expect(store.getWorkItem("x")!.prState).toEqual(open(7, "2026-11-12T11:00:00.000Z"));
     expect(store.listWorkItems()[0]!.prState?.state).toBe("open");
+  });
+
+  it("keeps when GitHub closed the PR", () => {
+    const { store, add } = storeSetup();
+    add("x", { prNumber: 7, status: "failed" });
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z", { state: "closed", checks: null, review: null, closedAt: "2026-11-12T10:30:00Z" }));
+    expect(store.getWorkItem("x")!.prState).toMatchObject({ state: "closed", closedAt: "2026-11-12T10:30:00Z" });
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z"));
+    expect(store.getWorkItem("x")!.prState).not.toHaveProperty("closedAt");
   });
 
   it("drops details it cannot read", () => {
@@ -256,5 +282,196 @@ describe("activity log filtering and cursor", () => {
     expect([...first, ...second, ...third].map(e => e.message)).toEqual(["m4", "m3", "m2", "m1", "m0"]);
     expect(store.listLog({ before: third[0]!.id })).toEqual([]);
     expect(store.listLog({ workItemId: "other", onlyProblems: true })).toEqual([]);
+  });
+});
+
+describe("latest task for an issue (#48)", () => {
+  it("returns null without a task, else the newest task of that repo and issue", () => {
+    const { store, add, setClock } = storeSetup();
+    expect(store.latestForIssue("a/b", 12)).toBeNull();
+    add("old", { issueNumber: 12, status: "agent", nodes: nodes({ status: "running" }) });
+    setClock("2026-11-12T11:00:00Z");
+    add("new", { issueNumber: 12, status: "failed" });
+    add("other-issue", { issueNumber: 13 });
+    add("other-repo", { repo: "c/d", issueNumber: 12 });
+    expect(store.latestForIssue("a/b", 12)?.id).toBe("new");
+    // An older active task can sit behind the newer finished one.
+    expect(store.findActiveForIssue("a/b", 12)?.id).toBe("old");
+    expect(store.latestForIssue("a/b", 14)).toBeNull();
+  });
+
+  it("breaks a tie on creation time by insertion order", () => {
+    const { store, add } = storeSetup();
+    add("first", { issueNumber: 12 });
+    add("second", { issueNumber: 12 });
+    expect(store.latestForIssue("a/b", 12)?.id).toBe("second");
+  });
+});
+
+describe("latestManualActions", () => {
+  it("returns the newest manual row per item and ignores other kinds and items", () => {
+    const { store, setClock } = storeSetup();
+    const log = (workItemId: string, kind: string, message: string, at: string) => {
+      setClock(at);
+      store.log({ level: "info", kind, repo: "a/b", workItemId, message, actor: "test" });
+    };
+    log("a", "manual", "marked failed", "2026-11-12T10:00:00Z");
+    log("a", "manual", "marked done", "2026-11-12T10:05:00Z");
+    log("a", "transition", "later, not manual", "2026-11-12T10:06:00Z");
+    log("b", "transition", "no manual row", "2026-11-12T10:00:00Z");
+    log("c", "manual", "marked done", "2026-11-12T09:00:00Z");
+    const found = store.latestManualActions(["a", "b"]);
+    expect([...found.keys()]).toEqual(["a"]);
+    expect(found.get("a")).toEqual({ message: "marked done", at: "2026-11-12T10:05:00.000Z" });
+    expect(store.latestManualActions([]).size).toBe(0);
+  });
+});
+
+describe("roster items: every active item plus a page of finished ones", () => {
+  /** One active item created first, then `finished` finished ones; finish times come in groups of three that share a timestamp. */
+  function seed(finished: number) {
+    const s = storeSetup();
+    const base = Date.parse("2026-01-01T00:00:00Z");
+    s.setClock(new Date(base).toISOString());
+    s.add("active-oldest", { status: "waiting_on_human" });
+    const expected: { id: string; at: string }[] = [];
+    for (let i = 0; i < finished; i++) {
+      const id = `f${String(i).padStart(3, "0")}`;
+      s.setClock(new Date(base + (i + 1) * 60_000).toISOString());
+      const at = new Date(base + 10 * 86_400_000 + Math.floor(i / 3) * 1_000).toISOString();
+      s.add(id, { status: i % 5 ? "done" : "failed", finishedAt: at });
+      expected.push({ id, at });
+    }
+    expected.sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1));
+    return { ...s, expected: expected.map((e) => e.id) };
+  }
+
+  it("lists an old active item past 200 newer finished ones and pages every finished item once, in order", () => {
+    const { store, expected } = seed(249);
+    // The newest-200 list no longer reaches it.
+    expect(store.listWorkItems({ limit: 200 }).some((i) => i.id === "active-oldest")).toBe(false);
+    expect(store.listRosterItems({}).active.map((i) => i.id)).toEqual(["active-oldest"]);
+    expect(store.listRosterItems({}).finished).toEqual([]);
+    expect(store.listRosterItems({}).nextBefore).toBeNull();
+
+    const first = store.listRosterItems({ includeDone: true, finishedLimit: 50 });
+    expect(first.active.map((i) => i.id)).toEqual(["active-oldest"]);
+    const seen = first.finished.map((i) => i.id);
+    let cursor = first.nextBefore;
+    let pages = 1;
+    while (cursor) {
+      const page = store.listRosterItems({ includeDone: true, finishedLimit: 50, before: cursor });
+      expect(page.active).toEqual([]);
+      seen.push(...page.finished.map((i) => i.id));
+      cursor = page.nextBefore;
+      pages++;
+    }
+    // 50 is not a multiple of 3, so tie groups straddle page boundaries.
+    expect(pages).toBe(5);
+    expect(seen).toEqual(expected);
+  });
+
+  it("says when there is nothing more", () => {
+    const { store } = seed(6);
+    expect(store.listRosterItems({ includeDone: true, finishedLimit: 6 })).toMatchObject({ nextBefore: null });
+    const page = store.listRosterItems({ includeDone: true, finishedLimit: 5 });
+    expect(page.finished).toHaveLength(5);
+    expect(store.listRosterItems({ includeDone: true, finishedLimit: 5, before: page.nextBefore! }).finished).toHaveLength(1);
+  });
+
+  it("orders a finished row without finished_at by its last update", () => {
+    const { store, add, db } = storeSetup();
+    add("a", { status: "done", finishedAt: "2026-11-01T00:00:00.000Z" });
+    add("legacy", { status: "done", finishedAt: null });
+    add("c", { status: "failed", finishedAt: "2026-11-03T00:00:00.000Z" });
+    db.prepare("UPDATE work_items SET updated_at = ? WHERE id = ?").run("2026-11-02T00:00:00.000Z", "legacy");
+    db.prepare("UPDATE work_items SET updated_at = ? WHERE id <> ?").run("2026-11-12T00:00:00.000Z", "legacy");
+    const first = store.listRosterItems({ includeDone: true, finishedLimit: 2 });
+    expect(first.finished.map((i) => i.id)).toEqual(["c", "legacy"]);
+    expect(store.listRosterItems({ includeDone: true, finishedLimit: 2, before: first.nextBefore! }).finished.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("filters both lists by repo", () => {
+    const { store, add } = storeSetup();
+    add("mine-active", { status: "agent" });
+    add("theirs-active", { repo: "c/d", status: "agent" });
+    add("mine-done", { status: "done", finishedAt: "2026-11-01T00:00:00.000Z" });
+    add("theirs-done", { repo: "c/d", status: "done", finishedAt: "2026-11-02T00:00:00.000Z" });
+    const page = store.listRosterItems({ repo: "a/b", includeDone: true, finishedLimit: 1 });
+    expect(page.active.map((i) => i.id)).toEqual(["mine-active"]);
+    expect(page.finished.map((i) => i.id)).toEqual(["mine-done"]);
+    expect(page.nextBefore).toBeNull();
+  });
+
+  it("rejects a malformed cursor instead of returning the first page", () => {
+    const { store, add } = storeSetup();
+    add("x", { status: "done", finishedAt: "2026-11-01T00:00:00.000Z" });
+    for (const before of ["", "nope", Buffer.from("[1,2]").toString("base64url"), Buffer.from('["2026-11-01T00:00:00.000Z"]').toString("base64url"), Buffer.from("{}").toString("base64url")]) {
+      expect(() => store.listRosterItems({ includeDone: true, before })).toThrow("invalid cursor");
+    }
+  });
+});
+
+
+describe("final usage of finished items", () => {
+  const usage = { inputTokens: 10, outputTokens: 20, totalTokens: 30, cost: { amount: 0.5, currency: "USD" } };
+  const nothing = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null };
+  const updatedAt = (db: ReturnType<typeof storeSetup>["db"], id: string) => (db.prepare("SELECT updated_at FROM work_items WHERE id = ?").get(id) as { updated_at: string }).updated_at;
+
+  it("is unknown until stored, and an all-null value counts as known", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "done", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+    expect(store.setFinalUsage("a", "t-a", nothing)).toBe(true);
+    expect(store.getWorkItem("a")!.finalUsage).toEqual(nothing);
+    expect(store.setFinalUsage("a", "t-a", usage)).toBe(true);
+    expect(store.listWorkItems()[0]!.finalUsage).toEqual(usage);
+  });
+
+  it("does not touch updated_at, and only stores for a finished item on the same thread", () => {
+    const { db, store, add, setClock } = storeSetup();
+    add("done", { status: "done", threadId: "t-done", finishedAt: "2026-11-12T09:00:00Z" });
+    add("active", { status: "agent", threadId: "t-active" });
+    const before = updatedAt(db, "done");
+    setClock("2026-11-12T11:00:00Z");
+    store.setFinalUsage("done", "t-done", usage);
+    expect(updatedAt(db, "done")).toBe(before);
+    expect(store.setFinalUsage("done", "t-other", nothing)).toBe(false);
+    expect(store.getWorkItem("done")!.finalUsage).toEqual(usage);
+    expect(store.setFinalUsage("active", "t-active", usage)).toBe(false);
+    expect(store.getWorkItem("active")!.finalUsage).toBeNull();
+  });
+
+  it("is kept when a finished item is saved, and cleared when it is reopened", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "failed", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
+    store.setFinalUsage("a", "t-a", usage);
+    expect(store.updateWorkItem("a", { lastError: "boom" })!.finalUsage).toEqual(usage);
+    expect(store.getWorkItem("a")!.finalUsage).toEqual(usage);
+    const reopened = store.updateWorkItem("a", { status: "agent", finishedAt: null });
+    expect(reopened!.finalUsage).toBeNull();
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+    // Finishing again does not bring the old value back.
+    store.updateWorkItem("a", { status: "done", finishedAt: "2026-11-12T10:00:00Z" });
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+  });
+
+  it("is cleared when the item's builder thread changes", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "done", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
+    store.setFinalUsage("a", "t-a", usage);
+    expect(store.updateWorkItem("a", { threadId: "t-b" })!.finalUsage).toBeNull();
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+  });
+
+  it("is cleared when a failed item is revived through the machine", () => {
+    const { store, add } = storeSetup();
+    add("a", { status: "failed", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z", nodes: nodes({ status: "running", round: 1, reports: [null], nudges: [0] }) });
+    store.setFinalUsage("a", "t-a", usage);
+    const item = store.getWorkItem("a")!;
+    const t = transition(item, { type: "revive" });
+    const after = store.updateWorkItem("a", applyTransition(item, t.nodes, t.patch))!;
+    expect(after.status).not.toBe("failed");
+    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
   });
 });

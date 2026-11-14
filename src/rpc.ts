@@ -6,7 +6,7 @@ import type { GeneralSettings } from "../rpcContract";
 import { buildRoster, itemRunDetail, rosterSteps, reconcile } from "./roster";
 import { pausedMessage, runIntake, startTask } from "./intake";
 import { parseWorkflows, stepById, topoOrder } from "./workflow";
-import { dispatch, replayDeferred } from "./delivery";
+import { dispatch, dispatchLocked, replayDeferred, withItemLock } from "./delivery";
 import { parseRepos } from "./config";
 import { computeStats, statsWindowStart } from "./stats";
 import { answerQuestion, getQuestion } from "./answer";
@@ -49,6 +49,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
             stallThresholdMinutes: config.values.stallThresholdMinutes,
             maxConcurrentTotal: config.values.maxConcurrentTotal,
             intakeIntervalMinutes: config.values.intakeIntervalMinutes,
+            archiveThreadsOnDone: config.values.archiveThreadsOnDone,
           },
         };
       },
@@ -74,7 +75,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         return { repo: input.repo, paused: cos.store.isRepoPaused(input.repo) };
       },
       async cos_roster(input) {
-        return { entries: await buildRoster(cos, input) };
+        return buildRoster(cos, input);
       },
       async cos_intake_now(input) {
         return { results: await runIntake(cos, { repo: input.repo, dryRun: input.dryRun, actor: "rpc:client" }) };
@@ -198,13 +199,21 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
       if (!opts.feedback?.trim()) throw new Error("revise needs feedback for the agent");
       return dispatch(cos, id, { type: "revise", step: opts.step, feedback: opts.feedback }, actor);
     case "mark_done":
-      cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked done", actor });
-      cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "done", queuedEvent: null, finishedAt: cos.now().toISOString() });
-    case "mark_failed":
-      cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: "marked failed", actor });
-      cos.invalidate();
-      return cos.store.updateWorkItem(id, { status: "failed", queuedEvent: null, finishedAt: cos.now().toISOString() });
+    case "mark_failed": {
+      // Through the engine, under the item's lock: live steps settle, a running job's result is dropped, and done archives the threads.
+      // The status is read inside the lock, so two marks arriving together log once.
+      const outcome = action === "mark_done" ? "done" : "failed";
+      return withItemLock(id, async () => {
+        const current = cos.store.getWorkItem(id);
+        if (!current || current.status === outcome) return current;
+        const updated = await dispatchLocked(cos, id, { type: "close", outcome }, actor);
+        if (updated?.status === outcome) {
+          cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `marked ${outcome}`, actor });
+          cos.invalidate();
+        }
+        return updated;
+      });
+    }
   }
 }
 

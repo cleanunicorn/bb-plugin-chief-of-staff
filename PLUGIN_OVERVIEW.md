@@ -9,17 +9,22 @@ A roster of every thread the plugin started: queued, running, waiting on
 human, blocked, done or failed, with repo, issue, PR, start time, last
 activity and token usage when the provider reports it. Stalls and failures
 raise a notification; you can retry, resume or re-run checks from the panel,
-`bb cos status`, or the `chief_of_staff_status` agent tool.
+`bb cos status`, or the `chief_of_staff_status` agent tool. An agent that hits
+its Claude or Codex usage limit (the 5-hour window) is not a failure: its step
+waits for the reset, then the agent continues where it stopped.
 
 ## Issue intake
 
 Labels and an assignee decide which GitHub
 issues become agent work. Each issue gets an isolated worktree thread with a
-prompt built from the issue, its comments and the repo's conventions, plus one
+prompt built from the issue, its maintainers' comments and the repo's
+conventions (issue text is marked as untrusted user content), plus one
 status comment on the issue. The comment is edited, not repeated, when the task
 restarts, and it links the thread only when BB has a web URL. A repository can
 turn issue comments off. An issue with an active thread or an open PR is never
-picked up twice.
+picked up twice. Once its task has failed or is done, an issue stays stopped
+until someone adds one of the filter labels (or assigns the filter's user)
+again after the task ended, or retries the task.
 
 ## Workflows
 

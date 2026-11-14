@@ -3,6 +3,13 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+/** Finished roster items per page: the default and the most one page may ask for. */
+export const ROSTER_FINISHED_LIMIT = 50;
+export const ROSTER_FINISHED_MAX = 500;
+export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_MAX).default(ROSTER_FINISHED_LIMIT);
+/** An earlier roster page's opaque nextBefore cursor. */
+export const rosterCursorSchema = z.string().min(1).max(1000);
+
 const rosterEntry = z.object({
   occupiesCapacity: z.boolean(),
   id: z.string(),
@@ -15,7 +22,7 @@ const rosterEntry = z.object({
       name: z.string(),
       type: z.enum(["agent", "check", "ship", "model"]),
       depth: z.number(),
-      status: z.enum(["pending", "running", "waiting", "done"]),
+      status: z.enum(["pending", "running", "waiting", "done", "stopped"]),
       phase: z.string().nullable(),
       agents: z.number(),
       reported: z.number(),
@@ -51,6 +58,10 @@ const rosterEntry = z.object({
     })
     .nullable(),
   startedAt: z.string(),
+  /** When a done or failed task finished; null while it runs (and on some legacy rows). */
+  finishedAt: z.string().nullable(),
+  /** How a finished task ended (src/outcome.ts); null while it runs. */
+  outcome: z.enum(["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"]).nullable(),
   lastActivityAt: z.string().nullable(),
   stalled: z.boolean(),
   fixAttempts: z.number(),
@@ -70,7 +81,7 @@ const rosterEntry = z.object({
     .nullable(),
 });
 
-const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), message: z.string(), actor: z.string() });
+const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), issueNumber: z.number().nullable(), issueTitle: z.string().nullable(), message: z.string(), actor: z.string() });
 
 /** Scalar plugin settings the configurator edits (everything except repos/workflow/token). */
 export const generalSettingsSchema = z.object({
@@ -194,12 +205,23 @@ export const rpcContract = defineRpcContract({
       repos: z.array(z.object({ key: z.string(), projectId: z.string(), maxConcurrent: z.number(), active: z.number(), labels: z.array(z.string()), intake: z.boolean(), paused: z.boolean(), workflowId: z.string(), workflowName: z.string(), stepNames: z.array(z.string()) })),
       errors: z.array(z.string()),
       warnings: z.array(z.string()),
-      settings: z.object({ stallThresholdMinutes: z.number(), maxConcurrentTotal: z.number(), intakeIntervalMinutes: z.number() }),
+      settings: z.object({ stallThresholdMinutes: z.number(), maxConcurrentTotal: z.number(), intakeIntervalMinutes: z.number(), archiveThreadsOnDone: z.boolean() }),
     }),
   },
   cos_set_paused: { input: z.object({ paused: z.boolean() }), output: z.object({ paused: z.boolean() }) },
   cos_set_repo_paused: { input: z.object({ repo: z.string().max(200), paused: z.boolean() }), output: z.object({ repo: z.string(), paused: z.boolean() }) },
-  cos_roster: { input: z.object({ repo: z.string().optional(), includeDone: z.boolean().default(false), withUsage: z.boolean().default(false) }), output: z.object({ entries: z.array(rosterEntry) }) },
+  cos_roster: {
+    input: z.object({
+      repo: z.string().optional(),
+      includeDone: z.boolean().default(false),
+      /** Finished items per page. */
+      finishedLimit: finishedLimitSchema,
+      /** An earlier page's nextBefore: return only the next page of finished items. */
+      before: rosterCursorSchema.optional(),
+      withUsage: z.boolean().default(false),
+    }),
+    output: z.object({ entries: z.array(rosterEntry), nextBefore: z.string().nullable() }),
+  },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: {
     input: z.object({ id: z.string(), action: z.enum(["retry", "rerun_step", "approve", "mark_done", "mark_failed"]), step: z.string().max(40).optional(), feedback: z.string().max(20000).optional() }),
@@ -211,7 +233,7 @@ export const rpcContract = defineRpcContract({
       title: z.string(),
       /** The workflow the task runs (a Workflow document). */
       workflow: z.any(),
-      live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number(), picked: z.string().nullable().optional() })),
+      live: z.record(z.string(), z.object({ status: z.enum(["pending", "running", "waiting", "done", "stopped"]), phase: z.string().nullable(), reported: z.number(), agents: z.number(), waitingKind: z.string().nullable(), retrying: z.boolean(), attempts: z.number(), round: z.number(), picked: z.string().nullable().optional() })),
       /** The task itself. */
       task: taskDetail.optional(),
       /** Each step's current round: what it received, what it produced, who works on it. */

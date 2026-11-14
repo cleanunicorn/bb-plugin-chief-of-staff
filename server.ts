@@ -9,6 +9,7 @@ import { registerCli } from "./src/cli";
 import { registerTools } from "./src/tools";
 import { reconcile } from "./src/roster";
 import { observeActive, observeFailure, observeIdle, observeInteraction, snapshotOf, syncThread } from "./src/sync";
+import { observeUsageLimit } from "./src/usageLimit";
 import { describeInteraction } from "./src/threads";
 import { sweep } from "./src/sweep";
 import { dispatch, newJobGeneration, replayDeferred } from "./src/delivery";
@@ -48,7 +49,13 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.failed", async ({ thread, error }) => {
     const item = touch(thread.id);
-    if (item) await observeFailure(cos, item.id, thread.id, error ?? "thread errored", "event");
+    if (item) await observeFailure(cos, item.id, thread.id, error ?? "thread errored", "event", { errored: true });
+  });
+  // Follows thread.failed with BB's account of the failed turn: a usage limit
+  // seen only now (or a failure read too early) parks the step on its reset.
+  bb.events.on("turn.failed", async (failure) => {
+    const item = store.getWorkItemByThread(failure.threadId);
+    if (item) await observeUsageLimit(cos, item.id, failure.threadId, "event", failure);
   });
   bb.events.on("interaction.pending", async ({ thread, interaction }) => {
     const item = touch(thread.id);

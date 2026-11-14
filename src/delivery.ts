@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import { GitHubError, GitHubRateLimitError, prStateFrom, reduceReviews, unlessRateLimited } from "./github";
-import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
+import { CAPACITY_REASON, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, deriveStatus, repoNotConfiguredReason, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
@@ -71,23 +71,26 @@ export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: s
 /** dispatch() for callers that already hold the item's lock. */
 export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false, deferredId?: number): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(itemId);
+  if (item && !item.workflow.steps.length && event.type === "close") return closeWithoutWorkflow(cos, item, event.outcome, actor);
   if (!item || !item.workflow.steps.length) {
     if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
     return null;
   }
-  if (cos.store.isPaused(item.repo)) {
+  // Closing by hand is the operator's call: a pause does not hold it.
+  const held = () => event.type !== "close" && cos.store.isPaused(item.repo);
+  if (held()) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
   if (item.queuedEvent) {
     if (event.type === "start" || event.type === "retry" || event.type === "approve") event = item.queuedEvent;
-    else if (!["rerun", "revise", "pr_closed", "pr_merged"].includes(event.type)) {
+    else if (!["rerun", "revise", "pr_closed", "pr_merged", "close"].includes(event.type)) {
       if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
       return item;
     }
   }
   const { policy, repos, values } = await cos.config();
-  if (cos.store.isPaused(item.repo)) {
+  if (held()) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
@@ -108,14 +111,23 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   // items observe it before running their own admission check.
   if (!force && occupiesCapacity(proposed) && (!occupiesCapacity(item) || event.type === "start")) {
     const repo = repos.find((r) => `${r.owner}/${r.repo}` === item.repo);
+    // A missing repo is not "full": say so, so the operator can fix the setting
+    // or close the task. It stays queued with its event, and starts on the first
+    // sweep after the repo is back (a `repos` parse error empties the list).
     const full = !repo || cos.store.countOccupied(item.repo, item.id) >= repo.maxConcurrent || cos.store.countOccupied(undefined, item.id) >= values.maxConcurrentTotal;
     if (full) {
+      const waitingReason = repo ? CAPACITY_REASON : repoNotConfiguredReason(item.repo);
       const queued = cos.store.updateWorkItem(item.id, {
         queuedEvent: event, status: "queued", jobStartedAt: null,
-        waitingKind: null, waitingReason: "Waiting for task capacity",
+        waitingKind: null, waitingReason,
         ...(event.type === "pr_opened" ? { prNumber: event.prNumber, prUrl: event.prUrl } : {}),
       });
       if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+      if (item.status === "done") await reopenItemThreads(cos, item, actor);
+      // Every sweep re-dispatches queued items: log only when the reason changes.
+      if (!repo && item.waitingReason !== waitingReason) {
+        cos.store.log({ level: "warn", kind: "admission", repo: item.repo, workItemId: item.id, message: `waiting: repo ${item.repo} is not configured; the task starts once it is back in the repos setting`, actor });
+      }
       cos.invalidate();
       return queued;
     }
@@ -123,11 +135,14 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   const updated = cos.store.transaction(() => {
     const stored = cos.store.updateWorkItem(item.id, patch);
     if (stored) cos.store.appendJournal(item.id, t.journal, actor);
+    // Closed by hand: a decision held by a pause (a rerun, a retry) must not reopen it on resume.
+    if (stored && event.type === "close" && stored.status === event.outcome) cos.store.deleteDeferredEventsFor(item.id);
     return stored;
   });
   if (!updated) return null;
   if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
+  if (item.status === "done" && updated.status !== "done") await reopenItemThreads(cos, updated, actor);
   for (const effect of t.effects) {
     if (effect.type === "check" || effect.type === "ship" || effect.type === "merge") {
       startJob(cos, item.id, effect, actor);
@@ -150,6 +165,23 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     }
   }
   if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
+  return cos.store.getWorkItem(item.id);
+}
+
+/** A task with no workflow steps has nothing for the engine to settle: write the outcome. */
+async function closeWithoutWorkflow(cos: Cos, item: WorkItem, outcome: "done" | "failed", actor: string): Promise<WorkItem | null> {
+  if (item.status === outcome) return item;
+  const updated = cos.store.transaction(() => {
+    const stored = cos.store.updateWorkItem(item.id, {
+      status: outcome, lastError: outcome === "done" ? MARKED_DONE : MARKED_FAILED, finishedAt: cos.now().toISOString(),
+      jobStartedAt: null, queuedEvent: null, waitingKind: null, waitingReason: null,
+    });
+    if (stored) cos.store.deleteDeferredEventsFor(item.id);
+    return stored;
+  });
+  if (!updated) return null;
+  logChanges(cos, item, updated, { type: "close", outcome }, actor);
+  if (outcome === "done") await archiveItemThreads(cos, updated, actor);
   return cos.store.getWorkItem(item.id);
 }
 
@@ -201,7 +233,7 @@ export function replayDeferred(cos: Cos): Promise<void> {
 
 /** Resume older deferred transitions before admitting fresh intake. */
 export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
-  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER })
+  const items = cos.store.listWorkItems({ activeOnly: true })
     .filter((i) => i.queuedEvent && !cos.store.isPaused(i.repo))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   for (const item of items) await dispatch(cos, item.id, { type: "start" }, actor);
@@ -231,11 +263,37 @@ async function archiveItemThreads(cos: Cos, item: WorkItem, actor: string): Prom
   if (archived.length) cos.store.log({ level: "info", kind: "effect", repo: item.repo, workItemId: item.id, message: `archived ${archived.length} thread${archived.length === 1 ? "" : "s"}: ${archived.join(", ")}`, actor });
 }
 
+/**
+ * A done task runs again (rerun): bring back the threads archiving retired,
+ * parents first, and have the provider rebuild a workspace it already removed,
+ * before any prompt goes out. Otherwise the prompt reaches an archived thread
+ * and the next sweep fails the task with "thread archived". One thread failing
+ * does not stop the rest; its prompt then fails and is retried as usual.
+ */
+async function reopenItemThreads(cos: Cos, item: WorkItem, actor: string): Promise<void> {
+  const ids = (await archiveOrder(cos, item)).reverse();
+  for (const threadId of ids) {
+    try {
+      let thread = await cos.bb.sdk.threads.get({ threadId });
+      if (thread.deletedAt) continue;
+      if (thread.archivedAt) {
+        await cos.bb.sdk.threads.unarchive({ threadId });
+        thread = await cos.bb.sdk.threads.get({ threadId });
+      }
+      if (thread.canRestoreEnvironment) await cos.bb.sdk.threads.restoreEnvironment({ threadId });
+    } catch (error) {
+      const message = await cos.safe(error instanceof Error ? error.message : String(error));
+      cos.store.log({ level: "warn", kind: "effect", repo: item.repo, workItemId: item.id, message: `could not bring back thread ${threadId}: ${message}`, actor });
+    }
+  }
+}
+
 /** The stored patch for a transition: step states plus the status derived from them. */
 export function applyTransition(item: WorkItem, nodes: Nodes, patch: Partial<WorkItem>): Partial<WorkItem> {
+  // Closed stays closed (failed, or done by the workflow or by hand) unless the patch reopens it (retry, revive, rerun).
   const explicit = "status" in patch ? patch.status : item.status;
   const derived = deriveStatus({ status: explicit === "failed" ? "failed" : "queued", workflow: item.workflow }, nodes);
-  const status = explicit === "failed" ? "failed" : patch.status === "done" ? "done" : derived.status;
+  const status = explicit === "failed" || explicit === "done" ? explicit : derived.status;
   const fixAttempts = Object.values(nodes).reduce((sum, n) => sum + n.attempts, 0);
   const finished = status === "done" || status === "failed";
   return {
@@ -599,6 +657,27 @@ export async function buildPrBody(cos: Cos, item: WorkItem, written: string | nu
 // ---- CI watching ----
 
 const CI_MARKER = (itemId: string) => `ci-failed:${itemId}`;
+/** The head sha last seen with no checks reported, and when it was first seen so. */
+const NO_CHECKS_SINCE = (itemId: string) => `ci-none:${itemId}`;
+/**
+ * How long a head with no checks counts as pending. Right after a push GitHub
+ * reports no checks until CI registers them, which looks like a repository
+ * with no CI at all.
+ */
+const NO_CHECKS_GRACE_MS = 5 * 60_000;
+
+/** Whether a head with no checks reported has waited out the grace for CI to register. */
+async function noChecksSettled(cos: Cos, itemId: string, sha: string): Promise<boolean> {
+  const key = NO_CHECKS_SINCE(itemId);
+  const seen = await cos.bb.storage.kv.get<{ sha: string; since: number }>(key);
+  const now = cos.now().getTime();
+  // Timed per head, not from the PR's creation: a fix's new head starts without checks too.
+  if (seen?.sha !== sha) {
+    await cos.bb.storage.kv.set(key, { sha, since: now });
+    return false;
+  }
+  return now - seen.since >= NO_CHECKS_GRACE_MS;
+}
 
 /** The ship step an item has open on a PR, if any. */
 function openShip(item: WorkItem): ShipStep | null {
@@ -623,7 +702,7 @@ function trackingPull(item: WorkItem): boolean {
  * time budget as `deadline` (epoch ms): no further PR is polled after it.
  */
 export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number } = {}): Promise<void> {
-  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => i.prNumber && trackingPull(i) && !cos.store.isPaused(i.repo));
+  const items = cos.store.listWorkItems({ activeOnly: true }).filter((i) => i.prNumber && trackingPull(i) && !cos.store.isPaused(i.repo));
   if (!items.length) return;
   const github = await cos.github();
   if (!github.hasToken) return;
@@ -671,8 +750,10 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
         if (runId) log += `\n\n${await github.getJobLogsForRun(repo.owner, repo.repo, runId).catch(unlessRateLimited(() => "(log download failed)"))}`;
         await cos.bb.storage.kv.set(CI_MARKER(item.id), pr.head.sha);
         await dispatch(cos, item.id, { type: "ci_failing", log: await cos.safe(log) }, actor);
-      } else if (ci.state === "passing" || ci.state === "no_checks") {
-        if (item.nodes[ship.id]?.phase === "ci" || ship.action === "merge") await dispatch(cos, item.id, { type: "ci_passing" }, actor);
+      } else {
+        // No checks yet may be CI that has not registered: held pending until the grace runs out.
+        const green = ci.state === "passing" || (ci.state === "no_checks" && await noChecksSettled(cos, item.id, pr.head.sha));
+        if (green && (item.nodes[ship.id]?.phase === "ci" || ship.action === "merge")) await dispatch(cos, item.id, { type: "ci_passing" }, actor);
       }
     } catch (error) {
       // Every later request would be refused too; the sweep resumes after the reset.

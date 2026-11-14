@@ -28,8 +28,9 @@ no GitHub issue: see [Install](#install).
 
 - **Turns issues into agent work.** Issues matching a per-repository filter
   become isolated worktree threads, with a prompt built from the issue, its
-  comments and the repository's `AGENTS.md` / `CONTRIBUTING.md`. You can also
-  start a task by describing it.
+  maintainers' comments and the repository's `AGENTS.md` / `CONTRIBUTING.md`.
+  Issue text is marked as untrusted ([Trust model](#trust-model)). You can
+  also start a task by describing it.
 - **Runs your workflow.** Each task follows a graph of steps you draw: agents
   with your instructions, check commands, and shipping. Read-only steps run in
   parallel, and a failed check or review sends the work back to an earlier
@@ -63,8 +64,11 @@ flowchart LR
 1. **Intake.** On a schedule (every 10 minutes by default), Chief of Staff
    looks in each configured repository for open issues that carry every label
    you chose (and are assigned to the user you chose, if you set one). An issue
-   with an active task or an open PR is never picked up twice. Tasks you
-   describe skip this step. `bb cos intake --dry-run` applies the same
+   with an active task or an open PR is never picked up twice. Once an issue's
+   task has failed or is done, the issue is not picked up again until someone
+   adds one of those labels again (or assigns the chosen user again) after the
+   task ended, or retries the task. The intake result says why it was skipped.
+   Tasks you describe skip this step. `bb cos intake --dry-run` applies the same
    concurrency limits, so it reports only the issues a real run would start.
 2. **A task starts** when the repository and the global limit have a free slot.
    When they are full, an issue waits for a later intake run and a task you
@@ -90,11 +94,16 @@ Every task has one status, derived from its steps:
 | `agent` | Agent | An agent is working on a step. |
 | `cos` | Chief of Staff | Running a check, pushing or merging. |
 | `ci` | Chief of Staff | PR open, CI running. |
-| `retrying` | Chief of Staff | Retrying after an error. |
+| `retrying` | Chief of Staff | Retrying after an error, or waiting for the agent's Claude or Codex usage limit to reset; the agent then continues where it stopped. |
 | `ready` | You | PR is green and ready to merge. |
 | `waiting_on_human` | You | A question, an approval or a decision. |
 | `blocked` | You | Stalled: no activity past the stall threshold. |
 | `done` / `failed` | Nobody | Finished. Shown with **Show finished**. |
+
+A finished card says how the task ended: **Merged**, **PR opened**,
+**Completed**, **Marked done**, **Failed**, **Marked failed** or **PR closed**.
+It also says when the task finished and how long it took, and why it ended if it
+did not deliver. Steps it left unfinished show as **stopped**.
 
 ### Read a task card
 
@@ -309,6 +318,11 @@ the skill; anything else stays plain text.
 `requireApproval` controls the approving-review gate in merge mode (on by
 default). Steps configured after shipping still run.
 
+Merge mode waits for CI to register its checks: a pushed head with no checks
+reported counts as green only after about 5 minutes without any, so a
+repository with no CI merges about 6 minutes after each push. Check runs are
+read up to 1,000 per head; a head with more stays pending.
+
 <details>
 <summary>Capacity, dashboard counts and upgrade behavior</summary>
 
@@ -324,8 +338,20 @@ capacity. Stage filters count tasks; task slots retain the admission semantics
 above. “Failures needing a decision” counts active human waits caused by an
 escalation, a missing report, or a Chief of Staff error. Stalled work is shown
 separately. Terminal failed runs are historical outcomes, not unresolved
-incidents; they remain accessible with **Show finished**. Retrying work stays in
-Checks & shipping until it requires a decision.
+incidents; they remain accessible with **Show finished**, which adds the most
+recently finished tasks after every active one; **Show older finished** loads
+the next page. Retrying work stays in Checks & shipping until it requires a
+decision.
+
+A task whose repository is not in the `repos` setting (removed, renamed, or the
+setting has an error, which leaves it empty) does not wait for capacity. If it
+has not started, or is waiting to reacquire capacity, it stays queued with
+"Repository owner/repo is not in the repos setting …", logs one warning, and
+starts on the next sweep after the repository is configured again. A task that
+was already running retries the step 3 times (after 1, 4 and 9 minutes), then
+waits on you with "repo owner/repo is no longer configured"; after fixing the
+setting, press **Retry**, or close the task. The overview and `bb cos status`
+name the open tasks of repositories that are not configured.
 
 **Upgrade behavior:** unfinished PR-only items in CI/ready finish after their PR
 is confirmed open or merged. Closed, unmerged PRs fail delivery; a GitHub error
@@ -410,7 +436,7 @@ The same settings, as stored:
 | `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. |
 | `defaultProviderId`, `defaultModel` | Used when a repo does not set its own. |
 | `notifyPush` | Push notifications through the push-notifications plugin. |
-| `archiveThreadsOnDone` | Archive a task's builder and step threads once its workflow is done (default on). Failed tasks keep theirs. |
+| `archiveThreadsOnDone` | Archive a task's builder and step threads once its workflow is done or you mark it done (default on). Failed tasks keep theirs. |
 
 ### Repositories
 
@@ -421,6 +447,7 @@ The same settings, as stored:
       "projectId": "proj_xxxxxxxxxx",
       "intake": true,
       "issueComments": true,
+      "briefComments": "trusted",
       "issueFilter": { "labels": ["agent-ready"], "assignee": null },
       "maxConcurrent": 2,
       "providerId": "claude-code", "model": "claude-opus-5-5",
@@ -447,24 +474,99 @@ another. The comment links the agent's thread only when BB has a web URL; a
 request opens, a second comment with its link is added. Set
 `issueComments: false` to post neither; pull requests are still opened.
 
+`briefComments` (default `"trusted"`) controls which issue comments the
+agent's first prompt quotes. It is separate from `issueComments`, which is
+about what Chief of Staff posts. The brief checks the newest 100 comments,
+leaves out Chief of Staff's own status comment, and quotes the newest 10 that
+remain:
+
+| `briefComments` | Comments quoted |
+| --- | --- |
+| `"trusted"` | Only those whose author is the repository's owner, an organization member or a collaborator (GitHub's `author_association` `OWNER`, `MEMBER` or `COLLABORATOR`). Comments with any other or no association are left out, and the brief says how many. |
+| `"all"` | Everyone's. Use it only where you trust everyone who can comment. |
+| `"none"` | None. The comments are not read. |
+
+GitHub reports `author_association` as your token sees it. Members of an
+organization whose membership is private can come back as `CONTRIBUTOR` or
+`NONE`, for example with a token that cannot read the organization's members,
+and their comments are then left out. Make the membership public, use a token
+that can see it, or add them as collaborators.
+
 `workflow` names one of your workflows (empty: the default). Entries written
 for earlier versions keep working: per-stage overrides and `checkCommand` are
 converted into a workflow for that repository, `allow.intake: false` pauses
 intake, and options of the removed routines feature are ignored.
 
+## Trust model
+
+An agent runs on your host, and Chief of Staff commits, pushes and can merge
+its work. Anything that reaches its prompt can steer what it does.
+
+**Who can influence an agent's prompt**
+
+| Who | What they control |
+| --- | --- |
+| You, the operator | Typed tasks, settings, workflows and their step instructions. |
+| People with triage access | Labels and assignees, which decide which issues are picked up. |
+| The issue author | The title and body, which they can edit after the issue was labelled. |
+| Commenters | Comment text, subject to `briefComments`. On a public repository anyone can comment. |
+| People who can push to the default branch | `AGENTS.md` and `CONTRIBUTING.md`, quoted as the repository's conventions. |
+
+**How issue content is presented.** The first prompt names the issue by
+number, repository and URL only. The title, body, author and quoted comments
+go in one block between markers that carry a random id per prompt, opened by
+a notice that the text is user-supplied data and cannot change the workflow
+or step instructions, and that the block ends only at the marker with that
+id. Every line users wrote is quoted with `>`, and each comment is labelled
+with its author's `author_association`, so issue text cannot pass itself off
+as a marker, a section header or a maintainer's comment. Copies of the marker
+text are also altered. This lowers the risk of prompt injection; it does not
+remove it. A model can still follow instructions written in an issue.
+
+**Limits of the filter.** `briefComments` limits what Chief of Staff puts in
+the prompt. The agent can still read the whole issue itself, for example with
+`gh issue view`.
+
+**What the agent can do.** `permissionMode` is passed to BB for every thread:
+
+| `permissionMode` | The agent |
+| --- | --- |
+| `accept-edits` | Works in a workspace sandbox; anything beyond it waits for you to approve. |
+| `auto` (default) | Works in the same sandbox; the provider reviews escalations automatically. |
+| `full` | Bypasses the sandbox and approvals; only the host's permission ceiling in BB still applies. |
+
+In every mode the agent's commits are pushed, and the Ship step can open a pull
+request or merge it. With `action: "merge"` and `requireApproval: false`, work
+can be merged without anyone reviewing it.
+
+**Recommendations for repositories that accept outside issues**
+
+- Keep `requireApproval` on, or ship with `action: "pr"`, so a person reviews
+  every change before it lands.
+- Keep `briefComments: "trusted"`.
+- Avoid `permissionMode: "full"`.
+- Label issues for intake only after reading them, and remember the author can
+  still edit them afterwards.
+
 ## CLI and agent tools
 
 ```
-bb cos status [--repo owner/repo] [--all] [--usage] [--json]
+bb cos status [--repo owner/repo] [--all [--finished-limit n] [--before cursor]] [--usage] [--json]
 bb cos intake [--repo owner/repo] [--dry-run]
 bb cos task "<prompt>" --repo owner/repo [--body "..."]
 bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message "..."]
 bb cos log [--limit n] [--item id]
 ```
 
+`bb cos status` lists every active task, newest first. `--all` adds the most
+recently finished tasks after them, 50 by default (`--finished-limit`, up to
+500). When older ones exist, the output ends with the command for the next
+page: `--before <cursor>` lists only that page of finished tasks and implies
+`--all`. `--json` returns the cursor as `nextBefore` (null on the last page).
+
 | Agent tool | Purpose |
 | --- | --- |
-| `chief_of_staff_status` | Read the roster. |
+| `chief_of_staff_status` | Read the roster. `includeDone` adds finished tasks; page older ones with `before` and `finishedLimit`. |
 | `cos_report` | Workflow agents report a finished step. |
 | `cos_start_task` | Hand a task to Chief of Staff. |
 
@@ -593,3 +695,7 @@ continues through retained history; **Back to newest** returns to live recent
 activity. **Problems only** selects warnings and errors on the server, including
 those older than the newest 60 entries. Changing the filter returns to its newest
 page. Retention still applies: paging cannot recover pruned entries.
+
+The icons in [assets/user-check.svg](assets/user-check.svg) and
+[assets/user-x.svg](assets/user-x.svg) come from [Lucide](https://lucide.dev)
+(ISC License, Copyright (c) Lucide Contributors).

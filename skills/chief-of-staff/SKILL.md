@@ -24,10 +24,14 @@ files. Never push or open pull requests; Chief of Staff does that.
 
 ## Commands
 
-- `bb cos status [--repo owner/repo] [--all] [--usage] [--json]` — roster of tracked
-  agents: the steps running, who holds the ball (agent / cos / human / system),
-  what is happening now, repo, issue, PR, thread id, stall flag, and a "Waiting
-  on you" list with the question, plan or escalation each item waits on.
+- `bb cos status [--repo owner/repo] [--all [--finished-limit n] [--before cursor]] [--usage] [--json]`
+  — roster of tracked agents: the steps running, who holds the ball (agent /
+  cos / human / system), what is happening now, repo, issue, PR, thread id,
+  stall flag, and a "Waiting on you" list with the question, plan or escalation
+  each item waits on. Every active item is listed; `--all` adds the 50 (or
+  `--finished-limit`) most recently finished. For older ones, run the "More
+  finished" command it prints (`--before <cursor>`, which implies `--all`;
+  `nextBefore` in `--json`).
   Answering or resuming the thread in BB moves the item back to running; the
   plugin re-syncs every thread each minute. In the dashboard, clicking the
   question opens it with its options and context and answers it in place
@@ -99,6 +103,11 @@ then `bb settings experiment pluginUpdates true` for automatic updates.
 - Issue intake never starts a second thread for an issue that already has an
   active thread or an open PR referencing it, and never picks up issues
   without a label or assignee filter.
+- An issue whose latest task failed or is done (merged PR included) is not
+  started again until a person re-adds a filter label, or re-assigns the
+  filter's assignee, after that task finished. To continue the same task
+  instead, `retry` it (not useful for a done task or one whose PR was closed).
+  Intake reports these issues under skipped with the reason.
 - Agents never push or open pull requests themselves; Chief of Staff does,
   in a Ship step.
 

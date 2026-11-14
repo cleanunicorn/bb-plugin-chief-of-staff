@@ -171,24 +171,27 @@ describe("GitHub rate limits", () => {
   });
 });
 
+/** GitHub's pages of a list with `total` entries, oldest first: ids 1..total, 100 per page. */
+function pagedFetch(total: number, entry: (id: number) => object) {
+  return fakeFetch((url) => {
+    const page = Number(url.searchParams.get("page") ?? "1");
+    const pages = Math.max(1, Math.ceil(total / 100));
+    const ids = Array.from({ length: Math.max(0, Math.min(100, total - (page - 1) * 100)) }, (_, i) => (page - 1) * 100 + i + 1);
+    const base = `https://api.github.com${url.pathname}?per_page=100`;
+    const link = pages > 1 && page < pages ? `<${base}&page=${page + 1}>; rel="next", <${base}&page=${pages}>; rel="last"` : pages > 1 ? `<${base}&page=1>; rel="first", <${base}&page=${page - 1}>; rel="prev"` : "";
+    return { body: ids.map(entry), headers: link ? { link } : ({} as Record<string, string>) };
+  });
+}
+const pagesAsked = (fetch: ReturnType<typeof fakeFetch>) => fetch.mock.calls.map(([u]) => new URL(String(u)).searchParams.get("page") ?? "1");
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
 describe("newest issue comments and truncated lists", () => {
-  /** GitHub's comment pages for an issue with `total` comments: ids 1..total, 100 per page. */
-  function commentsFetch(total: number) {
-    return fakeFetch((url) => {
-      const page = Number(url.searchParams.get("page") ?? "1");
-      const pages = Math.max(1, Math.ceil(total / 100));
-      const ids = Array.from({ length: Math.max(0, Math.min(100, total - (page - 1) * 100)) }, (_, i) => (page - 1) * 100 + i + 1);
-      const base = `https://api.github.com${url.pathname}?per_page=100`;
-      const link = pages > 1 && page < pages ? `<${base}&page=${page + 1}>; rel="next", <${base}&page=${pages}>; rel="last"` : pages > 1 ? `<${base}&page=1>; rel="first", <${base}&page=${page - 1}>; rel="prev"` : "";
-      return { body: ids.map((id) => ({ id, body: `c${id}`, user: null, created_at: "" })), headers: link ? { link } : ({} as Record<string, string>) };
-    });
-  }
+  const commentsFetch = (total: number) => pagedFetch(total, (id) => ({ id, body: `c${id}`, user: null, created_at: "" }));
   const newest = async (total: number) => {
     const fetch = commentsFetch(total);
     const comments = await new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch }).listIssueComments("acme", "app", 12, { newest: 10 });
-    return { ids: comments.map((c) => c.id), pages: fetch.mock.calls.map(([u]) => new URL(String(u)).searchParams.get("page") ?? "1") };
+    return { ids: comments.map((c) => c.id), pages: pagesAsked(fetch) };
   };
-  const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 
   it("keeps the default comment scan bounded to three pages for marker recovery", async () => {
     const fetch = commentsFetch(350);
@@ -222,6 +225,110 @@ describe("newest issue comments and truncated lists", () => {
     expect(log).toHaveBeenCalledWith("GitHub list /repos/acme/app/issues/12/comments truncated at 2 pages");
     await new GitHubClient({ token: TOKEN, fetch: commentsFetch(150) as typeof globalThis.fetch, log }).paginate("/repos/acme/app/issues/12/comments", 2);
     expect(log).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GitHubClient.listIssueEvents", () => {
+  /** Events of an issue with `total` of them, oldest first; the id doubles as the event's minute. */
+  const events = async (total: number) => {
+    const fetch = pagedFetch(total, (id) => ({ id, event: "labeled", created_at: new Date(Date.UTC(2026, 10, 1, 0, id)).toISOString(), label: { name: "agent-ready" } }));
+    const list = await new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch }).listIssueEvents("acme", "app", 12);
+    expect(fetch.mock.calls.every(([u]) => new URL(String(u)).pathname === "/repos/acme/app/issues/12/events")).toBe(true);
+    return { ids: list.map((e) => (e as unknown as { id: number }).id), pages: pagesAsked(fetch) };
+  };
+
+  it("makes one request for an issue with few events", async () => {
+    expect(await events(7)).toEqual({ ids: range(1, 7), pages: ["1"] });
+  });
+
+  it("reads page 1 and the last page of a long history, oldest first", async () => {
+    expect(await events(300)).toEqual({ ids: [...range(1, 100), ...range(201, 300)], pages: ["1", "3"] });
+  });
+
+  it("reads the page before a short last page, in at most three requests", async () => {
+    expect(await events(1205)).toEqual({ ids: [...range(1101, 1200), ...range(1201, 1205)], pages: ["1", "13", "12"] });
+  });
+
+  it("reads both pages of a two-page history", async () => {
+    expect(await events(105)).toEqual({ ids: range(1, 105), pages: ["1", "2"] });
+  });
+});
+
+describe("CI summary over every page of check runs (#50)", () => {
+  type Run = { id: number; name: string; status: string; conclusion: string | null; html_url?: string };
+  /**
+   * GitHub's check-run pages for a head with `total` runs, 100 per page, all
+   * green but for `odd`. `served` caps the runs GitHub actually lists.
+   */
+  function checksFetch(total: number, odd: Record<number, Partial<Run>> = {}, served = total, status: { state: string; total_count: number } = { state: "success", total_count: 0 }) {
+    return fakeFetch((url) => {
+      if (url.pathname.endsWith("/status")) return { body: status };
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const pages = Math.max(1, Math.ceil(served / 100));
+      const ids = Array.from({ length: Math.max(0, Math.min(100, served - (page - 1) * 100)) }, (_, i) => (page - 1) * 100 + i + 1);
+      const base = `https://api.github.com${url.pathname}?per_page=100`;
+      const link = page < pages ? `<${base}&page=${page + 1}>; rel="next", <${base}&page=${pages}>; rel="last"` : "";
+      const runs = ids.map((id): Run => ({ id, name: `check ${id}`, status: "completed", conclusion: "success", ...odd[id] }));
+      return { body: { total_count: total, check_runs: runs }, headers: link ? { link } : ({} as Record<string, string>) };
+    });
+  }
+  const summary = async (fetch: ReturnType<typeof fakeFetch>, log?: (message: string) => void) =>
+    new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch, log }).ciSummary("acme", "app", "abc");
+  const checkPages = (fetch: ReturnType<typeof fakeFetch>) =>
+    fetch.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("/check-runs")).map((u) => u.searchParams.get("page") ?? "1");
+
+  it("sees a failure past the first page", async () => {
+    const fetch = checksFetch(150, { 130: { conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/42/job/1" } });
+    expect(await summary(fetch)).toEqual({ state: "failing", failed: [{ name: "check 130", url: "https://github.com/acme/app/actions/runs/42/job/1", runId: 42 }], total: 150 });
+    expect(checkPages(fetch)).toEqual(["1", "2"]);
+  });
+
+  it("sees a run in progress past the first page", async () => {
+    expect(await summary(checksFetch(150, { 120: { status: "in_progress", conclusion: null } }))).toMatchObject({ state: "pending" });
+  });
+
+  it("passes only when every page is green", async () => {
+    expect(await summary(checksFetch(150))).toEqual({ state: "passing", failed: [], total: 150 });
+  });
+
+  it("never passes a list cut at the page cap", async () => {
+    const log = vi.fn();
+    const fetch = checksFetch(1500);
+    expect(await summary(fetch, log)).toMatchObject({ state: "pending" });
+    expect(checkPages(fetch)).toHaveLength(10);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("truncated"));
+  });
+
+  it("still reports a failure in a list cut at the page cap", async () => {
+    expect(await summary(checksFetch(1500, { 5: { conclusion: "failure" } }))).toMatchObject({ state: "failing", failed: [{ name: "check 5" }] });
+  });
+
+  // GitHub's count can exceed what it lists (re-runs, runs the token cannot see):
+  // holding the merge on it would hold it for good.
+  it("judges a list shorter than the total GitHub reports by the runs it lists, and logs it", async () => {
+    const log = vi.fn();
+    expect(await summary(checksFetch(150, {}, 100), log)).toEqual({ state: "passing", failed: [], total: 150 });
+    expect(log).toHaveBeenCalledWith("GitHub list /repos/acme/app/commits/abc/check-runs returned 100 of 150 check runs");
+    expect(await summary(checksFetch(150, { 90: { conclusion: "failure" } }, 100))).toMatchObject({ state: "failing" });
+  });
+
+  it("never passes an empty list GitHub counts runs for", async () => {
+    expect(await summary(checksFetch(2, {}, 0))).toMatchObject({ state: "pending", total: 2 });
+  });
+
+  // GitHub's combined status of a commit with no statuses is "pending" (checked on a real Actions-only head).
+  it("passes green check runs on a commit with no commit statuses", async () => {
+    expect(await summary(checksFetch(3, {}, 3, { state: "pending", total_count: 0 }))).toEqual({ state: "passing", failed: [], total: 3 });
+  });
+
+  it("waits for a commit status that is pending", async () => {
+    expect(await summary(checksFetch(3, {}, 3, { state: "pending", total_count: 1 }))).toMatchObject({ state: "pending", total: 4 });
+  });
+
+  it("reads a single page with one request", async () => {
+    const fetch = checksFetch(3);
+    expect(await summary(fetch)).toEqual({ state: "passing", failed: [], total: 3 });
+    expect(fetch.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("/check-runs")).map((u) => u.search)).toEqual(["?per_page=100"]);
   });
 });
 
@@ -319,6 +426,13 @@ describe("prStateFrom", () => {
     expect(prStateFrom(pr({ draft: true }), at)).toMatchObject({ state: "open", draft: true });
     expect(prStateFrom(pr({ state: "closed", merged: true, merged_at: "x" }), at)).toMatchObject({ state: "merged", checks: null, review: null });
     expect(prStateFrom(pr({ state: "closed" }), at)).toMatchObject({ state: "closed" });
+  });
+
+  it("records when GitHub merged or closed the PR, and nothing for an open one", () => {
+    expect(prStateFrom(pr({ state: "closed", merged: true, merged_at: "2026-11-13T09:00:00Z", closed_at: "2026-11-13T09:00:00Z" }), at).closedAt).toBe("2026-11-13T09:00:00Z");
+    expect(prStateFrom(pr({ state: "closed", closed_at: "2026-11-13T08:00:00Z" }), at).closedAt).toBe("2026-11-13T08:00:00Z");
+    expect(prStateFrom(pr({ closed_at: "2026-11-13T08:00:00Z" }), at)).not.toHaveProperty("closedAt");
+    expect(prStateFrom(pr({ state: "closed" }), at)).not.toHaveProperty("closedAt");
   });
 
   it("treats a merge time as merged when the list endpoint omits `merged`", () => {

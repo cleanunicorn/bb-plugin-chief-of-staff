@@ -25,6 +25,10 @@ it("words live status the same for the canvas and the step list", () => {
   expect(liveTone(live({}))?.label).toBe("pending");
 });
 
+it("draws a step a finished task left behind as stopped, not live", () => {
+  expect(liveTone(live({ status: "stopped" }))).toEqual({ color: "var(--muted-foreground)", label: "stopped" });
+});
+
 const container = document.createElement("div");
 let root: ReturnType<typeof createRoot>;
 const onSelect = vi.fn();

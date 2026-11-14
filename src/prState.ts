@@ -12,7 +12,8 @@ import type { PrState } from "./state";
  * throttle of the pass, which runs every sweep. Each open PR costs about 4
  * REST requests (getPull, two in ciSummary, listReviews) per refresh, so 40
  * open PRs come to about 960 requests an hour, on top of CI watching's 3 per
- * tracked PR every 2 minutes. Merged and closed PRs cost one request, once.
+ * tracked PR every 2 minutes. ciSummary takes one more request per 100 check
+ * runs past the first 100, up to 11 in all. Merged and closed PRs cost one request, once.
  * GitHub allows 5,000 an hour; the pass shares the client's rate limiter, so
  * the dashboard's rate-limit banner covers it.
  */

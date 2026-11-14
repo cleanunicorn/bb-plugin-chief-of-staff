@@ -30,7 +30,7 @@ import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { STATUS } from "./viz";
 
-export type LiveStatus = { status: "pending" | "running" | "waiting" | "done"; phase: string | null; reported: number; agents: number; waitingKind: string | null; retrying: boolean; attempts: number; round: number; picked?: string | null };
+export type LiveStatus = { status: "pending" | "running" | "waiting" | "done" | "stopped"; phase: string | null; reported: number; agents: number; waitingKind: string | null; retrying: boolean; attempts: number; round: number; picked?: string | null };
 
 export const STEP_TYPE_META: Record<StepType, { label: string; icon: string; hint: string }> = {
   agent: { label: "Agent", icon: "Bot", hint: "An agent works on the instructions" },
@@ -82,6 +82,8 @@ export function selectionTarget(selection: { nodes: readonly { id: string }[]; e
 export function liveTone(live: LiveStatus | undefined): { color: string; label: string } | null {
   if (!live) return null;
   if (live.status === "done") return { color: STATUS.good, label: "done" };
+  // A finished task left this step unfinished: settled, not live.
+  if (live.status === "stopped") return { color: "var(--muted-foreground)", label: "stopped" };
   if (live.status === "waiting") return { color: live.waitingKind === "cos_error" ? STATUS.serious : STATUS.warning, label: live.waitingKind === "approval" ? "needs approval" : live.waitingKind === "question" ? "question" : "needs you" };
   if (live.status === "running") {
     if (live.retrying) return { color: STATUS.serious, label: "retrying" };

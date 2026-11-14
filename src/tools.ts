@@ -4,6 +4,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { Cos } from "./context";
 import { buildRoster } from "./roster";
+import { finishedLimitSchema, rosterCursorSchema } from "../rpcContract";
 import { REPORT_OUTCOMES } from "./report";
 import { threadContext } from "./sync";
 import { startTask } from "./intake";
@@ -72,15 +73,18 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
     description: "Roster of tasks the Chief of Staff plugin runs: workflow and current steps, who holds the ball (agent, Chief of Staff, human), repo, issue, PR, activity.",
     parameters: z.object({
       repo: z.string().optional().describe("Limit to one owner/repo"),
-      includeDone: z.boolean().default(false).describe("Include finished and failed items"),
+      includeDone: z.boolean().default(false).describe("Add the most recently finished and failed items after the active ones"),
+      finishedLimit: finishedLimitSchema.describe("Finished items per page"),
+      before: rosterCursorSchema.optional().describe("Cursor from an earlier call's 'more finished' line: list only the next page of finished items"),
     }),
     async execute(params) {
-      const entries = await buildRoster(cos, { repo: params.repo, includeDone: params.includeDone });
+      const { entries, nextBefore } = await buildRoster(cos, { repo: params.repo, includeDone: params.includeDone, finishedLimit: params.finishedLimit, before: params.before });
       const lines = entries.map(
         (e) =>
           `- [${e.current.join(", ") || e.detail}/${e.actor}] ${e.repo}${e.issueNumber ? `#${e.issueNumber}` : ""} "${e.issueTitle}": ${e.activity}${e.stalled ? " (stalled)" : ""}${e.prNumber ? ` PR #${e.prNumber}` : ""} thread=${e.threadId ?? "-"} id=${e.id}${e.waitingReason ? ` waiting_on="${e.waitingReason.slice(0, 200)}"` : ""}`,
       );
-      const text = [`${entries.length} tracked item(s)`, ...lines];
+      // The cursor goes before the rows so truncation never cuts it off.
+      const text = [`${entries.length} tracked item(s)`, ...(nextBefore ? [`more finished: before=${nextBefore}`] : []), ...lines];
       return text.join("\n").slice(0, 20_000);
     },
   });

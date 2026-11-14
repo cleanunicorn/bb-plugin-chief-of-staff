@@ -3,8 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
-import { REMOVED_SUMMARY, StateStore } from "../src/state";
+import { REMOVED_SUMMARY, StateStore, isActiveStatus, type NewWorkItem } from "../src/state";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { settleJobs } from "../src/delivery";
+import { initialNodes } from "../src/machine";
 import { SETTLED_IDLE_MS } from "../src/sync";
 
 /** Make the engine throw on the next event of this type (a bug in handling it). */
@@ -23,14 +25,15 @@ vi.mock("../src/machine", async (importOriginal) => {
   };
 });
 
+type GhCall = { method: string; path: string; head?: string | null; body?: unknown; auth?: string | null };
 type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string; headers?: Record<string, string> } | undefined;
 
-function fakeGitHub(routes: Record<string, Route>, calls: { method: string; path: string; body?: unknown; auth?: string | null }[]) {
+function fakeGitHub(routes: Record<string, Route>, calls: GhCall[]) {
   return vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
     const method = (init.method ?? "GET").toUpperCase();
     const headers = init.headers as Record<string, string> | undefined;
-    calls.push({ method, path: url.pathname, body: init.body ? JSON.parse(String(init.body)) : undefined, auth: headers?.authorization ?? null });
+    calls.push({ method, path: url.pathname, head: url.searchParams.get("head"), body: init.body ? JSON.parse(String(init.body)) : undefined, auth: headers?.authorization ?? null });
     const key = `${method} ${url.pathname}`;
     const handler = routes[key] ?? routes[`${method} *`];
     const result = handler?.(url, init);
@@ -48,11 +51,11 @@ const repos = JSON.stringify({
 const minimalWorkflow = JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, verify: { maxAttempts: 1 } } });
 
 
-const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "open", html_url: "https://github.com/acme/app/issues/12", labels: [{ name: "agent-ready" }], milestone: null, assignees: [], updated_at: "2026-11-05T00:00:00Z" };
+const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "open", html_url: "https://github.com/acme/app/issues/12", labels: [{ name: "agent-ready" }], milestone: null, assignees: [], updated_at: "2026-11-05T00:00:00Z", user: { login: "reporter" }, author_association: "NONE" };
 const pull: Record<string, unknown> & { merged: boolean; merged_at: string | null; state: string } = { number: 7, title: "Fix login (#12)", body: "Closes #12", state: "open", draft: false, merged: false, merged_at: null, html_url: "https://github.com/acme/app/pull/7", head: { ref: "cos/issue-12-fix-login", sha: "abc" }, base: { ref: "main" }, labels: [], created_at: "2026-11-05T01:00:00Z", updated_at: "2026-11-05T01:00:00Z", mergeable: true, mergeable_state: "clean", user: { login: "bot" } };
 
 describe("chief-of-staff server", () => {
-  const ghCalls: { method: string; path: string; body?: unknown; auth?: string | null }[] = [];
+  const ghCalls: GhCall[] = [];
   const hostCalls: { method: string; input: unknown; hostId: string }[] = [];
   let openPulls: unknown[] = [];
   let currentPull: typeof pull = { ...pull };
@@ -61,18 +64,28 @@ describe("chief-of-staff server", () => {
   let checkLeak = "";
   let checkHangs = false;
   let threadUpdatedAt = 0;
-  let threadStatus: "idle" | "active" = "idle";
+  let threadStatus: "idle" | "active" | "error" = "idle";
   let checkBlocks: Promise<void> | null = null;
   let ghRoutes: Record<string, Route> = {};
   /** Per-thread overrides of status / updatedAt for the fake thread list. */
-  let perThread: Record<string, { status?: "idle" | "active"; updatedAt?: number }> = {};
+  let perThread: Record<string, { status?: "idle" | "active" | "error"; updatedAt?: number }> = {};
+  /** What a thread's failed turn reports (its provider/error and rate-limit events). */
+  let failures: Record<string, { errorInfo: { category: string; httpStatusCode: number | null; providerCode: null }; rateLimits: unknown }> = {};
+  /** Retries of failed turns asked for, and the threads with one queued (a number: queued for then). */
+  let retries: { threadId: string; sendAt?: number; reason?: string }[] = [];
+  let queuedRetry: Record<string, boolean | number> = {};
   const spawned = new Set<string>();
+  /** The thread ids of each threads.list call. */
+  const threadListCalls: (readonly string[] | undefined)[] = [];
   let prCreated = false;
   let clock = 0;
   let pending: unknown[] = [];
   let resolved: unknown[] = [];
   let sent: unknown[] = [];
   let archivedIds: string[] = [];
+  /** Threads archived now (archive adds, unarchive removes), and whether their workspace was removed. */
+  let archivedNow = new Set<string>();
+  let workspaceRemoved = false;
   let assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
   let host: ReturnType<typeof createFakePluginHost>;
   const originalFetch: typeof fetch = globalThis.fetch;
@@ -89,6 +102,8 @@ describe("chief-of-staff server", () => {
     resolved = [];
     sent = [];
     archivedIds = [];
+    archivedNow = new Set();
+    workspaceRemoved = false;
     checkHangs = false;
     checkBlocks = null;
     threadUpdatedAt = 0;
@@ -96,12 +111,16 @@ describe("chief-of-staff server", () => {
     assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
     prCreated = false;
     perThread = {};
+    failures = {};
+    retries = [];
+    queuedRetry = {};
     spawned.clear();
+    threadListCalls.length = 0;
     ghRoutes = {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
         "GET /repos/acme/app/issues": () => ({ body: [issue] }),
         "GET /repos/acme/app/issues/12": () => ({ body: issue }),
-        "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z" }] }),
+        "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z", author_association: "MEMBER" }] }),
         "GET /repos/acme/app/contents/AGENTS.md": () => ({ body: { content: Buffer.from("# Conventions\nUse pnpm").toString("base64") } }),
         "POST /repos/acme/app/issues/12/comments": () => ({ status: 201, body: { id: 2, body: "", user: null, created_at: "" } }),
         "GET /repos/acme/app/pulls": (url) => ({ body: url.searchParams.get("head") ? (prCreated ? [currentPull] : []) : openPulls }),
@@ -145,7 +164,18 @@ describe("chief-of-staff server", () => {
             spawned.add(id);
             return makeThreadResponse({ id, environmentId: builder || args.environment.type === "reuse" ? "env_1" : `env_${id}`, providerId: "claude-code" });
           },
-          get: async (args: { threadId: string }) => ({ ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status: threadStatus, updatedAt: threadUpdatedAt }), runtime: { displayStatus: threadStatus } }),
+          get: async (args: { threadId: string }) => {
+            const status = perThread[args.threadId]?.status ?? threadStatus;
+            return { ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status, updatedAt: perThread[args.threadId]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, archivedAt: archivedNow.has(args.threadId) ? 1 : null, canRestoreEnvironment: workspaceRemoved && !archivedNow.has(args.threadId) };
+          },
+          unarchive: async (args: { threadId: string }) => {
+            archivedNow.delete(args.threadId);
+            return { ok: true } as never;
+          },
+          restoreEnvironment: async () => {
+            workspaceRemoved = false;
+            return { ok: true } as never;
+          },
           interactions: {
             list: async () => pending as never,
             resolve: async (args: unknown) => {
@@ -154,21 +184,44 @@ describe("chief-of-staff server", () => {
               return { ok: true } as never;
             },
           },
-          list: async () =>
-            ["thr_1", ...[...spawned].filter((id) => id !== "thr_1")].map((id) => {
+          list: async (args?: { threadIds?: readonly string[] }) => {
+            threadListCalls.push(args?.threadIds);
+            return ["thr_1", ...[...spawned].filter((id) => id !== "thr_1")].map((id) => {
               const status = perThread[id]?.status ?? threadStatus;
-              return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0 };
-            }),
+              return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0, archivedAt: archivedNow.has(id) ? 1 : null };
+            });
+          },
           output: async () => ({ output: assistantOutput }),
           archive: async (args: { threadId: string }) => {
             archivedIds.push(args.threadId);
+            archivedNow.add(args.threadId);
             return { archivedThreadIds: [args.threadId] } as never;
           },
           send: async (args: unknown) => {
             sent.push(args);
             return { ok: true, delivery: "sent" } as never;
           },
-          events: { list: async () => [] as never },
+          events: {
+            list: async (args: { threadId: string; types?: readonly string[] }) => {
+              const failure = failures[args.threadId];
+              if (!failure) return [] as never;
+              if (args.types?.includes("provider/error")) return [{ type: "provider/error", data: { message: "usage limit", errorInfo: failure.errorInfo } }] as never;
+              if (args.types?.includes("provider/rateLimits/updated")) return [{ type: "provider/rateLimits/updated", data: { rateLimits: failure.rateLimits } }] as never;
+              return [] as never;
+            },
+          },
+          retry: async (args: { threadId: string; sendAt?: number; reason?: string }) => {
+            if (queuedRetry[args.threadId]) throw new Error("retry_already_queued");
+            retries.push(args);
+            queuedRetry[args.threadId] = true;
+            return {} as never;
+          },
+          queuedMessages: {
+            list: async (args: { threadId: string }) => {
+              const queued = queuedRetry[args.threadId];
+              return (queued ? [{ id: "q1", threadId: args.threadId, payload: { kind: "retry" }, sendAt: typeof queued === "number" ? queued : null }] : []) as never;
+            },
+          },
         },
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
@@ -194,7 +247,7 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText });
     await settleJobs();
   };
-  type Entry = { id: string; status: string; detail: string; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; issueUrl: string | null; fixAttempts: number; counters: Record<string, number> };
+  type Entry = { id: string; status: string; detail: string; outcome: string | null; finishedAt: string | null; current: string[]; lastError: string | null; actor: string; activity: string; waitingKind: string | null; waitingReason: string | null; prNumber: number | null; issueUrl: string | null; fixAttempts: number; counters: Record<string, number> };
   const roster = async () => ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: Entry[] }).entries[0];
   const ranChecks = () => hostCalls.filter((c) => (c.input as { command: string }).command === "npm test").length;
   const sentTexts = () => (sent as { input: { text: string }[] }[]).map((s) => s.input[0].text);
@@ -419,6 +472,33 @@ describe("chief-of-staff server", () => {
     expect(await roster()).toMatchObject({ detail: "done" });
   });
 
+  it("names tasks whose repository left the repos setting, in the overview and status (#52)", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    // A task queued for capacity earlier (as admission leaves one), not started yet.
+    const running = store.listWorkItems()[0]!;
+    const { id: _id, createdAt: _c, updatedAt: _u, ...fields } = running;
+    const waiting = store.insertWorkItem({ ...fields, id: "queued-task", status: "queued", issueNumber: null, issueTitle: "Tidy logs", threadId: null, nodes: initialNodes(running.workflow) });
+    store.updateWorkItem(waiting.id, { queuedEvent: { type: "start" }, waitingReason: "Waiting for task capacity" });
+    expect(store.listWorkItems().map((i) => i.status).sort()).toEqual(["agent", "queued"]);
+    const overview = async () => ((await host.harness.behavior.callRpc("cos_overview", null)) as { warnings: string[] }).warnings;
+    expect((await overview()).filter((w) => w.includes("repos setting"))).toEqual([]);
+
+    await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "other", projectId: "proj_1" }] }) });
+    await sweep();
+    await sweep();
+    // Each sweep re-tries the queued task; it logs the cause once.
+    expect(store.listLog({ limit: 200 }).filter((e) => e.workItemId === "queued-task" && e.level === "warn")).toHaveLength(1);
+    const queued = store.listWorkItems().find((i) => i.status === "queued")!;
+    expect(queued.waitingReason).toMatch(/acme\/app is not in the repos setting/);
+    expect((await host.harness.behavior.callRpc("cos_roster", {}) as { entries: Entry[] }).entries.find((e) => e.id === queued.id)?.activity).toMatch(/acme\/app is not in the repos setting/);
+    const warning = (await overview()).find((w) => w.includes("repos setting"));
+    expect(warning).toContain("acme/app#12");
+    expect(warning).toContain("acme/app: Tidy logs");
+    expect(JSON.parse((await host.harness.behavior.runCli(["status", "--json"])).stdout).warnings).toContain(warning);
+    expect((await host.harness.behavior.runCli(["status"])).stdout).toContain(`warning: ${warning}`);
+  });
+
   it("keeps four items isolated when one delivery becomes uncertain", async () => {
     await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", maxConcurrent: 4 }] }), maxConcurrentTotal: 4 });
     let serial = 0;
@@ -580,6 +660,7 @@ describe("chief-of-staff server", () => {
     expect(spawnArgs.environment).toMatchObject({ type: "host", hostId: "host_1", workspace: { type: "managed-worktree" } });
     expect(spawnArgs.prompt).toContain("Fix login");
     expect(spawnArgs.prompt).toContain("please fix");
+    expect(spawnArgs.prompt).toContain("Author: reporter (NONE)");
     expect(spawnArgs.prompt).toContain("Use pnpm");
     // The first prompt names the stage and the reporting contract.
     expect(spawnArgs.prompt).toContain("Build");
@@ -672,6 +753,98 @@ describe("chief-of-staff server", () => {
     expect(item.status).not.toBe("done");
     expect(item.finishedAt).toBeNull();
     expect(ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toHaveLength(failure === "merge rejected" ? 1 : 0);
+  });
+
+  describe("a head with no checks reported (#50)", () => {
+    const merges = () => ghCalls.filter((c) => c.method === "PUT" && c.path.endsWith("/merge")).length;
+    const status = () => new StateStore(host.bb.storage.database()).listWorkItems()[0]!.status;
+    const noChecks = () => {
+      ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 0, check_runs: [] } });
+    };
+
+    it.each([
+      { requireApproval: false },
+      { requireApproval: true },
+    ])("waits for CI to register before merging (requireApproval: $requireApproval)", async ({ requireApproval }) => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval } } }) });
+      noChecks();
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        expect(status()).not.toBe("done");
+        vi.setSystemTime(Date.now() + 3 * 60_000);
+        await sweep();
+        expect(merges()).toBe(0);
+        // A repository that really has no CI merges once the grace is over.
+        vi.setSystemTime(Date.now() + 3 * 60_000);
+        await sweep();
+        expect(merges()).toBe(1);
+        expect(status()).toBe("done");
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("merges as soon as checks that appear during the grace pass", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval: false } } }) });
+      noChecks();
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "in_progress", conclusion: null }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "success" }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(1);
+        expect(status()).toBe("done");
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("merges an Actions-only repository once its check runs pass", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval: false } } }) });
+      noChecks();
+      // What GitHub reports for a commit with no commit statuses.
+      ghRoutes["GET /repos/acme/app/commits/abc/status"] = () => ({ body: { state: "pending", total_count: 0 } });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "success" }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(1);
+        expect(status()).toBe("done");
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("sends a failure that appears during the grace back to build", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", requireApproval: false } } }) });
+      ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
+      noChecks();
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build"); await idle();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        await sweep();
+        expect(merges()).toBe(0);
+        ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { total_count: 1, check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
+        vi.setSystemTime(Date.now() + 2 * 60_000);
+        await sweep();
+        expect(merges()).toBe(0);
+        const fixing = (await roster()) as Entry & { steps: { id: string; attempts: number }[] };
+        expect(fixing).toMatchObject({ current: ["Build"] });
+        expect(fixing.steps.find((st) => st.id === "ship")!.attempts).toBe(1);
+      } finally { vi.useRealTimers(); }
+    });
   });
 
   describe("pull request state (#114)", () => {
@@ -861,6 +1034,389 @@ describe("chief-of-staff server", () => {
       const real = await intake();
       expect(real.results[0].started.map((s) => s.issue)).toEqual(dry.results[0].started.map((s) => s.issue));
       expect(real.results[0].skipped).toEqual(dry.results[0].skipped);
+    });
+  });
+
+  describe("an issue whose task finished is not restarted (#48)", () => {
+    type Intake = { results: { started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
+    const intake = async (dryRun = false) => ((await host.harness.behavior.callRpc("cos_intake_now", dryRun ? { dryRun: true } : {})) as Intake).results[0]!;
+    const items = () => new StateStore(host.bb.storage.database()).listWorkItems();
+    const action = (act: string) => host.harness.behavior.callRpc("cos_item_action", { id: items()[0]!.id, action: act });
+    /** Writes of the issue's status comment ("started an agent"), created or edited. */
+    const statusWrites = () => ghCalls.filter((c) => (c.method === "POST" || c.method === "PATCH") && c.path.includes("/issues/") && c.path.includes("/comments") && String((c.body as { body?: string } | undefined)?.body ?? "").startsWith("<!-- cos-status -->")).length;
+    const merging = JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } });
+    const FAILED = "previous task failed; retry it or relabel the issue";
+    const DONE = "previous task is done; relabel the issue to start again";
+    const PR_CLOSED = "previous task's PR was closed without merging; relabel the issue to start again";
+    const expectNotRestarted = async (reason: string) => {
+      const result = await intake();
+      expect(result.started).toEqual([]);
+      expect(result.skipped).toEqual([{ issue: 12, reason }]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn").filter(([args]) => String((args as { title?: string }).title).startsWith("cos/"))).toHaveLength(1);
+      expect(statusWrites()).toBe(1);
+      expect(items()).toHaveLength(1);
+    };
+
+    it("after the task is marked failed", async () => {
+      await intake();
+      await action("mark_failed");
+      await expectNotRestarted(FAILED);
+    });
+
+    it("after a task without a PR is marked done", async () => {
+      await intake();
+      await action("mark_done");
+      await expectNotRestarted(DONE);
+    });
+
+    it("after a workflow that ships by pushing finishes", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "push" } } }) });
+      await intake();
+      await report("build"); await idle();
+      expect(items()[0]).toMatchObject({ status: "done", prNumber: null });
+      await expectNotRestarted(DONE);
+    });
+
+    it("after its PR is closed without merging", async () => {
+      await host.harness.behavior.setSettings({ workflow: merging });
+      ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+      await intake();
+      await report("build"); await idle(); await sweep();
+      expect(items()[0]).toMatchObject({ status: "ready" });
+      currentPull = { ...pull, state: "closed" };
+      // The CI watch runs every two minutes.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 3 * 60_000);
+        await sweep();
+      } finally { vi.useRealTimers(); }
+      expect(items()[0]).toMatchObject({ status: "failed", lastError: "PR closed without merge" });
+      await expectNotRestarted(PR_CLOSED);
+    });
+
+    it("after its PR is merged and the issue stays open", async () => {
+      await host.harness.behavior.setSettings({ workflow: merging });
+      await intake();
+      await report("build"); await idle(); await sweep();
+      expect(items()[0]).toMatchObject({ status: "done", prState: { state: "merged" } });
+      await expectNotRestarted(DONE);
+    });
+
+    it.each(["thread.failed", "thread.archived", "thread.deleted"])("after the builder thread ends with %s", async (event) => {
+      await intake();
+      const thread = makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: event === "thread.failed" ? "error" : "idle", ...(event === "thread.archived" ? { archivedAt: Date.now() } : event === "thread.deleted" ? { deletedAt: Date.now() } : {}) });
+      await host.harness.behavior.emitThreadEvent(event as "thread.failed", { thread, error: "provider crashed" } as never);
+      expect(items()[0]).toMatchObject({ status: "failed" });
+      await expectNotRestarted(FAILED);
+    });
+
+    it("lets the operator retry the same task instead", async () => {
+      await intake();
+      await action("mark_failed");
+      await action("retry");
+      const result = await intake();
+      expect(result.started).toEqual([]);
+      expect(result.skipped).toEqual([{ issue: 12, reason: "active thread exists" }]);
+      expect(items()).toHaveLength(1);
+    });
+
+    it("reports the same skip in a dry run and makes no open-PR request for it", async () => {
+      await intake();
+      await action("mark_failed");
+      const listed = () => ghCalls.filter((c) => c.method === "GET" && c.path === "/repos/acme/app/pulls").length;
+      const before = listed();
+      expect((await intake(true)).skipped).toEqual([{ issue: 12, reason: FAILED }]);
+      await expectNotRestarted(FAILED);
+      expect(listed()).toBe(before);
+    });
+
+    describe("when the PR closes on GitHub before Chief of Staff notices", () => {
+      const T0 = Date.parse("2026-11-06T10:00:00Z");
+      const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+      const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+      beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
+      afterEach(() => vi.useRealTimers());
+
+      it("ignores the close time of an earlier PR of the task", async () => {
+        at(0);
+        await intake();
+        const store = new StateStore(host.bb.storage.database());
+        const id = items()[0]!.id;
+        // PR #7 closed at 1; the task shipped again as #8 and then failed at 5.
+        store.setPrState(id, { number: 7, state: "closed", draft: false, checks: null, review: null, checkedAt: iso(1), closedAt: iso(1) });
+        store.updateWorkItem(id, { prNumber: 8 });
+        at(5);
+        await action("mark_failed");
+        // Labelled at 2, while the task was still running.
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(6) }] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = () => ({ body: [{ event: "labeled", created_at: iso(2), label: { name: "agent-ready" } }] });
+        at(7);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+      });
+
+      it.each([
+        ["closed", { state: "closed", closed_at: iso(1) }, "failed"],
+        ["merged", { state: "closed", merged: true, merged_at: iso(1), closed_at: iso(1) }, "done"],
+      ] as const)("counts a relabel made after the PR was %s, before the CI watch saw it", async (_name, closed, status) => {
+        await host.harness.behavior.setSettings({ workflow: merging });
+        ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+        ghRoutes["PATCH /repos/acme/app/issues/comments/2"] = () => ({ body: { id: 2, body: "", user: null, created_at: "" } });
+        at(0);
+        await intake();
+        await report("build"); await idle(); await sweep();
+        expect(items()[0]).toMatchObject({ status: "ready" });
+        // Closed on GitHub at 1, relabelled at 2; the CI watch notices at 3.
+        currentPull = { ...pull, ...closed };
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(2) }] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = () => ({ body: [{ event: "labeled", created_at: iso(2), label: { name: "agent-ready" } }] });
+        at(3);
+        await sweep();
+        expect(items()[0]).toMatchObject({ status, finishedAt: iso(3), prState: { closedAt: iso(1) } });
+        at(4);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        expect(items()).toHaveLength(2);
+      });
+    });
+
+    describe("until a person relabels or reassigns the issue", () => {
+      const T0 = Date.parse("2026-11-06T10:00:00Z");
+      const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+      const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+      const MARKER = "intake:relabelChecked:acme/app#12";
+      const builderSpawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").filter(([args]) => String((args as { title?: string }).title).startsWith("cos/")).length;
+      const eventCalls = (n = 12) => ghCalls.filter((c) => c.method === "GET" && c.path === `/repos/acme/app/issues/${n}/events`).length;
+      const markLatestFailed = () => host.harness.behavior.callRpc("cos_item_action", { id: new StateStore(host.bb.storage.database()).latestForIssue("acme/app", 12)!.id, action: "mark_failed" });
+      /** The issue as listed now: `updatedAt` minutes after T0, with these events. */
+      const issueNow = (updatedAt: number, events: unknown[] | (() => { status?: number; body?: unknown; headers?: Record<string, string> }), more: unknown[] = []) => {
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(updatedAt) }, ...more] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = typeof events === "function" ? events : () => ({ body: events });
+      };
+      const labeled = (minutes: number, name = "agent-ready") => ({ event: "labeled", created_at: iso(minutes), label: { name } });
+      beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        // A restart edits the issue's status comment rather than post another.
+        ghRoutes["PATCH /repos/acme/app/issues/comments/2"] = () => ({ body: { id: 2, body: "", user: null, created_at: "" } });
+        let serial = 0;
+        host.harness.inspection.sdk.stub("threads.spawn", async (args: { title?: string }) => makeThreadResponse({ id: `${String(args.title).startsWith("cos/") ? "builder" : "step"}_${++serial}`, environmentId: "env_1" }));
+        // The first task starts at T0 and fails a minute later.
+        at(0);
+        await intake();
+        at(1);
+        await markLatestFailed();
+      });
+      afterEach(() => vi.useRealTimers());
+
+      it("starts again once after a filter label is added, then stays stopped", async () => {
+        issueNow(2, [{ event: "commented", created_at: iso(0) }, labeled(2)]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        expect(builderSpawns()).toBe(2);
+        expect(statusWrites()).toBe(2);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "active thread exists" }] });
+        at(4);
+        await markLatestFailed();
+        const calls = eventCalls();
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+        expect(eventCalls()).toBe(calls);
+        expect(builderSpawns()).toBe(2);
+      });
+
+      it.each([
+        ["the issue changed without a label event", [{ event: "referenced", created_at: iso(2) }]],
+        ["the label was added before the task finished", [labeled(0.5)]],
+        ["the label added is not one of the filter's", [labeled(2, "bug")]],
+      ])("stays stopped when %s, and asks GitHub once per issue update", async (_name, events) => {
+        issueNow(2, events);
+        at(3);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+        expect(eventCalls()).toBe(1);
+        expect(await host.bb.storage.kv.get(MARKER)).toEqual({ itemId: new StateStore(host.bb.storage.database()).latestForIssue("acme/app", 12)!.id, updatedAt: iso(2) });
+        await intake();
+        expect(eventCalls()).toBe(1);
+        // A later update is looked at again.
+        issueNow(2.5, events);
+        await intake();
+        expect(eventCalls()).toBe(2);
+        expect(builderSpawns()).toBe(1);
+      });
+
+      it("matches the label name regardless of case", async () => {
+        issueNow(2, [labeled(2, "Agent-Ready")]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("starts again after the filter's assignee is assigned again", async () => {
+        await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [], assignee: "dan" }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }) });
+        issueNow(2, [{ event: "assigned", created_at: iso(2), assignee: { login: "someone-else" } }]);
+        at(3);
+        // Without filter labels, a relabel would not restart it: the reason says to reassign.
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "previous task failed; retry it or reassign the issue" }] });
+        issueNow(2.5, [{ event: "assigned", created_at: iso(2.5), assignee: { login: "Dan" } }]);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("counts an assignment to anyone when the filter's assignee is *", async () => {
+        await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [], assignee: "*" }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }) });
+        issueNow(2, [{ event: "assigned", created_at: iso(2), assignee: { login: "someone" } }]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("makes no events request while the issue has not changed since the task finished", async () => {
+        issueNow(0.5, [labeled(0.5)]);
+        at(3);
+        expect(await intake()).toMatchObject({ skipped: [{ issue: 12, reason: FAILED }] });
+        await intake();
+        expect(eventCalls()).toBe(0);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+      });
+
+      it.each([500, 404])("skips only that issue when the events request fails with %i, and asks again next time", async (status) => {
+        const other = { ...issue, number: 13, title: "Other", html_url: "https://github.com/acme/app/issues/13" };
+        issueNow(2, () => ({ status, body: { message: "nope" } }), [other]);
+        at(3);
+        const result = await intake();
+        expect(result.skipped).toEqual([{ issue: 12, reason: FAILED }]);
+        expect(result.started.map((s) => s.issue)).toEqual([13]);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+        issueNow(2, [labeled(2)], [other]);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("stops the repository on a rate limit while reading the events", async () => {
+        const other = { ...issue, number: 13, title: "Other", html_url: "https://github.com/acme/app/issues/13" };
+        issueNow(2, () => ({ status: 429, headers: { "retry-after": "600" }, body: { message: "API rate limit exceeded" } }), [other]);
+        at(3);
+        const result = (await host.harness.behavior.callRpc("cos_intake_now", {}) as { results: { started: unknown[]; error?: string }[] }).results[0]!;
+        expect(result.error).toMatch(/rate limit/);
+        expect(result.started).toEqual([]);
+      });
+
+      it("reports a relabelled issue as a start in a dry run, and writes nothing", async () => {
+        issueNow(2, [labeled(2)]);
+        at(3);
+        expect((await intake(true)).started).toEqual([{ issue: 12, threadId: "(dry-run)" }]);
+        expect(items()).toHaveLength(1);
+        issueNow(2, []);
+        expect((await intake(true)).skipped).toEqual([{ issue: 12, reason: FAILED }]);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+        expect(items()).toHaveLength(1);
+      });
+    });
+  });
+
+  describe("overlapping intake runs (#49)", () => {
+    type Intake = { results: { started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
+    const activeFor12 = () => new StateStore(host.bb.storage.database()).listWorkItems().filter((item) => item.issueNumber === 12 && isActiveStatus(item.status));
+    /** An item something else started: active, occupying capacity, with no thread to spawn. */
+    const otherItem = (id: string, issueNumber: number): NewWorkItem => ({ id, repo: "acme/app", status: "agent", issueTitle: "other", issueNumber, branch: null, threadId: null, environmentId: null, prNumber: null, prUrl: null, providerId: null, model: null, lastError: null, source: "intake", lastActivityAt: null, finishedAt: null, workflow: DEFAULT_WORKFLOW, nodes: {} });
+    /** While intake lists the open PRs (after its first check, before its insert), run `during` once. */
+    const duringPrLookup = (during: () => void) => {
+      const original = ghRoutes["GET /repos/acme/app/pulls"]!;
+      let done = false;
+      ghRoutes["GET /repos/acme/app/pulls"] = (url, init) => {
+        if (!done && !url.searchParams.get("head")) { done = true; during(); }
+        return original(url, init);
+      };
+    };
+    const statusComments = () => ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/issues/12/comments");
+
+    const intake = (input: { dryRun?: boolean } = {}) => host.harness.behavior.callRpc("cos_intake_now", input) as Promise<Intake>;
+    /** Open-PR list requests (no head filter): one per intake run that got past its first check. */
+    const prLists = () => ghCalls.filter((c) => c.method === "GET" && c.path === "/repos/acme/app/pulls" && !c.head).length;
+    /** Hold the next open-PR list request until `open()`; `reached` settles once it is held. */
+    const holdNextPrList = () => {
+      let open!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      const atGate = new Promise<void>((resolve) => (reached = resolve));
+      const inner = globalThis.fetch;
+      let held = false;
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+        if (!held && (init?.method ?? "GET") === "GET" && url.pathname === "/repos/acme/app/pulls" && !url.searchParams.get("head")) {
+          held = true;
+          reached();
+          await gate;
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+      return { reached: atGate, open };
+    };
+
+    it("starts an issue once when two manual intakes overlap", async () => {
+      const [a, b] = await Promise.all([intake(), intake()]);
+      await settleJobs();
+      // The second run waited for the first, so it skipped at its first check, before any PR request.
+      expect(prLists()).toBe(1);
+      expect(activeFor12()).toHaveLength(1);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+      expect(statusComments()).toHaveLength(1);
+      expect([...a.results[0].started, ...b.results[0].started]).toEqual([{ issue: 12, threadId: "thr_1" }]);
+      expect([...a.results[0].skipped, ...b.results[0].skipped]).toEqual([{ issue: 12, reason: "active thread exists" }]);
+    });
+
+    it("starts an issue once when the sweep's intake overlaps a manual one", async () => {
+      await Promise.all([host.harness.behavior.runSchedule("cos-sweep"), intake()]);
+      await settleJobs();
+      expect(prLists()).toBe(1);
+      expect(activeFor12()).toHaveLength(1);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+      expect(statusComments()).toHaveLength(1);
+    });
+
+    it("runs a dry run without waiting for the real intake in progress", async () => {
+      const gate = holdNextPrList();
+      const real = intake();
+      await gate.reached;
+      const dry = await intake({ dryRun: true });
+      expect(dry.results[0].started).toEqual([{ issue: 12, threadId: "(dry-run)" }]);
+      gate.open();
+      expect((await real).results[0].started).toEqual([{ issue: 12, threadId: "thr_1" }]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    });
+
+    it("runs the next intake after one that throws", async () => {
+      const original = StateStore.prototype.listWorkItems;
+      let thrown = false;
+      const spy = vi.spyOn(StateStore.prototype, "listWorkItems").mockImplementation(function (this: StateStore, ...args) {
+        if (!thrown) { thrown = true; throw new Error("store unavailable"); }
+        return original.apply(this, args);
+      });
+      try {
+        const [failed, next] = await Promise.allSettled([intake(), intake()]);
+        expect(failed).toMatchObject({ status: "rejected", reason: { message: expect.stringContaining("store unavailable") } });
+        expect(next).toMatchObject({ status: "fulfilled", value: { results: [{ started: [{ issue: 12, threadId: "thr_1" }] }] } });
+      } finally { spy.mockRestore(); }
+    });
+
+    it("skips an issue started by something else after its first check, without spawning or commenting", async () => {
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).insertWorkItem(otherItem("other", 12)));
+      const result = (await host.harness.behavior.callRpc("cos_intake_now", {})) as Intake;
+      await settleJobs();
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "active thread exists" }] });
+      expect(activeFor12().map((item) => item.id)).toEqual(["other"]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(statusComments()).toHaveLength(0);
+    });
+
+    it("skips an issue when its project is paused after its first check", async () => {
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).setRepoPaused("acme/app", true));
+      const result = await intake();
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "paused" }] });
+      expect(activeFor12()).toHaveLength(0);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(statusComments()).toHaveLength(0);
+    });
+
+    it("skips an issue when the repository filled up after its first check", async () => {
+      await host.harness.behavior.setSettings({ repos: repos.replace('"maxConcurrent":2', '"maxConcurrent":1') });
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).insertWorkItem(otherItem("other", 99)));
+      const result = (await host.harness.behavior.callRpc("cos_intake_now", {})) as Intake;
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "repo at max concurrency (1)" }] });
+      expect(activeFor12()).toHaveLength(0);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
     });
   });
 
@@ -1179,6 +1735,144 @@ describe("chief-of-staff server", () => {
       await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
       expect((await roster()).detail).toBe("failed");
       expect(archivedIds).toEqual([]);
+    });
+  });
+
+  describe("closing a task by hand (#47)", () => {
+    const markDone = async () => host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_done" });
+    /** The issue is no longer offered, so a sweep only syncs the task's threads. */
+    const intakeOnce = async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [] });
+    };
+
+    it("stays done when the agent's turn ends afterwards: no nudge, threads archived", async () => {
+      await intakeOnce();
+      expect(await roster()).toMatchObject({ detail: "agent", current: ["Build"] });
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", detail: "done", current: [], lastError: "Marked done" });
+      expect(archivedIds).toEqual(["thr_1"]);
+      await idle("I made some changes.");
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+      expect(ranChecks()).toBe(0);
+      const log = (await host.harness.behavior.runCli(["log", "--limit", "20"])).stdout;
+      expect(log.match(/marked done/g)).toHaveLength(1);
+      // Marking it done again changes and logs nothing.
+      await markDone();
+      expect((await host.harness.behavior.runCli(["log", "--limit", "20"])).stdout.match(/marked done/g)).toHaveLength(1);
+    });
+
+    /** Build reported; the Verify check is running and held until the returned release is called. */
+    const checkRunning = async () => {
+      await intakeOnce();
+      await report("build");
+      let release!: () => void;
+      checkBlocks = new Promise<void>((resolve) => (release = resolve));
+      const updatedAt = tick();
+      threadUpdatedAt = updatedAt;
+      await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText: "done" });
+      expect(await roster()).toMatchObject({ current: ["Verify"], detail: "cos" });
+      return release;
+    };
+    const pushes = () => hostCalls.filter((c) => (c.input as { args?: string[] }).args?.[0] === "push").length;
+
+    it("drops the result of a check still running when the task is marked done", async () => {
+      const release = await checkRunning();
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      release();
+      await settleJobs();
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "done", current: [], lastError: "Marked done" });
+      expect(ranChecks()).toBe(1);
+      expect(pushes()).toBe(0);
+      expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(0);
+    });
+
+    it("drops the result of a check still running when the task is marked failed, and retry runs it again", async () => {
+      const release = await checkRunning();
+      const { id } = await roster();
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+      expect(await roster()).toMatchObject({ status: "failed", current: [] });
+      release();
+      await settleJobs();
+      expect(await roster()).toMatchObject({ status: "failed" });
+      expect(pushes()).toBe(0);
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "retry" });
+      await settleJobs();
+      expect(ranChecks()).toBe(2);
+      expect(await roster()).toMatchObject({ status: "done", lastError: null });
+    });
+
+    it("stays failed while the builder is still working", async () => {
+      threadStatus = "active";
+      await intakeOnce();
+      await host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_failed" });
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "failed", lastError: "Marked failed" });
+      expect(archivedIds).toEqual([]);
+    });
+
+    const question = { id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1, payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database should I use?", allowFreeText: true, multiSelect: false, required: true }] } };
+    const notifications = () => host.harness.inspection.sdk.callsTo("plugins.callRpc").length;
+
+    it("ignores questions, resumed turns and late reports on a done task", async () => {
+      await intakeOnce();
+      await markDone();
+      const before = notifications();
+      pending = [question];
+      await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+      await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) } as never);
+      expect(await roster()).toMatchObject({ status: "done", waitingKind: null, current: [] });
+      expect(notifications()).toBe(before);
+      expect(await report("build")).toBe("This task is already finished.");
+    });
+
+    it("does not read the turns or questions of a task marked failed", async () => {
+      await intakeOnce();
+      await host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_failed" });
+      const reads = () => host.harness.inspection.sdk.callsTo("threads.interactions.list").length;
+      const before = [reads(), notifications()];
+      await idle("I made some changes.");
+      pending = [question];
+      await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+      expect([reads(), notifications()]).toEqual(before);
+      expect(await roster()).toMatchObject({ status: "failed", waitingKind: null });
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    });
+
+    it("unarchives the threads and restores the workspace when a step of a done task runs again", async () => {
+      await intakeOnce();
+      const { id } = await roster();
+      await markDone();
+      expect([...archivedNow]).toEqual(["thr_1"]);
+      workspaceRemoved = true;
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "rerun_step", step: "build" });
+      await settleJobs();
+      expect(host.harness.inspection.sdk.callsTo("threads.unarchive")).toEqual([[{ threadId: "thr_1" }]]);
+      expect(host.harness.inspection.sdk.callsTo("threads.restoreEnvironment")).toEqual([[{ threadId: "thr_1" }]]);
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "running", detail: "agent", current: ["Build"], lastError: null });
+    });
+
+    it("keeps the threads when archiving is turned off", async () => {
+      await host.harness.behavior.setSettings({ archiveThreadsOnDone: false });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done" });
+      expect(archivedIds).toEqual([]);
+    });
+
+    it("archives the threads of a failed task marked done", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
+      expect((await roster()).detail).toBe("failed");
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      expect(archivedIds).toEqual(["thr_1"]);
     });
   });
 
@@ -1606,6 +2300,54 @@ describe("chief-of-staff server", () => {
     }
   });
 
+  it("shows the steps a finished task left running or waiting as stopped, without rewriting them", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const item = store.listWorkItems()[0]!;
+    type Step = { id: string; status: string; phase: string | null; retrying: boolean; waitingKind: string | null };
+    const steps = async () => ((await roster()) as unknown as { steps: Step[] }).steps;
+    // Active: live states pass through untouched.
+    expect((await steps()).find((st) => st.id === "build")).toMatchObject({ status: "running" });
+    const nodes = {
+      ...item.nodes,
+      build: { ...item.nodes.build!, status: "waiting" as const, waiting: { kind: "question" as const, reason: "Which login?" } },
+      ship: { ...item.nodes.ship!, status: "running" as const, phase: "ci" as const, retry: { effect: { type: "merge", step: "ship" }, at: new Date().toISOString(), count: 1 } },
+    } as typeof item.nodes;
+    store.updateWorkItem(item.id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString(), nodes, waitingReason: "Build: Which login?" });
+    const settled = { status: "stopped", phase: null, retrying: false, waitingKind: null };
+    expect(await roster()).toMatchObject({ current: [], outcome: "failed", activity: "Failed: thread archived" });
+    expect((await steps()).find((st) => st.id === "ship")).toMatchObject(settled);
+    expect((await steps()).find((st) => st.id === "build")).toMatchObject(settled);
+    const view = await host.harness.behavior.callRpc("cos_item_workflow", { id: item.id }) as { live: Record<string, Step>; task: { waitingReason: string | null }; steps: Record<string, { waitingReason: string | null }> };
+    // Nobody is waiting on a finished task: no "needs you" callouts in the sheet.
+    expect(view.task.waitingReason).toBeNull();
+    expect(view.steps.build!.waitingReason).toBeNull();
+    expect(view.live.ship).toMatchObject(settled);
+    expect(view.live.build).toMatchObject(settled);
+    // Pending steps never ran: they stay pending.
+    expect(Object.values(view.live).map((l) => l.status)).not.toContain("running");
+    const stored = store.getWorkItem(item.id)!.nodes;
+    expect(stored.ship).toMatchObject({ status: "running", phase: "ci" });
+    expect(stored.build).toMatchObject({ status: "waiting" });
+  });
+
+  it("says a task marked done by hand ended that way, and when", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const before = await roster();
+    expect(before).toMatchObject({ outcome: null, finishedAt: null });
+    await host.harness.behavior.callRpc("cos_item_action", { id: before.id, action: "mark_done" });
+    expect(await roster()).toMatchObject({ detail: "done", outcome: "marked_done", finishedAt: expect.any(String), activity: "Marked done" });
+  });
+
+  it("reads a task marked failed by hand, even with an error stored", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const { id } = await roster();
+    new StateStore(host.bb.storage.database()).updateWorkItem(id, { lastError: "push rejected" });
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+    // Mark failed stores MARKED_FAILED over the earlier error (#146), so the activity is the label alone.
+    expect(await roster()).toMatchObject({ detail: "failed", outcome: "marked_failed", lastError: "Marked failed", activity: "Marked failed" });
+  });
+
   it.each([
     { phase: "ci", merged: false, state: "open", expected: "done" },
     { phase: "ready", merged: true, state: "closed", expected: "done" },
@@ -1624,6 +2366,7 @@ describe("chief-of-staff server", () => {
     if (expected === "failed") expect((await roster()).lastError).toBe("PR closed without merge");
     // CI watching records what it saw on its merged and closed exits.
     if (state === "closed") expect(new StateStore(host.bb.storage.database()).getWorkItem(item.id)!.prState).toMatchObject({ number: 7, state: merged ? "merged" : "closed" });
+    expect(await roster()).toMatchObject({ outcome: expected === "failed" ? "pr_closed" : "pr_opened", finishedAt: expect.any(String) });
     expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(1);
     const count = archivedIds.length;
     await host.harness.behavior.runService("cos-reconcile").done;
@@ -1636,6 +2379,7 @@ describe("chief-of-staff server", () => {
     const store = new StateStore(host.bb.storage.database());
     const item = store.listWorkItems()[0];
     store.updateWorkItem(item.id, { status: "ready", finishedAt: null, nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase: "ready" } } });
+    archivedNow.clear(); // A task still waiting on its PR has live threads.
     ghRoutes["GET /repos/acme/app/pulls/7"] = () => ({ status: 503 });
     host = await host.harness.lifecycle.reload(plugin);
     await host.harness.behavior.runService("cos-reconcile").done;
@@ -1672,6 +2416,197 @@ describe("chief-of-staff server", () => {
     expect(byIssue(31).steps.find((st) => st.id === "ship")).toMatchObject({ status: "done" });
     // Was waiting on a question: still waiting, same question.
     expect(byIssue(32)).toMatchObject({ detail: "waiting_on_human", waitingKind: "question", waitingReason: "Build: Question: which DB?" });
+  });
+
+  describe("provider usage limits (the Claude or Codex 5-hour window)", () => {
+    const START = Date.parse("2026-11-06T10:00:00Z");
+    const RESET = Date.parse("2026-11-06T12:30:00Z");
+    const limitOf = (resetsAtMs: number) => ({
+      errorInfo: { category: "rate-limit", httpStatusCode: 429, providerCode: null },
+      rateLimits: { kind: "subscription-window", status: "blocked", providerId: "claude-code", overageReason: null, overageStatus: null, reachedReason: null, windows: [{ label: "5h", providerKey: null, resetsAtMs, status: "blocked" }] },
+    });
+    /** The thread's turn fails on the limit: BB announces thread.failed, then turn.failed. */
+    const hitLimit = async (threadId: string, resetsAtMs = RESET, opts: { turnFailed?: boolean; eventsReadable?: boolean } = {}) => {
+      if (opts.eventsReadable !== false) failures[threadId] = limitOf(resetsAtMs);
+      perThread[threadId] = { status: "error", updatedAt: Date.now() };
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: threadId, status: "error" }), error: "Claude usage limit reached" } as never);
+      await settleJobs();
+      if (opts.turnFailed !== false) {
+        await host.harness.behavior.emitThreadEvent("turn.failed", { threadId, requestId: "req_1", turnId: null, inputAccepted: true, attemptNumber: 1, originPluginId: "chief-of-staff", ...limitOf(resetsAtMs) } as never);
+        await settleJobs();
+      }
+    };
+    /** BB's retry runs once the window resets: the thread works again. */
+    const resumed = async (threadId: string) => {
+      perThread[threadId] = { status: "active", updatedAt: Date.now() };
+      delete failures[threadId];
+      queuedRetry[threadId] = false;
+      await sweep();
+    };
+    const at = (ms: number) => vi.setSystemTime(ms);
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      at(START);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("waits out the builder's limit and continues the same turn after the reset", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      const prompts = sent.length;
+      await hitLimit("thr_1");
+      expect(await roster()).toMatchObject({ detail: "retrying", actor: "system", current: ["Build"], lastError: null, activity: "Build: usage limit reached; continues after 12:30 UTC" });
+      // One retry of the failed turn, shortly after the reset.
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ threadId: "thr_1", reason: expect.stringContaining("usage limit resets") });
+      expect(retries[0]!.sendAt).toBeGreaterThanOrEqual(RESET + 15_000);
+      expect(retries[0]!.sendAt).toBeLessThan(RESET + 60_000);
+
+      // Hours of sweeps before the reset: not failed, not stalled, nothing re-sent.
+      for (let t = START; t < RESET; t += 40 * 60_000) {
+        at(t);
+        await sweep();
+        expect(await roster()).toMatchObject({ detail: "retrying", stalled: false });
+      }
+      expect(retries).toHaveLength(1);
+      expect(sent.length).toBe(prompts);
+
+      at(RESET + 60_000);
+      await resumed("thr_1");
+      expect(await roster()).toMatchObject({ detail: "agent", activity: "Build: agent working" });
+      await report("build");
+      await idle();
+      expect(ranChecks()).toBe(1);
+      expect(sent.length).toBe(prompts);
+    });
+
+    it("leaves the retry to BB when provider-retry already queued one", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      queuedRetry.thr_1 = true;
+      await hitLimit("thr_1");
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      expect(retries).toEqual([]);
+    });
+
+    it("handles thread.failed and turn.failed arriving back to back once", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      failures.thr_1 = limitOf(RESET);
+      perThread.thr_1 = { status: "error", updatedAt: Date.now() };
+      await Promise.all([
+        host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "Claude usage limit reached" } as never),
+        host.harness.behavior.emitThreadEvent("turn.failed", { threadId: "thr_1", requestId: "req_1", turnId: null, inputAccepted: true, attemptNumber: 1, originPluginId: "chief-of-staff", ...limitOf(RESET) } as never),
+      ]);
+      await settleJobs();
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      expect(retries).toHaveLength(1);
+      const store = new StateStore(host.bb.storage.database());
+      expect(store.listLog({ limit: 50 }).filter((e) => e.kind === "usage_limit")).toHaveLength(1);
+    });
+
+    it("takes back a builder failure recorded before BB said it was a usage limit", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1", RESET, { eventsReadable: false });
+      expect(await roster()).toMatchObject({ detail: "retrying", lastError: null, activity: "Build: usage limit reached; continues after 12:30 UTC" });
+      expect(retries).toHaveLength(1);
+    });
+
+    it("waits out a step thread's limit and takes the report of the retried turn", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      expect(await roster()).toMatchObject({ current: ["Review"], detail: "agent" });
+      await hitLimit("thr_review");
+      expect(await roster()).toMatchObject({ current: ["Review"], detail: "retrying", waitingKind: null, activity: "Review: usage limit reached; continues after 12:30 UTC" });
+      at(RESET + 60_000);
+      await resumed("thr_review");
+      expect(await roster()).toMatchObject({ current: ["Review"], detail: "agent" });
+      await report("review", "done", "Looks good", "thr_review");
+      await idle("Looks good", "thr_review");
+      expect((await roster()).current).not.toContain("Review");
+    });
+
+    it("hands a limit that resets days away to a person, as before", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1", START + 3 * 24 * 60 * 60_000);
+      expect(await roster()).toMatchObject({ detail: "failed", lastError: "Claude usage limit reached" });
+      expect(retries).toEqual([]);
+    });
+
+    it("retries itself when nobody did, and hands the step to a person when the limit does not lift", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1");
+      // The scheduled retry was lost (deleted from the queue): Chief of Staff asks again after the reset.
+      queuedRetry.thr_1 = false;
+      at(RESET + 10 * 60_000 + 30_000);
+      await sweep();
+      expect(retries).toHaveLength(2);
+      expect(retries[1]!.sendAt).toBeUndefined();
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      // Still failing two hours on: a person decides.
+      queuedRetry.thr_1 = false;
+      at(RESET + 2 * 60 * 60_000 + 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ detail: "failed", lastError: expect.stringContaining("usage limit did not lift") });
+    });
+
+    it("does not give up while BB's retry is still scheduled for later", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1");
+      queuedRetry.thr_1 = RESET + 3 * 60 * 60_000; // e.g. an account pool's later retry time
+      at(RESET + 2 * 60 * 60_000 + 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ detail: "retrying" });
+      at(RESET + 3 * 60 * 60_000 + 60_000);
+      await sweep();
+      expect(await roster()).toMatchObject({ detail: "failed", lastError: expect.stringContaining("usage limit did not lift") });
+    });
+
+    it("lifts the wait when the thread is idle again after the reset", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await hitLimit("thr_1");
+      at(RESET + 11 * 60_000);
+      delete failures.thr_1;
+      perThread.thr_1 = { status: "idle", updatedAt: Date.now() };
+      await sweep();
+      expect((await roster()).detail).not.toBe("retrying");
+    });
+
+    it("does not read a parked step thread's events on every sweep", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      perThread.thr_review = { status: "error", updatedAt: Date.now() };
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_review", status: "error" }), error: "provider crashed" } as never);
+      await settleJobs();
+      expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error" });
+      const reads = () => host.harness.inspection.sdk.callsTo("threads.events.list").filter((c) => (c[0] as { types?: string[] }).types?.includes("provider/error")).length;
+      const before = reads();
+      await sweep();
+      expect(reads()).toBe(before);
+    });
+
+    it("keeps a step thread whose limit did not lift with the person on later sweeps", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await report("build");
+      await idle();
+      await hitLimit("thr_review");
+      queuedRetry.thr_review = true; // BB's retry stays queued but the thread never recovers
+      at(RESET + 2 * 60 * 60_000 + 60_000);
+      await sweep();
+      const parked = await roster();
+      expect(parked).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error", current: ["Review"] });
+      expect(parked.waitingReason).toContain("usage limit did not lift");
+      for (let i = 1; i <= 3; i++) {
+        at(RESET + 2 * 60 * 60_000 + 60_000 + i * 60_000);
+        await sweep();
+        expect(await roster()).toMatchObject({ detail: "waiting_on_human", waitingKind: "cos_error" });
+      }
+    });
   });
 
   it("revives a failed item when its thread is resumed", async () => {
@@ -1726,6 +2661,10 @@ describe("chief-of-staff server", () => {
     const spawn = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
     expect(spawn.prompt).toContain("Explain errors");
     expect(ghCalls.some((call) => call.path === "/repos/acme/app/issues")).toBe(false);
+    // The activity log names the task each row belongs to: here a standalone task, by its title alone.
+    const log = (await host.harness.behavior.callRpc("cos_log", { workItemId: started.id })) as { entries: { workItemId: string; issueNumber: number | null; issueTitle: string | null }[] };
+    expect(log.entries.length).toBeGreaterThan(0);
+    for (const e of log.entries) expect(e).toMatchObject({ workItemId: started.id, issueNumber: null, issueTitle: "Improve login" });
   });
 
   it("shows the open question with options and context, and answers it from the dashboard", async () => {
@@ -1801,6 +2740,76 @@ describe("chief-of-staff server", () => {
     expect(cli.exitCode).toBe(0);
     expect(cli.stdout).toContain("acme/app#12");
     expect(cli.stdout).toContain("thr_1");
+  });
+
+  it("lists an active task older than 250 finished ones, with or without finished, and pages the rest (#106)", async () => {
+    const db = host.bb.storage.database();
+    const insert = db.prepare(
+      `INSERT INTO work_items (id, repo, issue_number, issue_title, thread_id, pr_number, pr_url, status, source, created_at, updated_at, finished_at, waiting_kind, waiting_reason)
+       VALUES (@id, 'acme/app', @issue, @title, @thread, @pr, @prUrl, @status, 'task', @created, @created, @finished, @kind, @reason)`,
+    );
+    const base = Date.parse("2026-01-01T00:00:00Z");
+    const iso = (ms: number) => new Date(base + ms).toISOString();
+    insert.run({ id: "old-active", issue: 1, title: "Old approval", thread: "thr_old", pr: 99, prUrl: "https://github.com/acme/app/pull/99", status: "waiting_on_human", created: iso(0), finished: null, kind: "approval", reason: "Approve the plan" });
+    for (let i = 1; i <= 250; i++) insert.run({ id: `done-${i}`, issue: 1000 + i, title: `Done ${i}`, thread: `thr_done_${i}`, pr: null, prUrl: null, status: i % 7 ? "done" : "failed", created: iso(i * 60_000), finished: iso(i * 60_000 + 1_000), kind: null, reason: null });
+    type Page = { entries: { id: string; detail: string; prNumber: number | null }[]; nextBefore: string | null };
+    const roster = async (input: Record<string, unknown>) => (await host.harness.behavior.callRpc("cos_roster", input)) as Page;
+
+    const activeOnly = await roster({});
+    expect(activeOnly.entries.map((e) => e.id)).toEqual(["old-active"]);
+    expect(activeOnly.nextBefore).toBeNull();
+
+    threadListCalls.length = 0;
+    const first = await roster({ includeDone: true });
+    // Active first, then the 50 most recently finished.
+    expect(first.entries[0]).toMatchObject({ id: "old-active", prNumber: 99 });
+    expect(first.entries.slice(1).map((e) => e.id)).toEqual(Array.from({ length: 50 }, (_, k) => `done-${250 - k}`));
+    expect(first.nextBefore).toEqual(expect.any(String));
+    expect(threadListCalls[0]?.[0]).toBe("thr_old");
+
+    const seen = first.entries.slice(1).map((e) => e.id);
+    let before = first.nextBefore;
+    while (before) {
+      const page = await roster({ includeDone: true, before });
+      expect(page.entries.every((e) => e.detail === "done" || e.detail === "failed")).toBe(true);
+      seen.push(...page.entries.map((e) => e.id));
+      before = page.nextBefore;
+    }
+    expect(seen).toEqual(Array.from({ length: 250 }, (_, k) => `done-${250 - k}`));
+
+    // A large page looks every thread up, 200 ids per call, active ones first.
+    threadListCalls.length = 0;
+    const big = await roster({ includeDone: true, finishedLimit: 300 });
+    expect(big.entries).toHaveLength(251);
+    expect(big.nextBefore).toBeNull();
+    expect(threadListCalls.map((ids) => ids?.length)).toEqual([200, 51]);
+    expect(threadListCalls[0]?.[0]).toBe("thr_old");
+
+    // The agent tool and the CLI page the same way.
+    const tool = await host.harness.behavior.callAgentTool("chief_of_staff_status", { includeDone: true, finishedLimit: 2 });
+    const text = typeof tool === "string" ? tool : tool.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+    expect(text).toContain("Old approval");
+    expect(text).toMatch(/more finished: before=\S+/);
+    const json = JSON.parse((await host.harness.behavior.runCli(["status", "--all", "--finished-limit", "2", "--json"])).stdout) as Page;
+    expect(json.entries.map((e) => e.id)).toEqual(["old-active", "done-250", "done-249"]);
+    expect(json.nextBefore).toEqual(expect.any(String));
+    // A page larger than the text output limit is still whole, parseable JSON with its cursor.
+    const bigJson = (await host.harness.behavior.runCli(["status", "--all", "--finished-limit", "200", "--json"])).stdout;
+    expect(bigJson.length).toBeGreaterThan(60_000);
+    const parsed = JSON.parse(bigJson) as Page;
+    expect(parsed.entries).toHaveLength(201);
+    expect(parsed.nextBefore).toEqual(expect.any(String));
+    const next = await host.harness.behavior.runCli(["status", "--before", json.nextBefore!, "--finished-limit", "2"]);
+    expect(next.exitCode).toBe(0);
+    expect(next.stdout).toContain("acme/app#1248");
+    expect(next.stdout).not.toContain("acme/app#1 ");
+    expect(next.stdout).toMatch(/More finished: bb cos status --all --finished-limit 2 --before \S+/);
+    const text2 = (await host.harness.behavior.runCli(["status", "--all"])).stdout;
+    expect(text2).toMatch(/More finished: bb cos status --all --before \S+/);
+    // The next-page command keeps the flags that shape the page.
+    const withFlags = (await host.harness.behavior.runCli(["status", "--all", "--repo", "acme/app", "--usage"])).stdout;
+    expect(withFlags).toMatch(/More finished: bb cos status --all --repo acme\/app --usage --before \S+/);
+    expect((await host.harness.behavior.runCli(["status"])).stdout).not.toContain("More finished");
   });
 
   it("reads and writes settings for the configurator without exposing the token", async () => {
@@ -1979,18 +2988,21 @@ describe("chief-of-staff server", () => {
     });
   });
 
-  it("quotes the newest comments of a long issue in the brief", async () => {
+  it("quotes the newest maintainer comments of a long issue in the brief", async () => {
     ghRoutes["GET /repos/acme/app/issues/12/comments"] = (url) => {
       const page = Number(url.searchParams.get("page") ?? "1");
       const base = "https://api.github.com/repos/acme/app/issues/12/comments?per_page=100";
       const ids = Array.from({ length: page === 3 ? 50 : 100 }, (_, i) => (page - 1) * 100 + i + 1);
-      return { body: ids.map((id) => ({ id, body: `comment ${id}`, user: { login: "dan" }, created_at: "" })), headers: page < 3 ? { link: `<${base}&page=${page + 1}>; rel="next", <${base}&page=3>; rel="last"` } : ({} as Record<string, string>) };
+      // The newest five come from outsiders and must not push maintainers' comments out.
+      return { body: ids.map((id) => ({ id, body: `comment ${id}`, user: { login: "dan" }, created_at: "", author_association: id > 245 ? "NONE" : "MEMBER" })), headers: page < 3 ? { link: `<${base}&page=${page + 1}>; rel="next", <${base}&page=3>; rel="last"` } : ({} as Record<string, string>) };
     };
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const { prompt } = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
-    expect(prompt).toContain("comment 241");
-    expect(prompt).toContain("comment 250");
-    expect(prompt).not.toContain("comment 240");
+    expect(prompt).toContain("comment 236");
+    expect(prompt).toContain("comment 245");
+    expect(prompt).not.toContain("comment 235");
+    expect(prompt).not.toContain("comment 246");
+    expect(prompt).toContain("5 of the latest 100 comments were left out");
   });
 
   it("validates and stores the workflow from the configurator", async () => {
