@@ -12,7 +12,7 @@ import { clickOutside, tick } from "./dom";
 
 type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string; active?: number; maxConcurrent?: number }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string; active?: number; maxConcurrent?: number }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, loading: {} as Record<string, boolean>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
   roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
   rosterInputs: [] as RosterInput[],
@@ -30,6 +30,8 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     const failure = mocks.failing[method];
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
+    // A first load in flight: no data yet.
+    if (mocks.loading[method]) return { data: undefined, error: null, isLoading: true, isFetching: true, refetch: vi.fn() };
     const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
       data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
@@ -55,7 +57,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.loading = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
 
 /** An activity row of task "one", #7 Fix login, in acme/app. */
 const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
@@ -1028,4 +1030,75 @@ it("keeps the stage filters to one scrolling row below sm and wraps them from sm
   for (const item of items) expect(classes(item)).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
   // Chips keep their pressed state.
   expect(nav.querySelector('button[aria-pressed="true"]')!.textContent).toContain("All tasks");
+});
+
+// ---------- summary header (#110) ----------
+
+const summary = () => container.querySelector<HTMLElement>('section[aria-label="Summary"]');
+const summaryText = () => summary()?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+const working = (id: string) => entry({ id, issueTitle: `Task ${id}` });
+
+it("says all clear with no agents working when nothing waits", async () => {
+  mocks.entries = [];
+  await mount();
+  expect(summaryText()).toContain("All clear — no agents working");
+  expect(container.querySelector('[aria-label="Needs attention"]')).toBeNull();
+});
+
+it("counts one agent working in the all clear line", async () => {
+  mocks.entries = [working("a")];
+  await mount();
+  expect(summaryText()).toContain("All clear — 1 agent working");
+});
+
+it("counts several agents working in the all clear line", async () => {
+  mocks.entries = [working("a"), working("b"), working("c"), entry({ id: "q", detail: "queued", status: "queued", current: [] })];
+  await mount();
+  expect(summaryText()).toContain("All clear — 3 agents working");
+});
+
+it("sits under the Work overview row, above the New task form and the filters", async () => {
+  await mount();
+  const order = (a: Element, b: Element) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
+  const heading = Array.from(container.querySelectorAll("h2")).find((h) => h.textContent === "Work overview")!;
+  expect(order(heading, summary()!)).toBeTruthy();
+  expect(order(summary()!, container.querySelector('nav[aria-label="Filter active tasks"]')!)).toBeTruthy();
+  await act(async () => buttonLabelled("New task").click());
+  expect(order(summary()!, container.querySelector("#new-task")!)).toBeTruthy();
+});
+
+for (const [kind, waiting, label, filterTitle] of [
+  ["a failure needing a decision", entry({ id: "w", issueTitle: "Repair deploy", detail: "waiting_on_human", status: "waiting on human", waitingKind: "cos_error" }), "1 failure needing a decision", "Failures needing a decision"],
+  ["stalled work", entry({ id: "w", issueTitle: "Repair deploy", stalled: true }), "1 stalled", "Stalled work"],
+  ["a question or approval", entry({ id: "w", issueTitle: "Repair deploy", detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Approve it" }), "1 questions or approvals", "Questions and approvals"],
+] as const) {
+  it(`shows ${kind} as waiting on you instead of all clear, and drills into it`, async () => {
+    mocks.entries = [working("a"), waiting];
+    await mount();
+    expect(summaryText()).not.toContain("All clear");
+    const attention = container.querySelector('[aria-label="Needs attention"]')!;
+    expect(summary()!.contains(attention)).toBe(true);
+    expect(attention.textContent).toContain("Needs attention");
+    const button = Array.from(attention.querySelectorAll("button")).find((b) => b.textContent?.includes(label))!;
+    expect(button.getAttribute("aria-pressed")).toBe("false");
+    await act(async () => button.click());
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(container.textContent).toContain(filterTitle);
+    expect(container.textContent).toContain("Repair deploy");
+    expect(container.textContent).not.toContain("Task a");
+  });
+}
+
+it("never says all clear while the tasks are loading", async () => {
+  mocks.loading = { cos_roster: true };
+  await mount();
+  expect(summary()).not.toBeNull();
+  expect(summaryText()).not.toContain("All clear");
+});
+
+it("never says all clear when the tasks failed to load", async () => {
+  mocks.failing = { cos_roster: "roster down" };
+  await mount();
+  expect(container.textContent).toContain("roster down");
+  expect(summaryText()).not.toContain("All clear");
 });

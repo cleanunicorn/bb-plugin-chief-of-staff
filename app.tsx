@@ -660,6 +660,43 @@ const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "fail
 /** Each item of the stage filter row: keeps its width in the phone's single scrolling row. */
 const FILTER_CHIP = "shrink-0 whitespace-nowrap";
 
+/** The agents line: "1 agent working", "3 agents working", "no agents working". */
+function agentsWorking(n: number): string {
+  return n === 0 ? "no agents working" : `${n} ${n === 1 ? "agent" : "agents"} working`;
+}
+
+/**
+ * The top of the Pipeline tab (#110): what waits on you, or "All clear" with the agents working. The waiting part
+ * is the former Needs attention row, unchanged; it drills into the matching filter. Nothing is called clear before
+ * the tasks have loaded.
+ */
+function PipelineSummary({ loaded, agents, failures, stalled, humanInput, filter, onFilter }: { loaded: boolean; agents: number; failures: number; stalled: number; humanInput: number; filter: TaskFilter; onFilter: (filter: TaskFilter) => void }) {
+  const waiting = failures + stalled + humanInput;
+  return (
+    <section aria-label="Summary" className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2">
+      {waiting > 0 ? (
+        <div role="group" aria-label="Needs attention" className="flex flex-wrap items-center gap-2">
+          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
+          {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => onFilter("failures")}>
+            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
+          </Button> : null}
+          {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => onFilter("stalled")}>
+            <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
+          </Button> : null}
+          {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => onFilter("input")}>
+            <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
+          </Button> : null}
+        </div>
+      ) : loaded ? (
+        <p className="flex items-center gap-2 text-sm text-foreground">
+          <StateMark icon="CircleCheck" tone="good" />
+          <span><span className="font-semibold">All clear</span> — {agentsWorking(agents)}</span>
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
   const now = useNow();
@@ -823,24 +860,11 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         {overview.data?.paused ? <strong className="text-foreground">Chief of Staff is paused. </strong> : null}
         {overview.data?.paused ? "New workflow actions are held until you resume." : "Pause intake and hold new workflow actions."} Already running agents and jobs can continue.
       </p>
+      <PipelineSummary loaded={roster.data !== undefined} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} />
       {newTask ? (
         <div id="new-task">
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
         </div>
-      ) : null}
-      {failures + stalled + humanInput > 0 ? (
-        <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
-          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
-          {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
-            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
-          </Button> : null}
-          {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
-            <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
-          </Button> : null}
-          {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => setFilter("input")}>
-            <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
-          </Button> : null}
-        </section>
       ) : null}
       {/* One row on a phone, scrolling sideways, so the first task is near the top (#110); from sm up the chips wrap.
           The padding keeps focus rings inside the scroller, which clips them; a focused chip scrolls into view. */}
