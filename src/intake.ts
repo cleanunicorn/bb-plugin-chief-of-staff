@@ -144,7 +144,7 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
           }
           // A finished task is not restarted on its own: a person relabels the issue or retries the task.
           const latest = cos.store.latestForIssue(key, issue.number);
-          const finished = finishedReason(latest);
+          const finished = finishedReason(latest, repo);
           if (finished && !(await mayBeReRequested(cos, key, issue, latest!))) {
             result.skipped.push({ issue: issue.number, reason: finished });
             continue;
@@ -201,14 +201,16 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
 /**
  * Why intake leaves an issue alone whose newest task failed or is done, or
  * null when there is no such task. The reason names what restarts the work:
- * relabelling the issue, or `retry` where it revives the task (not for a done
- * task, nor for one whose PR was closed: retry would only fail it again).
+ * relabelling the issue (reassigning it when the filter has no labels), or
+ * `retry` where it revives the task (not for a done task, nor for one whose PR
+ * was closed: retry would only fail it again).
  */
-function finishedReason(latest: WorkItem | null): string | null {
-  if (latest?.status === "done") return "previous task is done; relabel the issue to start again";
+function finishedReason(latest: WorkItem | null, repo: RepoConfig): string | null {
+  const again = repo.issueFilter.labels.length ? "relabel" : "reassign";
+  if (latest?.status === "done") return `previous task is done; ${again} the issue to start again`;
   if (latest?.status !== "failed") return null;
-  if (latest.lastError === PR_CLOSED_ERROR) return "previous task's PR was closed without merging; relabel the issue to start again";
-  return "previous task failed; retry it or relabel the issue";
+  if (latest.lastError === PR_CLOSED_ERROR) return `previous task's PR was closed without merging; ${again} the issue to start again`;
+  return `previous task failed; retry it or ${again} the issue`;
 }
 
 /**

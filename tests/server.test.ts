@@ -1077,7 +1077,8 @@ describe("chief-of-staff server", () => {
         await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [], assignee: "dan" }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }) });
         issueNow(2, [{ event: "assigned", created_at: iso(2), assignee: { login: "someone-else" } }]);
         at(3);
-        expect((await intake()).started).toEqual([]);
+        // Without filter labels, a relabel would not restart it: the reason says to reassign.
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "previous task failed; retry it or reassign the issue" }] });
         issueNow(2.5, [{ event: "assigned", created_at: iso(2.5), assignee: { login: "Dan" } }]);
         expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
       });
