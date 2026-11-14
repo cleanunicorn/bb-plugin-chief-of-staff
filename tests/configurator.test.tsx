@@ -38,7 +38,8 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
-import { Configurator } from "../components/cos/configurator";
+import { Configurator, SECTIONS } from "../components/cos/configurator";
+import { CONFIG_SECTIONS } from "../components/cos/configRoute";
 import { useConfigDrafts } from "../components/cos/configDrafts";
 
 const MAX_TASKS = "Max tasks across all repos";
@@ -67,6 +68,33 @@ afterEach(async () => {
   mocks.realtime.clear();
   mocks.failed = { config: null, settings: null };
   mocks.neverLoaded = { config: false, settings: false };
+});
+
+it("lists exactly the sections the page address can name, in the same order", () => {
+  expect(SECTIONS.map((s) => s.id)).toEqual([...CONFIG_SECTIONS]);
+});
+
+const currentSection = () => container.querySelector('nav [aria-current="page"]')!.textContent;
+const sectionButton = (label: string) => Array.from(container.querySelectorAll("nav button")).find((b) => b.textContent?.includes(label))!;
+
+it("switches sections on its own when nobody controls the section (the settings page)", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await click(sectionButton("Repositories"));
+  expect(currentSection()).toContain("Repositories");
+  expect(hasButton("Add repository")).toBe(true);
+});
+
+it("asks its owner to change section when the section is controlled, and shows the section it is given", async () => {
+  const onSectionChange = vi.fn();
+  await mount(<Configurator section="general" onSectionChange={onSectionChange} />);
+  await click(sectionButton("General"));
+  expect(onSectionChange).not.toHaveBeenCalled();
+  await click(sectionButton("Repositories"));
+  expect(onSectionChange).toHaveBeenCalledExactlyOnceWith("repos");
+  expect(currentSection()).toContain("General");
+
+  await mount(<Configurator section="repos" onSectionChange={onSectionChange} />);
+  expect(currentSection()).toContain("Repositories");
 });
 
 it("shows no save bar and no unsaved dot on a clean load", async () => {
