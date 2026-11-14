@@ -36,6 +36,13 @@ type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
 type UsageStats = PluginRpcResult<Contract["cos_stats"]>["usage"];
+type FinishedOrder = "recent" | "tokens";
+
+/** A task's share of all finished tasks' tokens: "12%", or "<1%" for a small non-zero share. */
+function sharePercent(tokens: number, of: number): string {
+  const pct = (tokens / of) * 100;
+  return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
+}
 
 const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
@@ -430,7 +437,8 @@ function cardConfirm(kind: Confirmable, title: string, failed: boolean, archives
 
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
 /** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
-function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
+/** `finishedTokens`: tokens of all finished tasks, for a finished task's share; null when unknown or not shown. */
+function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; finishedTokens?: number | null; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
   // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
   // refetch has changed the task's outcome under it.
@@ -442,6 +450,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
   const usage = entry.usage;
+  const share = finished && usage?.counted && usage.totalTokens != null && finishedTokens ? sharePercent(usage.totalTokens, finishedTokens) : null;
   // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
   const showingActivity = useRef(false);
   const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed, archivesOnDone);
@@ -536,6 +545,10 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
         {usage && (!usage.counted || usage.totalTokens != null) ? <div title={usageNote(usage)}>
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />{finished ? "Tokens" : "Tokens so far"} · all threads</dt>
           <dd className="font-medium text-foreground tabular-nums">{usage.totalTokens != null ? compact(usage.totalTokens) : "counting…"}</dd>
+        </div> : null}
+        {share ? <div title={`${share} of finished tasks' tokens`}>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="ChartPie" fallback="Circle" className="size-3.5" aria-hidden />Share</dt>
+          <dd className="font-medium text-foreground tabular-nums">{share}<span className="sr-only"> of finished tasks' tokens</span></dd>
         </div> : null}
         {usage?.cost != null ? <div title={usageNote(usage)}>
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Cost</dt>
@@ -688,7 +701,8 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [includeDone, setIncludeDone] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [throughputTable, setThroughputTable] = useState(false);
-  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true } });
+  const [finishedOrder, setFinishedOrder] = useState<FinishedOrder>("recent");
+  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true, finishedOrder } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
   const refetchAll = useCallback(async () => {
@@ -741,12 +755,22 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     const ids = new Set(liveEntries.map((e) => e.id));
     return [...liveEntries, ...older.entries.filter((e) => !ids.has(e.id))];
   }, [liveEntries, older]);
-  const toggleFinished = () => {
+  /** Drop the older finished pages: they belong to the list being replaced. */
+  const resetOlder = () => {
     olderRequest.current = { generation: olderRequest.current.generation + 1, inFlight: false };
     setOlder(null);
     setLoadingOlder(false);
+  };
+  const toggleFinished = () => {
+    resetOlder();
     setIncludeDone((v) => !v);
   };
+  const orderFinished = (order: FinishedOrder) => {
+    if (order === finishedOrder) return;
+    resetOlder();
+    setFinishedOrder(order);
+  };
+  const finishedTokens = includeDone ? (roster.data?.finishedTokens ?? null) : null;
   const loadOlder = async () => {
     const request = olderRequest.current;
     if (!olderCursor || request.inFlight) return;
@@ -755,7 +779,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     setActionError(null);
     const snapshot = liveEntries.filter(isFinished);
     try {
-      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true });
+      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true, finishedOrder });
       if (olderRequest.current !== request) return;
       setOlder((prev) => {
         const base = prev?.entries ?? snapshot;
@@ -871,6 +895,16 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
+            {includeDone ? (
+              <div role="group" aria-label="Order finished tasks" className="flex items-center gap-1">
+                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "recent"} onClick={() => orderFinished("recent")}>
+                  <Icon name="CalendarCheck" fallback="Clock" aria-hidden />Recently finished
+                </Button>
+                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "tokens"} onClick={() => orderFinished("tokens")}>
+                  <Icon name="Coins" fallback="Circle" aria-hidden />Most tokens
+                </Button>
+              </div>
+            ) : null}
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
@@ -892,7 +926,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
+                <AgentCard key={e.id} entry={e} finishedTokens={finishedTokens} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
               ))}
             </div>
           </div>

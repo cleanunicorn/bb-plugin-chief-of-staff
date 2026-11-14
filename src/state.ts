@@ -327,19 +327,32 @@ const activeIn = (expr: string) => `${expr} IN (${ACTIVE_STATUSES.map((s) => `'$
 const ACTIVE_IN = activeIn("status");
 const FINISHED_IN = "status IN ('done', 'failed')";
 
-/** Opaque roster cursor: the last finished item's sort key and id. */
-function encodeRosterCursor(at: string, id: string): string {
-  return Buffer.from(JSON.stringify([at, id])).toString("base64url");
+/** How the roster orders finished items: most recently finished, or most tokens. */
+export type FinishedOrder = "recent" | "tokens";
+
+/**
+ * Opaque roster cursor: the last finished item's sort key and id. A
+ * "recent" cursor is [finished key, id]; a "tokens" cursor is
+ * ["tokens", usage_tokens or null, id]. Each order rejects the other's.
+ */
+type RosterCursor = { order: "recent"; at: string; id: string } | { order: "tokens"; tokens: number | null; id: string };
+function encodeRosterCursor(cursor: RosterCursor): string {
+  const value = cursor.order === "recent" ? [cursor.at, cursor.id] : ["tokens", cursor.tokens, cursor.id];
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
-function decodeRosterCursor(cursor: string): [string, string] {
+function decodeRosterCursor(cursor: string, order: FinishedOrder): RosterCursor {
   let value: unknown;
   try {
     value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   } catch {
     value = null;
   }
-  if (!Array.isArray(value) || value.length !== 2 || !value.every((v) => typeof v === "string" && v)) throw new Error("invalid cursor");
-  return value as [string, string];
+  const id = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+  if (Array.isArray(value)) {
+    if (order === "recent" && value.length === 2 && id(value[0]) && id(value[1])) return { order, at: value[0], id: value[1] };
+    if (order === "tokens" && value.length === 3 && value[0] === "tokens" && (value[1] === null || Number.isSafeInteger(value[1])) && id(value[2])) return { order, tokens: value[1] as number | null, id: value[2] };
+  }
+  throw new Error("invalid cursor");
 }
 
 export function isActiveStatus(status: WorkStatus): boolean {
@@ -699,15 +712,20 @@ export class StateStore {
 
   /**
    * The roster's items: every active item (newest created first), then one
-   * page of finished items (most recently finished first). A `before` cursor
-   * from an earlier page returns only the next finished page. Finished items
-   * are keyed by COALESCE(finished_at, updated_at), with the id as the
-   * tie-break so items finished in the same tick are neither skipped nor
-   * repeated. SQLite filters by the status index and sorts the finished rows
-   * for each page; a (status, key, id) index would avoid that if history grows large.
+   * page of finished items. A `before` cursor from an earlier page of the same
+   * order returns only the next finished page.
+   * - "recent" (default): most recently finished first, keyed by
+   *   COALESCE(finished_at, updated_at). SQLite filters by the status index
+   *   and sorts the finished rows for each page; a (status, key, id) index
+   *   would avoid that if history grows large.
+   * - "tokens": most usage_tokens first; items not counted yet or without
+   *   reported tokens (NULL) last.
+   * The id is the tie-break, so items with the same key are neither skipped
+   * nor repeated.
    */
-  listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
-    const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before);
+  listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string; order?: FinishedOrder }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
+    const order = opts.order ?? "recent";
+    const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before, order);
     // Bind exactly the parameters each statement names.
     const repo = opts.repo ? " AND repo = @repo" : "";
     const repoParams = opts.repo ? { repo: opts.repo } : {};
@@ -715,13 +733,32 @@ export class StateStore {
     if (!cursor && !opts.includeDone) return { active, finished: [], nextBefore: null };
     const limit = Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT));
     const key = "COALESCE(finished_at, updated_at)";
-    const after = cursor ? ` AND (${key} < @at OR (${key} = @at AND id < @id))` : "";
-    const rows = this.db.prepare(`SELECT *, ${key} AS finished_key FROM work_items WHERE ${FINISHED_IN}${repo}${after} ORDER BY ${key} DESC, id DESC LIMIT @limit`)
-      .all({ ...repoParams, ...(cursor ? { at: cursor[0], id: cursor[1] } : {}), limit: limit + 1 }) as Row[];
+    let after = "";
+    let params: Record<string, unknown> = {};
+    if (cursor?.order === "recent") {
+      after = ` AND (${key} < @at OR (${key} = @at AND id < @id))`;
+      params = { at: cursor.at, id: cursor.id };
+    } else if (cursor?.order === "tokens") {
+      after = cursor.tokens === null
+        ? " AND usage_tokens IS NULL AND id < @id"
+        : " AND (usage_tokens < @tokens OR (usage_tokens = @tokens AND id < @id) OR usage_tokens IS NULL)";
+      params = cursor.tokens === null ? { id: cursor.id } : { tokens: cursor.tokens, id: cursor.id };
+    }
+    const sort = order === "tokens" ? "usage_tokens IS NULL, usage_tokens DESC, id DESC" : `${key} DESC, id DESC`;
+    const rows = this.db.prepare(`SELECT *, ${key} AS finished_key FROM work_items WHERE ${FINISHED_IN}${repo}${after} ORDER BY ${sort} LIMIT @limit`)
+      .all({ ...repoParams, ...params, limit: limit + 1 }) as Row[];
     const page = rows.slice(0, limit);
     const last = page.at(-1);
-    const nextBefore = rows.length > limit && last ? encodeRosterCursor(last.finished_key as string, last.id as string) : null;
+    const nextBefore = rows.length > limit && last
+      ? encodeRosterCursor(order === "tokens" ? { order, tokens: (last.usage_tokens as number | null) ?? null, id: last.id as string } : { order, at: last.finished_key as string, id: last.id as string })
+      : null;
     return { active, finished: page.map(rowToWorkItem), nextBefore };
+  }
+
+  /** Tokens of all finished items (optionally of one repo), each summed over its threads; null when none reported tokens. */
+  finishedTokens(repo?: string): number | null {
+    const row = this.db.prepare(`SELECT SUM(usage_tokens) AS n FROM work_items WHERE ${FINISHED_IN}${repo ? " AND repo = ?" : ""}`).get(...(repo ? [repo] : [])) as { n: number | null };
+    return row.n ?? null;
   }
 
   /**

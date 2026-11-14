@@ -10,11 +10,11 @@ import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
 
-type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
+type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean; finishedOrder?: "recent" | "tokens" };
 const mocks = vi.hoisted(() => ({
   entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number; tokens?: number | null }[], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } as { totalTokens: number | null; cost: { amount: number; currency: string }[]; counted: number; unreported: number; pending: number; medianTokensPerDone: number | null }, failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
-  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
+  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null; finishedTokens?: number | null }),
   rosterInputs: [] as RosterInput[],
 }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -521,11 +521,11 @@ it("pages older finished tasks without duplicates and drops them when finished a
   expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.includes("Show older finished"))).toBe(false);
   await act(async () => buttonLabelled("Show finished").click());
   await act(async () => buttonLabelled("Show older finished").click());
-  expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: true });
+  expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: true, finishedOrder: "recent" });
   expect(titles().filter((t) => t?.includes("Finished one"))).toHaveLength(1);
   expect(container.textContent).toContain("Finished two");
   await act(async () => buttonLabelled("Show older finished").click());
-  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "c2", withUsage: true });
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "c2", withUsage: true, finishedOrder: "recent" });
   expect(container.textContent).toContain("Finished three");
   expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.includes("Show older finished"))).toBe(false);
   // The active task comes first, once.
@@ -537,6 +537,32 @@ it("pages older finished tasks without duplicates and drops them when finished a
   await act(async () => buttonLabelled("Show finished").click());
   expect(container.textContent).not.toContain("Finished two");
   expect(buttonLabelled("Show older finished")).toBeDefined();
+});
+
+it("orders finished tasks by tokens, resetting older pages, and shows each one's share", async () => {
+  const counted = (id: string, title: string, totalTokens: number) => ({ ...finished(id, title), usage: { inputTokens: null, outputTokens: null, totalTokens, cost: null, threads: 2, reportedThreads: 2, counted: true } });
+  const recent = [counted("f1", "Small one", 1_000), counted("f2", "Big one", 3_000)];
+  mocks.roster = (input) => (input.includeDone ? { entries: input.finishedOrder === "tokens" ? [...recent].reverse() : recent, nextBefore: input.finishedOrder === "tokens" ? "t1" : "c1", finishedTokens: 400_000 } : { entries: [] });
+  mocks.call.mockImplementation(async (_method: string, input: RosterInput) => ({ entries: [finished(input.before === "t1" ? "f4" : "f3", input.before === "t1" ? "Token page" : "Recent page")], nextBefore: null, finishedTokens: 400_000 }));
+  await mount();
+  expect(container.querySelector('[aria-label="Order finished tasks"]')).toBeNull();
+  await act(async () => buttonLabelled("Show finished").click());
+  expect(buttonLabelled("Recently finished").getAttribute("aria-pressed")).toBe("true");
+  await act(async () => buttonLabelled("Show older finished").click());
+  expect(container.textContent).toContain("Recent page");
+  await act(async () => buttonLabelled("Most tokens").click());
+  expect(mocks.rosterInputs.at(-1)).toMatchObject({ includeDone: true, finishedOrder: "tokens" });
+  // The recent order's older page is gone; the next page follows the tokens order.
+  expect(container.textContent).not.toContain("Recent page");
+  expect(titles()[0]).toContain("Big one");
+  await act(async () => buttonLabelled("Show older finished").click());
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "t1", withUsage: true, finishedOrder: "tokens" });
+  expect(container.textContent).toContain("Token page");
+  const big = Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes("Big one"))!;
+  expect(big.textContent).toContain("Share<1% of finished tasks' tokens");
+  mocks.roster = (input) => ({ entries: input.includeDone ? [counted("f2", "Big one", 100_000)] : [], nextBefore: null, finishedTokens: 400_000 });
+  await act(async () => { root.render(<PipelineTab />); });
+  expect(container.textContent).toContain("Share25% of finished tasks' tokens");
 });
 
 it("shows a live task once when an appended page still holds its finished copy", async () => {

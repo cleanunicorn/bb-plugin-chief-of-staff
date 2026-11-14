@@ -229,9 +229,16 @@ export const rpcContract = defineRpcContract({
       finishedLimit: finishedLimitSchema,
       /** An earlier page's nextBefore: return only the next page of finished items. */
       before: rosterCursorSchema.optional(),
+      /** Finished items most recently finished first, or most tokens first. A cursor belongs to its order. */
+      finishedOrder: z.enum(["recent", "tokens"]).default("recent"),
       withUsage: z.boolean().default(false),
     }),
-    output: z.object({ entries: z.array(rosterEntry), nextBefore: z.string().nullable() }),
+    output: z.object({
+      entries: z.array(rosterEntry),
+      nextBefore: z.string().nullable(),
+      /** With finished items: tokens of every finished task in scope (all pages), for each task's share; null when none reported tokens. */
+      finishedTokens: z.number().nullable(),
+    }),
   },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: {

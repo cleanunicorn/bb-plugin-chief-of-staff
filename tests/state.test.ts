@@ -413,6 +413,63 @@ describe("roster items: every active item plus a page of finished ones", () => {
 });
 
 
+describe("finished items ordered by tokens", () => {
+  const usage = (totalTokens: number | null) => ({ inputTokens: null, outputTokens: null, totalTokens, cost: null, threads: 1, reportedThreads: totalTokens == null ? 0 : 1 });
+  function seed() {
+    const t = storeSetup();
+    const finish = (id: string, tokens: number | null | undefined, repo = "a/b") => {
+      const finishedAt = "2026-11-10T00:00:00.000Z";
+      t.add(id, { repo, status: "done", finishedAt });
+      if (tokens !== undefined) t.store.setTaskUsage(id, finishedAt, usage(tokens), "2026-11-12T10:00:00.000Z");
+    };
+    finish("big", 900);
+    finish("tie-a", 500);
+    finish("tie-b", 500);
+    finish("tie-c", 500);
+    finish("small", 0);
+    finish("unreported", null);
+    finish("pending-a", undefined);
+    finish("pending-b", undefined);
+    finish("theirs", 10_000, "c/d");
+    t.add("active", { status: "agent" });
+    return t;
+  }
+  const all = (store: StateStore, repo: string | undefined, limit: number) => {
+    const ids: string[] = [];
+    let before: string | undefined;
+    for (let i = 0; i < 20; i++) {
+      const page = store.listRosterItems({ repo, includeDone: true, finishedLimit: limit, before, order: "tokens" });
+      if (i > 0) expect(page.active).toEqual([]);
+      ids.push(...page.finished.map((x) => x.id));
+      if (!page.nextBefore) return ids;
+      before = page.nextBefore;
+    }
+    throw new Error("did not end");
+  };
+
+  it("orders by tokens, most first, then not counted or unreported last, paging across ties and nulls", () => {
+    const { store } = seed();
+    const expected = ["big", "tie-c", "tie-b", "tie-a", "small", "unreported", "pending-b", "pending-a"];
+    for (const limit of [1, 2, 3, 50]) expect(all(store, "a/b", limit)).toEqual(expected);
+    expect(all(store, undefined, 2)[0]).toBe("theirs");
+    expect(store.listRosterItems({ includeDone: true, order: "tokens" }).active.map((i) => i.id)).toEqual(["active"]);
+  });
+
+  it("sums finished tokens in scope, and rejects a cursor of the other order", () => {
+    const { store } = seed();
+    expect(store.finishedTokens("a/b")).toBe(2400);
+    expect(store.finishedTokens()).toBe(12_400);
+    expect(store.finishedTokens("x/y")).toBeNull();
+    const tokens = store.listRosterItems({ includeDone: true, finishedLimit: 1, order: "tokens" }).nextBefore!;
+    const recent = store.listRosterItems({ includeDone: true, finishedLimit: 1 }).nextBefore!;
+    expect(() => store.listRosterItems({ includeDone: true, before: tokens })).toThrow("invalid cursor");
+    expect(() => store.listRosterItems({ includeDone: true, before: recent, order: "tokens" })).toThrow("invalid cursor");
+    for (const bad of [["tokens", "5", "x"], ["tokens", 5], ["tokens", 1.5, "x"], ["recent", 5, "x"]]) {
+      expect(() => store.listRosterItems({ includeDone: true, order: "tokens", before: Buffer.from(JSON.stringify(bad)).toString("base64url") })).toThrow("invalid cursor");
+    }
+  });
+});
+
 describe("usage of finished items, summed over their threads", () => {
   const usage = { inputTokens: 10, outputTokens: 20, totalTokens: 30, cost: { amount: 0.5, currency: "USD" }, threads: 3, reportedThreads: 2 };
   const nothing = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 2, reportedThreads: 0 };

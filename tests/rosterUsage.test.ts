@@ -336,3 +336,27 @@ describe("finished tasks on the roster", () => {
     expect(e!.usage).toBeNull();
   });
 });
+
+describe("finished tasks ordered by tokens on the roster", () => {
+  it("orders by stored tokens, pages within the order, and sums the scope's finished tokens", async () => {
+    const t = setup();
+    const done = { status: "done" as const, finishedAt: "2026-11-13T09:00:00.000Z" };
+    t.add("small", done);
+    t.add("big", done);
+    t.add("other-repo", { ...done, repo: "c/d" });
+    t.add("live");
+    t.replies.set("t-small", reported(1));
+    t.replies.set("t-big", reported(5));
+    t.replies.set("t-other-repo", reported(100));
+    await countFinishedUsage(t.cos);
+    const first = await buildRoster(t.cos, { repo: "a/b", includeDone: true, finishedLimit: 1, finishedOrder: "tokens" });
+    expect(first.entries.map((e) => e.id)).toEqual(["live", "big"]);
+    expect(first.finishedTokens).toBe(18);
+    const next = await buildRoster(t.cos, { repo: "a/b", before: first.nextBefore!, finishedOrder: "tokens" });
+    expect(next.entries.map((e) => e.id)).toEqual(["small"]);
+    expect(next.nextBefore).toBeNull();
+    await expect(buildRoster(t.cos, { repo: "a/b", before: first.nextBefore! })).rejects.toThrow("invalid cursor");
+    expect((await buildRoster(t.cos, { includeDone: true })).finishedTokens).toBe(318);
+    expect((await buildRoster(t.cos, {})).finishedTokens).toBeNull();
+  });
+});
