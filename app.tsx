@@ -19,6 +19,7 @@ import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { TaskActionsMenu, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { useConfigDrafts } from "@/components/cos/configDrafts";
@@ -374,9 +375,6 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
 
 // ---------- agent card ----------
 
-type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
-type Confirmable = "mark_done" | "mark_failed" | "restart";
-
 /** Active cards count the task's age; finished cards say when it finished and how long it took. */
 function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: string; label: string; title: string } {
   const started = new Date(entry.startedAt).toLocaleString();
@@ -394,55 +392,11 @@ function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: 
   return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
 }
 
-/**
- * What each confirm on a card says and sends. A failed task is no longer worked on, so its copy differs.
- * `archivesOnDone`: marking done archives the task's threads ("Archive threads when a task is done").
- */
-function cardConfirm(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
-  switch (kind) {
-    case "restart":
-      return {
-        title: `Restart ‘${title}’ on a new thread?`,
-        // Server `retry` on a failed item reopens it, which usually takes a slot whether or not an agent starts. It
-        // restarts an unfinished writing step on a fresh thread; steps not yet started then run through the scheduler.
-        description: "This reopens the task, so it usually takes one of the task slots again, or waits for one to free up. Chief of Staff carries on from where it stopped: an unfinished writing step restarts on a new thread, and steps that had not started run as usual. The old thread is left as it is.",
-        confirmLabel: "Restart",
-        action: "retry",
-      };
-    case "mark_done":
-      return {
-        title: `Mark ‘${title}’ done?`,
-        description: `${failed ? "The task is recorded as done instead of failed. No agent work starts." : "Chief of Staff stops working on this task and its workflow ends."} ${archivesOnDone ? "Its threads are archived and their workspace is removed: changes not pushed are lost." : "Its threads are left as they are."}`,
-        confirmLabel: "Mark done",
-        action: "mark_done",
-      };
-    case "mark_failed":
-      return {
-        title: `Mark ‘${title}’ failed?`,
-        description: "Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is.",
-        confirmLabel: "Mark failed",
-        tone: "destructive",
-        action: "mark_failed",
-      };
-  }
-}
-
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
-/** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
-function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
+function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
-  // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
-  // refetch has changed the task's outcome under it.
-  const [confirming, setConfirming] = useState<{ kind: Confirmable; failed: boolean; open: boolean }>({ kind: "mark_done", failed: false, open: false });
-  const ask = (kind: Confirmable) => setConfirming({ kind, failed: entry.detail === "failed", open: true });
-  const closeConfirm = () => setConfirming((c) => ({ ...c, open: false }));
-  const menuTrigger = useRef<HTMLButtonElement>(null);
-  const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
-  const title = entry.issueTitle || entry.threadTitle || "Untitled task";
+  const title = taskTitle(entry);
   const finished = entry.detail === "done" || entry.detail === "failed";
-  // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
-  const showingActivity = useRef(false);
-  const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed, archivesOnDone);
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
   const tabIndex = tabbable ? undefined : -1;
@@ -572,79 +526,8 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
             </Button>
           ) : null}
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
-              <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            side="top"
-            // Show the activity once the menu has closed: an open menu keeps focus inside itself.
-            onCloseAutoFocus={(event) => {
-              if (!showingActivity.current || !onShowActivity) return;
-              showingActivity.current = false;
-              event.preventDefault();
-              onShowActivity({ id: entry.id, label: taskLabel({ workItemId: entry.id, issueNumber: entry.issueNumber, issueTitle: entry.issueTitle || null }) ?? title });
-            }}
-          >
-            {onShowActivity ? (
-              <DropdownMenuItem onSelect={() => { showingActivity.current = true; }}>
-                <Icon name="Activity" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Show activity
-              </DropdownMenuItem>
-            ) : null}
-            {entry.detail === "done" ? (
-              // A re-run puts a done task back to work; the sheet asks before running it. Focus returns to More actions,
-              // because this item is gone once the menu closes.
-              <DropdownMenuItem onSelect={() => onWorkflow(entry.id, menuTrigger.current!, "list")}>
-                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Run a step again…
-              </DropdownMenuItem>
-            ) : entry.detail === "failed" ? (
-              <>
-                <DropdownMenuItem onSelect={() => ask("restart")}>
-                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Restart on a new thread…
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => ask("mark_done")}>
-                  <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark done…
-                </DropdownMenuItem>
-              </>
-            ) : (
-              <>
-                <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
-                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Retry the stuck step
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => ask("mark_done")}>
-                  <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark done…
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => ask("mark_failed")}>
-                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark failed…
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <TaskActionsMenu task={entry} busy={busy} tabIndex={tabIndex} onAction={onAction} onAsk={onAsk} onRerun={(id, trigger) => onWorkflow(id, trigger, "list")} onShowActivity={onShowActivity} />
       </div>
-      <ConfirmDialog
-        open={confirming.open}
-        title={confirmCopy.title}
-        description={confirmCopy.description}
-        confirmLabel={confirmCopy.confirmLabel}
-        tone={confirmCopy.tone}
-        onConfirm={() => {
-          onAction(entry.id, confirmCopy.action);
-          closeConfirm();
-        }}
-        onCancel={closeConfirm}
-        restoreFocus={focusTrigger}
-      />
     </article>
   );
 }
@@ -757,6 +640,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
   // The setting defaults to on; until the overview loads, assume it.
   const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
+  const confirm = useTaskConfirm({ archivesOnDone, busy, onAction: (id, action) => void act(id, action), fallback: () => sheetFocus.fallback.current?.focus() });
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const stalled = active.filter((e) => attentionKind(e) === "stalled").length;
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
@@ -868,7 +752,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
+                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} onAction={(id, action) => void act(id, action)} onAsk={confirm.ask} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
               ))}
             </div>
           </div>
@@ -935,6 +819,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         </Panel>
       </div>
 
+      {confirm.dialog}
       {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
       {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
