@@ -245,3 +245,43 @@ it("falls back to the first card when the current one leaves the list", async ()
   expect(cards()).toHaveLength(2);
   expect(currentCard()).toBe(0);
 });
+
+// ---------- the Finished rows (#105) are one tab stop group too ----------
+
+/** `count` finished tasks with every row control: issue link, PR link, Open thread, Workflow and More actions. */
+function finishedTasks(count: number): RosterEntry[] {
+  return Array.from({ length: count }, (_, i) =>
+    entry({ id: `f${i}`, issueTitle: `Done ${i}`, issueNumber: 100 + i, detail: "done", status: "done", actor: "none", current: [], occupiesCapacity: false, outcome: "merged", threadId: `thread-f${i}`, prUrl: `https://github.com/acme/app/pull/${100 + i}`, prNumber: 100 + i, finishedAt: new Date().toISOString() }),
+  );
+}
+const finishedGroup = () => container.querySelector<HTMLElement>('[role="group"][aria-label="Finished tasks"]')!;
+const rows = () => Array.from(finishedGroup().querySelectorAll("article"));
+
+it("keeps Throughput a few tab stops past the tasks, with 50 finished tasks", async () => {
+  mocks.entries = [...withApprovalFirst(tasks(5)), ...finishedTasks(50)];
+  await page();
+  // Ten rows render; only the current one's five controls are tab stops.
+  expect(rows()).toHaveLength(10);
+  expect(tabbables(finishedGroup())).toHaveLength(5);
+  expect(rows().slice(1).every((row) => tabbables(row).length === 0)).toBe(true);
+  // From the last active card's stop to Throughput: Collapse, the row's five, Show 20 more.
+  const lastActive = tabbables(group()).at(-1)!;
+  const throughput = heading("Throughput · last 14 days");
+  const between = tabbablesAfter(lastActive).filter((el) => el.compareDocumentPosition(throughput) & Node.DOCUMENT_POSITION_FOLLOWING);
+  expect(between.length).toBeLessThanOrEqual(8);
+});
+
+it("moves between finished rows with the arrow keys, landing on Workflow", async () => {
+  mocks.entries = finishedTasks(3);
+  await page();
+  const workflow = (index: number) => Array.from(rows()[index]!.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Workflow")!;
+  workflow(0).focus();
+  await press(document.activeElement!, "ArrowDown");
+  expect(document.activeElement).toBe(workflow(1));
+  expect(tabbables(rows()[1]!)).toContain(workflow(1));
+  expect(tabbables(rows()[0]!)).toHaveLength(0);
+  await press(document.activeElement!, "End");
+  expect(document.activeElement).toBe(workflow(2));
+  const hint = document.getElementById(finishedGroup().getAttribute("aria-describedby")!);
+  expect(hint?.textContent).toBe("Arrow keys move between tasks.");
+});

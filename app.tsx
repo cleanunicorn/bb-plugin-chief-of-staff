@@ -12,13 +12,13 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
-import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
 import { edgeCounts, loopBacks } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { FinishedSection, useFinishedTasks } from "@/components/cos/finished";
 import { TaskActionsMenu, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
@@ -108,10 +108,6 @@ function repoName(repo: string): string {
 }
 
 function entryTone(e: RosterEntry): { tone: Tone; label: string; icon: string } {
-  // A finished task reads by how it ended, never by whether an old error is still stored.
-  if (e.outcome) return OUTCOME_META[e.outcome];
-  if (e.detail === "done") return { tone: "good", label: "Done", icon: "CircleCheck" };
-  if (e.detail === "failed") return { tone: "neutral", label: "Failed", icon: "CircleX" };
   if (e.detail === "blocked") return { tone: "warning", label: "Stalled", icon: "OctagonAlert" };
   if (e.detail === "waiting_on_human") {
     const w = WAITING_LABEL[e.waitingKind ?? "question"] ?? WAITING_LABEL.question!;
@@ -375,37 +371,20 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
 
 // ---------- agent card ----------
 
-/** Active cards count the task's age; finished cards say when it finished and how long it took. */
-function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: string; label: string; title: string } {
-  const started = new Date(entry.startedAt).toLocaleString();
-  if (!finished) {
-    const age = duration((now - Date.parse(entry.startedAt)) / 60_000);
-    return { text: age, label: `Task age ${age}`, title: `Task started ${started}` };
-  }
-  // Some legacy rows have no finish time: say only what is known.
-  if (!entry.finishedAt) {
-    const text = `Started ${relative(entry.startedAt, now)}`;
-    return { text, label: text, title: `Task started ${started}` };
-  }
-  const ago = relative(entry.finishedAt, now);
-  const took = duration((Date.parse(entry.finishedAt) - Date.parse(entry.startedAt)) / 60_000);
-  return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
+/** An active card counts the task's age. */
+function cardTimer(entry: RosterEntry, now: number): { text: string; label: string; title: string } {
+  const age = duration((now - Date.parse(entry.startedAt)) / 60_000);
+  return { text: age, label: `Task age ${age}`, title: `Task started ${new Date(entry.startedAt).toLocaleString()}` };
 }
 
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
 function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
   const title = taskTitle(entry);
-  const finished = entry.detail === "done" || entry.detail === "failed";
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
   const tabIndex = tabbable ? undefined : -1;
-  const timer = cardTimer(entry, finished, now);
-  // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
-  // MARKED_FAILED only repeats the outcome label.
-  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) && entry.lastError !== MARKED_FAILED ? entry.lastError : null;
-  // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
-  const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
+  const timer = cardTimer(entry, now);
   return (
     <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
@@ -425,24 +404,17 @@ function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflo
           </p>
         </div>
       </header>
-      <div className={cn("flex items-start justify-between gap-2", finished && "flex-wrap gap-y-1")}>
+      <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
           {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon="Hourglass" /> : null}
         </div>
-        <span className={cn("flex items-center gap-1 text-xs text-muted-foreground tabular-nums", finished ? "min-w-0" : "shrink-0")} title={timer.title} aria-label={timer.label}>
-          <Icon name={finished ? "CalendarCheck" : "Timer"} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
+        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums" title={timer.title} aria-label={timer.label}>
+          <Icon name="Timer" fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
           {timer.text}
         </span>
       </div>
-      {!finished ? <ActivityLine entry={entry} /> : null}
-      {endReason ? (
-        <p className="flex items-start gap-1.5 text-sm text-foreground">
-          {/* Muted: a failed run is history, not an alarm (#22). */}
-          <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">{reasonLead}</span> {endReason}</span>
-        </p>
-      ) : null}
+      <ActivityLine entry={entry} />
       {entry.steps.length ? <details className="group text-xs">
         <summary {...{ [ENTRY_ATTRIBUTE]: "" }} tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
@@ -456,7 +428,7 @@ function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflo
         </summary>
         <div className="pt-2 pb-1"><StepFlow entry={entry} /></div>
       </details> : null}
-      {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
+      {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId ? (
         <button
           type="button"
           tabIndex={tabIndex}
@@ -473,7 +445,7 @@ function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflo
           </span>
         </button>
       ) : null}
-      {entry.lastError && !finished && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
+      {entry.lastError && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
         <p className="flex items-start gap-1.5 text-sm text-foreground">
           <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
           <span className="line-clamp-2">{entry.lastError}</span>
@@ -544,15 +516,23 @@ const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "fail
 export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
   const now = useNow();
-  const [includeDone, setIncludeDone] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [throughputTable, setThroughputTable] = useState(false);
-  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true } });
+  const [actionError, setActionError] = useState<string | null>(null);
+  // Active work only: finished tasks are in the Finished section, from their own query.
+  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone: false, withUsage: true } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  const live = roster.data?.entries;
+  const active = useMemo(() => (live ?? []).filter((e) => !isFinished(e)), [live]);
+  const activeIds = useMemo(() => new Set(active.map((e) => e.id)), [active]);
+  const finished = useFinishedTasks(activeIds, setActionError);
+  const [finishedOpen, setFinishedOpen] = useState(true);
+  const finishedHeading = useRef<HTMLHeadingElement>(null);
+  const finishedQuery = finished.query;
   const refetchAll = useCallback(async () => {
-    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch()]);
-  }, [roster, stats, overview]);
+    await Promise.all([roster.refetch(), finishedQuery.refetch(), stats.refetch(), overview.refetch()]);
+  }, [roster, finishedQuery, stats, overview]);
   useLiveRefresh(refetchAll);
   const [pausing, setPausing] = useState(false);
   // Every task with an action in flight: one finishing must not re-enable another's buttons.
@@ -560,7 +540,6 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
   const [viewing, setViewing] = useState<{ id: string; mode: SheetMode } | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const throughputHeading = useRef<HTMLHeadingElement>(null);
@@ -584,50 +563,6 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     [rpc, refetchAll],
   );
 
-  const live = roster.data?.entries;
-  const liveEntries = useMemo(() => live ?? [], [live]);
-  // Counts and attention come from the live query's active items, never from finished pages.
-  const active = liveEntries.filter((e) => !isFinished(e));
-  // Finished pages loaded with "Show older finished": the live query's finished
-  // items at the first click, then each older page. The live query wins on
-  // duplicates (a retried item is active again).
-  const [older, setOlder] = useState<{ entries: RosterEntry[]; before: string | null } | null>(null);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const olderRequest = useRef<{ generation: number; inFlight: boolean }>({ generation: 0, inFlight: false });
-  const olderCursor = !includeDone ? null : older ? older.before : (roster.data?.nextBefore ?? null);
-  const entries = useMemo(() => {
-    if (!older) return liveEntries;
-    const ids = new Set(liveEntries.map((e) => e.id));
-    return [...liveEntries, ...older.entries.filter((e) => !ids.has(e.id))];
-  }, [liveEntries, older]);
-  const toggleFinished = () => {
-    olderRequest.current = { generation: olderRequest.current.generation + 1, inFlight: false };
-    setOlder(null);
-    setLoadingOlder(false);
-    setIncludeDone((v) => !v);
-  };
-  const loadOlder = async () => {
-    const request = olderRequest.current;
-    if (!olderCursor || request.inFlight) return;
-    request.inFlight = true;
-    setLoadingOlder(true);
-    setActionError(null);
-    const snapshot = liveEntries.filter(isFinished);
-    try {
-      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true });
-      if (olderRequest.current !== request) return;
-      setOlder((prev) => {
-        const base = prev?.entries ?? snapshot;
-        const seen = new Set(base.map((e) => e.id));
-        return { entries: [...base, ...page.entries.filter((e) => !seen.has(e.id))], before: page.nextBefore ?? null };
-      });
-    } catch (error) {
-      if (olderRequest.current === request) setActionError(errorText(error));
-    } finally {
-      request.inFlight = false;
-      if (olderRequest.current === request) setLoadingOlder(false);
-    }
-  };
   const byStage = useMemo(() => {
     const counts = Object.fromEntries(STAGES.map((s) => [s.key, 0])) as Record<StageKey, number>;
     for (const e of active) {
@@ -640,19 +575,19 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
   // The setting defaults to on; until the overview loads, assume it.
   const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
-  const confirm = useTaskConfirm({ archivesOnDone, busy, onAction: (id, action) => void act(id, action), fallback: () => sheetFocus.fallback.current?.focus() });
+  const confirm = useTaskConfirm({ archivesOnDone, busy, onAction: (id, action) => void act(id, action), fallback: (fromFinished) => (fromFinished ? finishedHeading : sheetFocus.fallback).current?.focus() });
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const stalled = active.filter((e) => attentionKind(e) === "stalled").length;
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
-  const visible = entries.filter((e) => matchesTaskFilter(e, filter));
+  const visible = active.filter((e) => matchesTaskFilter(e, filter));
   const roving = useRovingCards(visible.map((e) => e.id));
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
   return (
     <div className="flex flex-col gap-4">
-      <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
+      <QueryErrors errors={[roster.error, finishedQuery.error, stats.error, overview.error, actionError]} />
       <div className="relative flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
         {/* The first tab stop after the heading: past the filters and every task card (issue #115).
@@ -721,21 +656,15 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       {/* Agents */}
       <Panel
         className="border-0 bg-transparent [&>header]:px-0 [&>header]:flex-wrap [&>div]:px-0"
-        title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
+        title={filter === "all" ? "Active tasks" : filterLabel ?? "Active tasks"}
         icon="Bot"
         dim={roster.isFetching && !roster.isLoading}
         actions={
-          <>
-            {filter !== "all" ? (
-              <Button size="sm" variant="ghost" onClick={() => setFilter("all")}>
-                <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
-              </Button>
-            ) : null}
-            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
-              <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
-              {includeDone ? "Hide finished" : "Show finished"}
+          filter !== "all" ? (
+            <Button size="sm" variant="ghost" onClick={() => setFilter("all")}>
+              <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
             </Button>
-          </>
+          ) : null
         }
       >
         {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
@@ -757,15 +686,21 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             </div>
           </div>
         ) : null}
-        {/* Stage and attention filters never match finished tasks. */}
-        {olderCursor && filter === "all" ? (
-          <div className="mt-3 flex justify-center">
-            <Button size="sm" variant="outline" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => void loadOlder()}>
-              <Icon name="History" fallback="Circle" aria-hidden />Show older finished
-            </Button>
-          </div>
-        ) : null}
       </Panel>
+
+      {/* Below the active work and above Throughput: history never mixes with active cards (#105). */}
+      <FinishedSection
+        finished={finished}
+        now={now}
+        busy={busy}
+        open={finishedOpen}
+        onOpenChange={setFinishedOpen}
+        headingRef={finishedHeading}
+        onAction={(id, action) => void act(id, action)}
+        onAsk={confirm.ask}
+        onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }}
+        onShowActivity={onShowActivity}
+      />
 
       <div className="grid gap-4 lg:grid-cols-5">
         <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>

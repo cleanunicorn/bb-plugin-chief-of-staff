@@ -122,40 +122,41 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
   );
 }
 
-type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; open: boolean; trigger: HTMLButtonElement | null };
+type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; finished: boolean; open: boolean; trigger: HTMLButtonElement | null };
 
 /**
  * The confirm for every task in a list. `busy` holds the tasks with an action in flight (their triggers are
  * disabled meanwhile). Once the dialog closes, focus goes back to the More actions button that asked, as soon
- * as it is enabled again; when that button has gone (the task moved to another list), to `fallback`.
+ * as it is enabled again; when that button has gone (the task moved to another list), to `fallback`, told
+ * whether the task was finished when asked.
  */
-export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { archivesOnDone: boolean; busy: ReadonlySet<string>; onAction: (id: string, action: ItemAction) => void; fallback: () => void }): { ask: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; dialog: ReactNode } {
+export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { archivesOnDone: boolean; busy: ReadonlySet<string>; onAction: (id: string, action: ItemAction) => void; fallback: (finished: boolean) => void }): { ask: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; dialog: ReactNode } {
   // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
   // refetch has changed the task's outcome under it.
-  const [asked, setAsked] = useState<Asked>({ id: "", title: "", kind: "mark_done", failed: false, open: false, trigger: null });
-  const pending = useRef<HTMLButtonElement | null>(null);
+  const [asked, setAsked] = useState<Asked>({ id: "", title: "", kind: "mark_done", failed: false, finished: false, open: false, trigger: null });
+  const pending = useRef<{ trigger: HTMLButtonElement; finished: boolean } | null>(null);
   const fallbackRef = useRef(fallback);
   fallbackRef.current = fallback;
   const ask = useCallback((task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => {
-    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", open: true, trigger });
+    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", finished: task.detail === "done" || task.detail === "failed", open: true, trigger });
   }, []);
   const close = () => setAsked((a) => ({ ...a, open: false }));
   // A confirmed action disables its trigger while the call runs; focus it once the call is over, if focus is still lost.
   useEffect(() => {
-    const trigger = pending.current;
-    if (!trigger) return;
-    if (trigger.isConnected && trigger.disabled) return;
+    const waiting = pending.current;
+    if (!waiting) return;
+    if (waiting.trigger.isConnected && waiting.trigger.disabled) return;
     pending.current = null;
     const active = document.activeElement;
     if (active && active !== document.body) return;
-    if (trigger.isConnected) trigger.focus();
-    else fallbackRef.current();
+    if (waiting.trigger.isConnected) waiting.trigger.focus();
+    else fallbackRef.current(waiting.finished);
   }, [busy]);
   const restoreFocus = () => {
     const trigger = asked.trigger;
     if (trigger?.isConnected && !trigger.disabled) trigger.focus();
-    else if (trigger?.isConnected) pending.current = trigger;
-    else fallbackRef.current();
+    else if (trigger?.isConnected) pending.current = { trigger, finished: asked.finished };
+    else fallbackRef.current(asked.finished);
   };
   const copy = confirmCopy(asked.kind, asked.title, asked.failed, archivesOnDone);
   const dialog = (
