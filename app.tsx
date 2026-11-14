@@ -31,10 +31,12 @@ import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, shortcutBlocked, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
+import { useVisitBaseline } from "@/components/cos/lastVisit";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
+type Since = PluginRpcResult<Contract["cos_since"]>;
 
 const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
@@ -655,9 +657,60 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
+/** cos_since's input on a first visit, when the query is off: valid, never sent. */
+const FIRST_VISIT = "1970-01-01T00:00:00.000Z";
 const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
 /** Each item of the stage filter row: keeps its width in the phone's single scrolling row. */
 const FILTER_CHIP = "shrink-0 whitespace-nowrap";
+
+/** What the header knows about changes since the last visit. `baseline` is null on a first visit. */
+type SinceState = { baseline: string | null; data: Since | undefined; pending: boolean };
+
+/** Reasons can be whole error messages; the header keeps them to one short phrase. */
+const REASON_MAX = 80;
+function clip(text: string, max = REASON_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+/** Why a failure ended, in the header: the card's reason, or the outcome's label when it has none. */
+function failureWhy(failure: Since["failures"][number]): string {
+  return failure.reason ?? OUTCOME_META[failure.outcome].label;
+}
+
+const SINCE_LINK = "rounded font-medium text-foreground underline decoration-muted-foreground/60 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/**
+ * "Since you were here (3h ago): 3 shipped · 1 failed (Thread archived) · Nothing waits on you" (#110). Only the
+ * non-zero counts show; each opens the finished tasks. Two or more failures are listed below, three at most.
+ */
+function SinceLine({ baseline, data, nothingWaits, onShowFinished, now }: { baseline: string; data: Since; nothingWaits: boolean; onShowFinished: () => void; now: number }) {
+  const [first] = data.failures;
+  const listed = data.failed >= 2 ? data.failures : [];
+  return (
+    <div className="flex flex-col gap-1">
+      {/* Inline text with real spaces, so it wraps as a sentence and reads as one. */}
+      <p className="text-sm text-foreground [overflow-wrap:anywhere]">
+        <Icon name="History" fallback="Clock" className="mr-1.5 inline size-3.5 align-[-2px] text-muted-foreground" aria-hidden />
+        <span className="text-muted-foreground">Since you were here (<time dateTime={baseline} title={new Date(baseline).toLocaleString()}>{relative(baseline, now)}</time>):</span>{" "}
+        {data.shipped ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.shipped} shipped</button> : null}
+        {data.shipped && data.failed ? " · " : null}
+        {data.failed ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.failed} failed</button> : null}
+        {data.failed === 1 && first ? <> (<span title={failureWhy(first)}>{clip(failureWhy(first))}</span>)</> : null}
+        {nothingWaits ? <span className="text-muted-foreground"> · Nothing waits on you</span> : null}
+      </p>
+      {listed.length ? (
+        <ul className="flex flex-col gap-0.5 pl-5 text-xs text-muted-foreground">
+          {listed.map((f) => (
+            <li key={f.id} className="truncate" title={`${taskLabel({ workItemId: f.id, issueNumber: f.issueNumber, issueTitle: f.issueTitle })} — ${failureWhy(f)}`}>
+              <span className="text-foreground">{taskLabel({ workItemId: f.id, issueNumber: f.issueNumber, issueTitle: f.issueTitle })}</span> — {clip(failureWhy(f))}
+            </li>
+          ))}
+          {data.failed > listed.length ? <li>and {data.failed - listed.length} more</li> : null}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
 
 /** The agents line: "1 agent working", "3 agents working", "no agents working". */
 function agentsWorking(n: number): string {
@@ -669,10 +722,15 @@ function agentsWorking(n: number): string {
  * is the former Needs attention row, unchanged; it drills into the matching filter. Nothing is called clear before
  * the tasks have loaded.
  */
-function PipelineSummary({ loaded, agents, failures, stalled, humanInput, filter, onFilter }: { loaded: boolean; agents: number; failures: number; stalled: number; humanInput: number; filter: TaskFilter; onFilter: (filter: TaskFilter) => void }) {
+function PipelineSummary({ loaded, agents, failures, stalled, humanInput, filter, onFilter, since, onShowFinished, now }: { loaded: boolean; agents: number; failures: number; stalled: number; humanInput: number; filter: TaskFilter; onFilter: (filter: TaskFilter) => void; since: SinceState; onShowFinished: () => void; now: number }) {
   const waiting = failures + stalled + humanInput;
+  const changed = since.data !== undefined && since.data.shipped + since.data.failed > 0;
+  // All clear needs the tasks loaded, nothing waiting, and nothing finished since the last visit. The since counts
+  // count once known; on a first visit or when they fail to load, the current state decides alone.
+  const clear = loaded && waiting === 0 && !since.pending && !changed;
   return (
     <section aria-label="Summary" className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2">
+      {changed && since.baseline ? <SinceLine baseline={since.baseline} data={since.data!} nothingWaits={loaded && waiting === 0} onShowFinished={onShowFinished} now={now} /> : null}
       {waiting > 0 ? (
         <div role="group" aria-label="Needs attention" className="flex flex-wrap items-center gap-2">
           <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
@@ -686,7 +744,7 @@ function PipelineSummary({ loaded, agents, failures, stalled, humanInput, filter
             <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
           </Button> : null}
         </div>
-      ) : loaded ? (
+      ) : clear ? (
         <p className="flex items-center gap-2 text-sm text-foreground">
           <StateMark icon="CircleCheck" tone="good" />
           <span><span className="font-semibold">All clear</span> — {agentsWorking(agents)}</span>
@@ -705,10 +763,17 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  // This browser tab's last visit (#110); null on a first visit, which asks for no since counts.
+  const baseline = useVisitBaseline();
+  const since = experimental_useRpcQuery<Contract, "cos_since">({ contract: rpcContract, method: "cos_since", input: { since: baseline ?? FIRST_VISIT }, enabled: baseline !== null });
   const refetchAll = useCallback(async () => {
-    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch()]);
-  }, [roster, stats, overview]);
+    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch(), ...(baseline !== null ? [since.refetch()] : [])]);
+  }, [roster, stats, overview, since, baseline]);
   useLiveRefresh(refetchAll);
+  const sinceState: SinceState = baseline === null
+    ? { baseline: null, data: undefined, pending: false }
+    : { baseline, data: since.data, pending: since.data === undefined && !since.error };
+  const tasksHeading = useRef<HTMLHeadingElement>(null);
   const [pausing, setPausing] = useState(false);
   // Every task with an action in flight: one finishing must not re-enable another's buttons.
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
@@ -760,6 +825,13 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     setOlder(null);
     setLoadingOlder(false);
     setIncludeDone((v) => !v);
+  };
+  // The since counts open the finished tasks: all of them, with the task list in view (#110).
+  const showFinished = () => {
+    if (!includeDone) toggleFinished();
+    setFilter("all");
+    tasksHeading.current?.focus({ preventScroll: true });
+    tasksHeading.current?.scrollIntoView?.({ block: "start" });
   };
   const loadOlder = async () => {
     const request = olderRequest.current;
@@ -819,7 +891,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
 
   return (
     <div className="flex flex-col gap-4">
-      <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
+      <QueryErrors errors={[roster.error, stats.error, overview.error, baseline !== null ? since.error : null, actionError]} />
       <div className="relative flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
         {/* The first tab stop after the heading: past the filters and every task card (issue #115).
@@ -859,7 +931,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         {overview.data?.paused ? <strong className="text-foreground">Chief of Staff is paused. </strong> : null}
         {overview.data?.paused ? "New workflow actions are held until you resume." : "Pause intake and hold new workflow actions."} Already running agents and jobs can continue.
       </p>
-      <PipelineSummary loaded={roster.data !== undefined} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} />
+      <PipelineSummary loaded={roster.data !== undefined} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} since={sinceState} onShowFinished={showFinished} now={now} />
       {newTask ? (
         <div id="new-task">
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
@@ -879,6 +951,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         className="border-0 bg-transparent [&>header]:px-0 [&>header]:flex-wrap [&>div]:px-0"
         title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
         icon="Bot"
+        headingRef={tasksHeading}
         dim={roster.isFetching && !roster.isLoading}
         actions={
           <>

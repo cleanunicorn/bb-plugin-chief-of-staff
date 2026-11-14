@@ -12,7 +12,7 @@ import { clickOutside, tick } from "./dom";
 
 type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string; active?: number; maxConcurrent?: number }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, loading: {} as Record<string, boolean>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string; active?: number; maxConcurrent?: number }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, loading: {} as Record<string, boolean>, since: { shipped: 0, failed: 0, failures: [] } as { shipped: number; failed: number; failures: { id: string; repo: string; issueNumber: number | null; issueTitle: string; outcome: string; reason: string | null }[] }, queries: [] as { method: string; input: unknown; enabled?: boolean }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
   roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
   rosterInputs: [] as RosterInput[],
@@ -22,11 +22,11 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useBbNavigate: () => mocks.navigate,
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
-  experimental_useRpcQuery: ({ method, input }: { method: string; input: { onlyProblems?: boolean; before?: number; limit?: number } }) => {
+  experimental_useRpcQuery: ({ method, input, enabled }: { method: string; input: { onlyProblems?: boolean; before?: number; limit?: number }; enabled?: boolean }) => {
     // The host validates JSON before rendering, including absent optional cursors.
     z.json().parse(input);
     if (method === "cos_roster") mocks.rosterInputs.push(input as RosterInput);
-    mocks.queries.push({ method, input });
+    mocks.queries.push({ method, input, enabled });
     const failure = mocks.failing[method];
     // Like the SDK, a failed first load has an error and no data.
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
@@ -34,7 +34,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     if (mocks.loading[method]) return { data: undefined, error: null, isLoading: true, isFetching: true, refetch: vi.fn() };
     const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
-      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : method === "cos_since" ? mocks.since : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -57,7 +57,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.loading = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.loading = {}; mocks.since = { shipped: 0, failed: 0, failures: [] }; localStorage.clear(); sessionStorage.clear(); mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
 
 /** An activity row of task "one", #7 Fix login, in acme/app. */
 const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
@@ -1100,5 +1100,130 @@ it("never says all clear when the tasks failed to load", async () => {
   mocks.failing = { cos_roster: "roster down" };
   await mount();
   expect(container.textContent).toContain("roster down");
+  expect(summaryText()).not.toContain("All clear");
+});
+
+// ---------- since you were here (#110) ----------
+
+const HOURS_AGO = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+const failure = (n: number, reason: string | null, outcome = "failed") => ({ id: `f${n}`, repo: "acme/app", issueNumber: n, issueTitle: `Broke ${n}`, outcome, reason });
+const sinceQueries = () => mocks.queries.filter((q) => q.method === "cos_since");
+
+it("says what shipped and failed since the last visit, and that nothing waits", async () => {
+  const last = HOURS_AGO(3);
+  localStorage.setItem("cos.lastVisit", last);
+  mocks.entries = [working("a")];
+  mocks.since = { shipped: 3, failed: 1, failures: [failure(5, "Thread archived")] };
+  await mount();
+  expect(summaryText()).toContain("Since you were here (3h ago): 3 shipped · 1 failed (Thread archived) · Nothing waits on you");
+  expect(summaryText()).not.toContain("All clear");
+  expect(sinceQueries().at(-1)).toMatchObject({ input: { since: last }, enabled: true });
+});
+
+it("shows no since counts on a first visit, only the current state", async () => {
+  mocks.entries = [working("a")];
+  mocks.since = { shipped: 3, failed: 1, failures: [failure(5, "Thread archived")] };
+  await mount();
+  expect(summaryText()).not.toContain("Since");
+  expect(summaryText()).toContain("All clear — 1 agent working");
+  expect(sinceQueries().every((q) => q.enabled === false)).toBe(true);
+});
+
+it("says all clear when nothing finished since the last visit and nothing waits", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(2));
+  mocks.entries = [working("a"), working("b")];
+  await mount();
+  expect(summaryText()).toBe("All clear — 2 agents working");
+});
+
+it("lists up to three failures with why they ended, then how many more", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(26));
+  mocks.entries = [];
+  mocks.since = { shipped: 0, failed: 5, failures: [failure(9, "Thread archived"), failure(8, null, "marked_failed"), failure(7, "PR closed without merge", "pr_closed")] };
+  await mount();
+  const text = summaryText();
+  expect(text).toContain("Since you were here (26h ago): 5 failed · Nothing waits on you");
+  expect(text).not.toContain("shipped");
+  const items = Array.from(summary()!.querySelectorAll("li")).map((li) => li.textContent?.replace(/\s+/g, " ").trim());
+  expect(items).toEqual(["#9 Broke 9 — Thread archived", "#8 Broke 8 — Marked failed", "#7 Broke 7 — PR closed without merge", "and 2 more"]);
+});
+
+it("says how a failure ended when it has no stored reason", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.since = { shipped: 0, failed: 1, failures: [failure(4, null, "marked_failed")] };
+  await mount();
+  expect(summaryText()).toContain("1 failed (Marked failed)");
+});
+
+it("clips a long failure reason in the header and keeps it whole in the tooltip", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  const long = `Error: ${"x".repeat(300)}`;
+  mocks.since = { shipped: 0, failed: 1, failures: [failure(4, long)] };
+  await mount();
+  const reason = Array.from(summary()!.querySelectorAll<HTMLElement>("[title]")).find((el) => el.title === long)!;
+  expect(reason.textContent!.length).toBeLessThan(100);
+  expect(reason.textContent).toMatch(/…/);
+});
+
+it("keeps the waiting work below the since counts, without Nothing waits on you", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [entry({ id: "w", detail: "waiting_on_human", status: "waiting on human", waitingKind: "approval", waitingReason: "Approve it" })];
+  mocks.since = { shipped: 2, failed: 0, failures: [] };
+  await mount();
+  expect(summaryText()).toContain("Since you were here (1h ago): 2 shipped");
+  expect(summaryText()).not.toContain("Nothing waits on you");
+  expect(container.querySelector('[aria-label="Needs attention"]')!.textContent).toContain("1 questions or approvals");
+});
+
+it("opens finished tasks from the shipped and failed counts and moves focus to the task list", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [working("a"), entry({ id: "s", issueTitle: "Stalled one", stalled: true })];
+  mocks.since = { shipped: 2, failed: 1, failures: [failure(4, "Thread archived")] };
+  await mount();
+  // A filter from earlier is cleared.
+  await act(async () => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("1 stalled"))!.click());
+  expect(buttonLabelled("Show finished").getAttribute("aria-pressed")).toBe("false");
+  await act(async () => buttonLabelled("2 shipped").click());
+  expect(buttonLabelled("Hide finished").getAttribute("aria-pressed")).toBe("true");
+  expect(mocks.rosterInputs.at(-1)).toMatchObject({ includeDone: true });
+  expect(document.activeElement?.tagName).toBe("H2");
+  expect(document.activeElement?.textContent).toBe("All tasks");
+  expect(container.textContent).toContain("Task a");
+  // Already showing finished tasks: it stays on.
+  (document.activeElement as HTMLElement).blur();
+  await act(async () => buttonLabelled("1 failed").click());
+  expect(buttonLabelled("Hide finished").getAttribute("aria-pressed")).toBe("true");
+  expect(document.activeElement?.textContent).toBe("All tasks");
+});
+
+it("keeps the same since counts across a dashboard tab switch", async () => {
+  const last = HOURS_AGO(4);
+  localStorage.setItem("cos.lastVisit", last);
+  mocks.since = { shipped: 1, failed: 0, failures: [] };
+  await mount(<Dashboard subPath="agents" />);
+  expect(summaryText()).toContain("Since you were here (4h ago): 1 shipped");
+  await act(async () => { root.render(<Dashboard subPath="issues" />); });
+  expect(summary()).toBeNull();
+  // Leaving the Pipeline tab recorded the visit; coming back keeps this tab's baseline.
+  expect(localStorage.getItem("cos.lastVisit")).not.toBe(last);
+  await act(async () => { root.render(<Dashboard subPath="agents" />); });
+  expect(summaryText()).toContain("Since you were here (4h ago): 1 shipped");
+  expect(sinceQueries().at(-1)).toMatchObject({ input: { since: last }, enabled: true });
+});
+
+it("shows only the current state when the since counts fail to load", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [working("a")];
+  mocks.failing = { cos_since: "since down" };
+  await mount();
+  expect(container.textContent).toContain("since down");
+  expect(summaryText()).toBe("All clear — 1 agent working");
+});
+
+it("does not say all clear while the since counts are loading", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [working("a")];
+  mocks.loading = { cos_since: true };
+  await mount();
   expect(summaryText()).not.toContain("All clear");
 });
