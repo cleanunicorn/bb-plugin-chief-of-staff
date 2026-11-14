@@ -39,7 +39,7 @@ export const settingDescriptors = {
     experimental_schema: jsonSchema(parseWorkflows),
     default: serializeWorkflows(DEFAULT_DOCUMENT),
   },
-  maxConcurrentTotal: { type: "number", label: "Max concurrent tasks (all repos)", description: "Tasks running at once, across all repositories. 0 starts no new tasks; tasks already running continue.", default: 4 },
+  maxConcurrentTotal: { type: "number", label: "Max concurrent tasks (all repos)", description: "Tasks running at once, across all repositories. 0 starts no new tasks; tasks holding a slot keep going.", default: 4 },
   stallThresholdMinutes: { type: "number", label: "Stall threshold (minutes)", description: "A running agent with no activity for this long is reported as stalled.", default: 30 },
   intakeIntervalMinutes: { type: "number", label: "Issue intake interval (minutes)", default: 10 },
   defaultProviderId: { type: "string", label: "Default provider id", description: "Used when a repo does not set providerId (e.g. claude-code).", default: "" },

@@ -469,7 +469,7 @@ no issue is picked up. Set `intake: false` to run only tasks you start.
 `maxConcurrent` (default 2) is how many tasks run at once in the repository.
 At 0 no new task starts there. Tasks holding a slot keep going, but one that
 gave it up (waiting on CI or a merge) waits for a slot before its next agent
-step. Configure warns before you save a limit of 0.
+step. The visual editor in Configure warns before you save a limit of 0.
 
 `issueComments` (default `true`) controls the comments Chief of Staff leaves on
 the issue. When an agent starts it posts one status comment and, on a restart

@@ -552,6 +552,16 @@ it("explains a repository's limit and warns before a limit of 0 is saved", async
   expect((JSON.parse(input.repos) as { repos: { maxConcurrent: number }[] }).repos[0]!.maxConcurrent).toBe(0);
 });
 
+it("lists at most five capacity warnings in the save bar", async () => {
+  const repos = Array.from({ length: 7 }, (_, i) => ({ owner: "acme", repo: `app${i}`, projectId: "proj_1", maxConcurrent: 0 }));
+  mocks.config = { ...mocks.config, repos: JSON.stringify({ repos }) };
+  await mount(<Configurator initialSection="repos" />);
+  await click(container.querySelector("article button[aria-expanded]")!);
+  await setValue(field("Model"), "opus");
+  expect(saveBarWarnings()).toHaveLength(6);
+  expect(saveBarWarnings()[5]).toBe("and 2 more");
+});
+
 it("saves a stall threshold typed over the limit as the limit", async () => {
   await mount(<Configurator initialSection="general" />);
   await setValue(field(STALL), "5000");

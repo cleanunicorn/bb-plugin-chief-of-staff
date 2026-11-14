@@ -812,7 +812,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       {maxTotal !== undefined && maxTotal <= 0 ? (
         <p className="flex items-start gap-1.5 text-xs text-foreground">
           <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
-          <span><strong>No new tasks start: Max tasks across all repos is {maxTotal}.</strong> Raise it in Configure → General. Tasks already running continue.</span>
+          <span><strong>No new tasks start: Max tasks across all repos is {maxTotal}.</strong> Raise it in Configure → General. Tasks holding a slot keep going; one waiting on CI or a merge waits for a slot before its next agent step.</span>
         </p>
       ) : null}
       {newTask ? (

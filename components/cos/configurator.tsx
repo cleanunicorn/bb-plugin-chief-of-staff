@@ -753,7 +753,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                 ) : null}
                 {cautions.length ? (
                   <ul aria-label="Warnings" className="flex basis-full flex-col gap-0.5">
-                    {cautions.map((w, i) => (
+                    {cautions.slice(0, 5).map((w, i) => (
                       <li key={i}>
                         <button
                           type="button"
@@ -770,6 +770,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                         </button>
                       </li>
                     ))}
+                    {cautions.length > 5 ? <li className="text-xs text-muted-foreground">and {cautions.length - 5} more</li> : null}
                   </ul>
                 ) : null}
               </>

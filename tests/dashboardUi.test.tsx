@@ -400,7 +400,7 @@ it("shows a total limit of 0 as held, not as unlimited", async () => {
   mocks.maxConcurrentTotal = 0;
   await mount();
   expect(taskSlots()).toBe("Task slots: 1 / 0");
-  expect(container.textContent).toContain(`${HELD} 0. Raise it in Configure → General. Tasks already running continue.`);
+  expect(container.textContent).toContain(`${HELD} 0. Raise it in Configure → General. Tasks holding a slot keep going; one waiting on CI or a merge waits for a slot before its next agent step.`);
   expect(allReposMeter()?.getAttribute("aria-valuemax")).toBe("0");
 });
 
