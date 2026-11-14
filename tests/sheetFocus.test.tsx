@@ -56,7 +56,7 @@ beforeEach(async () => {
   root = createRoot(container);
   await render();
 });
-afterEach(async () => { await act(async () => { root.unmount(); }); await settle(); document.body.replaceChildren(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root.unmount(); }); await settle(); document.body.replaceChildren(); localStorage.clear(); vi.unstubAllGlobals(); });
 
 it("moves focus into the workflow sheet, keeps it there, and returns it to the Workflow button", async () => {
   const opener = button("Workflow", container);

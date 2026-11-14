@@ -49,6 +49,7 @@ afterEach(async () => {
   mocks.entries = [];
   mocks.logs = [];
   mocks.call.mockReset();
+  localStorage.clear();
 });
 
 // ---------- M1: named regions ----------
@@ -62,23 +63,24 @@ it("names every Pipeline panel as a region by its heading", async () => {
   for (const section of regions) expect(document.getElementById(section.getAttribute("aria-labelledby")!)?.tagName).toBe("H2");
 });
 
-// ---------- M3: chart days are images, not buttons ----------
+// ---------- M3: chart days are named with their numbers and are not tab stops ----------
 
-it("shows chart days as images with their numbers, not as buttons or tab stops", async () => {
+it("names chart days with their numbers, as mouse-only buttons that are not tab stops", async () => {
   mocks.entries = tasks(1);
   await page();
   const figure = container.querySelector("figure")!;
-  expect(figure.querySelectorAll("button")).toHaveLength(0);
+  // A click opens the day's finished tasks (#105); keyboard users pick the day in the table view.
   expect(tabbables(figure)).toHaveLength(0);
-  const days = Array.from(figure.querySelectorAll('[role="img"][aria-label]'));
+  const days = Array.from(figure.querySelectorAll<HTMLButtonElement>("button[aria-label]"));
   expect(days).toHaveLength(14);
-  expect(days[2]!.getAttribute("aria-label")).toMatch(/^Nov 3: Done 2, Failed 1$/);
+  expect(days.every((d) => d.tabIndex === -1)).toBe(true);
+  expect(days[2]!.getAttribute("aria-label")).toBe("Show tasks finished Nov 3 (Done 2, Failed 1)");
 });
 
 it("still shows a day's tooltip on hover", async () => {
   mocks.entries = tasks(1);
   await page();
-  const day = container.querySelectorAll('figure [role="img"]')[2]!;
+  const day = container.querySelectorAll("figure button[aria-label]")[2]!;
   await act(async () => { day.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
   expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("Nov 3");
   await act(async () => { day.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })); });
@@ -98,7 +100,7 @@ const LOGS: LogEntry[] = [
   { id: 2, at: new Date().toISOString(), level: "error", kind: "check", message: "Build failed", actor: "job", repo: "acme/app", workItemId: "t1" },
 ];
 
-it("skips from Work overview past 50 tasks to Throughput, then reaches Activity in three tabs", async () => {
+it("skips from Work overview past 50 tasks to Throughput, then reaches Activity in five tabs", async () => {
   mocks.entries = tasks(50);
   mocks.logs = LOGS;
   await page();
@@ -112,8 +114,9 @@ it("skips from Work overview past 50 tasks to Throughput, then reaches Activity 
   await click(skip!);
   expect(document.activeElement).toBe(heading("Throughput · last 14 days"));
 
-  const next = tabbablesAfter(document.activeElement!).slice(0, 3);
-  expect(next.map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim())).toEqual(["Chart view", "Table view", "Problems only"]);
+  // The two counts open the Finished section filtered to them; they have no other keyboard route.
+  const next = tabbablesAfter(document.activeElement!).slice(0, 5);
+  expect(next.map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim())).toEqual(["Chart view", "Table view", "13 completed", "1 historical failed runs", "Problems only"]);
 });
 
 it("keeps the skip link when there are no tasks", async () => {
@@ -244,4 +247,44 @@ it("falls back to the first card when the current one leaves the list", async ()
   await page();
   expect(cards()).toHaveLength(2);
   expect(currentCard()).toBe(0);
+});
+
+// ---------- the Finished rows (#105) are one tab stop group too ----------
+
+/** `count` finished tasks with every row control: issue link, PR link, Open thread, Workflow and More actions. */
+function finishedTasks(count: number): RosterEntry[] {
+  return Array.from({ length: count }, (_, i) =>
+    entry({ id: `f${i}`, issueTitle: `Done ${i}`, issueNumber: 100 + i, detail: "done", status: "done", actor: "none", current: [], occupiesCapacity: false, outcome: "merged", threadId: `thread-f${i}`, prUrl: `https://github.com/acme/app/pull/${100 + i}`, prNumber: 100 + i, finishedAt: new Date().toISOString() }),
+  );
+}
+const finishedGroup = () => container.querySelector<HTMLElement>('[role="group"][aria-label="Finished tasks"]')!;
+const rows = () => Array.from(finishedGroup().querySelectorAll("article"));
+
+it("keeps Throughput a few tab stops past the tasks, with 50 finished tasks", async () => {
+  mocks.entries = [...withApprovalFirst(tasks(5)), ...finishedTasks(50)];
+  await page();
+  // Eight rows render; only the current one's five controls are tab stops.
+  expect(rows()).toHaveLength(8);
+  expect(tabbables(finishedGroup())).toHaveLength(5);
+  expect(rows().slice(1).every((row) => tabbables(row).length === 0)).toBe(true);
+  // From the last active card's stop to Throughput: Collapse, search, three outcome toggles, the row's five, Show 20 more.
+  const lastActive = tabbables(group()).at(-1)!;
+  const throughput = heading("Throughput · last 14 days");
+  const between = tabbablesAfter(lastActive).filter((el) => el.compareDocumentPosition(throughput) & Node.DOCUMENT_POSITION_FOLLOWING);
+  expect(between.map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim())).toEqual(["Collapse", "Search finished tasks", "Shipped", "Marked done", "Failed", "app issue #100", "PR #100", "Open thread", "Workflow", "More actions", "Show 20 more"]);
+});
+
+it("moves between finished rows with the arrow keys, landing on Workflow", async () => {
+  mocks.entries = finishedTasks(3);
+  await page();
+  const workflow = (index: number) => Array.from(rows()[index]!.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Workflow")!;
+  workflow(0).focus();
+  await press(document.activeElement!, "ArrowDown");
+  expect(document.activeElement).toBe(workflow(1));
+  expect(tabbables(rows()[1]!)).toContain(workflow(1));
+  expect(tabbables(rows()[0]!)).toHaveLength(0);
+  await press(document.activeElement!, "End");
+  expect(document.activeElement).toBe(workflow(2));
+  const hint = document.getElementById(finishedGroup().getAttribute("aria-describedby")!);
+  expect(hint?.textContent).toBe("Arrow keys move between tasks.");
 });
