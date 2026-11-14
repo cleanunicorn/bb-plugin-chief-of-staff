@@ -23,6 +23,12 @@ export const repoConfigSchema = z.object({
   issueFilter: issueFilterSchema.default({ labels: ["agent-ready"] }),
   /** Comment on the GitHub issue when an agent starts and when a PR opens. Off: no issue comments. */
   issueComments: z.boolean().default(true),
+  /**
+   * Which issue comments the agent's brief quotes: "trusted" only the
+   * repository's owner, members and collaborators; "all" everyone's; "none" no
+   * comments. Separate from issueComments, which is about what Chief of Staff posts.
+   */
+  briefComments: z.enum(["trusted", "all", "none"]).default("trusted"),
   maxConcurrent: z.number().int().min(0).default(2),
   providerId: z.string().optional(),
   model: z.string().optional(),

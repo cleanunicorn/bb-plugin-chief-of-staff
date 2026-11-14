@@ -51,7 +51,7 @@ const repos = JSON.stringify({
 const minimalWorkflow = JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, verify: { maxAttempts: 1 } } });
 
 
-const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "open", html_url: "https://github.com/acme/app/issues/12", labels: [{ name: "agent-ready" }], milestone: null, assignees: [], updated_at: "2026-11-05T00:00:00Z" };
+const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "open", html_url: "https://github.com/acme/app/issues/12", labels: [{ name: "agent-ready" }], milestone: null, assignees: [], updated_at: "2026-11-05T00:00:00Z", user: { login: "reporter" }, author_association: "NONE" };
 const pull: Record<string, unknown> & { merged: boolean; merged_at: string | null; state: string } = { number: 7, title: "Fix login (#12)", body: "Closes #12", state: "open", draft: false, merged: false, merged_at: null, html_url: "https://github.com/acme/app/pull/7", head: { ref: "cos/issue-12-fix-login", sha: "abc" }, base: { ref: "main" }, labels: [], created_at: "2026-11-05T01:00:00Z", updated_at: "2026-11-05T01:00:00Z", mergeable: true, mergeable_state: "clean", user: { login: "bot" } };
 
 describe("chief-of-staff server", () => {
@@ -117,7 +117,7 @@ describe("chief-of-staff server", () => {
         "GET /repos/acme/app": () => ({ body: { default_branch: "main", full_name: "acme/app" } }),
         "GET /repos/acme/app/issues": () => ({ body: [issue] }),
         "GET /repos/acme/app/issues/12": () => ({ body: issue }),
-        "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z" }] }),
+        "GET /repos/acme/app/issues/12/comments": () => ({ body: [{ id: 1, body: "please fix", user: { login: "dan" }, created_at: "2026-11-05T00:00:00Z", author_association: "MEMBER" }] }),
         "GET /repos/acme/app/contents/AGENTS.md": () => ({ body: { content: Buffer.from("# Conventions\nUse pnpm").toString("base64") } }),
         "POST /repos/acme/app/issues/12/comments": () => ({ status: 201, body: { id: 2, body: "", user: null, created_at: "" } }),
         "GET /repos/acme/app/pulls": (url) => ({ body: url.searchParams.get("head") ? (prCreated ? [currentPull] : []) : openPulls }),
@@ -655,6 +655,7 @@ describe("chief-of-staff server", () => {
     expect(spawnArgs.environment).toMatchObject({ type: "host", hostId: "host_1", workspace: { type: "managed-worktree" } });
     expect(spawnArgs.prompt).toContain("Fix login");
     expect(spawnArgs.prompt).toContain("please fix");
+    expect(spawnArgs.prompt).toContain("Author: reporter (NONE)");
     expect(spawnArgs.prompt).toContain("Use pnpm");
     // The first prompt names the stage and the reporting contract.
     expect(spawnArgs.prompt).toContain("Build");
@@ -2907,18 +2908,21 @@ describe("chief-of-staff server", () => {
     });
   });
 
-  it("quotes the newest comments of a long issue in the brief", async () => {
+  it("quotes the newest maintainer comments of a long issue in the brief", async () => {
     ghRoutes["GET /repos/acme/app/issues/12/comments"] = (url) => {
       const page = Number(url.searchParams.get("page") ?? "1");
       const base = "https://api.github.com/repos/acme/app/issues/12/comments?per_page=100";
       const ids = Array.from({ length: page === 3 ? 50 : 100 }, (_, i) => (page - 1) * 100 + i + 1);
-      return { body: ids.map((id) => ({ id, body: `comment ${id}`, user: { login: "dan" }, created_at: "" })), headers: page < 3 ? { link: `<${base}&page=${page + 1}>; rel="next", <${base}&page=3>; rel="last"` } : ({} as Record<string, string>) };
+      // The newest five come from outsiders and must not push maintainers' comments out.
+      return { body: ids.map((id) => ({ id, body: `comment ${id}`, user: { login: "dan" }, created_at: "", author_association: id > 245 ? "NONE" : "MEMBER" })), headers: page < 3 ? { link: `<${base}&page=${page + 1}>; rel="next", <${base}&page=3>; rel="last"` } : ({} as Record<string, string>) };
     };
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const { prompt } = host.harness.inspection.sdk.callsTo("threads.spawn")[0][0] as { prompt: string };
-    expect(prompt).toContain("comment 241");
-    expect(prompt).toContain("comment 250");
-    expect(prompt).not.toContain("comment 240");
+    expect(prompt).toContain("comment 236");
+    expect(prompt).toContain("comment 245");
+    expect(prompt).not.toContain("comment 235");
+    expect(prompt).not.toContain("comment 246");
+    expect(prompt).toContain("5 of the latest 100 comments were left out");
   });
 
   it("validates and stores the workflow from the configurator", async () => {

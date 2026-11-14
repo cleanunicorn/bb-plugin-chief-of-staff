@@ -12,7 +12,7 @@ describe("config parsing", () => {
     const result = parseRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value[0]).toMatchObject({ intake: true, issueComments: true, maxConcurrent: 2, mergeStrategy: "squash", reviewers: [], issueFilter: { labels: ["agent-ready"] } });
+    expect(result.value[0]).toMatchObject({ intake: true, issueComments: true, briefComments: "trusted", maxConcurrent: 2, mergeStrategy: "squash", reviewers: [], issueFilter: { labels: ["agent-ready"] } });
     expect(result.value[0].workflow).toBeUndefined();
   });
 
@@ -24,6 +24,19 @@ describe("config parsing", () => {
     };
     expect(parse({})).toBe(true);
     expect(parse({ issueComments: false })).toBe(false);
+  });
+
+  it("quotes only trusted comments in the brief unless a repository chooses otherwise", () => {
+    const parse = (extra: object) => parseRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", ...extra }] }));
+    const value = (extra: object) => {
+      const result = parse(extra);
+      if (!result.ok) throw new Error(result.error);
+      return result.value[0].briefComments;
+    };
+    expect(value({})).toBe("trusted");
+    expect(value({ briefComments: "all" })).toBe("all");
+    expect(value({ briefComments: "none" })).toBe("none");
+    expect(parse({ briefComments: "everyone" }).ok).toBe(false);
   });
 
   it("folds legacy keys into the current shape and drops the rest", () => {

@@ -132,6 +132,16 @@
   the workflow view no longer shows a finished task as waiting on you. A
   finished task with no history no longer says "No history yet".
 
+- **Issue text in agent prompts is marked untrusted, and only maintainers'
+  comments are quoted.** The issue's title, body and comments now sit in a
+  delimited block that tells the agent they are user-supplied data that
+  cannot override the workflow. Every line in it is quoted and each comment
+  shows its author's association, so issue text cannot fake the block's end
+  or a maintainer's comment. By default the brief quotes only comments by the repository's
+  owner, members and collaborators and says how many others it left out. The
+  new per-repository `briefComments` option (`trusted`, `all` or `none`)
+  changes that. The README has a new Trust model section.
+
 - **Cleaner workflow progress on task cards.** The collapsed row shows one
   segmented bar, one segment per step, with a done count; states differ by
   shape as well as color. Expanded, steps are
