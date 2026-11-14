@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { freshNode, type Nodes } from "../src/machine";
 import { describeOutcome, endSummary, finishedOutcome, MARKED_DONE, MARKED_FAILED, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
 import { describeActivity } from "../src/roster";
+import { outcomeSchema } from "../rpcContract";
 import type { WorkItem } from "../src/state";
 import { workflowSchema, type Workflow } from "../src/workflow";
 
@@ -127,5 +128,16 @@ describe("endSummary", () => {
 
   it("does not repeat a reason that already says the label", () => {
     expect(endSummary("pr_closed", PR_CLOSED_ERROR)).toEqual({ headline: PR_CLOSED_ERROR, reason: null });
+  });
+
+  it("keeps the label on a failure whose error happens to start with it", () => {
+    expect(endSummary("failed", "Failed to push branch")).toEqual({ headline: "Failed", reason: { lead: "Why it ended", text: "Failed to push branch" } });
+    expect(describeOutcome("failed", "failed to push branch")).toBe("Failed: failed to push branch");
+  });
+});
+
+describe("the RPC contract's outcomes", () => {
+  it("match OUTCOMES", () => {
+    expect(outcomeSchema.options).toEqual([...OUTCOMES]);
   });
 });
