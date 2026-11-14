@@ -254,6 +254,84 @@ describe("GitHubClient.listIssueEvents", () => {
   });
 });
 
+describe("CI summary over every page of check runs (#50)", () => {
+  type Run = { id: number; name: string; status: string; conclusion: string | null; html_url?: string };
+  /**
+   * GitHub's check-run pages for a head with `total` runs, 100 per page, all
+   * green but for `odd`. `served` caps the runs GitHub actually lists.
+   */
+  function checksFetch(total: number, odd: Record<number, Partial<Run>> = {}, served = total, status: { state: string; total_count: number } = { state: "success", total_count: 0 }) {
+    return fakeFetch((url) => {
+      if (url.pathname.endsWith("/status")) return { body: status };
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const pages = Math.max(1, Math.ceil(served / 100));
+      const ids = Array.from({ length: Math.max(0, Math.min(100, served - (page - 1) * 100)) }, (_, i) => (page - 1) * 100 + i + 1);
+      const base = `https://api.github.com${url.pathname}?per_page=100`;
+      const link = page < pages ? `<${base}&page=${page + 1}>; rel="next", <${base}&page=${pages}>; rel="last"` : "";
+      const runs = ids.map((id): Run => ({ id, name: `check ${id}`, status: "completed", conclusion: "success", ...odd[id] }));
+      return { body: { total_count: total, check_runs: runs }, headers: link ? { link } : ({} as Record<string, string>) };
+    });
+  }
+  const summary = async (fetch: ReturnType<typeof fakeFetch>, log?: (message: string) => void) =>
+    new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch, log }).ciSummary("acme", "app", "abc");
+  const checkPages = (fetch: ReturnType<typeof fakeFetch>) =>
+    fetch.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("/check-runs")).map((u) => u.searchParams.get("page") ?? "1");
+
+  it("sees a failure past the first page", async () => {
+    const fetch = checksFetch(150, { 130: { conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/42/job/1" } });
+    expect(await summary(fetch)).toEqual({ state: "failing", failed: [{ name: "check 130", url: "https://github.com/acme/app/actions/runs/42/job/1", runId: 42 }], total: 150 });
+    expect(checkPages(fetch)).toEqual(["1", "2"]);
+  });
+
+  it("sees a run in progress past the first page", async () => {
+    expect(await summary(checksFetch(150, { 120: { status: "in_progress", conclusion: null } }))).toMatchObject({ state: "pending" });
+  });
+
+  it("passes only when every page is green", async () => {
+    expect(await summary(checksFetch(150))).toEqual({ state: "passing", failed: [], total: 150 });
+  });
+
+  it("never passes a list cut at the page cap", async () => {
+    const log = vi.fn();
+    const fetch = checksFetch(1500);
+    expect(await summary(fetch, log)).toMatchObject({ state: "pending" });
+    expect(checkPages(fetch)).toHaveLength(10);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("truncated"));
+  });
+
+  it("still reports a failure in a list cut at the page cap", async () => {
+    expect(await summary(checksFetch(1500, { 5: { conclusion: "failure" } }))).toMatchObject({ state: "failing", failed: [{ name: "check 5" }] });
+  });
+
+  // GitHub's count can exceed what it lists (re-runs, runs the token cannot see):
+  // holding the merge on it would hold it for good.
+  it("judges a list shorter than the total GitHub reports by the runs it lists, and logs it", async () => {
+    const log = vi.fn();
+    expect(await summary(checksFetch(150, {}, 100), log)).toEqual({ state: "passing", failed: [], total: 150 });
+    expect(log).toHaveBeenCalledWith("GitHub list /repos/acme/app/commits/abc/check-runs returned 100 of 150 check runs");
+    expect(await summary(checksFetch(150, { 90: { conclusion: "failure" } }, 100))).toMatchObject({ state: "failing" });
+  });
+
+  it("never passes an empty list GitHub counts runs for", async () => {
+    expect(await summary(checksFetch(2, {}, 0))).toMatchObject({ state: "pending", total: 2 });
+  });
+
+  // GitHub's combined status of a commit with no statuses is "pending" (checked on a real Actions-only head).
+  it("passes green check runs on a commit with no commit statuses", async () => {
+    expect(await summary(checksFetch(3, {}, 3, { state: "pending", total_count: 0 }))).toEqual({ state: "passing", failed: [], total: 3 });
+  });
+
+  it("waits for a commit status that is pending", async () => {
+    expect(await summary(checksFetch(3, {}, 3, { state: "pending", total_count: 1 }))).toMatchObject({ state: "pending", total: 4 });
+  });
+
+  it("reads a single page with one request", async () => {
+    const fetch = checksFetch(3);
+    expect(await summary(fetch)).toEqual({ state: "passing", failed: [], total: 3 });
+    expect(fetch.mock.calls.map(([u]) => new URL(String(u))).filter((u) => u.pathname.endsWith("/check-runs")).map((u) => u.search)).toEqual(["?per_page=100"]);
+  });
+});
+
 const pr = (number: number, ref: string, body: string | null = null): GitHubPull => ({ number, title: `PR ${number}`, body, head: { ref, sha: "abc" } }) as GitHubPull;
 
 describe("matchOpenPullForIssue", () => {

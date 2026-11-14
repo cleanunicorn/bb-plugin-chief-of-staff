@@ -38,6 +38,14 @@
   no longer offered on a task that has already failed. A task marked done
   reads "Closed" rather than "Shipped".
 
+- **Auto-merge waits for CI to start.** In merge mode, a pull request whose
+  head has no checks reported yet is no longer merged straight away: GitHub
+  shows no checks until CI registers them. A head counts as having no CI only
+  after about 5 minutes without checks, timed again after each push. Check runs
+  past the first 100 are now read, so a failure there blocks the merge. A
+  repository whose CI reports only check runs (GitHub Actions) no longer shows
+  its checks as pending forever: GitHub's empty commit status is not counted.
+
 - **Chief of Staff opens without crashing.** The activity feed omits its
   pagination cursor until viewing older entries, keeping query inputs valid JSON.
 
