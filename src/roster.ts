@@ -6,7 +6,7 @@ import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNot
 import { occupiesCapacity, type FinishedOrder, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { FAILED_OUTCOMES, finishedOutcome, MARKED_FAILED, OUTCOME_META, type Outcome } from "./outcome";
 import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
-import { itemsUsage, type ItemUsage } from "./usage";
+import { itemsUsage, storedUsage, type ItemUsage } from "./usage";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
 import { agentWork, describePick, isAuthoredAgent, isWriter, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
@@ -277,6 +277,8 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
       createdAt: item.createdAt,
       lastActivityAt: item.lastActivityAt,
       finishedAt: item.finishedAt,
+      /** A finished task's stored usage over all its threads; null while it runs (read it with cos_item_usage). */
+      usage: finished ? storedUsage(cos, item) : null,
     },
     steps,
     journal: cos.store.listJournal(item.id).map(previewEntry),

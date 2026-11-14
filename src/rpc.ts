@@ -9,6 +9,7 @@ import { parseWorkflows, stepById, topoOrder } from "./workflow";
 import { dispatch, dispatchLocked, replayDeferred, withItemLock } from "./delivery";
 import { parseRepos } from "./config";
 import { computeStats, statsWindowStart } from "./stats";
+import { itemsUsage } from "./usage";
 import { answerQuestion, getQuestion } from "./answer";
 import { listSkills } from "./threads";
 import { isReferenceable } from "./skills";
@@ -92,6 +93,13 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         if (!item) throw new Error(`work item ${input.id} not found`);
         const live = Object.fromEntries(rosterSteps(item).map((s) => [s.id, { status: s.status, phase: s.phase, reported: s.reported, agents: s.agents, waitingKind: s.waitingKind, retrying: s.retrying, attempts: s.attempts, round: s.round, picked: s.picked ?? null }]));
         return { title: `${item.repo}${item.issueNumber ? `#${item.issueNumber}` : ""} ${item.issueTitle}`, workflow: item.workflow, live, ...itemRunDetail(cos, item) };
+      },
+      async cos_item_usage(input) {
+        const item = cos.store.getWorkItem(input.id);
+        if (!item) throw new Error(`work item ${input.id} not found`);
+        // Stored for a finished task; read live over all threads for an active one.
+        const [usage] = await itemsUsage(cos, [item]);
+        return { usage: usage ?? null };
       },
       async cos_journal_detail(input) {
         return { detail: cos.store.journalDetail(input.itemId, input.id) };

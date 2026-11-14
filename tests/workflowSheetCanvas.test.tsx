@@ -169,3 +169,23 @@ it("sends nothing when running a step again is cancelled, and keeps the sheet as
   expect(details()).toBe("Ship");
   expect(mocks.call).not.toHaveBeenCalled();
 });
+
+it("reads an active task's usage once when the sheet opens, not on each refresh, and shows a finished task's stored count", async () => {
+  const at = "2026-11-06T10:00:00.000Z";
+  const task = { repo: "acme/app", issueNumber: 12, issueUrl: null, body: null, status: "agent", branch: "cos/issue-12", prNumber: null, prUrl: null, threadId: "thr_1", waitingReason: null, lastError: null, createdAt: at, lastActivityAt: at, finishedAt: null, usage: null };
+  const live = { inputTokens: 1, outputTokens: 2, totalTokens: 1_500_000, cost: null, threads: 3, reportedThreads: 3, counted: true };
+  mocks.call.mockImplementation(async (method: string) => (method === "cos_item_usage" ? { usage: live } : {}));
+  mocks.workflow = { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, task, steps: {}, journal: [] };
+  await act(async () => { root.render(<PipelineTab />); });
+  const summary = () => dialog()!.querySelector('[aria-label="Task summary"]')!.textContent;
+  expect(summary()).toContain("Tokens so far · all threads1.5M");
+  // A live refresh renders again with new data: no second read.
+  mocks.workflow = { ...(mocks.workflow as object), task: { ...task, lastActivityAt: "2026-11-06T10:05:00.000Z" } };
+  await act(async () => { root.render(<PipelineTab />); });
+  expect(mocks.call.mock.calls.filter(([method]) => method === "cos_item_usage")).toEqual([["cos_item_usage", { id: "one" }]]);
+  // Finished: the stored count comes with the run view.
+  mocks.workflow = { ...(mocks.workflow as object), task: { ...task, status: "done", finishedAt: at, usage: { ...live, totalTokens: 2_000_000 } } };
+  await act(async () => { root.render(<PipelineTab />); });
+  expect(summary()).toContain("Tokens · all threads2.0M");
+  expect(mocks.call.mock.calls.filter(([method]) => method === "cos_item_usage")).toHaveLength(1);
+});

@@ -8,9 +8,10 @@ import type { rpcContract } from "../../rpcContract";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
-import { STATUS, duration, relative } from "./viz";
+import { STATUS, compact, duration, relative } from "./viz";
+import { usageNote } from "./dashboardModel";
 import { STEP_TYPE_META, liveTone, type LiveStatus } from "./workflowCanvas";
-import { PIVOTAL_KINDS, journalLine, stepInputs, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail } from "./runModel";
+import { PIVOTAL_KINDS, journalLine, stepInputs, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail, type TaskUsage } from "./runModel";
 import { modelMode, stepById, type Step, type Workflow } from "../../src/workflow";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -47,7 +48,8 @@ const who = (actor: string) => (actor === "rpc:client" ? "you" : null);
  * One line of facts about the task, under the sheet's title.
  * `oneLine` keeps the strip to a single row on short screens: the last value truncates (full text in `title`), and the strip scrolls sideways if that is not enough.
  */
-export function TaskSummary({ task, workflow, live, loops, now, oneLine = false }: { task: TaskDetail | undefined; workflow: Workflow; live: Record<string, LiveStatus>; loops: LoopSummary; now: number; oneLine?: boolean }) {
+/** `usage`: the task's usage over all its agent threads (stored once finished, read when the sheet opened while it runs). */
+export function TaskSummary({ task, workflow, live, loops, now, usage = null, oneLine = false }: { task: TaskDetail | undefined; workflow: Workflow; live: Record<string, LiveStatus>; loops: LoopSummary; now: number; usage?: TaskUsage | null; oneLine?: boolean }) {
   const done = workflow.steps.filter((s) => live[s.id]?.status === "done").length;
   const items: { icon: string; label: string; value: ReactNode; title?: string }[] = [];
   if (task) items.push({ icon: "Activity", label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
@@ -59,6 +61,11 @@ export function TaskSummary({ task, workflow, live, loops, now, oneLine = false 
     value: `${loops.approximate && loops.total ? "≈" : ""}${loops.total}`,
     title: loops.loops.map((l) => `${l.from ? (stepById(workflow, l.from)?.name ?? l.from) : "You"} → ${stepById(workflow, l.to)?.name ?? l.to} ×${l.count}`).join("\n") || "Nothing was sent back",
   });
+  // Before PR and Branch: on one line only the last fact gives up width.
+  if (usage && (!usage.counted || usage.totalTokens != null)) {
+    items.push({ icon: "Coins", label: `${task?.finishedAt ? "Tokens" : "Tokens so far"} · all threads`, value: usage.totalTokens != null ? compact(usage.totalTokens) : "counting…", title: usageNote(usage) });
+  }
+  if (usage?.cost) items.push({ icon: "Coins", label: "Cost", value: `${usage.cost.amount.toFixed(2)} ${usage.cost.currency}`, title: usageNote(usage) });
   if (task?.prUrl) items.push({ icon: "GitPullRequest", label: "PR", value: <UrlLink href={task.prUrl}>#{task.prNumber}</UrlLink> });
   if (task?.branch) items.push({ icon: "GitBranch", label: "Branch", value: <span className="font-mono">{task.branch}</span>, title: task.branch });
   return (

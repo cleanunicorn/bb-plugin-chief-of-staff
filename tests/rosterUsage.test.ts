@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { migrationsForDatabase, StateStore, type NewWorkItem } from "../src/state";
-import { buildRoster } from "../src/roster";
+import { buildRoster, itemRunDetail } from "../src/roster";
 import { countFinishedUsage, USAGE_BATCH, USAGE_RETRY_MS } from "../src/usage";
 
 /** The roster's entries: buildRoster returns `{ entries, nextBefore }` since #139. */
@@ -358,5 +358,22 @@ describe("finished tasks ordered by tokens on the roster", () => {
     await expect(buildRoster(t.cos, { repo: "a/b", before: first.nextBefore! })).rejects.toThrow("invalid cursor");
     expect((await buildRoster(t.cos, { includeDone: true })).finishedTokens).toBe(318);
     expect((await buildRoster(t.cos, {})).finishedTokens).toBeNull();
+  });
+});
+
+describe("usage in a task's run view", () => {
+  it("carries a finished task's stored count and nothing for an active one, without usage calls", async () => {
+    const t = setup();
+    // The most recently finished is counted first.
+    t.add("done", { status: "done", finishedAt: "2026-11-13T09:30:00.000Z" });
+    t.add("pending", { status: "done", finishedAt: "2026-11-13T09:00:00.000Z" });
+    t.add("live");
+    expect(await countFinishedUsage(t.cos, 1)).toEqual(["done"]);
+    t.calls.length = 0;
+    const view = (id: string) => itemRunDetail(t.cos, t.store.getWorkItem(id)!).task.usage;
+    expect(view("done")).toMatchObject({ totalTokens: 3, counted: true, threads: 1 });
+    expect(view("pending")).toMatchObject({ totalTokens: null, counted: false, threads: 1 });
+    expect(view("live")).toBeNull();
+    expect(t.calls).toHaveLength(0);
   });
 });

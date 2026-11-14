@@ -36,6 +36,7 @@ type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
 type UsageStats = PluginRpcResult<Contract["cos_stats"]>["usage"];
+type TaskUsage = NonNullable<PluginRpcResult<Contract["cos_item_usage"]>["usage"]>;
 type FinishedOrder = "recent" | "tokens";
 
 /** A task's share of all finished tasks' tokens: "12%", or "<1%" for a small non-zero share. */
@@ -179,11 +180,33 @@ export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)"
 export const PHONE_VIEWPORT_QUERY = "not all and (min-width: 40rem)";
 type SheetMode = "canvas" | "list";
 
+/**
+ * The task's usage over all its agent threads: a finished task's stored count
+ * comes with the run view; an active task's is read once, when the sheet
+ * opens (each read makes usage calls per thread), not on every refresh.
+ */
+function useTaskUsage(id: string, task: { status: string; usage?: TaskUsage | null } | undefined): TaskUsage | null {
+  const rpc = useRpc<Contract>();
+  // Read through a ref: the effect runs when the task opens or becomes active, not when the client object changes.
+  const client = useRef(rpc);
+  useEffect(() => { client.current = rpc; });
+  const [live, setLive] = useState<TaskUsage | null>(null);
+  const active = Boolean(task) && task!.status !== "done" && task!.status !== "failed";
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    client.current.call("cos_item_usage", { id }).then((r) => { if (current) setLive(r.usage); }, () => {});
+    return () => { current = false; };
+  }, [active, id]);
+  return task?.usage ?? (active ? live : null);
+}
+
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
 function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
+  const usage = useTaskUsage(id, view.data?.task);
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<SheetMode>(initialMode);
@@ -307,7 +330,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
           {controls}
         </header>
       )}
-      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} oneLine={short} /> : null}
+      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} usage={usage} oneLine={short} /> : null}
       <ErrorLine error={view.error ?? error} />
       {/* On a phone the row is the one scroller: the canvas at a set height, then the list or overview at natural height. */}
       {wf && data ? <div ref={column} className={cn("flex min-h-0 flex-1", phoneColumn ? "flex-col gap-2 overflow-y-auto overscroll-contain" : short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>

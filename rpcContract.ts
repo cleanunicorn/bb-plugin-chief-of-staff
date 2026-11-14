@@ -177,6 +177,8 @@ const taskDetail = z.object({
   createdAt: z.string(),
   lastActivityAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
+  /** A finished task's stored usage over all its threads (no usage calls); null while it runs: read that once with cos_item_usage. */
+  usage: itemUsage.nullable().optional(),
 });
 
 const stepDetail = z.object({
@@ -260,6 +262,8 @@ export const rpcContract = defineRpcContract({
       journal: z.array(journalRecord).optional(),
     }),
   },
+  /** A task's usage over all its agent threads: stored for a finished task, read live (several usage calls) for an active one. */
+  cos_item_usage: { input: z.object({ id: z.string() }), output: z.object({ usage: itemUsage.nullable() }) },
   cos_journal_detail: { input: z.object({ itemId: z.string(), id: z.number().int() }), output: z.object({ detail: z.string().nullable() }) },
   cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().max(200).optional(), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },
   cos_question: { input: z.object({ id: z.string() }), output: questionView },
