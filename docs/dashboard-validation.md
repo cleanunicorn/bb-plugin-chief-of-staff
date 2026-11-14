@@ -255,3 +255,92 @@ overview was clipped (0 px visible). In List mode the column scrolls to the
 overview (measured). Portrait heights below about 580 px leave less than 60 px
 of overview below the canvas (55 px at 320×568), still reachable by touch. A
 fix needs its own layout for short, narrow viewports.
+
+## What changed, what needs you (issue #110)
+
+What changed on the Pipeline tab:
+
+- **Summary header**, under the Work overview row. It holds the former Needs
+  attention row (same buttons, labels, `aria-pressed` and drill-downs, now a
+  `role="group"` inside `section[aria-label="Summary"]`). Above it, with a
+  baseline: "Since you were here (5h ago): 3 shipped · 1 failed (reason)".
+  Only non-zero counts show; two or more failures are listed as "#N title —
+  reason" (three at most, then "and N more"). A failure without a stored
+  reason shows its outcome label ("Marked failed"); reasons are clipped to 80
+  characters, whole in the tooltip. "Nothing waits on you" ends the line when
+  nothing waits. "All clear — N agents working" needs the roster loaded,
+  nothing waiting and no since counts (or none to load: a first visit, or
+  `cos_since` failed, which `QueryErrors` reports). The shipped and failed
+  counts turn Show finished on, clear the filter and focus the task list
+  heading.
+- **`cos_since`** (read-only RPC): done and failed counts with
+  `COALESCE(finished_at, updated_at) > since`, and the newest three failures
+  with outcome and reason. The reason rule is one helper, `endReason` in
+  `src/outcome.ts`, used by the card and the RPC.
+- **Skeletons** with `aria-busy` and an `sr-only` status replace "Loading…" in
+  the summary, task grid, Throughput, Capacity and Activity. A panel whose
+  first load failed shows none. The "Loading…" lines inside `WorkflowSheet`
+  are out of scope (a sheet, not the tab).
+- **Capacity** hides "All repos" with exactly one repository; the global cap
+  stays in "Task slots".
+- **Stage filters** are one sideways-scrolling row below `sm`, wrapping from
+  `sm` up.
+- **`j`/`k`** move between task cards (clamped), and focus the current card
+  from outside the grid. They do nothing with a modifier, while composing,
+  in `input, textarea, select, [contenteditable], [role=textbox]`, with a
+  sheet open, or with any `[role=dialog]`, `[role=alertdialog]` or
+  `[role=menu]` in the document (Radix unmounts closed ones). `/` is left out:
+  #105, which adds the search field, is still open.
+
+Baseline semantics (`components/cos/lastVisit.ts`): `localStorage
+["cos.lastVisit"]` is when this browser last left the dashboard, written on
+`pagehide`, on the page becoming hidden and when the Pipeline tab unmounts.
+`sessionStorage["cos.visitBaseline"]` is this browser tab's baseline (`"none"`
+on a first visit). Within a visit it is read back unchanged, so tab switches,
+live refetches, StrictMode remounts and reloads keep the counts. A visit ends
+when the dashboard was out of sight for 30 minutes: on mount, or when the page
+becomes visible again, a stale `cos.lastVisit` starts a new visit from it.
+This amends the plan, which kept the baseline for the browser tab's life; BB
+stays open for days, so that baseline would never move. Storage that throws
+reads as a first visit. Known limit: if the host keeps the panel mounted and
+the page visible while you work elsewhere in BB, the visit continues until the
+panel unmounts or the page is hidden.
+
+Tests: `tests/since.test.ts` (counts on each side of `since` and at it, legacy
+rows without a finish time, failure order and limit, reasons for a failed
+thread, a closed PR, marked failed with and without the stored label, offsets,
+empty), `tests/server.test.ts` (`cos_since` through the RPC, input validation,
+nothing stored), `tests/lastVisit.test.tsx` (first visit, stored visit, reuse
+within a visit, new visit after 30 minutes, invalid values, throwing and
+unreachable storage, writes on `pagehide`/hidden/unmount, a new visit on
+becoming visible), `tests/dashboardUi.test.tsx` (single and multiple
+repository meters, the filter row classes, all clear with 0, 1 and 3 agents,
+each attention kind, loading and failed roster, since counts, first visit,
+the failure list, reason fallback and clipping, the links, counts kept across
+a dashboard tab switch, a failed or loading `cos_since`, skeletons) and
+`tests/pipelineKeyboard.test.tsx` (`j`/`k` from a card, any control and the
+page, clamping, modifiers, the New task fields, an open menu, confirm dialog
+and workflow sheet; guard tests assert the key was not claimed, since focus
+traps would undo a move anyway). `npm run check` and `npm run build:ci` pass.
+
+Browser check: headless Chromium (BB browser automation) on a static render of
+the real `Dashboard` with the built `dist/app.css`, simulated host colour
+tokens and reset, a stand-in SDK answering RPCs from fixture data (54 tasks:
+4 or 5 active, 49 finished, one repository), and placeholder icons.
+
+| Viewport | Scenario | Summary (top–bottom) | First card top | Filters | Page overflow |
+| --- | --- | --- | --- | --- | --- |
+| 1440×900 | 3 shipped, 1 failed, 1 approval waiting | 119–175 px | 293 px | one 32 px row | 0 |
+| 1440×900 | 7 shipped, 4 failed (3 listed), nothing waits | 119–211 px | 329 px | one 32 px row | 0 |
+| 390×844 (touch) | 3 shipped, 1 failed, 1 approval waiting | 155–230 px | 348 px | one 32 px row, 791 px of chips scrolling in 358 px | 0 |
+| 390×844 (touch) | 7 shipped, 4 failed (3 listed) | 155–266 px | 384 px | same | 0 |
+
+At 390×844 the loading scenario showed skeletons with five busy regions
+(summary, tasks, throughput, capacity, activity), pulsing, and no "Loading…"
+text. All clear read "All clear — 4 agents working"; a first visit showed only
+the Needs attention row. Capacity showed one meter, named after the repository.
+
+Not checked: a live BB install (host navigation, icons, theme, and whether the
+host unmounts or hides the panel when you open a thread, which decides when a
+visit ends); dark theme; `j`/`k` and the links in a real browser (covered in
+jsdom); reduced-motion rendering of the skeletons (`motion-safe:` only).
