@@ -3,7 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
-import { REMOVED_SUMMARY, StateStore } from "../src/state";
+import { REMOVED_SUMMARY, StateStore, isActiveStatus, type NewWorkItem } from "../src/state";
+import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { settleJobs } from "../src/delivery";
 import { SETTLED_IDLE_MS } from "../src/sync";
 
@@ -23,14 +24,15 @@ vi.mock("../src/machine", async (importOriginal) => {
   };
 });
 
+type GhCall = { method: string; path: string; head?: string | null; body?: unknown; auth?: string | null };
 type Route = (url: URL, init: RequestInit) => { status?: number; body?: unknown; text?: string; headers?: Record<string, string> } | undefined;
 
-function fakeGitHub(routes: Record<string, Route>, calls: { method: string; path: string; body?: unknown; auth?: string | null }[]) {
+function fakeGitHub(routes: Record<string, Route>, calls: GhCall[]) {
   return vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
     const method = (init.method ?? "GET").toUpperCase();
     const headers = init.headers as Record<string, string> | undefined;
-    calls.push({ method, path: url.pathname, body: init.body ? JSON.parse(String(init.body)) : undefined, auth: headers?.authorization ?? null });
+    calls.push({ method, path: url.pathname, head: url.searchParams.get("head"), body: init.body ? JSON.parse(String(init.body)) : undefined, auth: headers?.authorization ?? null });
     const key = `${method} ${url.pathname}`;
     const handler = routes[key] ?? routes[`${method} *`];
     const result = handler?.(url, init);
@@ -52,7 +54,7 @@ const issue = { number: 12, title: "Fix login", body: "Login breaks", state: "op
 const pull: Record<string, unknown> & { merged: boolean; merged_at: string | null; state: string } = { number: 7, title: "Fix login (#12)", body: "Closes #12", state: "open", draft: false, merged: false, merged_at: null, html_url: "https://github.com/acme/app/pull/7", head: { ref: "cos/issue-12-fix-login", sha: "abc" }, base: { ref: "main" }, labels: [], created_at: "2026-11-05T01:00:00Z", updated_at: "2026-11-05T01:00:00Z", mergeable: true, mergeable_state: "clean", user: { login: "bot" } };
 
 describe("chief-of-staff server", () => {
-  const ghCalls: { method: string; path: string; body?: unknown; auth?: string | null }[] = [];
+  const ghCalls: GhCall[] = [];
   const hostCalls: { method: string; input: unknown; hostId: string }[] = [];
   let openPulls: unknown[] = [];
   let currentPull: typeof pull = { ...pull };
@@ -1161,6 +1163,120 @@ describe("chief-of-staff server", () => {
         expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
         expect(items()).toHaveLength(1);
       });
+    });
+  });
+
+  describe("overlapping intake runs (#49)", () => {
+    type Intake = { results: { started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
+    const activeFor12 = () => new StateStore(host.bb.storage.database()).listWorkItems().filter((item) => item.issueNumber === 12 && isActiveStatus(item.status));
+    /** An item something else started: active, occupying capacity, with no thread to spawn. */
+    const otherItem = (id: string, issueNumber: number): NewWorkItem => ({ id, repo: "acme/app", status: "agent", issueTitle: "other", issueNumber, branch: null, threadId: null, environmentId: null, prNumber: null, prUrl: null, providerId: null, model: null, lastError: null, source: "intake", lastActivityAt: null, finishedAt: null, workflow: DEFAULT_WORKFLOW, nodes: {} });
+    /** While intake lists the open PRs (after its first check, before its insert), run `during` once. */
+    const duringPrLookup = (during: () => void) => {
+      const original = ghRoutes["GET /repos/acme/app/pulls"]!;
+      let done = false;
+      ghRoutes["GET /repos/acme/app/pulls"] = (url, init) => {
+        if (!done && !url.searchParams.get("head")) { done = true; during(); }
+        return original(url, init);
+      };
+    };
+    const statusComments = () => ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/issues/12/comments");
+
+    const intake = (input: { dryRun?: boolean } = {}) => host.harness.behavior.callRpc("cos_intake_now", input) as Promise<Intake>;
+    /** Open-PR list requests (no head filter): one per intake run that got past its first check. */
+    const prLists = () => ghCalls.filter((c) => c.method === "GET" && c.path === "/repos/acme/app/pulls" && !c.head).length;
+    /** Hold the next open-PR list request until `open()`; `reached` settles once it is held. */
+    const holdNextPrList = () => {
+      let open!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      const atGate = new Promise<void>((resolve) => (reached = resolve));
+      const inner = globalThis.fetch;
+      let held = false;
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+        if (!held && (init?.method ?? "GET") === "GET" && url.pathname === "/repos/acme/app/pulls" && !url.searchParams.get("head")) {
+          held = true;
+          reached();
+          await gate;
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+      return { reached: atGate, open };
+    };
+
+    it("starts an issue once when two manual intakes overlap", async () => {
+      const [a, b] = await Promise.all([intake(), intake()]);
+      await settleJobs();
+      // The second run waited for the first, so it skipped at its first check, before any PR request.
+      expect(prLists()).toBe(1);
+      expect(activeFor12()).toHaveLength(1);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+      expect(statusComments()).toHaveLength(1);
+      expect([...a.results[0].started, ...b.results[0].started]).toEqual([{ issue: 12, threadId: "thr_1" }]);
+      expect([...a.results[0].skipped, ...b.results[0].skipped]).toEqual([{ issue: 12, reason: "active thread exists" }]);
+    });
+
+    it("starts an issue once when the sweep's intake overlaps a manual one", async () => {
+      await Promise.all([host.harness.behavior.runSchedule("cos-sweep"), intake()]);
+      await settleJobs();
+      expect(prLists()).toBe(1);
+      expect(activeFor12()).toHaveLength(1);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+      expect(statusComments()).toHaveLength(1);
+    });
+
+    it("runs a dry run without waiting for the real intake in progress", async () => {
+      const gate = holdNextPrList();
+      const real = intake();
+      await gate.reached;
+      const dry = await intake({ dryRun: true });
+      expect(dry.results[0].started).toEqual([{ issue: 12, threadId: "(dry-run)" }]);
+      gate.open();
+      expect((await real).results[0].started).toEqual([{ issue: 12, threadId: "thr_1" }]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    });
+
+    it("runs the next intake after one that throws", async () => {
+      const original = StateStore.prototype.listWorkItems;
+      let thrown = false;
+      const spy = vi.spyOn(StateStore.prototype, "listWorkItems").mockImplementation(function (this: StateStore, ...args) {
+        if (!thrown) { thrown = true; throw new Error("store unavailable"); }
+        return original.apply(this, args);
+      });
+      try {
+        const [failed, next] = await Promise.allSettled([intake(), intake()]);
+        expect(failed).toMatchObject({ status: "rejected", reason: { message: expect.stringContaining("store unavailable") } });
+        expect(next).toMatchObject({ status: "fulfilled", value: { results: [{ started: [{ issue: 12, threadId: "thr_1" }] }] } });
+      } finally { spy.mockRestore(); }
+    });
+
+    it("skips an issue started by something else after its first check, without spawning or commenting", async () => {
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).insertWorkItem(otherItem("other", 12)));
+      const result = (await host.harness.behavior.callRpc("cos_intake_now", {})) as Intake;
+      await settleJobs();
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "active thread exists" }] });
+      expect(activeFor12().map((item) => item.id)).toEqual(["other"]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(statusComments()).toHaveLength(0);
+    });
+
+    it("skips an issue when its project is paused after its first check", async () => {
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).setRepoPaused("acme/app", true));
+      const result = await intake();
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "paused" }] });
+      expect(activeFor12()).toHaveLength(0);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(statusComments()).toHaveLength(0);
+    });
+
+    it("skips an issue when the repository filled up after its first check", async () => {
+      await host.harness.behavior.setSettings({ repos: repos.replace('"maxConcurrent":2', '"maxConcurrent":1') });
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).insertWorkItem(otherItem("other", 99)));
+      const result = (await host.harness.behavior.callRpc("cos_intake_now", {})) as Intake;
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "repo at max concurrency (1)" }] });
+      expect(activeFor12()).toHaveLength(0);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
     });
   });
 

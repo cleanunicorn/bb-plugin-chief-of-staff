@@ -20,6 +20,12 @@
   the filter's user again) or retries the task, and the intake result shows
   why it was skipped.
 
+- **Overlapping intake runs no longer start the same issue twice.** Pressing
+  "Run intake" (or `bb cos intake`) while the scheduled intake is running, or
+  from two dashboards at once, used to create two tasks, two threads and two
+  issue comments for one issue. Intake runs now take turns, and an issue is
+  checked again just before it starts. Dry runs still answer straight away.
+
 - **Chief of Staff opens without crashing.** The activity feed omits its
   pagination cursor until viewing older entries, keeping query inputs valid JSON.
 

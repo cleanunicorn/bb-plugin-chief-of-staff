@@ -16,6 +16,8 @@ function setup({ fail = false, empty = false } = {}) {
   let now = 0;
   const listed: string[] = [];
   const considered: number[] = [];
+  /** resumeQueued's store reads: one per intake that got past its start. */
+  let resumes = 0;
   let issues = [1, 2, 3];
   const github = {
     hasToken: true,
@@ -32,7 +34,7 @@ function setup({ fail = false, empty = false } = {}) {
     bb: host.bb, config: async () => ({ repos, values: { maxConcurrentTotal: 4 } }),
     github: async () => github, now: () => new Date(now), safe: async (text: string) => text,
     store: {
-      listWorkItems: () => [], isPaused: () => false, isRepoPaused: () => false, log: () => {},
+      listWorkItems: () => { resumes += 1; return []; }, isPaused: () => false, isRepoPaused: () => false, log: () => {},
       findActiveForIssue: (_repo: string, number: number) => { considered.push(number); return true; },
     },
   }) as unknown as Cos;
@@ -41,7 +43,7 @@ function setup({ fail = false, empty = false } = {}) {
     await runIntake(context(), { actor: "test", ...options, ...(options.bounded === false ? {} : { deadline: now + 120_000 }) });
     return [...listed];
   };
-  return { poll, considered, removeIssue: (number: number) => { issues = issues.filter((n) => n !== number); } };
+  return { poll, considered, context, listed, resumes: () => resumes, removeIssue: (number: number) => { issues = issues.filter((n) => n !== number); } };
 }
 
 it("resumes across repositories and issues after a slow listing, including across reloads", async () => {
@@ -75,4 +77,15 @@ it("recovers when the saved next issue disappears", async () => {
   await poll();
   await poll();
   expect(considered).toEqual([1, 1, 3]);
+});
+
+it("skips a scheduled intake whose budget ran out while it waited for another", async () => {
+  const { context, listed, resumes } = setup();
+  const cos = context();
+  // The manual run's slow listing takes 125 s; the sweep's budget is 120 s from now.
+  const [manual, scheduled] = await Promise.all([runIntake(cos, { actor: "manual" }), runIntake(cos, { actor: "sweep", deadline: 120_000 })]);
+  expect(manual.map((r) => r.repo)).toEqual(["acme/slow", "acme/fast"]);
+  expect(scheduled).toEqual([]);
+  expect(listed).toEqual(["slow", "fast"]);
+  expect(resumes()).toBe(1);
 });
