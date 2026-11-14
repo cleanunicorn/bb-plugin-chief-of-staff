@@ -10,8 +10,9 @@ import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { STATUS, duration, relative } from "./viz";
 import { STEP_TYPE_META, liveTone, type LiveStatus } from "./workflowCanvas";
-import { PIVOTAL_KINDS, journalLine, stepInputs, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail } from "./runModel";
+import { PIVOTAL_KINDS, journalLine, stepInputs, taskEnd, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail } from "./runModel";
 import { modelMode, stepById, type Step, type Workflow } from "../../src/workflow";
+import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "../../src/outcome";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "Queued",
@@ -40,6 +41,8 @@ const KIND_COLOR: Record<JournalRecord["kind"], string> = {
 };
 
 const minutesBetween = (from: string | null | undefined, to: string | null | undefined, now: number) => (from ? Math.max(0, (to ? Date.parse(to) : now) - Date.parse(from)) / 60_000 : null);
+/** A finished span: from `from` to `to`, or nothing when the end is not known. Never counts on to now. */
+const minutesTo = (from: string | null | undefined, to: string | null) => (from && to ? Math.max(0, Date.parse(to) - Date.parse(from)) / 60_000 : null);
 /** Dashboard actions (approve, send back, run again) are recorded as "rpc:client". */
 const who = (actor: string) => (actor === "rpc:client" ? "you" : null);
 
@@ -51,7 +54,8 @@ export function TaskSummary({ task, workflow, live, loops, now, oneLine = false 
   const done = workflow.steps.filter((s) => live[s.id]?.status === "done").length;
   const items: { icon: string; label: string; value: ReactNode; title?: string }[] = [];
   if (task) items.push({ icon: "Activity", label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
-  if (task) items.push({ icon: "Timer", label: task.finishedAt ? "Took" : "Running for", value: duration(minutesBetween(task.createdAt, task.finishedAt, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
+  const { finished, end } = taskEnd(task);
+  if (task) items.push({ icon: "Timer", label: finished ? "Took" : "Running for", value: duration(finished ? minutesTo(task.createdAt, end) : minutesBetween(task.createdAt, null, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
   items.push({ icon: "ListChecks", label: "Steps done", value: `${done}/${workflow.steps.length}` });
   items.push({
     icon: "Undo2",
@@ -211,8 +215,30 @@ function LoopList({ workflow, loops }: { workflow: Workflow; loops: LoopSummary 
   );
 }
 
+/**
+ * How a finished task ended: the outcome, when, and (when it did not deliver) why. A delivered task's stale error stays
+ * hidden, and MARKED_FAILED would only repeat the label. Worded like the card's end reason.
+ */
+function EndCallout({ task }: { task: TaskDetail & { outcome: NonNullable<TaskDetail["outcome"]> } }) {
+  const meta = OUTCOME_META[task.outcome];
+  const failed = FAILED_OUTCOMES.includes(task.outcome);
+  const reason = failed && task.lastError !== MARKED_FAILED ? task.lastError : null;
+  // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
+  const lead = task.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
+  const color = failed ? STATUS.serious : meta.tone === "good" ? STATUS.good : "var(--muted-foreground)";
+  return (
+    <Callout icon={meta.icon} color={color}>
+      <span className="font-medium">{meta.label}</span>
+      {/* Only a recorded finish time: a legacy row's last activity is already on the line below. */}
+      {task.finishedAt ? ` · ended ${new Date(task.finishedAt).toLocaleString()}` : ""}
+      {reason ? <span className="block">{lead} {reason}</span> : null}
+    </Callout>
+  );
+}
+
 /** With no step selected: the task, why it waits, where work went back, and what happened. */
 export function TaskOverview({ itemId, title, workflow, task, loops, journal, now }: { itemId: string; title: string; workflow: Workflow; task: TaskDetail | undefined; loops: LoopSummary; journal: readonly JournalRecord[]; now: number }) {
+  const { finished } = taskEnd(task);
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -220,7 +246,7 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
         <p className="mt-0.5 text-xs text-muted-foreground">Select a step to see what it received and produced.</p>
       </div>
       {task?.waitingReason ? <Callout icon="Hand" color={STATUS.warning}>{task.waitingReason}</Callout> : null}
-      {task?.lastError && task.status !== "done" ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
+      {finished && task?.outcome ? <EndCallout task={{ ...task, outcome: task.outcome }} /> : task?.lastError && !finished ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
       {task ? (
         <Section title="Task" icon="FileText">
           {task.body?.trim() ? <TextBlock>{task.body}</TextBlock> : <p className="text-xs text-muted-foreground">{task.issueNumber ? `GitHub issue #${task.issueNumber}.` : "No description."}</p>}
@@ -232,11 +258,12 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
           <p className="text-[11px] text-muted-foreground">
             {task.repo} · started {relative(task.createdAt, now)}
             {task.lastActivityAt ? ` · last activity ${relative(task.lastActivityAt, now)}` : ""}
+            {finished && task.finishedAt ? ` · finished ${new Date(task.finishedAt).toLocaleString()}` : ""}
           </p>
         </Section>
       ) : null}
       <LoopList workflow={workflow} loops={loops} />
-      <Timeline itemId={itemId} workflow={workflow} entries={journal} now={now} empty={task?.status === "done" || task?.status === "failed" ? "No step history was recorded for this task." : "No history yet. Steps are recorded as they start, report, pass, fail or get sent back."} />
+      <Timeline itemId={itemId} workflow={workflow} entries={journal} now={now} empty={finished ? "No step history was recorded for this task." : "No history yet. Steps are recorded as they start, report, pass, fail or get sent back."} />
       {loops.approximate && journal.length ? <p className="text-[11px] text-muted-foreground">History recorded from {new Date(journal[0]!.at).toLocaleString()}; earlier steps of this task are not in it.</p> : null}
     </div>
   );
