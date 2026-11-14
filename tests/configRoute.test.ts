@@ -29,4 +29,9 @@ describe("configSectionFromSubPath", () => {
   it("decodes a percent-encoded section", () => {
     expect(configSectionFromSubPath("config/%61ccess")).toBe("access");
   });
+
+  it("falls back to Workflows instead of throwing on a malformed escape, so other tabs still load", () => {
+    expect(configSectionFromSubPath("config/%E0")).toBe("workflow");
+    expect(configSectionFromSubPath("agents/%E0")).toBe("workflow");
+  });
 });

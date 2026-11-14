@@ -7,7 +7,12 @@ export type ConfigSection = (typeof CONFIG_SECTIONS)[number];
 
 /** The section a dashboard sub-path names. Unknown or missing gives Workflows; segments after the section are ignored. */
 export function configSectionFromSubPath(subPath: string): ConfigSection {
-  const second = decodeURIComponent(subPath.split("/")[1] ?? "");
+  let second: string;
+  try {
+    second = decodeURIComponent(subPath.split("/")[1] ?? "");
+  } catch {
+    return "workflow"; // a hand-edited malformed escape (URIError) must not break the dashboard
+  }
   return (CONFIG_SECTIONS as readonly string[]).includes(second) ? (second as ConfigSection) : "workflow";
 }
 

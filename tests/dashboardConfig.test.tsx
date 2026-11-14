@@ -239,6 +239,12 @@ it("pushes config/advanced from Open Advanced JSON", async () => {
   expect((field("Repositories") as HTMLTextAreaElement).value).toBe(BAD_REPOS);
 });
 
+it("still loads Pipeline when the address has a malformed escape after the tab", async () => {
+  await show("agents/%E0");
+  const tabs = Array.from(container.querySelectorAll('nav[aria-label="Dashboard tabs"] button'));
+  expect(tabs.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
+});
+
 it("keeps a General draft while moving between section addresses, and back", async () => {
   await show("config/general");
   await setValue(field(MAX_TASKS), "5");

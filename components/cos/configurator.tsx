@@ -678,7 +678,6 @@ export function Configurator({
                     onClick={() => {
                       editRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
                       setOpenRepo(repoDraft.length);
-                      selectSection("repos");
                     }}
                   >
                     <Icon name="Plus" fallback="Circle" aria-hidden /> Add repository
