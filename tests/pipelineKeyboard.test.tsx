@@ -62,23 +62,24 @@ it("names every Pipeline panel as a region by its heading", async () => {
   for (const section of regions) expect(document.getElementById(section.getAttribute("aria-labelledby")!)?.tagName).toBe("H2");
 });
 
-// ---------- M3: chart days are images, not buttons ----------
+// ---------- M3: chart days are named with their numbers and are not tab stops ----------
 
-it("shows chart days as images with their numbers, not as buttons or tab stops", async () => {
+it("names chart days with their numbers, as mouse-only buttons that are not tab stops", async () => {
   mocks.entries = tasks(1);
   await page();
   const figure = container.querySelector("figure")!;
-  expect(figure.querySelectorAll("button")).toHaveLength(0);
+  // A click opens the day's finished tasks (#105); keyboard users pick the day in the table view.
   expect(tabbables(figure)).toHaveLength(0);
-  const days = Array.from(figure.querySelectorAll('[role="img"][aria-label]'));
+  const days = Array.from(figure.querySelectorAll<HTMLButtonElement>("button[aria-label]"));
   expect(days).toHaveLength(14);
+  expect(days.every((d) => d.tabIndex === -1)).toBe(true);
   expect(days[2]!.getAttribute("aria-label")).toMatch(/^Nov 3: Done 2, Failed 1$/);
 });
 
 it("still shows a day's tooltip on hover", async () => {
   mocks.entries = tasks(1);
   await page();
-  const day = container.querySelectorAll('figure [role="img"]')[2]!;
+  const day = container.querySelectorAll("figure button[aria-label]")[2]!;
   await act(async () => { day.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
   expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("Nov 3");
   await act(async () => { day.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })); });
@@ -98,7 +99,7 @@ const LOGS: LogEntry[] = [
   { id: 2, at: new Date().toISOString(), level: "error", kind: "check", message: "Build failed", actor: "job", repo: "acme/app", workItemId: "t1" },
 ];
 
-it("skips from Work overview past 50 tasks to Throughput, then reaches Activity in three tabs", async () => {
+it("skips from Work overview past 50 tasks to Throughput, then reaches Activity in five tabs", async () => {
   mocks.entries = tasks(50);
   mocks.logs = LOGS;
   await page();
@@ -112,8 +113,9 @@ it("skips from Work overview past 50 tasks to Throughput, then reaches Activity 
   await click(skip!);
   expect(document.activeElement).toBe(heading("Throughput · last 14 days"));
 
-  const next = tabbablesAfter(document.activeElement!).slice(0, 3);
-  expect(next.map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim())).toEqual(["Chart view", "Table view", "Problems only"]);
+  // The two counts open the Finished section filtered to them; they have no other keyboard route.
+  const next = tabbablesAfter(document.activeElement!).slice(0, 5);
+  expect(next.map((el) => el.getAttribute("aria-label") ?? el.textContent?.trim())).toEqual(["Chart view", "Table view", "13 completed", "1 historical failed runs", "Problems only"]);
 });
 
 it("keeps the skip link when there are no tasks", async () => {

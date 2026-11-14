@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Outcome } from "../src/outcome";
-import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, dayLabel, finishDay, finishedTimer, groupByDay, isFiltering, matchesFinishedFilter, mergePages, outcomeGroup, visibleSlice } from "../components/cos/finishedModel";
+import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, dayLabel, finishDay, fmtDay, loadedPast, rangeLabel, finishedTimer, groupByDay, isFiltering, matchesFinishedFilter, mergePages, outcomeGroup, visibleSlice } from "../components/cos/finishedModel";
 
 const NOW = Date.parse("2026-11-14T15:00:00.000Z");
 
@@ -116,8 +116,8 @@ describe("finishedTimer", () => {
 });
 
 describe("matchesFinishedFilter", () => {
-  type Row = { outcome: Outcome | null; detail: string; repo: string; issueTitle: string; threadTitle: string | null; issueNumber: number | null; prNumber: number | null };
-  const row = (over: Partial<Row> = {}): Row => ({ outcome: "merged", detail: "done", repo: "acme/app", issueTitle: "Fix login redirect", threadTitle: null, issueNumber: 12, prNumber: 34, ...over });
+  type Row = { outcome: Outcome | null; detail: string; repo: string; issueTitle: string; threadTitle: string | null; issueNumber: number | null; prNumber: number | null; finishedAt: string | null };
+  const row = (over: Partial<Row> = {}): Row => ({ outcome: "merged", detail: "done", repo: "acme/app", issueTitle: "Fix login redirect", threadTitle: null, issueNumber: 12, prNumber: 34, finishedAt: "2026-11-14T10:00:00Z", ...over });
 
   it("matches everything without a filter", () => {
     expect(isFiltering(NO_FILTER)).toBe(false);
@@ -165,5 +165,33 @@ describe("matchesFinishedFilter", () => {
     expect(matchesFinishedFilter(row({ repo: "acme/api" }), filter)).toBe(false);
     expect(matchesFinishedFilter(row({ outcome: "failed", detail: "failed" }), filter)).toBe(false);
     expect(matchesFinishedFilter(row({ issueNumber: 13, prNumber: null }), filter)).toBe(false);
+  });
+});
+
+describe("date range", () => {
+  const row = (finishedAt: string | null) => ({ outcome: "merged" as const, detail: "done", repo: "acme/app", issueTitle: "T", threadTitle: null, issueNumber: 1, prNumber: null, finishedAt });
+
+  it("matches tasks finished on the range's UTC days, inclusive, and never a task without a finish time", () => {
+    const range = { from: "2026-11-08", to: "2026-11-09" };
+    const f = { ...NO_FILTER, range };
+    expect(isFiltering(f)).toBe(true);
+    expect(matchesFinishedFilter(row("2026-11-08T00:00:00Z"), f)).toBe(true);
+    expect(matchesFinishedFilter(row("2026-11-09T23:59:59Z"), f)).toBe(true);
+    expect(matchesFinishedFilter(row("2026-11-07T23:59:59Z"), f)).toBe(false);
+    expect(matchesFinishedFilter(row("2026-11-10T00:00:00Z"), f)).toBe(false);
+    expect(matchesFinishedFilter(row(null), f)).toBe(false);
+  });
+
+  it("names one day or a span", () => {
+    expect(rangeLabel({ from: "2026-11-08", to: "2026-11-08" })).toBe(fmtDay("2026-11-08"));
+    expect(rangeLabel({ from: "2026-11-01", to: "2026-11-14" })).toBe(`${fmtDay("2026-11-01")} – ${fmtDay("2026-11-14")}`);
+  });
+
+  it("knows when the loaded tasks reach back past a day", () => {
+    const loaded = [row("2026-11-10T10:00:00Z"), row("2026-11-08T10:00:00Z"), row(null)];
+    expect(loadedPast(loaded, "2026-11-09")).toBe(true);
+    expect(loadedPast(loaded, "2026-11-08")).toBe(false);
+    expect(loadedPast([row(null)], "2026-11-08")).toBe(false);
+    expect(loadedPast([], "2026-11-08")).toBe(false);
   });
 });

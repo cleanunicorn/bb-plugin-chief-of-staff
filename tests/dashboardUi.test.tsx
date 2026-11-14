@@ -691,6 +691,111 @@ it("starts paging over when a filter changes", async () => {
   expect(hasButton("Show 20 more")).toBe(false);
 });
 
+// ---------- Throughput opens the Finished section (#105) ----------
+
+/** The UTC day `offset` days ago, and a time on it. */
+const utcDay = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
+const at = (offset: number, time = "12:00:00") => `${utcDay(offset)}T${time}.000Z`;
+const window14 = () => Array.from({ length: 14 }, (_, i) => ({ date: utcDay(13 - i), started: 0, done: 0, failed: 0 }));
+const fmt = (day: string) => new Date(`${day}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+const finishedHeadingEl = () => finishedPanel().querySelector("h2")!;
+
+it("opens a Throughput day's finished tasks from its column, clearing other filters, and focuses the section", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({
+    entries: input.includeDone ? [
+      finished("a", "Today one", "done", { outcome: "merged", finishedAt: at(0, "01:00:00") }),
+      finished("b", "Three days ago", "done", { outcome: "merged", finishedAt: at(3, "23:59:00") }),
+      finished("c", "Three days ago too", "failed", { outcome: "failed", finishedAt: at(3, "00:00:00") }),
+      finished("d", "Four days ago", "done", { outcome: "completed", finishedAt: at(4) }),
+      finished("legacy", "No finish time", "done", { finishedAt: null }),
+    ] : [],
+    nextBefore: null,
+  });
+  await mount();
+  await setValue(searchBox(), "Today");
+  await act(async () => buttonLabelled("Collapse").click());
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(3))}:`))!;
+  await act(async () => day.click());
+  expect(buttonLabelled("Collapse").getAttribute("aria-expanded")).toBe("true");
+  expect(searchBox().value).toBe("");
+  // Done and failed, like the bar: legacy rows without a finish time never match a day.
+  expect(rowTitles()).toEqual(["Three days ago", "Three days ago too"]);
+  const chip = container.querySelector<HTMLButtonElement>('button[aria-label^="Remove the date filter"]')!;
+  expect(chip.textContent).toBe(`Finished ${fmt(utcDay(3))}`);
+  expect(document.activeElement).toBe(finishedHeadingEl());
+  await act(async () => chip.click());
+  expect(rowTitles()).toHaveLength(5);
+});
+
+it("opens a day from the table view, where each day is a button", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "Today one", "done", { finishedAt: at(0) }), finished("b", "Yesterday one", "done", { finishedAt: at(1) })] : [], nextBefore: null });
+  await mount();
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Table view"]')!.click());
+  const dayButton = container.querySelector<HTMLButtonElement>(`table button[aria-label="Show tasks finished ${fmt(utcDay(1))}"]`)!;
+  expect(dayButton.textContent).toBe(fmt(utcDay(1)));
+  await act(async () => dayButton.click());
+  expect(rowTitles()).toEqual(["Yesterday one"]);
+  expect(document.activeElement).toBe(finishedHeadingEl());
+});
+
+it("opens the window's completed or failed tasks from the Throughput counts", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({
+    entries: input.includeDone ? [
+      finished("m", "Merged", "done", { outcome: "merged", finishedAt: at(1) }),
+      finished("h", "Hand done", "done", { outcome: "marked_done", finishedAt: at(2) }),
+      finished("f", "Broke", "failed", { outcome: "failed", finishedAt: at(2) }),
+      finished("old", "Too old", "done", { outcome: "merged", finishedAt: at(20) }),
+    ] : [],
+    nextBefore: null,
+  });
+  await mount();
+  await act(async () => buttonLabelled("13 completed").click());
+  expect(rowTitles()).toEqual(["Merged", "Hand done"]);
+  expect(outcomeToggle("Shipped").getAttribute("aria-pressed")).toBe("true");
+  expect(outcomeToggle("Marked done").getAttribute("aria-pressed")).toBe("true");
+  expect(container.querySelector('button[aria-label^="Remove the date filter"]')!.textContent).toBe(`Finished ${fmt(utcDay(13))} – ${fmt(utcDay(0))}`);
+  await act(async () => buttonLabelled("13 historical failed runs").click());
+  expect(rowTitles()).toEqual(["Broke"]);
+  expect(outcomeToggle("Failed").getAttribute("aria-pressed")).toBe("true");
+  expect(outcomeToggle("Shipped").getAttribute("aria-pressed")).toBe("false");
+});
+
+it("loads older pages for a day until the loaded tasks reach past it", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "Today one", "done", { finishedAt: at(0) })] : [], nextBefore: input.includeDone ? "c1" : null });
+  mocks.call.mockImplementation(async (method: string, input: RosterInput) => {
+    if (method !== "cos_roster") return {};
+    if (input.before === "c1") return { entries: [finished("b", "Five days ago", "done", { finishedAt: at(5) }), finished("legacy", "Legacy", "done", { finishedAt: null })], nextBefore: "c2" };
+    if (input.before === "c2") return { entries: [finished("c", "Seven days ago", "done", { finishedAt: at(7) }), finished("d", "Eight days ago", "done", { finishedAt: at(8) })], nextBefore: "c3" };
+    throw new Error(`unexpected cursor ${input.before}`);
+  });
+  await mount();
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(7))}:`))!;
+  await act(async () => day.click());
+  await tick();
+  expect(mocks.call.mock.calls.map(([, input]) => (input as RosterInput).before)).toEqual(["c1", "c2"]);
+  expect(rowTitles()).toEqual(["Seven days ago"]);
+});
+
+it("stops loading older pages for a day when one fails", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("a", "Today one", "done", { finishedAt: at(0) })] : [], nextBefore: input.includeDone ? "c1" : null });
+  mocks.call.mockRejectedValue(new Error("history unavailable"));
+  await mount();
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(7))}:`))!;
+  await act(async () => day.click());
+  await tick();
+  await tick();
+  expect(mocks.call).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain("history unavailable");
+  // Asking again still works.
+  await act(async () => buttonLabelled("Search older").click());
+  expect(mocks.call).toHaveBeenCalledTimes(2);
+});
+
 it("lists the pull request of an active task on Repos & PRs, with a deep finished page", async () => {
   mocks.entries = [entry({ id: "old", issueTitle: "Old approval", prNumber: 42, detail: "waiting_on_human", status: "waiting on human" }), finished("f1", "No PR")];
   await mount(<ReposTab />);

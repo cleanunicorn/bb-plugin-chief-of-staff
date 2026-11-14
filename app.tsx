@@ -18,7 +18,8 @@ import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { FinishedSection, useFinishedTasks, useFinishedView } from "@/components/cos/finished";
+import { FinishedSection, useFinishedTasks, useFinishedView, type FinishedView } from "@/components/cos/finished";
+import { NO_FILTER, fmtDay } from "@/components/cos/finishedModel";
 import { TaskActionsMenu, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
@@ -512,6 +513,8 @@ function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflo
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
 const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
+/** A Throughput number or day that opens the Finished section: text that reads as a link. */
+const SUMMARY_LINK = "rounded text-foreground underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
@@ -583,7 +586,16 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const visible = active.filter((e) => matchesTaskFilter(e, filter));
   const roving = useRovingCards(visible.map((e) => e.id));
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
-  const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+  // Throughput's days and counts open the Finished section filtered to them (#105). Other filters are cleared,
+  // so the rows shown are the ones counted.
+  const showFinished = (patch: Partial<FinishedView>) => {
+    finishedView.update({ ...NO_FILTER, open: true, ...patch });
+    const heading = finishedHeading.current;
+    heading?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    heading?.focus({ preventScroll: true });
+  };
+  const windowRange = s?.daily.length ? { from: s.daily[0]!.date, to: s.daily.at(-1)!.date } : null;
+  const showDay = (date: string) => showFinished({ range: { from: date, to: date } });
 
   return (
     <div className="flex flex-col gap-4">
@@ -706,17 +718,29 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       <div className="grid gap-4 lg:grid-cols-5">
         <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon="ChartColumn" dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
           {s ? <p className="mb-4 text-sm text-muted-foreground">
-            {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
+            {windowRange && s.doneInWindow ? <button type="button" className={SUMMARY_LINK} onClick={() => showFinished({ range: windowRange, outcomes: ["shipped", "marked_done"] })}>{s.doneInWindow} completed</button> : `${s.doneInWindow} completed`}
+            {" · "}
+            {windowRange && s.failedInWindow ? <button type="button" className={SUMMARY_LINK} onClick={() => showFinished({ range: windowRange, outcomes: ["failed"] })}>{s.failedInWindow} historical failed runs</button> : `${s.failedInWindow} historical failed runs`}
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
           </p> : null}
           {!s ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : throughputTable ? (
-            <DataTable columns={["Day", "Started", "Done", "Failed"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed])} />
+            <DataTable
+              columns={["Day", "Started", "Done", "Failed"]}
+              rows={s.daily.map((d) => [
+                // The keyboard and touch way to open a day's finished tasks: the chart's columns are not tab stops (#115) and too narrow to tap (#116).
+                <button key="day" type="button" aria-label={`Show tasks finished ${fmtDay(d.date)}`} className={cn(SUMMARY_LINK, "pointer-coarse:min-h-10")} onClick={() => showDay(d.date)}>{fmtDay(d.date)}</button>,
+                d.started,
+                d.done,
+                d.failed,
+              ])}
+            />
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}
               onShowTable={() => setThroughputTable(true)}
+              onSelect={showDay}
               rows={s.daily.map((d) => ({ date: d.date, done: d.done, failed: d.failed }))}
               xKey="date"
               formatX={fmtDay}

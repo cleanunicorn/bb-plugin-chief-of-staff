@@ -1,6 +1,6 @@
 // The Finished section of the Pipeline tab (#105): finished tasks as compact rows, newest first, grouped by
 // the day they finished, below the active grid so history never mixes with active work.
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Ref } from "react";
 import { UrlLink, experimental_useRpcQuery, useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
@@ -15,7 +15,7 @@ import { PrStatePill } from "./prState";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "./rovingCards";
 import { TaskActionsMenu, taskTitle, type Confirmable, type ItemAction, type MenuTask } from "./taskActions";
 import type { ActivityTask } from "./dashboardModel";
-import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, finishedTimer, groupByDay, isFiltering, matchesFinishedFilter, mergePages, visibleSlice, type FinishedFilter, type OutcomeGroup } from "./finishedModel";
+import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, finishedTimer, groupByDay, isFiltering, loadedPast, matchesFinishedFilter, mergePages, rangeLabel, visibleSlice, type FinishedFilter, type OutcomeGroup } from "./finishedModel";
 import { inputClass } from "./fields";
 
 type Contract = typeof rpcContract;
@@ -36,6 +36,8 @@ export function useFinishedTasks(activeIds: ReadonlySet<string>, onError: (messa
   // off the first page as newer ones finish is not lost. The first page's copy wins on duplicates.
   const [older, setOlder] = useState<{ entries: FinishedEntry[]; before: string | null } | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  // The cursor whose page last failed to load: pages are not fetched for it again unasked.
+  const [failedCursor, setFailedCursor] = useState<string | null>(null);
   const inFlight = useRef(false);
   const cursor = older ? older.before : (query.data?.nextBefore ?? null);
   const entries = useMemo(() => mergePages(firstEntries ?? [], older?.entries ?? [], activeIds), [firstEntries, older, activeIds]);
@@ -44,6 +46,7 @@ export function useFinishedTasks(activeIds: ReadonlySet<string>, onError: (messa
     inFlight.current = true;
     setLoadingOlder(true);
     onError(null);
+    setFailedCursor(null);
     const snapshot = (firstEntries ?? []).filter((e) => e.detail === "done" || e.detail === "failed");
     try {
       const page = await rpc.call("cos_roster", { includeDone: true, before: cursor, withUsage: false });
@@ -54,12 +57,13 @@ export function useFinishedTasks(activeIds: ReadonlySet<string>, onError: (messa
       });
     } catch (error) {
       onError(errorText(error));
+      setFailedCursor(cursor);
     } finally {
       inFlight.current = false;
       setLoadingOlder(false);
     }
   }, [cursor, firstEntries, onError, rpc]);
-  return { query, entries, cursor, loadingOlder, loadOlder };
+  return { query, entries, cursor, loadingOlder, loadOlder, failedCursor };
 }
 
 /** "acme/app" → "app". */
@@ -188,6 +192,11 @@ function FinishedFilters({ view, repos, onChange }: { view: FinishedView; repos:
           {repos.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
       ) : null}
+      {view.range ? (
+        <Button size="sm" variant="outline" className="pointer-coarse:h-10" aria-label={`Remove the date filter: finished ${rangeLabel(view.range)}`} onClick={() => onChange({ range: null })}>
+          <Icon name="CalendarCheck" fallback="Clock" aria-hidden />Finished {rangeLabel(view.range)}<Icon name="X" fallback="Circle" aria-hidden />
+        </Button>
+      ) : null}
       {isFiltering(view) ? (
         <Button size="sm" variant="ghost" className="pointer-coarse:h-10" onClick={() => onChange(NO_FILTER)}>
           <Icon name="X" fallback="Circle" aria-hidden />Clear filters
@@ -210,11 +219,11 @@ export type FinishedSectionProps = {
 
 /** Finished tasks as compact rows, newest first, by day: 10 at first, then 20 more per click. */
 export function FinishedSection({ finished, now, busy, view, onViewChange, repos, headingRef, ...handlers }: FinishedSectionProps) {
-  const { query, entries, cursor, loadingOlder, loadOlder } = finished;
+  const { query, entries, cursor, loadingOlder, loadOlder, failedCursor } = finished;
   const filtering = isFiltering(view);
   const matching = useMemo(() => entries.filter((e) => matchesFinishedFilter(e, view)), [entries, view]);
   // Paging starts over when a filter changes.
-  const filterKey = JSON.stringify([view.outcomes, view.repo, view.query.trim()]);
+  const filterKey = JSON.stringify([view.outcomes, view.repo, view.query.trim(), view.range]);
   const [paging, setPaging] = useState({ key: filterKey, shown: FINISHED_FIRST });
   const shown = paging.key === filterKey ? paging.shown : FINISHED_FIRST;
   const slice = visibleSlice(matching, shown);
@@ -223,6 +232,12 @@ export function FinishedSection({ finished, now, busy, view, onViewChange, repos
   const repoOptions = useMemo(() => [...new Set([...repos, ...entries.map((e) => e.repo)])].sort(), [repos, entries]);
   const bodyId = "cos-finished-list";
   const count = query.data ? `${entries.length}${cursor ? "+" : ""}` : null;
+  // A date range reaches back into older pages: load them until the loaded tasks pass its first day.
+  const from = view.range?.from ?? null;
+  useEffect(() => {
+    if (from === null || !cursor || cursor === failedCursor || loadingOlder || loadedPast(entries, from)) return;
+    void loadOlder();
+  }, [from, cursor, failedCursor, loadingOlder, entries, loadOlder]);
   const showMore = () => {
     const next = shown + FINISHED_STEP;
     setPaging({ key: filterKey, shown: next });

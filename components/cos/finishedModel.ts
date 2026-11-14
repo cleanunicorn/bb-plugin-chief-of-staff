@@ -103,16 +103,43 @@ export function finishedTimer(entry: { startedAt: string; finishedAt: string | n
   return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
 }
 
+/** UTC days, inclusive, as YYYY-MM-DD: a Throughput day, or its whole window. */
+export type DayRange = { from: string; to: string };
+
 /** What the Finished section shows. No outcome picked means every outcome. */
-export type FinishedFilter = { outcomes: readonly OutcomeGroup[]; repo: string | null; query: string };
-export const NO_FILTER: FinishedFilter = { outcomes: [], repo: null, query: "" };
+export type FinishedFilter = { outcomes: readonly OutcomeGroup[]; repo: string | null; query: string; range: DayRange | null };
+export const NO_FILTER: FinishedFilter = { outcomes: [], repo: null, query: "", range: null };
 
-export const isFiltering = (f: FinishedFilter) => f.outcomes.length > 0 || f.repo !== null || f.query.trim() !== "";
+export const isFiltering = (f: FinishedFilter) => f.outcomes.length > 0 || f.repo !== null || f.query.trim() !== "" || f.range !== null;
 
-type Filterable = { outcome: Outcome | null; detail: string; repo: string; issueTitle: string; threadTitle: string | null; issueNumber: number | null; prNumber: number | null };
+/** "Nov 8", or "Nov 1 – Nov 14". */
+export function rangeLabel(range: DayRange): string {
+  return range.from === range.to ? fmtDay(range.from) : `${fmtDay(range.from)} – ${fmtDay(range.to)}`;
+}
 
-/** Outcome, repository and search all match. The search finds the title, and "12" or "#12" the issue or PR number too. */
+/**
+ * The loaded tasks reach back before `day`: older pages cannot finish on it or later. Pages come newest
+ * finished first, so the last task with a finish time is the oldest loaded.
+ */
+export function loadedPast(entries: readonly { finishedAt: string | null }[], day: string): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const d = finishDay(entries[i]!);
+    if (d) return d < day;
+  }
+  return false;
+}
+
+type Filterable = { outcome: Outcome | null; detail: string; repo: string; issueTitle: string; threadTitle: string | null; issueNumber: number | null; prNumber: number | null; finishedAt: string | null };
+
+/**
+ * Outcome, repository, finish day and search all match. The search finds the title, and "12" or "#12" the
+ * issue or PR number too. A task without a finish time never matches a date range.
+ */
 export function matchesFinishedFilter(entry: Filterable, f: FinishedFilter): boolean {
+  if (f.range) {
+    const day = finishDay(entry);
+    if (!day || day < f.range.from || day > f.range.to) return false;
+  }
   if (f.outcomes.length) {
     const group = outcomeGroup(entry);
     if (!group || !f.outcomes.includes(group)) return false;
