@@ -105,7 +105,7 @@ function issueUrlFor(repo: string, issueNumber: number | null): string | null {
 /** The item's PR state, unless it belongs to an earlier PR than the one it has now. */
 function rosterPr(item: WorkItem): RosterEntry["pr"] {
   if (!item.prState || item.prState.number !== item.prNumber) return null;
-  const { number: _number, ...pr } = item.prState;
+  const { number: _number, closedAt: _closedAt, ...pr } = item.prState;
   return pr;
 }
 

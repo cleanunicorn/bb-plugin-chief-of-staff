@@ -191,6 +191,15 @@ describe("cached pull request state", () => {
     expect(store.listWorkItems()[0]!.prState?.state).toBe("open");
   });
 
+  it("keeps when GitHub closed the PR", () => {
+    const { store, add } = storeSetup();
+    add("x", { prNumber: 7, status: "failed" });
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z", { state: "closed", checks: null, review: null, closedAt: "2026-11-12T10:30:00Z" }));
+    expect(store.getWorkItem("x")!.prState).toMatchObject({ state: "closed", closedAt: "2026-11-12T10:30:00Z" });
+    store.setPrState("x", open(7, "2026-11-12T11:00:00.000Z"));
+    expect(store.getWorkItem("x")!.prState).not.toHaveProperty("closedAt");
+  });
+
   it("drops details it cannot read", () => {
     const { store, add, db } = storeSetup();
     add("x", { prNumber: 7 });
@@ -256,5 +265,28 @@ describe("activity log filtering and cursor", () => {
     expect([...first, ...second, ...third].map(e => e.message)).toEqual(["m4", "m3", "m2", "m1", "m0"]);
     expect(store.listLog({ before: third[0]!.id })).toEqual([]);
     expect(store.listLog({ workItemId: "other", onlyProblems: true })).toEqual([]);
+  });
+});
+
+describe("latest task for an issue (#48)", () => {
+  it("returns null without a task, else the newest task of that repo and issue", () => {
+    const { store, add, setClock } = storeSetup();
+    expect(store.latestForIssue("a/b", 12)).toBeNull();
+    add("old", { issueNumber: 12, status: "agent", nodes: nodes({ status: "running" }) });
+    setClock("2026-11-12T11:00:00Z");
+    add("new", { issueNumber: 12, status: "failed" });
+    add("other-issue", { issueNumber: 13 });
+    add("other-repo", { repo: "c/d", issueNumber: 12 });
+    expect(store.latestForIssue("a/b", 12)?.id).toBe("new");
+    // An older active task can sit behind the newer finished one.
+    expect(store.findActiveForIssue("a/b", 12)?.id).toBe("old");
+    expect(store.latestForIssue("a/b", 14)).toBeNull();
+  });
+
+  it("breaks a tie on creation time by insertion order", () => {
+    const { store, add } = storeSetup();
+    add("first", { issueNumber: 12 });
+    add("second", { issueNumber: 12 });
+    expect(store.latestForIssue("a/b", 12)?.id).toBe("second");
   });
 });

@@ -895,6 +895,275 @@ describe("chief-of-staff server", () => {
     });
   });
 
+  describe("an issue whose task finished is not restarted (#48)", () => {
+    type Intake = { results: { started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
+    const intake = async (dryRun = false) => ((await host.harness.behavior.callRpc("cos_intake_now", dryRun ? { dryRun: true } : {})) as Intake).results[0]!;
+    const items = () => new StateStore(host.bb.storage.database()).listWorkItems();
+    const action = (act: string) => host.harness.behavior.callRpc("cos_item_action", { id: items()[0]!.id, action: act });
+    /** Writes of the issue's status comment ("started an agent"), created or edited. */
+    const statusWrites = () => ghCalls.filter((c) => (c.method === "POST" || c.method === "PATCH") && c.path.includes("/issues/") && c.path.includes("/comments") && String((c.body as { body?: string } | undefined)?.body ?? "").startsWith("<!-- cos-status -->")).length;
+    const merging = JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge" } } });
+    const FAILED = "previous task failed; retry it or relabel the issue";
+    const DONE = "previous task is done; relabel the issue to start again";
+    const PR_CLOSED = "previous task's PR was closed without merging; relabel the issue to start again";
+    const expectNotRestarted = async (reason: string) => {
+      const result = await intake();
+      expect(result.started).toEqual([]);
+      expect(result.skipped).toEqual([{ issue: 12, reason }]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn").filter(([args]) => String((args as { title?: string }).title).startsWith("cos/"))).toHaveLength(1);
+      expect(statusWrites()).toBe(1);
+      expect(items()).toHaveLength(1);
+    };
+
+    it("after the task is marked failed", async () => {
+      await intake();
+      await action("mark_failed");
+      await expectNotRestarted(FAILED);
+    });
+
+    it("after a task without a PR is marked done", async () => {
+      await intake();
+      await action("mark_done");
+      await expectNotRestarted(DONE);
+    });
+
+    it("after a workflow that ships by pushing finishes", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "push" } } }) });
+      await intake();
+      await report("build"); await idle();
+      expect(items()[0]).toMatchObject({ status: "done", prNumber: null });
+      await expectNotRestarted(DONE);
+    });
+
+    it("after its PR is closed without merging", async () => {
+      await host.harness.behavior.setSettings({ workflow: merging });
+      ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+      await intake();
+      await report("build"); await idle(); await sweep();
+      expect(items()[0]).toMatchObject({ status: "ready" });
+      currentPull = { ...pull, state: "closed" };
+      // The CI watch runs every two minutes.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(Date.now() + 3 * 60_000);
+        await sweep();
+      } finally { vi.useRealTimers(); }
+      expect(items()[0]).toMatchObject({ status: "failed", lastError: "PR closed without merge" });
+      await expectNotRestarted(PR_CLOSED);
+    });
+
+    it("after its PR is merged and the issue stays open", async () => {
+      await host.harness.behavior.setSettings({ workflow: merging });
+      await intake();
+      await report("build"); await idle(); await sweep();
+      expect(items()[0]).toMatchObject({ status: "done", prState: { state: "merged" } });
+      await expectNotRestarted(DONE);
+    });
+
+    it.each(["thread.failed", "thread.archived", "thread.deleted"])("after the builder thread ends with %s", async (event) => {
+      await intake();
+      const thread = makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: event === "thread.failed" ? "error" : "idle", ...(event === "thread.archived" ? { archivedAt: Date.now() } : event === "thread.deleted" ? { deletedAt: Date.now() } : {}) });
+      await host.harness.behavior.emitThreadEvent(event as "thread.failed", { thread, error: "provider crashed" } as never);
+      expect(items()[0]).toMatchObject({ status: "failed" });
+      await expectNotRestarted(FAILED);
+    });
+
+    it("lets the operator retry the same task instead", async () => {
+      await intake();
+      await action("mark_failed");
+      await action("retry");
+      const result = await intake();
+      expect(result.started).toEqual([]);
+      expect(result.skipped).toEqual([{ issue: 12, reason: "active thread exists" }]);
+      expect(items()).toHaveLength(1);
+    });
+
+    it("reports the same skip in a dry run and makes no open-PR request for it", async () => {
+      await intake();
+      await action("mark_failed");
+      const listed = () => ghCalls.filter((c) => c.method === "GET" && c.path === "/repos/acme/app/pulls").length;
+      const before = listed();
+      expect((await intake(true)).skipped).toEqual([{ issue: 12, reason: FAILED }]);
+      await expectNotRestarted(FAILED);
+      expect(listed()).toBe(before);
+    });
+
+    describe("when the PR closes on GitHub before Chief of Staff notices", () => {
+      const T0 = Date.parse("2026-11-06T10:00:00Z");
+      const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+      const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+      beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
+      afterEach(() => vi.useRealTimers());
+
+      it("ignores the close time of an earlier PR of the task", async () => {
+        at(0);
+        await intake();
+        const store = new StateStore(host.bb.storage.database());
+        const id = items()[0]!.id;
+        // PR #7 closed at 1; the task shipped again as #8 and then failed at 5.
+        store.setPrState(id, { number: 7, state: "closed", draft: false, checks: null, review: null, checkedAt: iso(1), closedAt: iso(1) });
+        store.updateWorkItem(id, { prNumber: 8 });
+        at(5);
+        await action("mark_failed");
+        // Labelled at 2, while the task was still running.
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(6) }] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = () => ({ body: [{ event: "labeled", created_at: iso(2), label: { name: "agent-ready" } }] });
+        at(7);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+      });
+
+      it.each([
+        ["closed", { state: "closed", closed_at: iso(1) }, "failed"],
+        ["merged", { state: "closed", merged: true, merged_at: iso(1), closed_at: iso(1) }, "done"],
+      ] as const)("counts a relabel made after the PR was %s, before the CI watch saw it", async (_name, closed, status) => {
+        await host.harness.behavior.setSettings({ workflow: merging });
+        ghRoutes["GET /repos/acme/app/pulls/7/reviews"] = () => ({ body: [] });
+        ghRoutes["PATCH /repos/acme/app/issues/comments/2"] = () => ({ body: { id: 2, body: "", user: null, created_at: "" } });
+        at(0);
+        await intake();
+        await report("build"); await idle(); await sweep();
+        expect(items()[0]).toMatchObject({ status: "ready" });
+        // Closed on GitHub at 1, relabelled at 2; the CI watch notices at 3.
+        currentPull = { ...pull, ...closed };
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(2) }] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = () => ({ body: [{ event: "labeled", created_at: iso(2), label: { name: "agent-ready" } }] });
+        at(3);
+        await sweep();
+        expect(items()[0]).toMatchObject({ status, finishedAt: iso(3), prState: { closedAt: iso(1) } });
+        at(4);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        expect(items()).toHaveLength(2);
+      });
+    });
+
+    describe("until a person relabels or reassigns the issue", () => {
+      const T0 = Date.parse("2026-11-06T10:00:00Z");
+      const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+      const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+      const MARKER = "intake:relabelChecked:acme/app#12";
+      const builderSpawns = () => host.harness.inspection.sdk.callsTo("threads.spawn").filter(([args]) => String((args as { title?: string }).title).startsWith("cos/")).length;
+      const eventCalls = (n = 12) => ghCalls.filter((c) => c.method === "GET" && c.path === `/repos/acme/app/issues/${n}/events`).length;
+      const markLatestFailed = () => host.harness.behavior.callRpc("cos_item_action", { id: new StateStore(host.bb.storage.database()).latestForIssue("acme/app", 12)!.id, action: "mark_failed" });
+      /** The issue as listed now: `updatedAt` minutes after T0, with these events. */
+      const issueNow = (updatedAt: number, events: unknown[] | (() => { status?: number; body?: unknown; headers?: Record<string, string> }), more: unknown[] = []) => {
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(updatedAt) }, ...more] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = typeof events === "function" ? events : () => ({ body: events });
+      };
+      const labeled = (minutes: number, name = "agent-ready") => ({ event: "labeled", created_at: iso(minutes), label: { name } });
+      beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        // A restart edits the issue's status comment rather than post another.
+        ghRoutes["PATCH /repos/acme/app/issues/comments/2"] = () => ({ body: { id: 2, body: "", user: null, created_at: "" } });
+        let serial = 0;
+        host.harness.inspection.sdk.stub("threads.spawn", async (args: { title?: string }) => makeThreadResponse({ id: `${String(args.title).startsWith("cos/") ? "builder" : "step"}_${++serial}`, environmentId: "env_1" }));
+        // The first task starts at T0 and fails a minute later.
+        at(0);
+        await intake();
+        at(1);
+        await markLatestFailed();
+      });
+      afterEach(() => vi.useRealTimers());
+
+      it("starts again once after a filter label is added, then stays stopped", async () => {
+        issueNow(2, [{ event: "commented", created_at: iso(0) }, labeled(2)]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        expect(builderSpawns()).toBe(2);
+        expect(statusWrites()).toBe(2);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "active thread exists" }] });
+        at(4);
+        await markLatestFailed();
+        const calls = eventCalls();
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+        expect(eventCalls()).toBe(calls);
+        expect(builderSpawns()).toBe(2);
+      });
+
+      it.each([
+        ["the issue changed without a label event", [{ event: "referenced", created_at: iso(2) }]],
+        ["the label was added before the task finished", [labeled(0.5)]],
+        ["the label added is not one of the filter's", [labeled(2, "bug")]],
+      ])("stays stopped when %s, and asks GitHub once per issue update", async (_name, events) => {
+        issueNow(2, events);
+        at(3);
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: FAILED }] });
+        expect(eventCalls()).toBe(1);
+        expect(await host.bb.storage.kv.get(MARKER)).toEqual({ itemId: new StateStore(host.bb.storage.database()).latestForIssue("acme/app", 12)!.id, updatedAt: iso(2) });
+        await intake();
+        expect(eventCalls()).toBe(1);
+        // A later update is looked at again.
+        issueNow(2.5, events);
+        await intake();
+        expect(eventCalls()).toBe(2);
+        expect(builderSpawns()).toBe(1);
+      });
+
+      it("matches the label name regardless of case", async () => {
+        issueNow(2, [labeled(2, "Agent-Ready")]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("starts again after the filter's assignee is assigned again", async () => {
+        await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [], assignee: "dan" }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }) });
+        issueNow(2, [{ event: "assigned", created_at: iso(2), assignee: { login: "someone-else" } }]);
+        at(3);
+        // Without filter labels, a relabel would not restart it: the reason says to reassign.
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "previous task failed; retry it or reassign the issue" }] });
+        issueNow(2.5, [{ event: "assigned", created_at: iso(2.5), assignee: { login: "Dan" } }]);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("counts an assignment to anyone when the filter's assignee is *", async () => {
+        await host.harness.behavior.setSettings({ repos: JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [], assignee: "*" }, maxConcurrent: 2, checkCommand: "npm test", allow: { intake: true, openPr: true, merge: true, release: false, deploy: false } }] }) });
+        issueNow(2, [{ event: "assigned", created_at: iso(2), assignee: { login: "someone" } }]);
+        at(3);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("makes no events request while the issue has not changed since the task finished", async () => {
+        issueNow(0.5, [labeled(0.5)]);
+        at(3);
+        expect(await intake()).toMatchObject({ skipped: [{ issue: 12, reason: FAILED }] });
+        await intake();
+        expect(eventCalls()).toBe(0);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+      });
+
+      it.each([500, 404])("skips only that issue when the events request fails with %i, and asks again next time", async (status) => {
+        const other = { ...issue, number: 13, title: "Other", html_url: "https://github.com/acme/app/issues/13" };
+        issueNow(2, () => ({ status, body: { message: "nope" } }), [other]);
+        at(3);
+        const result = await intake();
+        expect(result.skipped).toEqual([{ issue: 12, reason: FAILED }]);
+        expect(result.started.map((s) => s.issue)).toEqual([13]);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+        issueNow(2, [labeled(2)], [other]);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+      });
+
+      it("stops the repository on a rate limit while reading the events", async () => {
+        const other = { ...issue, number: 13, title: "Other", html_url: "https://github.com/acme/app/issues/13" };
+        issueNow(2, () => ({ status: 429, headers: { "retry-after": "600" }, body: { message: "API rate limit exceeded" } }), [other]);
+        at(3);
+        const result = (await host.harness.behavior.callRpc("cos_intake_now", {}) as { results: { started: unknown[]; error?: string }[] }).results[0]!;
+        expect(result.error).toMatch(/rate limit/);
+        expect(result.started).toEqual([]);
+      });
+
+      it("reports a relabelled issue as a start in a dry run, and writes nothing", async () => {
+        issueNow(2, [labeled(2)]);
+        at(3);
+        expect((await intake(true)).started).toEqual([{ issue: 12, threadId: "(dry-run)" }]);
+        expect(items()).toHaveLength(1);
+        issueNow(2, []);
+        expect((await intake(true)).skipped).toEqual([{ issue: 12, reason: FAILED }]);
+        expect(await host.bb.storage.kv.get(MARKER)).toBeUndefined();
+        expect(items()).toHaveLength(1);
+      });
+    });
+  });
+
   it("runs a custom workflow: parallel planners, approval, build, check, parallel gate + docs, ship, with a review loop", async () => {
     const custom = {
       workflows: [

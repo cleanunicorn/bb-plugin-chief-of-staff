@@ -86,6 +86,8 @@ export interface PrState {
   review: "approved" | "changes_requested" | null;
   /** When it was last read successfully. */
   checkedAt: string;
+  /** When GitHub merged or closed it (absent while open, or when GitHub gave no time). */
+  closedAt?: string;
 }
 
 /** A work item whose pull request state may need reading (see listPrItemsDue). */
@@ -357,7 +359,7 @@ function readPrState(row: Row): PrState | null {
   if (!state || !PR_STATES.includes(state) || typeof number !== "number") return null;
   const details = parseJson<Partial<PrState> | null>(row.pr_state_json, null);
   if (!details || typeof details !== "object" || typeof details.checkedAt !== "string") return null;
-  return { number, state, draft: Boolean(details.draft), checks: details.checks ?? null, review: details.review ?? null, checkedAt: details.checkedAt };
+  return { number, state, draft: Boolean(details.draft), checks: details.checks ?? null, review: details.review ?? null, checkedAt: details.checkedAt, ...(typeof details.closedAt === "string" ? { closedAt: details.closedAt } : {}) };
 }
 
 function rowToWorkItem(row: Row): WorkItem {
@@ -582,6 +584,12 @@ export class StateStore {
       if (isActiveStatus(item.status)) return item;
     }
     return null;
+  }
+
+  /** The issue's newest task, whatever its status (intake uses it to leave a finished issue alone). */
+  latestForIssue(repo: string, issueNumber: number): WorkItem | null {
+    const row = this.db.prepare(`SELECT * FROM work_items WHERE repo = ? AND issue_number = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(repo, issueNumber) as Row | undefined;
+    return row ? rowToWorkItem(row) : null;
   }
 
   listWorkItems(opts: { repo?: string; activeOnly?: boolean; limit?: number } = {}): WorkItem[] {

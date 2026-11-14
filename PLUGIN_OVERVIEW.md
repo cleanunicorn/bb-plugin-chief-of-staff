@@ -21,7 +21,9 @@ prompt built from the issue, its comments and the repo's conventions, plus one
 status comment on the issue. The comment is edited, not repeated, when the task
 restarts, and it links the thread only when BB has a web URL. A repository can
 turn issue comments off. An issue with an active thread or an open PR is never
-picked up twice.
+picked up twice. Once its task has failed or is done, an issue stays stopped
+until someone adds one of the filter labels (or assigns the filter's user)
+again after the task ended, or retries the task.
 
 ## Workflows
 

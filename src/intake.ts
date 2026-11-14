@@ -4,10 +4,10 @@
 import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import { BRANCH_PREFIX, issueBranchName, repoKey, slugify, type RepoConfig } from "./config";
-import { matchOpenPullForIssue, GitHubRateLimitError, describeReset, unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue, type GitHubPull } from "./github";
+import { matchOpenPullForIssue, GitHubRateLimitError, describeReset, unlessRateLimited, type GitHubClient, type GitHubComment, type GitHubIssue, type GitHubIssueEvent, type GitHubPull } from "./github";
 import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
-import { initialNodes } from "./machine";
+import { initialNodes, PR_CLOSED_ERROR } from "./machine";
 import { isStatusComment } from "./statusComment";
 
 export interface IntakeResult {
@@ -142,11 +142,27 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
             result.skipped.push({ issue: issue.number, reason: "active thread exists" });
             continue;
           }
+          // A finished task is not restarted on its own: a person relabels the issue or retries the task.
+          const latest = cos.store.latestForIssue(key, issue.number);
+          const finished = finishedReason(latest, repo);
+          if (finished && !(await mayBeReRequested(cos, key, issue, latest!))) {
+            result.skipped.push({ issue: issue.number, reason: finished });
+            continue;
+          }
           // Capacity is a local read: check it before the GitHub lookup, so a full repository costs no request.
           const capacity = capacityProblem(cos, repo, config.values.maxConcurrentTotal, { repo: dryRunRepo, total: dryRunTotal });
           if (capacity) {
             result.skipped.push({ issue: issue.number, reason: capacity });
             continue;
+          }
+          if (finished) {
+            const events = await github.listIssueEvents(repo.owner, repo.repo, issue.number).catch(unlessRateLimited(() => null));
+            // A failed lookup is asked again next run; only an answer is remembered.
+            if (!events || !reRequested(events, repo, finishTime(latest!))) {
+              if (events && !opts.dryRun) await kv.set(relabelKey(key, issue.number), { itemId: latest!.id, updatedAt: issue.updated_at } satisfies RelabelChecked);
+              result.skipped.push({ issue: issue.number, reason: finished });
+              continue;
+            }
           }
           openPulls ??= github.listOpenPulls(repo.owner, repo.repo);
           const pr = matchOpenPullForIssue(await openPulls, issue.number, BRANCH_PREFIX);
@@ -180,6 +196,69 @@ export async function runIntake(cos: Cos, opts: { repo?: string; dryRun?: boolea
   }
   if (results.some((r) => r.started.length)) cos.invalidate();
   return results;
+}
+
+/**
+ * Why intake leaves an issue alone whose newest task failed or is done, or
+ * null when there is no such task. The reason names what restarts the work:
+ * relabelling the issue (reassigning it when the filter has no labels), or
+ * `retry` where it revives the task (not for a done task, nor for one whose PR
+ * was closed: retry would only fail it again).
+ */
+function finishedReason(latest: WorkItem | null, repo: RepoConfig): string | null {
+  const again = repo.issueFilter.labels.length ? "relabel" : "reassign";
+  if (latest?.status === "done") return `previous task is done; ${again} the issue to start again`;
+  if (latest?.status !== "failed") return null;
+  if (latest.lastError === PR_CLOSED_ERROR) return `previous task's PR was closed without merging; ${again} the issue to start again`;
+  return `previous task failed; retry it or ${again} the issue`;
+}
+
+/**
+ * When the task ended, for telling a later relabel from an earlier one. A PR
+ * closed or merged on GitHub ended it then, even though Chief of Staff only
+ * noticed (and set finishedAt) at its next CI watch. Only the task's current
+ * PR counts: an earlier one closed while the task was still running.
+ */
+function finishTime(item: WorkItem): number {
+  const finished = Date.parse(item.finishedAt ?? item.updatedAt);
+  const pr = item.prState?.number === item.prNumber ? item.prState : null;
+  const closed = pr?.closedAt ? Date.parse(pr.closedAt) : NaN;
+  return Number.isNaN(closed) ? finished : Math.min(finished, closed);
+}
+
+/** KV key recording that an issue's events were read for its finished task, at an issue update. */
+const relabelKey = (repo: string, issueNumber: number) => `intake:relabelChecked:${repo}#${issueNumber}`;
+interface RelabelChecked {
+  itemId: string;
+  updatedAt: string;
+}
+
+/**
+ * Whether the issue could have been relabelled or reassigned since `latest`
+ * finished, from local state only: it changed after that, and its events
+ * were not already read at this update. A parked issue costs no request.
+ */
+async function mayBeReRequested(cos: Cos, repo: string, issue: GitHubIssue, latest: WorkItem): Promise<boolean> {
+  if (!(Date.parse(issue.updated_at) > finishTime(latest))) return false;
+  const checked = await cos.bb.storage.kv.get<RelabelChecked>(relabelKey(repo, issue.number));
+  return !(checked?.itemId === latest.id && checked.updatedAt === issue.updated_at);
+}
+
+/**
+ * Whether a person asked for the issue again after `since` (epoch ms): added
+ * one of the filter's labels, or assigned the filter's assignee. Chief of
+ * Staff never writes labels or assignees, so these events are a person's;
+ * its own comments, which also move `updated_at`, do not count.
+ */
+function reRequested(events: GitHubIssueEvent[], repo: RepoConfig, since: number): boolean {
+  const labels = new Set(repo.issueFilter.labels.map((l) => l.toLowerCase()));
+  const assignee = repo.issueFilter.assignee?.toLowerCase();
+  return events.some((e) => {
+    if (!(Date.parse(e.created_at) > since)) return false;
+    if (e.event === "labeled") return labels.has(e.label?.name.toLowerCase() ?? "");
+    if (e.event === "assigned" && assignee && e.assignee) return assignee === "*" || e.assignee.login.toLowerCase() === assignee;
+    return false;
+  });
 }
 
 /** `pending` is what a dry run would have started so far: nothing is stored for it, so it is added to the stored count. */

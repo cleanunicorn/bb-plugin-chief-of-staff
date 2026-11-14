@@ -63,8 +63,11 @@ flowchart LR
 1. **Intake.** On a schedule (every 10 minutes by default), Chief of Staff
    looks in each configured repository for open issues that carry every label
    you chose (and are assigned to the user you chose, if you set one). An issue
-   with an active task or an open PR is never picked up twice. Tasks you
-   describe skip this step. `bb cos intake --dry-run` applies the same
+   with an active task or an open PR is never picked up twice. Once an issue's
+   task has failed or is done, the issue is not picked up again until someone
+   adds one of those labels again (or assigns the chosen user again) after the
+   task ended, or retries the task. The intake result says why it was skipped.
+   Tasks you describe skip this step. `bb cos intake --dry-run` applies the same
    concurrency limits, so it reports only the issues a real run would start.
 2. **A task starts** when the repository and the global limit have a free slot.
    When they are full, an issue waits for a later intake run and a task you
