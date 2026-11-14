@@ -89,6 +89,42 @@ it("marks the edited section as unsaved, and Discard restores the loaded values"
   expect(mocks.call).not.toHaveBeenCalled();
 });
 
+// ---------- the save bar names the unsaved sections (#124) ----------
+
+/** The save bar's "Unsaved changes …" line. */
+const unsavedLine = () => Array.from(container.querySelectorAll("span")).find((s) => s.textContent?.startsWith("Unsaved changes"))?.textContent ?? null;
+/** The section labels behind the unsaved dots, without the nav buttons' counts. */
+const unsavedLabels = () => unsavedSections().map((t) => t!.replace(/\d+$/, ""));
+
+it("names General in the save bar when only a general setting changed", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  expect(unsavedLine()).toBe("Unsaved changes in General");
+  expect(unsavedLabels()).toEqual(["General"]);
+});
+
+it("names every section with changes, in the section list's order", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  await click(button("Workflows"));
+  await setValue(field("Name"), "Delivery");
+  expect(unsavedLine()).toBe("Unsaved changes in Workflows and General");
+  expect(unsavedLabels()).toEqual(["Workflows", "General"]);
+
+  await click(navButton("Repositories"));
+  await click(container.querySelector("article button[aria-expanded]")!);
+  await setValue(field("Model"), "opus");
+  expect(unsavedLine()).toBe("Unsaved changes in Workflows, Repositories and General");
+  expect(unsavedLabels()).toEqual(["Workflows", "Repositories", "General"]);
+});
+
+it("names Advanced JSON in the save bar when only the JSON changed", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(field("Workflow"), "{}");
+  expect(unsavedLine()).toBe("Unsaved changes in Advanced JSON");
+  expect(unsavedLabels()).toEqual(["Advanced JSON"]);
+});
+
 it("is clean again when a general setting is typed back to its loaded value", async () => {
   await mount(<Configurator initialSection="general" />);
   await setValue(field(MAX_TASKS), "5");

@@ -35,6 +35,11 @@ const SECTIONS = [
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
 
+/** "A", "A and B", "A, B and C". */
+function joinNames(names: readonly string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : (names[0] ?? "");
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -590,6 +595,8 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const providers = settings.data?.providers ?? [];
   const counts: Record<Section, number | null> = { workflow: null, repos: reposBlocked ? null : repoDraft.length, general: null, access: null, advanced: null };
   const sectionDirty: Record<Section, boolean> = { workflow: dirty.workflow, repos: dirty.repos, general: dirty.general, access: false, advanced: advancedDirty };
+  /** The labels behind the "unsaved" dots, in the section list's order. */
+  const dirtySections = SECTIONS.filter((s) => sectionDirty[s.id]).map((s) => s.label);
   const loadErrors: { section: Section; title: string; error: string }[] = [
     ...(reposError !== null ? [{ section: "repos" as const, title: "Repositories", error: reposError }] : []),
     ...(workflowError !== null ? [{ section: "workflow" as const, title: "Workflows", error: workflowError }] : []),
@@ -714,7 +721,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
               <>
                 <span className="flex items-center gap-1.5 text-sm text-foreground">
                   <span aria-hidden className="size-2 rounded-full" style={{ background: STATUS.warning }} />
-                  Unsaved changes
+                  Unsaved changes in {joinNames(dirtySections)}
                   {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
                 </span>
                 <span className="ml-auto flex gap-1.5">
