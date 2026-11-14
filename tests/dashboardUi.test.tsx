@@ -55,7 +55,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); localStorage.clear(); vi.unstubAllGlobals(); });
 
 /** An activity row of task "one", #7 Fix login, in acme/app. */
 const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
@@ -794,6 +794,53 @@ it("stops loading older pages for a day when one fails", async () => {
   // Asking again still works.
   await act(async () => buttonLabelled("Search older").click());
   expect(mocks.call).toHaveBeenCalledTimes(2);
+});
+
+// ---------- the Finished view survives tab switches and reloads (#105) ----------
+
+it("keeps the Finished view, filters and date range when switching to Repos & PRs and back", async () => {
+  mocks.daily = window14();
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory().map((e, i) => ({ ...e, finishedAt: at(i) })) : [], nextBefore: null });
+  await mount(<Dashboard subPath="agents" />);
+  await act(async () => outcomeToggle("Failed").click());
+  const day = Array.from(container.querySelectorAll<HTMLButtonElement>("figure button[aria-label]")).find((b) => b.getAttribute("aria-label")!.startsWith(`${fmt(utcDay(2))}:`))!;
+  await act(async () => day.click());
+  await act(async () => outcomeToggle("Failed").click());
+  await setValue(searchBox(), "deploy");
+  expect(rowTitles()).toEqual(["Broken deploy"]);
+  await act(async () => { root.render(<Dashboard subPath="issues" />); });
+  expect(container.querySelector('input[aria-label="Search finished tasks"]')).toBeNull();
+  await act(async () => { root.render(<Dashboard subPath="agents" />); });
+  expect(searchBox().value).toBe("deploy");
+  expect(outcomeToggle("Failed").getAttribute("aria-pressed")).toBe("true");
+  expect(container.querySelector('button[aria-label^="Remove the date filter"]')!.textContent).toBe(`Finished ${fmt(utcDay(2))}`);
+  expect(rowTitles()).toEqual(["Broken deploy"]);
+});
+
+it("restores the stored Finished view on a reload, without the date range", async () => {
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory() : [], nextBefore: null });
+  await mount(<Dashboard subPath="agents" />);
+  await act(async () => outcomeToggle("Marked done").click());
+  await setValue(searchBox(), "docs");
+  await act(async () => buttonLabelled("Collapse").click());
+  expect(JSON.parse(localStorage.getItem("cos.finishedView.v1")!)).toEqual({ open: false, outcomes: ["marked_done"], repo: null, query: "docs" });
+  // A reload: a fresh dashboard reads what was stored.
+  await act(async () => { root.unmount(); });
+  root = createRoot(container);
+  await act(async () => { root.render(<Dashboard subPath="agents" />); });
+  expect(buttonLabelled("Expand").getAttribute("aria-expanded")).toBe("false");
+  await act(async () => buttonLabelled("Expand").click());
+  expect(searchBox().value).toBe("docs");
+  expect(outcomeToggle("Marked done").getAttribute("aria-pressed")).toBe("true");
+  expect(rowTitles()).toEqual(["Marked docs"]);
+});
+
+it("ignores a malformed stored Finished view", async () => {
+  localStorage.setItem("cos.finishedView.v1", "{not json");
+  mocks.roster = (input) => ({ entries: input.includeDone ? mixedHistory() : [], nextBefore: null });
+  await mount();
+  expect(buttonLabelled("Collapse").getAttribute("aria-expanded")).toBe("true");
+  expect(rowTitles()).toHaveLength(4);
 });
 
 it("lists the pull request of an active task on Repos & PRs, with a deep finished page", async () => {

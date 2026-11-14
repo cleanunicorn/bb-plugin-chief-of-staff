@@ -15,7 +15,7 @@ import { PrStatePill } from "./prState";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "./rovingCards";
 import { TaskActionsMenu, taskTitle, type Confirmable, type ItemAction, type MenuTask } from "./taskActions";
 import type { ActivityTask } from "./dashboardModel";
-import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, finishedTimer, groupByDay, isFiltering, loadedPast, matchesFinishedFilter, mergePages, rangeLabel, visibleSlice, type FinishedFilter, type OutcomeGroup } from "./finishedModel";
+import { DEFAULT_FINISHED_VIEW, FINISHED_FIRST, FINISHED_STEP, FINISHED_VIEW_KEY, NO_FILTER, finishedTimer, groupByDay, isFiltering, loadedPast, matchesFinishedFilter, mergePages, parseFinishedView, rangeLabel, storedFinishedView, visibleSlice, type FinishedView, type OutcomeGroup } from "./finishedModel";
 import { inputClass } from "./fields";
 
 type Contract = typeof rpcContract;
@@ -149,15 +149,39 @@ function FinishedRow({ entry, now, busy, tabbable, onAction, onAsk, onWorkflow, 
   );
 }
 
-/** What the Finished section shows: open or collapsed, and its filters. */
-export type FinishedView = FinishedFilter & { open: boolean };
-export const DEFAULT_FINISHED_VIEW: FinishedView = { open: true, ...NO_FILTER };
+function loadView(): FinishedView {
+  try {
+    return parseFinishedView(JSON.parse(localStorage.getItem(FINISHED_VIEW_KEY) ?? "null"));
+  } catch {
+    return DEFAULT_FINISHED_VIEW;
+  }
+}
 
+function saveView(view: FinishedView): void {
+  try {
+    localStorage.setItem(FINISHED_VIEW_KEY, JSON.stringify(storedFinishedView(view)));
+  } catch {
+    /* storage unavailable: the view lasts while the dashboard is open */
+  }
+}
+
+/**
+ * The Finished section's view, read from local storage and saved on every change, so it survives reloads.
+ * Hold it above the tab switch (the Dashboard does), so the date range survives switching tabs too.
+ */
 export function useFinishedView(): { view: FinishedView; update: (patch: Partial<FinishedView>) => void } {
-  const [view, setView] = useState<FinishedView>(DEFAULT_FINISHED_VIEW);
-  const update = useCallback((patch: Partial<FinishedView>) => setView((v) => ({ ...v, ...patch })), []);
+  const [view, setView] = useState<FinishedView>(loadView);
+  const update = useCallback((patch: Partial<FinishedView>) => {
+    setView((v) => {
+      const next = { ...v, ...patch };
+      saveView(next);
+      return next;
+    });
+  }, []);
   return { view, update };
 }
+
+export type FinishedViewState = ReturnType<typeof useFinishedView>;
 
 const OUTCOME_FILTERS: { key: OutcomeGroup; label: string; icon: string }[] = [
   { key: "shipped", label: "Shipped", icon: "CircleCheck" },

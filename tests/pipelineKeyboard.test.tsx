@@ -49,6 +49,7 @@ afterEach(async () => {
   mocks.entries = [];
   mocks.logs = [];
   mocks.call.mockReset();
+  localStorage.clear();
 });
 
 // ---------- M1: named regions ----------

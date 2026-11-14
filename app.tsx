@@ -18,8 +18,8 @@ import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { FinishedSection, useFinishedTasks, useFinishedView, type FinishedView } from "@/components/cos/finished";
-import { NO_FILTER, fmtDay } from "@/components/cos/finishedModel";
+import { FinishedSection, useFinishedTasks, useFinishedView, type FinishedViewState } from "@/components/cos/finished";
+import { NO_FILTER, fmtDay, type FinishedView } from "@/components/cos/finishedModel";
 import { TaskActionsMenu, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
@@ -516,7 +516,8 @@ const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "fail
 /** A Throughput number or day that opens the Finished section: text that reads as a link. */
 const SUMMARY_LINK = "rounded text-foreground underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
+/** `finishedView`: the Finished section's view, held by the Dashboard so it survives switching tabs. Without it, the tab holds its own. */
+export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShowActivity?: (task: ActivityTask) => void; finishedView?: FinishedViewState } = {}) {
   const rpc = useRpc<Contract>();
   const now = useNow();
   const [filter, setFilter] = useState<TaskFilter>("all");
@@ -530,7 +531,8 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const active = useMemo(() => (live ?? []).filter((e) => !isFinished(e)), [live]);
   const activeIds = useMemo(() => new Set(active.map((e) => e.id)), [active]);
   const finished = useFinishedTasks(activeIds, setActionError);
-  const finishedView = useFinishedView();
+  const ownView = useFinishedView();
+  const finishedView = heldView ?? ownView;
   const finishedHeading = useRef<HTMLHeadingElement>(null);
   const finishedQuery = finished.query;
   const refetchAll = useCallback(async () => {
@@ -1202,6 +1204,8 @@ export function Dashboard({ subPath }: { subPath: string }) {
   const [alert, setAlert] = useState<{ title: string; body: string } | null>(null);
   // Held here so a task card's "Show activity" can narrow the feed, and the choice survives switching tabs.
   const [activityTask, setActivityTask] = useState<ActivityTask | null>(null);
+  // Held here too: the Pipeline tab unmounts on every switch, and its Finished view should not reset.
+  const finishedView = useFinishedView();
   const activityHeading = useRef<HTMLHeadingElement | null>(null);
   const showActivity = useCallback((task: ActivityTask) => {
     setActivityTask(task);
@@ -1258,7 +1262,7 @@ export function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
+        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} finishedView={finishedView} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
         {tab === "config" ? null : <ActivityFeed task={activityTask} onTaskChange={setActivityTask} headingRef={activityHeading} />}
       </div>
     </PaletteProvider>

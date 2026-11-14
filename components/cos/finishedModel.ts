@@ -151,3 +151,32 @@ export function matchesFinishedFilter(entry: Filterable, f: FinishedFilter): boo
   const number = /^#?(\d+)$/.exec(q);
   return number !== null && (entry.issueNumber === Number(number[1]) || entry.prNumber === Number(number[1]));
 }
+
+/** What the Finished section shows: open or collapsed, and its filters. */
+export type FinishedView = FinishedFilter & { open: boolean };
+export const DEFAULT_FINISHED_VIEW: FinishedView = { open: true, ...NO_FILTER };
+
+/** Where the view is kept between visits. The date range is not: it comes from a Throughput click and lasts the session. */
+export const FINISHED_VIEW_KEY = "cos.finishedView.v1";
+const MAX_QUERY = 200;
+const GROUPS: readonly OutcomeGroup[] = ["shipped", "marked_done", "failed"];
+
+/** A stored view, checked field by field: anything malformed falls back to the default. */
+export function parseFinishedView(raw: unknown): FinishedView {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return DEFAULT_FINISHED_VIEW;
+  const v = raw as Record<string, unknown>;
+  // Known groups in the stored order, without repeats.
+  const outcomes = Array.isArray(v.outcomes) ? [...new Set(v.outcomes.filter((g): g is OutcomeGroup => GROUPS.includes(g as OutcomeGroup)))] : [];
+  return {
+    open: typeof v.open === "boolean" ? v.open : DEFAULT_FINISHED_VIEW.open,
+    outcomes,
+    repo: typeof v.repo === "string" && v.repo ? v.repo : null,
+    query: typeof v.query === "string" ? v.query.slice(0, MAX_QUERY) : "",
+    range: null,
+  };
+}
+
+/** The part of the view that is stored. */
+export function storedFinishedView(view: FinishedView): Omit<FinishedView, "range"> {
+  return { open: view.open, outcomes: [...view.outcomes], repo: view.repo, query: view.query };
+}
