@@ -41,6 +41,10 @@ no GitHub issue: see [Install](#install).
   repository, issue, PR, age, last activity and token usage (when the provider
   reports it), and who holds the ball: an agent, Chief of Staff, or you. Stalls
   and failures are detected and notified.
+- **Knows what the work cost.** A task's token usage is summed over every agent
+  thread it spawned (planner, builder, reviewers, replaced builders).
+  Throughput totals it for the window and per day, and finished tasks can be
+  ordered by it.
 
 ## How it works
 
@@ -343,6 +347,20 @@ recently finished tasks after every active one; **Show older finished** loads
 the next page. Retrying work stays in Checks & shipping until it requires a
 decision.
 
+**Token usage.** A card's "Tokens · all threads" figure (and cost, when the
+provider reports one) is the sum over every agent thread of the task: model
+chooser, planner, builder, reviewers and replaced builders. Its tooltip gives
+the thread count and how many threads reported usage. An active task's figure
+is read live and labelled "so far". A finished task is counted once by the
+background sweep (up to 10 tasks a minute), when none of its threads is still
+running. Until then its card says "counting…", and opening the dashboard makes
+no usage calls for finished tasks. A task whose provider reported nothing shows
+no figure, rather than 0. Throughput adds the window's total, by the day each
+task finished, and the table view has a Tokens column. With **Show finished**,
+**Most tokens** orders finished tasks by usage (uncounted ones last), and each
+finished card shows its share of all finished tasks' tokens. The workflow
+sheet's header shows Tokens and Cost too.
+
 A task whose repository is not in the `repos` setting (removed, renamed, or the
 setting has an error, which leaves it empty) does not wait for capacity. If it
 has not started, or is waiting to reacquire capacity, it stays queued with
@@ -563,6 +581,9 @@ recently finished tasks after them, 50 by default (`--finished-limit`, up to
 500). When older ones exist, the output ends with the command for the next
 page: `--before <cursor>` lists only that page of finished tasks and implies
 `--all`. `--json` returns the cursor as `nextBefore` (null on the last page).
+`--usage` adds each task's token usage to the `--json` entries, summed over all
+of its agent threads: read live for active tasks, and the stored count for
+finished ones (`counted: false` until it is counted).
 
 | Agent tool | Purpose |
 | --- | --- |
