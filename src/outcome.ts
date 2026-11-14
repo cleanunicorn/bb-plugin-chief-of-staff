@@ -68,3 +68,13 @@ export function finishedOutcome(item: Pick<WorkItem, "status" | "lastError" | "p
   }
   return null;
 }
+
+/** How a finished task ended, with why when it did not deliver ("Failed: thread archived"). */
+export function describeOutcome(outcome: Outcome, lastError: string | null): string {
+  const label = OUTCOME_META[outcome].label;
+  if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return label;
+  // A person ended it: mark_failed stores MARKED_FAILED; any other stored error is only the last seen, not the cause.
+  if (outcome === "marked_failed") return lastError === MARKED_FAILED ? label : `${label} (last error: ${lastError})`;
+  // "PR closed without merge" already says it.
+  return lastError.toLowerCase().startsWith(label.toLowerCase()) ? lastError : `${label}: ${lastError}`;
+}

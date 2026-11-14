@@ -4,7 +4,7 @@
 import type { Cos } from "./context";
 import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
 import { isActiveStatus, occupiesCapacity, type PrState, type WaitingKind, type WorkItem } from "./state";
-import { FAILED_OUTCOMES, finishedOutcome, MARKED_FAILED, OUTCOME_META, type Outcome } from "./outcome";
+import { describeOutcome, finishedOutcome, type Outcome } from "./outcome";
 import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
 import { readThreadUsage, type ThreadUsage } from "./threads";
 import { applyTransition, dispatch, watchCi } from "./delivery";
@@ -299,20 +299,11 @@ export function itemRunDetail(cos: Pick<Cos, "store">, item: WorkItem) {
       createdAt: item.createdAt,
       lastActivityAt: item.lastActivityAt,
       finishedAt: item.finishedAt,
+      outcome: finishedOutcome(item, finished ? (cos.store.latestManualActions([item.id]).get(item.id) ?? null) : null),
     },
     steps,
     journal: cos.store.listJournal(item.id).map(previewEntry),
   };
-}
-
-/** How a finished task ended, with why when it did not deliver ("Failed: thread archived"). */
-export function describeOutcome(outcome: Outcome, lastError: string | null): string {
-  const label = OUTCOME_META[outcome].label;
-  if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return label;
-  // A person ended it: mark_failed stores MARKED_FAILED; any other stored error is only the last seen, not the cause.
-  if (outcome === "marked_failed") return lastError === MARKED_FAILED ? label : `${label} (last error: ${lastError})`;
-  // "PR closed without merge" already says it.
-  return lastError.toLowerCase().startsWith(label.toLowerCase()) ? lastError : `${label}: ${lastError}`;
 }
 
 /** One line on what is happening right now, for the roster. */

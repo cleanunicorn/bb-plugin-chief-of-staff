@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { freshNode, type Nodes } from "../src/machine";
-import { finishedOutcome, MARKED_DONE, MARKED_FAILED, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
-import { describeActivity, describeOutcome } from "../src/roster";
+import { describeOutcome, finishedOutcome, MARKED_DONE, MARKED_FAILED, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
+import { describeActivity } from "../src/roster";
 import type { WorkItem } from "../src/state";
 import { workflowSchema, type Workflow } from "../src/workflow";
 
