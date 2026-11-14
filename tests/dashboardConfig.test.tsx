@@ -231,7 +231,9 @@ it("follows a problem link to its section and opens the repository it names", as
   await follow();
   expect(currentSection()).toContain("General");
 
-  await click(button("Repositories · acme/app: duplicate of entry 1"));
+  // The save bar lists the sections with problems that are not on screen (#123), each leading to its problem.
+  await click(button("Show"));
+  await click(button("Repositories · acme/app · 1 to fix"));
   expect(pushed().at(-1)).toBe("cos/config/repos");
   await follow();
   expect(currentSection()).toContain("Repositories");

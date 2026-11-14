@@ -50,8 +50,9 @@
   other workflow that has problems. Activating a problem about a step selects
   it: the canvas pans to it and its panel opens with focus (in list view the
   step expands). Steps with problems carry a red border and a count on the
-  canvas, and an "N to fix" pill in list view. The save bar is one row, "N to
-  fix before saving" with Show/Hide: expanded, it lists only the sections and
+  canvas, and an "N to fix" pill in list view. The save bar keeps to a count,
+  "N to fix before saving" with Show/Hide (one row, plus a row for Discard and
+  Save on a phone): expanded, it lists only the sections and
   repositories with problems that are not on screen, and opening Workflows
   from there selects the first problem's step.
 

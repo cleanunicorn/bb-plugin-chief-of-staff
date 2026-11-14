@@ -579,7 +579,7 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
           <dd className="font-medium text-foreground tabular-nums">{usage.totalTokens != null ? compact(usage.totalTokens) : "counting…"}</dd>
         </div> : null}
         {share ? <div title={`${share} of finished tasks' tokens`}>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="ChartPie" fallback="Circle" className="size-3.5" aria-hidden />Share</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.share} fallback="Circle" className="size-3.5" aria-hidden />Share</dt>
           <dd className="font-medium text-foreground tabular-nums">{share}<span className="sr-only"> of finished tasks' tokens</span></dd>
         </div> : null}
         {usage?.cost != null ? <div title={usageNote(usage)}>
@@ -1082,7 +1082,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
                   <Icon name="CalendarCheck" fallback="Clock" aria-hidden />Recently finished
                 </Button>
                 <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "tokens"} onClick={() => orderFinished("tokens")}>
-                  <Icon name="Coins" fallback="Circle" aria-hidden />Most tokens
+                  <Icon name={CARD_ICON.tokens} fallback="Circle" aria-hidden />Most tokens
                 </Button>
               </div>
             ) : null}

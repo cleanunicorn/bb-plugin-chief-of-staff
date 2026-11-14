@@ -61,6 +61,8 @@ export const HOST_ICON_NAMES: Record<string, string> = {
   CircleDot: "CircleCheck",
   ClipboardCheck: "ListTodo",
   Cog: "Settings",
+  // A finished task's share of all finished tasks' tokens. The host has no pie or percent icon.
+  ChartPie: "chief-of-staff/chart-pie",
   // Cost. Layers is Task slots.
   Coins: "chief-of-staff/coins",
   Command: "Terminal",

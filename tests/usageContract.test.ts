@@ -27,7 +27,7 @@ it("orders finished tasks recently finished first by default, and keeps the fini
 
 it("keeps a task's usage in the workflow view and in cos_item_usage", () => {
   const usage = { inputTokens: null, outputTokens: null, totalTokens: 7, cost: null, threads: 2, reportedThreads: 1, counted: true };
-  const task = { repo: "a/b", issueNumber: null, issueUrl: null, body: null, status: "done", branch: null, prNumber: null, prUrl: null, threadId: null, waitingReason: null, lastError: null, createdAt: "x", lastActivityAt: null, finishedAt: "y", usage };
+  const task = { repo: "a/b", issueNumber: null, issueUrl: null, body: null, status: "done", branch: null, prNumber: null, prUrl: null, threadId: null, waitingReason: null, lastError: null, createdAt: "x", lastActivityAt: null, finishedAt: "y", outcome: "completed", usage };
   expect(rpcContract.cos_item_workflow.output.parse({ title: "t", workflow: {}, live: {}, task }).task!.usage).toEqual(usage);
   expect(rpcContract.cos_item_usage.output.parse({ usage })).toEqual({ usage });
   expect(rpcContract.cos_item_usage.output.parse({ usage: null })).toEqual({ usage: null });

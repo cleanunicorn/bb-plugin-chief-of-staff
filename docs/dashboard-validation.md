@@ -383,8 +383,11 @@ bar keeps only the count.
 - Steps with problems have a critical border and a count badge on the canvas,
   "N to fix" in their accessible name, and an "N to fix" pill while collapsed
   in list view.
-- The save bar is one row: "Unsaved changes · N to fix before saving" (below
-  `sm`, "N to fix"), Show/Hide, Discard, Save. Expanded, it lists section
+- The save bar is one row from `sm` up: "Unsaved changes in <sections> · N to
+  fix before saving" (below `sm`, "N to fix"), Show/Hide, Discard, Save. Below
+  `sm`, Discard and Save take a second row of their own, at opposite ends
+  (#124), so the phone figures below (measured before that) are one row short.
+  Expanded, it lists section
   summaries for what is not on screen (`Workflows · N to fix`,
   `Repositories · acme/app · N to fix`, `General · N to fix`), at most about
   three rows before scrolling. With nothing off screen, Show scrolls to the
@@ -421,7 +424,10 @@ workflow gave 5); a second Check gives 4 lines and "Show all 4".
 At 1440×1000 a step added from the toolbar below the fitted view is panned to
 (its top 233 px into the 520 px canvas). After a step is opened from a problem
 line, clicking a step only partly inside the canvas (Review, at 1440×1000 and
-at 390×844) selects it and leaves the pan and zoom as they were. No horizontal
+at 390×844) selects it and leaves the pan and zoom as they were. The 390×844
+rows predate Discard and Save moving to their own row on phones (#124); the
+collapsed bar is now two rows there, still well under a quarter of the screen,
+and was not re-measured. No horizontal
 page overflow at either size, and no error text in the bar in any state. Not checked: a screen reader, Safari, a live BB install.
 
 ## What changed, what needs you (issue #110)

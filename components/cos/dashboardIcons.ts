@@ -42,6 +42,7 @@ export const CARD_ICON = {
   lastActivity: "Activity",
   tokens: "Hash",
   cost: "Coins",
+  share: "ChartPie", // a finished task's share of all finished tasks' tokens
   fixCycles: "Undo2", // sent back to fix, like Loop-backs; RefreshCw is the retrying state
   error: "CircleAlert",
 } as const;

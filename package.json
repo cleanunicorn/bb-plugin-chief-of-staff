@@ -20,7 +20,8 @@
         "octagon-alert": "./assets/octagon-alert.svg",
         "coins": "./assets/coins.svg",
         "activity": "./assets/activity.svg",
-        "trending-up": "./assets/trending-up.svg"
+        "trending-up": "./assets/trending-up.svg",
+        "chart-pie": "./assets/chart-pie.svg"
       }
     },
     "server": "./server.ts",
