@@ -13,6 +13,7 @@ import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems 
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor } from "./workflowEditor";
 import { useConfigDrafts } from "./configDrafts";
+import type { ConfigSection } from "./configRoute";
 import type { ConfigDrafts } from "./configDrafts";
 import { useRowKeys } from "./rowKeys";
 import { Button } from "../ui/button";
@@ -26,14 +27,14 @@ type SettingsData = PluginRpcResult<Contract["cos_get_settings"]>;
 type Project = SettingsData["projects"][number];
 type Provider = SettingsData["providers"][number];
 
-const SECTIONS = [
+export const SECTIONS = [
   { id: "workflow", label: "Workflows", icon: "Workflow" },
   { id: "repos", label: "Repositories", icon: "FolderGit2" },
   { id: "general", label: "General", icon: "SlidersHorizontal" },
   { id: "access", label: "GitHub access", icon: "KeyRound" },
   { id: "advanced", label: "Advanced JSON", icon: "Braces" },
-] as const;
-type Section = (typeof SECTIONS)[number]["id"];
+] as const satisfies readonly { id: ConfigSection; label: string; icon: string }[];
+type Section = ConfigSection;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

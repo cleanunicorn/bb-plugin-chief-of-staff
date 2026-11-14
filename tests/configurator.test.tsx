@@ -38,7 +38,8 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
-import { Configurator } from "../components/cos/configurator";
+import { Configurator, SECTIONS } from "../components/cos/configurator";
+import { CONFIG_SECTIONS } from "../components/cos/configRoute";
 import { useConfigDrafts } from "../components/cos/configDrafts";
 
 const MAX_TASKS = "Max tasks across all repos";
@@ -67,6 +68,10 @@ afterEach(async () => {
   mocks.realtime.clear();
   mocks.failed = { config: null, settings: null };
   mocks.neverLoaded = { config: false, settings: false };
+});
+
+it("lists exactly the sections the page address can name, in the same order", () => {
+  expect(SECTIONS.map((s) => s.id)).toEqual([...CONFIG_SECTIONS]);
 });
 
 it("shows no save bar and no unsaved dot on a clean load", async () => {

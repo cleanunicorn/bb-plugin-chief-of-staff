@@ -21,6 +21,7 @@ import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dial
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
+import { configSectionFromSubPath } from "@/components/cos/configRoute";
 import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
@@ -1413,16 +1414,11 @@ export function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSection(subPath)} />}
+        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} initialSection={configSectionFromSubPath(subPath)} />}
         {tab === "config" ? null : <ActivityFeed task={activityTask} onTaskChange={setActivityTask} headingRef={activityHeading} />}
       </div>
     </PaletteProvider>
   );
-}
-
-function configSection(subPath: string): "workflow" | "repos" | "general" | "access" | "advanced" {
-  const second = decodeURIComponent(subPath.split("/")[1] ?? "");
-  return second === "repos" || second === "general" || second === "access" || second === "advanced" ? second : "workflow";
 }
 
 function ConfigureLink({ section, label }: { section: "repos"; label: string }) {
