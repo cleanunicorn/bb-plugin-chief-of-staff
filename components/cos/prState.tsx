@@ -8,6 +8,7 @@ import { UrlLink } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { relative, toneColor, usePalette, type Tone } from "@/components/cos/viz";
+import { FILTER_ICON } from "@/components/cos/dashboardIcons";
 import type { PrState } from "../../src/state";
 
 /** A roster entry's PR state: null when it has not been read yet. */
@@ -100,7 +101,7 @@ const FILTERS: { key: PrFilter; label: string; icon: string; empty: string }[] =
   { key: "needs", label: "Needs action", icon: "GitPullRequest", empty: "open" },
   { key: "merged", label: "Merged", icon: "GitMerge", empty: "merged" },
   { key: "closed", label: "Closed", icon: "GitPullRequestClosed", empty: "closed" },
-  { key: "all", label: "All", icon: "LayoutGrid", empty: "" },
+  { key: "all", label: "All", icon: FILTER_ICON.all, empty: "" },
 ];
 
 /** Rows shown per page: about 570 px of rows, within a screen. */

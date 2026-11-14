@@ -1,5 +1,5 @@
 // Host icon names: the host has its own catalog, and missing artwork falls
-// back to a Circle, so PR states must stay distinct after the name mapping.
+// back to the call's fallback, so PR states must stay distinct after the name mapping.
 // (The UI tests mock Icon and skip the mapping; this is what proves it.)
 import { expect, it, vi } from "vitest";
 
