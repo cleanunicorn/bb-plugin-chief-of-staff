@@ -287,43 +287,57 @@ actual `WorkflowsEditor` with the default workflow and the built
 host-sidebar placeholder, a `[data-bb-plugin=chief-of-staff]` panel with
 the `h-full overflow-auto` scroller, the `max-w-7xl p-4 md:p-6` column, header
 and nav placeholders, and a `sticky bottom-0` Save bar. It used a simulated
-host theme, system fonts, and placeholder squares for host icons. It is not a
-live BB install, the running plugin was not reinstalled, and nothing was saved.
+host theme, a 16 px root with 14 px system-font body text, and placeholder
+squares for host icons. It is not a live BB install, the running plugin was
+not reinstalled, and nothing was saved.
 Measured with `getBoundingClientRect`: on opening and after Fit, the toolbar
 buttons' pairwise intersections, each step's top against the toolbar's
 bottom, and steps inside the frame. Then, after selecting Review, scrolling
 "On fail, go back to" to the bottom of the window and then scrolling the page
 to its end, the canvas box against the window.
 
-| Window | Panel | Layout | Canvas | Toolbar rows | Overlaps | Steps under toolbar (open / Fit) | Canvas at page end |
+The fixture's panel stands in for the plugin page's width, so the editor is the
+panel minus the page padding (48 px). The real page also has the
+configurator's section list beside the editor from `lg` up, and that list is
+not in the fixture. The canvas widths below cover the issue's range either
+way.
+
+| Window | Editor | Layout | Canvas | Toolbar rows | Overlaps | Steps under toolbar (open / Fit) | Canvas at page end |
 |---|---|---|---|---|---|---|---|
-| 1440×1000 | 895 (issue repro) | two-column | 507 px | 1 | none | none / none | sticky, top 11, fully in view |
-| 1440×1000 | 700 | two-column | 312 px | 2 | none | none / none | sticky, fully in view |
-| 1280×1000 | 700 | two-column | 312 px | 2 | none | none / none | sticky, fully in view |
-| 1440×1000 | 1400 | two-column | 732 px | 1 | none | none / none | sticky, fully in view |
-| 1920×1000 | 1400 | two-column | 732 px | 1 | none | none / none | sticky, fully in view |
-| 1279×1000 | 700 | stacked | 658 px | 1 | none | none / none | scrolled off (by design) |
-| 1000×1000 | 1000 | stacked | 958 px | 1 | none | none / none | scrolled off (by design) |
-| 1200×900 | 1000 | stacked | 958 px | 1 | none | none / none | scrolled off (by design) |
+| 1440×1000 | 847 (issue repro) | two-column | 451 px | 2 (Full screen wraps) | none | none / none | sticky, top 12, fully in view |
+| 1440×1000 | 652 | two-column | 256 px | 2 | none | none / none | sticky, fully in view |
+| 1280×1000 | 652 | two-column | 256 px | 2 | none | none / none | sticky, fully in view |
+| 1440×1000 | 1232 | two-column | 836 px | 1 | none | none / none | sticky, fully in view |
+| 1920×1000 | 1232 | two-column | 836 px | 1 | none | none / none | sticky, fully in view |
+| 1279×1000 | 652 | stacked | 652 px | 1 | none | none / none | scrolled off (by design) |
+| 1000×1000 | 952 | stacked | 952 px | 1 | none | none / none | scrolled off (by design) |
+| 1200×900 | 952 | stacked | 952 px | 1 | none | none / none | scrolled off (by design) |
 
 At every size every toolbar button lies inside the canvas box and Full screen
 is the last button. With "On fail, go back to" at the bottom of a 1000 px
-window, the whole 520 px canvas is visible in every two-column case.
+window, and again with the page scrolled to its end, the whole 520 px canvas
+is visible in every two-column case.
 
 The same script against the parent commit (`c59c5af`, built the same way)
-reproduces the issue. With a 312 px canvas, Full screen covers Model
-(46.8×20 px) and the toolbar covers the Plan step both on opening and after
-Fit. At the page end the canvas is not sticky and its top is off screen.
-With the fixture's fonts the 507 px canvas did not overlap; the issue measured
-the overlap at 450 px in the live host.
+reproduces the issue. In the issue's configuration (451 px canvas), Tidy
+spans x 868–926 and Full screen x 916–1011, so they overlap. The issue
+measured 890–955 and 911–1011. With a 256 px canvas, Full screen covers
+Check and Ship, and the toolbar covers the Plan step both on opening and
+after Fit. At the page end the canvas is not sticky and its top is 78 px off
+screen.
+
+No element between the page's scroller (`app.tsx`, `h-full overflow-auto`)
+and the editor sets `overflow`, so nothing stops the canvas from sticking in
+the live page. The wrappers are flex and gap only, plus the configurator's
+`lg:flex-row lg:items-start` row.
 
 Not met, by design: below `xl` the canvas and the step panel stack, and the
 canvas still scrolls away while you edit the bottom of the panel. A sticky
 canvas there would cover the panel. Criterion 3 was measured, and is met, in
 the two-column layout.
 
-Not checked: a live BB install (host fonts, icons, and the real page header
-heights), touch, and dark theme. The fixture's step panel for Review is
-about 940 px tall, against about 1,400 px in the live report. The canvas
-stuck at the page end anyway, so a taller panel only scrolls further under
-it.
+Not checked: a live BB install (host fonts, icons, the configurator's section
+list, and the real header heights), touch, and dark theme. The fixture's step
+panel for Review is about 990 px tall, against about 1,400 px in the live
+report. The canvas stuck at the page end anyway, so a taller panel only
+scrolls further under it.
