@@ -335,7 +335,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
         )}
         <aside ref={aside} aria-label={step ? "Step details" : "Task overview"} className={cn("rounded-lg border border-border text-sm", phoneColumn ? "shrink-0 p-3" : cn("min-h-0 overflow-y-auto", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0"))}>
           {step ? (
-            <StepPanel itemId={id} workflow={wf} step={step} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
+            <StepPanel itemId={id} workflow={wf} step={step} task={data.task} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
           ) : (
             <TaskOverview itemId={id} title={data.title} workflow={wf} task={data.task} loops={loops} journal={journal} now={now} />
           )}

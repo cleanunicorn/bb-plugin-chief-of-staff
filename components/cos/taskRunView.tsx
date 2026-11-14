@@ -269,7 +269,8 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
   );
 }
 
-function StepSettings({ step, live }: { step: Step; live: LiveStatus | undefined }) {
+/** `finished`: the task has ended, so a step that has not picked a model never will. */
+function StepSettings({ step, live, finished }: { step: Step; live: LiveStatus | undefined; finished: boolean }) {
   return (
     <details className="text-xs">
       <summary className="cursor-pointer rounded font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Step settings</summary>
@@ -279,7 +280,7 @@ function StepSettings({ step, live }: { step: Step; live: LiveStatus | undefined
         {step.type === "ship" ? <p><b>Action:</b> {step.action}</p> : null}
         {step.type === "model" ? (
           modelMode(step) === "auto"
-            ? <p><b>Picked:</b> {live?.picked ?? (live?.status === "done" ? "nothing (kept the current model)" : "not yet: an agent picks the best model for the task")}</p>
+            ? <p><b>Picked:</b> {live?.picked ?? (live?.status === "done" ? "nothing (kept the current model)" : finished ? "nothing (the task ended before a model was picked)" : "not yet: an agent picks the best model for the task")}</p>
             : <p><b>Sets:</b> {[step.providerId, step.model, step.reasoningLevel].filter(Boolean).join(" · ") || "nothing"}</p>
         ) : null}
         {step.instructions ? <TextBlock>{step.instructions}</TextBlock> : null}
@@ -288,8 +289,19 @@ function StepSettings({ step, live }: { step: Step; live: LiveStatus | undefined
   );
 }
 
-/** The selected step: its state, what it received, what it produced, and its runs. */
-export function StepPanel({ itemId, workflow, step, live, detail, steps, journal, now }: { itemId: string; workflow: Workflow; step: Step; live: LiveStatus | undefined; detail: StepDetail | undefined; steps: Record<string, StepDetail> | undefined; journal: readonly JournalRecord[]; now: number }) {
+/**
+ * What the step produced when there is nothing to show. On a finished task nothing more will come: a step that
+ * started reads as one that did not finish (closing a task can send it back to pending with its start kept).
+ */
+function emptyProduced(finished: boolean, live: LiveStatus | undefined, detail: StepDetail | undefined): string {
+  if (!finished) return live?.status === "running" ? "Working on it." : "Nothing yet.";
+  if (detail?.finishedAt || live?.status === "done") return "Nothing.";
+  return detail?.startedAt || live?.status === "stopped" ? "Did not finish." : "Did not run.";
+}
+
+/** The selected step: its state, what it received, what it produced, and its runs. On a finished task it reads as a record: no timer counts on. */
+export function StepPanel({ itemId, workflow, step, task, live, detail, steps, journal, now }: { itemId: string; workflow: Workflow; step: Step; task: TaskDetail | undefined; live: LiveStatus | undefined; detail: StepDetail | undefined; steps: Record<string, StepDetail> | undefined; journal: readonly JournalRecord[]; now: number }) {
+  const { finished, end } = taskEnd(task);
   const tone = liveTone(live);
   const limit = step.type === "agent" ? step.maxRounds : step.type === "model" ? 0 : step.maxAttempts;
   const inputs = stepInputs(workflow, steps, step.id);
@@ -298,7 +310,14 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
   if (live?.round) facts.push(["Run", live.round]);
   if (step.onFail) facts.push(["Failures", `${live?.attempts ?? 0} (limit ${limit})`]);
   if (detail?.startedAt) facts.push(["Started", relative(detail.startedAt, now)]);
-  if (detail?.startedAt) facts.push([detail.finishedAt ? "Took" : "Running for", duration(minutesBetween(detail.startedAt, detail.finishedAt, now))]);
+  if (detail?.startedAt) {
+    if (detail.finishedAt) facts.push(["Took", duration(minutesBetween(detail.startedAt, detail.finishedAt, now))]);
+    else if (!finished) facts.push(["Running for", duration(minutesBetween(detail.startedAt, null, now))]);
+    else {
+      const ran = minutesTo(detail.startedAt, end);
+      facts.push(["Ran for", ran === null ? duration(null) : `${duration(ran)} before the task ended`]);
+    }
+  }
   const onFail = step.onFail ? stepById(workflow, step.onFail)?.name ?? step.onFail : null;
   return (
     <div className="flex flex-col gap-4">
@@ -341,7 +360,7 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
           inputs.map((i) => (
             <div key={i.from} className="flex flex-col gap-1">
               <p className="text-xs font-medium text-foreground">From {i.name}</p>
-              {i.reports.length ? i.reports.map((r) => <TextBlock key={r.agent}>{(i.reports.length > 1 ? `Agent ${r.agent + 1}\n\n` : "") + r.summary}</TextBlock>) : i.output ? <TextBlock mono>{i.output}</TextBlock> : <p className="text-xs text-muted-foreground">Nothing yet.</p>}
+              {i.reports.length ? i.reports.map((r) => <TextBlock key={r.agent}>{(i.reports.length > 1 ? `Agent ${r.agent + 1}\n\n` : "") + r.summary}</TextBlock>) : i.output ? <TextBlock mono>{i.output}</TextBlock> : <p className="text-xs text-muted-foreground">{finished ? "Nothing." : "Nothing yet."}</p>}
             </div>
           ))
         ) : (
@@ -359,11 +378,11 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
         ) : detail?.output ? (
           <TextBlock mono>{detail.output}</TextBlock>
         ) : (
-          <p className="text-xs text-muted-foreground">{live?.status === "running" ? "Working on it." : "Nothing yet."}</p>
+          <p className="text-xs text-muted-foreground">{emptyProduced(finished, live, detail)}</p>
         )}
       </Section>
-      <Timeline itemId={itemId} workflow={workflow} entries={mine} now={now} empty="No runs recorded for this step yet." />
-      <StepSettings step={step} live={live} />
+      <Timeline itemId={itemId} workflow={workflow} entries={mine} now={now} empty={finished ? "No runs recorded for this step." : "No runs recorded for this step yet."} />
+      <StepSettings step={step} live={live} finished={finished} />
     </div>
   );
 }
