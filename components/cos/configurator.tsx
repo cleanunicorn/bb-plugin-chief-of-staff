@@ -1,7 +1,7 @@
 // Visual configurator: the delivery workflow, repositories, general settings
 // and GitHub access. Edits drafts locally, then saves through cos_set_config (the same
 // JSON documents the server parses) and cos_set_settings (scalar settings).
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { experimental_useRpcQuery, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
@@ -16,6 +16,7 @@ import { useConfigDrafts } from "./configDrafts";
 import type { ConfigDrafts } from "./configDrafts";
 import { useRowKeys } from "./rowKeys";
 import { Button } from "../ui/button";
+import { ConfirmDialog } from "../ui/confirm-dialog";
 import { Field, TextInput, NumberInput, ListInput, Select, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
@@ -389,6 +390,12 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   useEffect(() => () => setStatus(null), [setStatus]);
   const [retrying, setRetrying] = useState(false);
   const repoKeys = useRowKeys<RepoConfig>();
+  // What was asked outlives the opening: the dialog keeps naming the sections while it closes, after their drafts are gone.
+  const [confirming, setConfirming] = useState<{ sections: string[]; open: boolean; confirmed: boolean }>({ sections: [], open: false, confirmed: false });
+  /** The button that asked, where focus returns when the dialog is cancelled. */
+  const confirmOpener = useRef<HTMLElement | null>(null);
+  /** The nav button of the section on screen: where focus goes once a confirmed Discard has removed the save bar. */
+  const currentSectionButton = useRef<HTMLButtonElement>(null);
 
   // refetch() resolves on failure, so only returned data can confirm a saved document.
   // Compare the draft identity too: edits made while reloading must remain unsaved.
@@ -605,6 +612,10 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const banner = loadErrors
     .filter((e) => e.section !== section)
     .map((e) => `${e.title} JSON does not load: ${e.error}. ${section === "advanced" ? "Repair it below." : "Repair it in Advanced JSON; until then the visual editor leaves it unchanged and does not save it."}`);
+  const askDiscard = (opener: HTMLElement) => {
+    confirmOpener.current = opener;
+    setConfirming({ sections: dirtySections, open: true, confirmed: false });
+  };
   const openAdvanced = () => setSection("advanced");
   const visualSection = section === "workflow" || section === "repos" || section === "general";
   // A JSON save sends only the JSON documents and the server validates them, so the visual
@@ -622,6 +633,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         {SECTIONS.map((s) => (
           <button
             key={s.id}
+            ref={section === s.id ? currentSectionButton : undefined}
             type="button"
             aria-current={section === s.id ? "page" : undefined}
             onClick={() => setSection(s.id)}
@@ -725,7 +737,7 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                   {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
                 </span>
                 <span className="ml-auto flex gap-1.5">
-                  <Button size="sm" variant="outline" disabled={saving} onClick={discard}>
+                  <Button size="sm" variant="outline" disabled={saving} onClick={(e) => askDiscard(e.currentTarget)}>
                     Discard
                   </Button>
                   <Button size="sm" disabled={saving || blocking.length > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
@@ -765,6 +777,22 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
           </div>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirming.open}
+        title={`Discard changes to ${joinNames(confirming.sections)}?`}
+        description="Your edits go back to the saved values, including in sections not on screen. This cannot be undone."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        tone="destructive"
+        onConfirm={() => {
+          setConfirming((c) => ({ ...c, open: false, confirmed: true }));
+          discard();
+        }}
+        onCancel={() => setConfirming((c) => ({ ...c, open: false }))}
+        // The dialog has no trigger to return focus to. Cancel returns it to the button that asked; a confirmed
+        // Discard removes that button with the save bar, so focus goes to the section's button instead.
+        restoreFocus={() => (confirming.confirmed ? currentSectionButton.current : confirmOpener.current)?.focus()}
+      />
     </div>
   );
 }

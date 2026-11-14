@@ -3,7 +3,7 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, serializeWorkflows } from "../src/workflow";
-import { button, click, container, field, mount, setValue, unmount } from "./dom";
+import { button, click, container, dialog, dialogButton, field, keydown, mount, setValue, tick, unmount } from "./dom";
 
 const mocks = vi.hoisted(() => ({
   config: { repos: "", workflow: "" },
@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   failed: { config: null as string | null, settings: null as string | null },
   /** Reads that never loaded, so they have an error and no data. */
   neverLoaded: { config: false, settings: false },
+  /** Every render of the confirm dialog, to see what it shows while it closes. */
+  dialogRenders: [] as { open: boolean; title: string }[],
 }));
 /** The SDK's query state: a refresh error keeps `data`; a failed first load has none. */
 const query = (key: "config" | "settings", data: unknown, refetch: () => unknown) => ({
@@ -38,6 +40,16 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({ ...(await original<typeof import("../components/cos/workflowCanvas")>()), WorkflowCanvas: () => null }));
+vi.mock("../components/ui/confirm-dialog", async (original) => {
+  const actual = await original<typeof import("../components/ui/confirm-dialog")>();
+  return {
+    ...actual,
+    ConfirmDialog: (props: import("../components/ui/confirm-dialog").ConfirmDialogProps) => {
+      mocks.dialogRenders.push({ open: props.open, title: props.title });
+      return <actual.ConfirmDialog {...props} />;
+    },
+  };
+});
 import { Configurator } from "../components/cos/configurator";
 import { useConfigDrafts } from "../components/cos/configDrafts";
 
@@ -47,6 +59,12 @@ const text = () => container.textContent ?? "";
 const number = (label: string) => (field(label) as HTMLInputElement).value;
 /** The section buttons that carry the unsaved dot. */
 const unsavedSections = () => Array.from(container.querySelectorAll('nav [aria-label="unsaved"]')).map((dot) => dot.closest("button")!.textContent);
+/** Discard in the save bar, confirmed in the dialog it opens. */
+async function confirmDiscard() {
+  await click(button("Discard"));
+  await click(dialogButton("Discard"));
+  await tick();
+}
 
 const VALUES = { ...mocks.settings.values };
 beforeEach(() => {
@@ -67,6 +85,7 @@ afterEach(async () => {
   mocks.realtime.clear();
   mocks.failed = { config: null, settings: null };
   mocks.neverLoaded = { config: false, settings: false };
+  mocks.dialogRenders = [];
 });
 
 it("shows no save bar and no unsaved dot on a clean load", async () => {
@@ -82,7 +101,7 @@ it("marks the edited section as unsaved, and Discard restores the loaded values"
   expect(text()).toContain("Unsaved changes");
   expect(unsavedSections()).toEqual(["General"]);
 
-  await click(button("Discard"));
+  await confirmDiscard();
   expect(number(MAX_TASKS)).toBe("8");
   expect(text()).not.toContain("Unsaved changes");
   expect(unsavedSections()).toEqual([]);
@@ -123,6 +142,93 @@ it("names Advanced JSON in the save bar when only the JSON changed", async () =>
   await setValue(field("Workflow"), "{}");
   expect(unsavedLine()).toBe("Unsaved changes in Advanced JSON");
   expect(unsavedLabels()).toEqual(["Advanced JSON"]);
+});
+
+// ---------- Discard asks first (#124) ----------
+
+const DISCARD_DESCRIPTION = "Your edits go back to the saved values, including in sections not on screen. This cannot be undone.";
+
+it("asks before Discard, naming every section with changes, and discards them all on confirm", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  await click(button("Workflows"));
+  await setValue(field("Name"), "Delivery");
+
+  button("Discard").focus();
+  await click(button("Discard"));
+  expect(dialog()?.textContent).toContain("Discard changes to Workflows and General?");
+  expect(dialog()?.textContent).toContain(DISCARD_DESCRIPTION);
+  // Nothing is dropped until the dialog is answered.
+  expect(unsavedLabels()).toEqual(["Workflows", "General"]);
+  expect((field("Name") as HTMLInputElement).value).toBe("Delivery");
+
+  await click(dialogButton("Discard"));
+  await tick();
+  expect(dialog()).toBeNull();
+  expect(unsavedLabels()).toEqual([]);
+  expect(unsavedLine()).toBeNull();
+  expect((field("Name") as HTMLInputElement).value).toBe(DEFAULT_DOCUMENT.workflows[0]!.name);
+  await click(button("General"));
+  expect(number(MAX_TASKS)).toBe("8");
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("hands focus to the current section's button after a confirmed Discard, since the bar is gone", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  button("Discard").focus();
+  await confirmDiscard();
+  expect(document.activeElement).toBe(navButton("General"));
+});
+
+it.each([
+  ["Keep editing", () => click(dialogButton("Keep editing"))],
+  ["Escape", () => keydown(dialog()!, "Escape")],
+])("keeps every draft when Discard is cancelled with %s, and returns focus to Discard", async (_, cancel) => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  button("Discard").focus();
+  await click(button("Discard"));
+  expect(dialog()).not.toBeNull();
+
+  await cancel();
+  await tick();
+  expect(dialog()).toBeNull();
+  expect(number(MAX_TASKS)).toBe("5");
+  expect(unsavedLabels()).toEqual(["General"]);
+  expect(unsavedLine()).toBe("Unsaved changes in General");
+  expect(document.activeElement).toBe(button("Discard"));
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("asks the same way when only Advanced JSON has changes", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(field("Workflow"), "{}");
+  button("Discard").focus();
+  await click(button("Discard"));
+  expect(dialog()?.textContent).toContain("Discard changes to Advanced JSON?");
+  expect((field("Workflow") as HTMLTextAreaElement).value).toBe("{}");
+
+  await click(dialogButton("Keep editing"));
+  await tick();
+  expect((field("Workflow") as HTMLTextAreaElement).value).toBe("{}");
+
+  await confirmDiscard();
+  expect((field("Workflow") as HTMLTextAreaElement).value).toBe(mocks.config.workflow);
+  expect(unsavedLabels()).toEqual([]);
+  expect(document.activeElement).toBe(navButton("Advanced JSON"));
+  expect(mocks.call).not.toHaveBeenCalled();
+});
+
+it("keeps the dialog's title while it closes, after the drafts it names are gone", async () => {
+  await mount(<Configurator initialSection="general" />);
+  await setValue(field(MAX_TASKS), "5");
+  await confirmDiscard();
+  const lastOpen = mocks.dialogRenders.map((r) => r.open).lastIndexOf(true);
+  expect(mocks.dialogRenders[lastOpen]!.title).toBe("Discard changes to General?");
+  const closing = mocks.dialogRenders.slice(lastOpen + 1);
+  expect(closing.length).toBeGreaterThan(0);
+  expect(closing.every((r) => !r.open && r.title === "Discard changes to General?")).toBe(true);
 });
 
 it("is clean again when a general setting is typed back to its loaded value", async () => {
@@ -415,7 +521,7 @@ it("keeps an Advanced JSON draft across a section switch, and Discard restores t
   await click(button("Advanced JSON"));
   expect(textarea("Workflow").value).toBe("{}");
 
-  await click(button("Discard"));
+  await confirmDiscard();
   expect(textarea("Workflow").value).toBe(mocks.config.workflow);
   expect(unsavedSections()).toEqual([]);
   expect(mocks.call).not.toHaveBeenCalled();
@@ -431,7 +537,7 @@ it("locks the visual sections while an Advanced JSON draft is pending", async ()
   await click(button("Repositories1"));
   expect(button("Add repository").closest("[inert]")).not.toBeNull();
 
-  await click(button("Discard"));
+  await confirmDiscard();
   expect(text()).not.toContain(JSON_NOTICE);
   expect(container.querySelector("[inert]")).toBeNull();
 });
@@ -834,7 +940,7 @@ describe("removing items and workflows (#66)", () => {
     await setValue(field("GitHub repository"), "acme/renamed");
     await setValue(model, "opus");
     expect(field("Model")).toBe(model);
-    await click(button("Discard"));
+    await confirmDiscard();
 
     // A refetch hands over a new result object with the same JSON: the rows are the same rows.
     await click(button("Remove acme/b"));
@@ -870,7 +976,7 @@ describe("removing items and workflows (#66)", () => {
     await click(button("Fast"));
     await click(button("Delete Fast"));
     await click(button("Remove"));
-    await click(button("Discard"));
+    await confirmDiscard();
     expect(unsavedSections()).toEqual([]);
     expect(button("Fast")).toBeTruthy();
 
