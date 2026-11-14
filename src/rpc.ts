@@ -164,6 +164,22 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         ]);
         return { values: general, token: { stored: Boolean(values.githubToken && values.githubToken.trim()), source: await cos.tokenSource() }, projects, providers };
       },
+      async cos_provider_models(input) {
+        try {
+          const result = await cos.bb.sdk.providers.models({ providerId: input.providerId, preferCached: true });
+          const models = result.models.map((m) => ({
+            id: m.id,
+            displayName: m.displayName || m.id,
+            isDefault: m.isDefault,
+            reasoningLevels: m.supportedReasoningEfforts.map((e) => e.reasoningEffort),
+            defaultReasoningLevel: m.defaultReasoningEffort || null,
+          }));
+          const failure = result.modelLoadError;
+          return { models, error: failure ? failure.detail || failure.code : null };
+        } catch (error) {
+          return { models: [], error: error instanceof Error ? error.message : String(error) };
+        }
+      },
       async cos_skills() {
         const { repos } = await cos.config();
         const projectIds = [...new Set(repos.map((r) => r.projectId).filter(Boolean))];

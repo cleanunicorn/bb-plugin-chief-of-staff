@@ -226,7 +226,14 @@ describe("chief-of-staff server", () => {
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
         skills: { list: async () => ({ skills: [{ id: "skill_1", name: "tdd", description: "Test first", filePath: "/x/SKILL.md", manageable: false, pluginId: null, provider: null, registrySkillId: null, scope: "bb-project" }] }) as never },
-        providers: { catalog: async () => [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true, info: {} }] as never },
+        providers: {
+          catalog: async () => [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true, info: {} }] as never,
+          models: async (args?: { providerId?: string }) => {
+            if (args?.providerId === "broken") throw new Error("provider exploded");
+            if (args?.providerId === "codex") return { models: [], modelLoadError: { code: "auth_required", detail: null, providerId: "codex" }, permissionCeiling: "full" } as never;
+            return { models: [{ id: "claude-opus-5-5", model: "claude-opus-5-5", displayName: "Opus 5.5", description: "", isDefault: true, reasoningDiscovery: "known", defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }, { reasoningEffort: "high", description: "" }] }], modelLoadError: null, permissionCeiling: "full" } as never;
+          },
+        },
       },
     });
     await plugin(host.bb);
@@ -2305,6 +2312,46 @@ describe("chief-of-staff server", () => {
     expect(sent.slice(before).filter((m) => (m as { threadId: string }).threadId === "thr_1")).toHaveLength(0);
   });
 
+  it("keeps a PR ship step with watchCi open until CI is green, sending red CI back to the builder", async () => {
+    const doc = { default: "default", workflows: [{ id: "default", name: "Build and watch", steps: [
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "pr", watchCi: true, onFail: "build", maxAttempts: 2 },
+    ] }] };
+    const pinned = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, workflow: "default" }] });
+    await host.harness.behavior.callRpc("cos_set_config", { workflow: JSON.stringify(doc), repos: pinned });
+    // Saved and read back with the option intact.
+    const saved = JSON.parse(((await host.harness.behavior.callRpc("cos_get_config", null)) as { workflow: string }).workflow);
+    expect(saved.workflows[0].steps[1]).toMatchObject({ action: "pr", watchCi: true, onFail: "build" });
+    let checks = "failure";
+    ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: checks, html_url: "https://github.com/acme/app/actions/runs/99" }] } });
+    ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]!.workflow.steps[1]).toMatchObject({ watchCi: true });
+    await report("build");
+    await idle();
+    // The PR is open, and the step stays on it.
+    expect(await roster()).toMatchObject({ detail: "ci", prNumber: 7 });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await sweep();
+      const fixing = (await roster()) as Entry & { steps: { id: string; attempts: number }[] };
+      expect(fixing).toMatchObject({ current: ["Build"] });
+      expect(fixing.steps.find((st) => st.id === "ship")!.attempts).toBe(1);
+      checks = "success";
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      await report("build");
+      await idle();
+      expect(await roster()).toMatchObject({ detail: "ci" });
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      await sweep();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]).toMatchObject({ status: "done", prNumber: 7 });
+    expect(ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toHaveLength(1);
+    expect(ghCalls.some((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toBe(false);
+  });
+
   it("counts a CI failure again when a fix pushes no new commit", async () => {
     await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", maxCiFixes: 1 } } }) });
     ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
@@ -2856,6 +2903,15 @@ describe("chief-of-staff server", () => {
     const withFlags = (await host.harness.behavior.runCli(["status", "--all", "--repo", "acme/app", "--usage"])).stdout;
     expect(withFlags).toMatch(/More finished: bb cos status --all --repo acme\/app --usage --before \S+/);
     expect((await host.harness.behavior.runCli(["status"])).stdout).not.toContain("More finished");
+  });
+
+  it("lists a provider's models and reasoning levels for the model fields, and says why when it cannot", async () => {
+    expect(await host.harness.behavior.callRpc("cos_provider_models", { providerId: "claude-code" })).toEqual({
+      models: [{ id: "claude-opus-5-5", displayName: "Opus 5.5", isDefault: true, reasoningLevels: ["low", "high"], defaultReasoningLevel: "high" }],
+      error: null,
+    });
+    expect(await host.harness.behavior.callRpc("cos_provider_models", { providerId: "codex" })).toEqual({ models: [], error: "auth_required" });
+    expect(await host.harness.behavior.callRpc("cos_provider_models", { providerId: "broken" })).toEqual({ models: [], error: "provider exploded" });
   });
 
   it("reads and writes settings for the configurator without exposing the token", async () => {

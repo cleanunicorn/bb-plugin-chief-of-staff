@@ -8,12 +8,14 @@ import { experimental_useRpcQuery } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { KnownSkill } from "../../src/skills";
 import { SkillTextarea } from "./skillTextarea";
+import { ModelFields, type ModelCatalog } from "./modelFields";
 import { useRowKeys } from "./rowKeys";
 import {
   DEFAULT_MODEL_INSTRUCTIONS,
   DEFAULT_WORKFLOW,
   blankStep,
   modelMode,
+  watchesCi,
   descendants,
   insertStepAfter,
   problemKey,
@@ -153,6 +155,9 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, rev
   // The `/` typeahead is a convenience: without the list, instructions are plain text.
   const skillsQuery = experimental_useRpcQuery<typeof rpcContract, "cos_skills">({ contract: rpcContract, method: "cos_skills", input: null });
   const skills: KnownSkill[] | null = skillsQuery.data?.skills ?? null;
+  // The model fields' autocomplete, likewise: without it they are plain text.
+  const settingsQuery = experimental_useRpcQuery<typeof rpcContract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
+  const catalog: ModelCatalog | null = settingsQuery.data ? { providers: settingsQuery.data.providers, defaultProviderId: settingsQuery.data.values.defaultProviderId ?? "" } : null;
   const wf = doc.workflows.find((w) => w.id === current) ?? doc.workflows[0]!;
   // Everything the server would reject: this workflow's problems and the document's.
   const allProblems = useMemo(() => problems ?? workflowProblems(doc), [doc, problems]);
@@ -302,7 +307,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, rev
             <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setFocusNameOf(null); setRevealed(null); }} onAdd={setFocusNameOf} problems={problemCounts} reveal={revealed?.nonce} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px] xl:self-start [@media(min-width:80rem)_and_(min-height:45rem)]:sticky [@media(min-width:80rem)_and_(min-height:45rem)]:top-3"} />
             <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
               {selectedStep ? (
-                <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} reveal={revealed?.id === selectedStep.id ? revealed.nonce : undefined} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow focusName={focusNameOf === selectedStep.id} />
+                <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} reveal={revealed?.id === selectedStep.id ? revealed.nonce : undefined} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} catalog={catalog} narrow focusName={focusNameOf === selectedStep.id} />
               ) : (
                 <div className="flex h-full min-h-40 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
                   <Icon name="MousePointerClick" fallback="Circle" className="size-5" aria-hidden />
@@ -316,7 +321,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, rev
         <div className="flex flex-col gap-2">
           {topoOrder(wf).map((id) => {
             const step = wf.steps.find((s) => s.id === id)!;
-            return <StepPanel key={id} workflow={wf} step={step} problems={stepProblems(step)} reveal={revealed?.id === id ? revealed.nonce : undefined} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} skills={skills} collapsible />;
+            return <StepPanel key={id} workflow={wf} step={step} problems={stepProblems(step)} reveal={revealed?.id === id ? revealed.nonce : undefined} onChange={(s) => setStep(id, s)} onRemove={() => removeStep(id)} skills={skills} catalog={catalog} collapsible />;
           })}
           <div className="flex flex-wrap gap-1.5">
             {(Object.keys(STEP_TYPE_META) as StepType[]).map((t) => (
@@ -345,7 +350,7 @@ function Row({ children, narrow }: { children: ReactNode; narrow?: boolean }) {
  * A new `reveal` value opens the panel, scrolls it into view and focuses its heading.
  * `focusName`: focus the Name field when the panel opens (a step just added).
  */
-export function StepPanel({ workflow, step, problems = [], reveal, onChange, onRemove, skills = null, collapsible = false, narrow = false, focusName = false }: { workflow: Workflow; step: Step; problems?: WorkflowProblem[]; reveal?: number; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; collapsible?: boolean; narrow?: boolean; focusName?: boolean }) {
+export function StepPanel({ workflow, step, problems = [], reveal, onChange, onRemove, skills = null, catalog = null, collapsible = false, narrow = false, focusName = false }: { workflow: Workflow; step: Step; problems?: WorkflowProblem[]; reveal?: number; onChange: (s: Step) => void; onRemove: () => void; skills?: readonly KnownSkill[] | null; catalog?: ModelCatalog | null; collapsible?: boolean; narrow?: boolean; focusName?: boolean }) {
   const two = narrow ? "grid grid-cols-1 gap-2" : "grid grid-cols-1 gap-2 sm:grid-cols-2";
   const [open, setOpen] = useState(!collapsible);
   const panel = useRef<HTMLElement>(null);
@@ -367,7 +372,9 @@ export function StepPanel({ workflow, step, problems = [], reveal, onChange, onR
   const before = others.filter((s) => descendants(workflow, s.id).has(step.id));
   const autoModel = step.type === "model" && modelMode(step) === "auto";
   const agentRuns = step.type === "agent" || autoModel;
-  const canFail = step.type === "ship" ? step.action === "merge" : step.type === "model" ? false : step.type !== "agent" || step.verdict;
+  // Where red CI goes back to by default: the last code-writing step before this one.
+  const fixer = topoOrder(workflow).map((id) => before.find((s) => s.id === id)).filter((s): s is Step => s?.type === "agent" && s.writes).at(-1);
+  const canFail = step.type === "ship" ? watchesCi(step) : step.type === "model" ? false : step.type !== "agent" || step.verdict;
   return (
     <article ref={panel} className="flex scroll-mt-3 flex-col gap-3 rounded-lg border border-border bg-background p-3">
       <header className="flex items-center gap-2">
@@ -452,10 +459,8 @@ export function StepPanel({ workflow, step, problems = [], reveal, onChange, onR
                     <div className={two}>
                       <Field label="Choice id" hint="What the agent reports." error={error("id", i)}>{(id) => <TextInput id={id} value={c.id} onChange={(v) => setChoice({ id: v.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 40) })} mono />}</Field>
                       <Field label="Use when" error={error("when", i)}>{(id) => <TextInput id={id} value={c.when} onChange={(v) => setChoice({ when: v })} placeholder="e.g. small, well-understood change" />}</Field>
-                      <Field label="Agent (provider)" error={error("providerId", i)}>{(id) => <TextInput id={id} value={c.providerId ?? ""} onChange={(v) => setChoice({ providerId: v || undefined })} placeholder="keep current" mono />}</Field>
-                      <Field label="Model" error={error("model", i)}>{(id) => <TextInput id={id} value={c.model ?? ""} onChange={(v) => setChoice({ model: v || undefined })} placeholder="keep current" mono />}</Field>
-                      <Field label="Reasoning level" error={error("reasoningLevel", i)}>{(id) => <TextInput id={id} value={c.reasoningLevel ?? ""} onChange={(v) => setChoice({ reasoningLevel: v || undefined })} placeholder="keep current" mono />}</Field>
                     </div>
+                    <ModelFields className={two} value={c} onChange={(patch) => setChoice({ ...patch })} catalog={catalog} error={(field) => error(field, i)} />
                     <ConfirmRemove label={`Remove choice ${c.id}`} onConfirm={() => set({ chooses: step.chooses.filter((_, j) => j !== i) })} />
                   </div>
                 );
@@ -477,11 +482,7 @@ export function StepPanel({ workflow, step, problems = [], reveal, onChange, onR
           ) : null}
           {step.type === "model" && !autoModel ? (
             <div className="flex flex-col gap-2">
-              <div className={two}>
-                <Field label="Agent (provider)" hint="A BB provider id, e.g. claude-code." error={error("providerId")}>{(id) => <TextInput id={id} value={step.providerId ?? ""} onChange={(v) => set({ providerId: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
-                <Field label="Model" error={error("model")}>{(id) => <TextInput id={id} value={step.model ?? ""} onChange={(v) => set({ model: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
-                <Field label="Reasoning level" error={error("reasoningLevel")}>{(id) => <TextInput id={id} value={step.reasoningLevel ?? ""} onChange={(v) => set({ reasoningLevel: v || undefined, mode: "fixed" })} placeholder="keep current" mono />}</Field>
-              </div>
+              <ModelFields className={two} value={step} onChange={(patch) => set({ ...patch, mode: "fixed" })} catalog={catalog} error={(field) => error(field)} providerHint="A BB provider id, e.g. claude-code." />
             </div>
           ) : null}
           {step.type === "check" ? (
@@ -492,14 +493,14 @@ export function StepPanel({ workflow, step, problems = [], reveal, onChange, onR
           ) : null}
           {step.type === "ship" ? (
             <div className={two}>
-              <Field label="Shipping means" hint={step.action === "pr" ? "Finishes when the PR opens. Later CI, review and merge are handled by the PR owner." : undefined}>
+              <Field label="Shipping means" hint={step.action === "pr" ? (step.watchCi ? "Finishes when the PR's CI is green. Review and merge are handled by the PR owner." : "Finishes when the PR opens. Later CI, review and merge are handled by the PR owner.") : undefined}>
                 {(id) => (
                   <Select
                     id={id}
                     value={step.action}
                     onChange={(v) => set({ action: v })}
                     options={[
-                      { value: "pr", label: "Finish when the pull request opens" },
+                      { value: "pr", label: step.watchCi ? "Open a pull request and get its CI green" : "Finish when the pull request opens" },
                       { value: "merge", label: "Finish after the pull request is merged" },
                       { value: "push", label: "Push the branch only" },
                     ]}
@@ -507,6 +508,7 @@ export function StepPanel({ workflow, step, problems = [], reveal, onChange, onR
                 )}
               </Field>
               {step.action !== "push" ? <ToggleRow label="Open as draft" checked={step.draft} onChange={(v) => set({ draft: v })} /> : null}
+              {step.action === "pr" ? <ToggleRow label="Wait for green CI" hint="Red CI goes back to the step below to be fixed, until CI is green or the attempts run out." checked={step.watchCi} onChange={(v) => set({ watchCi: v, ...(v && !step.onFail && fixer ? { onFail: fixer.id } : {}) })} /> : null}
               {step.action === "merge" ? <ToggleRow label="Wait for an approving review" hint="CI and review waits release task capacity. Merges when approved and green." checked={step.requireApproval} onChange={(v) => set({ requireApproval: v })} /> : null}
             </div>
           ) : null}

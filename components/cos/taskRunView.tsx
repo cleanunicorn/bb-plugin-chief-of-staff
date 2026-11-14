@@ -278,7 +278,7 @@ function StepSettings({ step, live, finished }: { step: Step; live: LiveStatus |
       <div className="mt-1.5 flex flex-col gap-1.5">
         {step.type === "agent" ? <p>{step.writes ? "Writes code" : "Read-only"} · {step.agents} {step.agents === 1 ? "agent" : "agents"}{step.approval ? " · Approval required" : ""}{step.verdict ? " · Pass/fail" : ""}</p> : null}
         {step.type === "check" ? <p className="break-all"><b>Command:</b> <span className="font-mono">{step.command}</span></p> : null}
-        {step.type === "ship" ? <p><b>Action:</b> {step.action}</p> : null}
+        {step.type === "ship" ? <p><b>Action:</b> {step.action}{step.action === "pr" && step.watchCi ? ", until CI is green" : ""}</p> : null}
         {step.type === "model" ? (
           modelMode(step) === "auto"
             ? <p><b>Picked:</b> {live?.picked ?? (live?.status === "done" ? "nothing (kept the current model)" : finished ? "nothing (the task ended before a model was picked)" : "not yet: an agent picks the best model for the task")}</p>

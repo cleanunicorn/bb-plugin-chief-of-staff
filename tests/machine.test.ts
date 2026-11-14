@@ -104,7 +104,7 @@ function loop() {
 }
 
 describe("workflow engine", () => {
-  it("walks the default workflow to an open PR", () => {
+  it("walks the default workflow to an open PR with green CI", () => {
     let item = itemFor(DEFAULT_WORKFLOW);
     let fx: Effect[];
     [item, fx] = run(item, { type: "start" });
@@ -126,8 +126,11 @@ describe("workflow engine", () => {
     expect(fx).toEqual([{ type: "ship", step: "ship" }]);
     expect([item.status, item.jobStartedAt]).toEqual(["cos", NOW.toISOString()]);
 
+    // The default ship step waits for green CI: an open PR alone does not finish it.
     [item] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
-    expect([item.status, item.prNumber]).toEqual(["done", 7]);
+    expect([item.status, item.prNumber, item.nodes.ship!.phase]).toEqual(["ci", 7, "ci"]);
+    [item, fx] = run(item, { type: "ci_passing" });
+    expect([item.status, fx.filter((e) => e.type === "merge")]).toEqual(["done", []]);
     expect(item.finishedAt).toBe(NOW.toISOString());
     [item, fx] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
     expect(fx).toEqual([]);
@@ -390,6 +393,58 @@ describe("workflow engine", () => {
     expect(item.waitingKind).toBe("escalation");
     [item] = run(item, { type: "approve" });
     expect([item.status, item.nodes.ship!.phase]).toEqual(["ready", "ready"]);
+  });
+
+  it("watches CI on a PR step with watchCi: red goes back to be fixed, green finishes it", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "pr", watchCi: true, onFail: "build", maxAttempts: 2 },
+    ]);
+    expect(validateWorkflow(w)).toEqual([]);
+    let item = itemFor(w);
+    item = { ...item, nodes: { build: { ...item.nodes.build!, status: "done", round: 1 }, ship: { ...item.nodes.ship!, status: "running", round: 1, phase: "pushing" } } };
+    let fx: Effect[];
+    [item] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
+    expect([item.status, item.nodes.ship!.status, item.nodes.ship!.phase]).toEqual(["ci", "running", "ci"]);
+
+    // Red CI: the builder gets the log as feedback and re-runs; shipping waits for it.
+    [item, fx] = run(item, { type: "ci_failing", log: "lint failed" });
+    expect(st(item)).toEqual({ build: "running", ship: "pending" });
+    expect(item.nodes.build!.feedback).toContain("lint failed");
+    expect(agentFx(fx)).toEqual([{ type: "agent", step: "build", agent: 0, kind: "start" }]);
+
+    // The fix is reported; the ship step pushes again, finds the PR and watches CI again.
+    [item] = run(item, ended("build", report(), item));
+    expect(item.nodes.ship!.phase).toBe("pushing");
+    [item] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" });
+    expect(item.nodes.ship!.phase).toBe("ci");
+    [item, fx] = run(item, { type: "ci_passing" });
+    expect([item.status, st(item), fx.filter((e) => e.type === "merge")]).toEqual(["done", { build: "done", ship: "done" }, []]);
+  });
+
+  it("asks a person when a watched PR's CI stays red, and finishes the step on approval", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "pr", watchCi: true, onFail: "build", maxAttempts: 0 },
+    ]);
+    let item = itemFor(w, { prNumber: 7 });
+    item = { ...item, nodes: { build: { ...item.nodes.build!, status: "done", round: 1 }, ship: { ...item.nodes.ship!, status: "running", round: 1, phase: "ci" } } };
+    [item] = run(item, { type: "ci_failing", log: "red" });
+    expect(item.waitingKind).toBe("escalation");
+    [item] = run(item, { type: "approve" });
+    expect([item.status, item.nodes.ship!.status]).toEqual(["done", "done"]);
+  });
+
+  it("still finishes a PR step without watchCi when the PR opens", () => {
+    const w = wf([
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "pr" },
+    ]);
+    expect(w.steps[1]).toMatchObject({ watchCi: false });
+    let item = itemFor(w);
+    item = { ...item, nodes: { build: { ...item.nodes.build!, status: "done", round: 1 }, ship: { ...item.nodes.ship!, status: "running", round: 1, phase: "pushing" } } };
+    [item] = run(item, { type: "pr_opened", step: "ship", prNumber: 7, prUrl: "u" });
+    expect(item.status).toBe("done");
   });
 
   it("re-runs a chosen step and everything after it", () => {

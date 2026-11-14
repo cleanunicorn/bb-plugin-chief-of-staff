@@ -736,7 +736,7 @@ export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number
       const ship = openShip(item);
       if (!ship) continue;
       // Upgrade unfinished PR-only deliveries after confirming the PR exists.
-      if (ship.action === "pr") {
+      if (ship.action === "pr" && !ship.watchCi) {
         await dispatch(cos, item.id, { type: "pr_opened", step: ship.id, prNumber: pr.number, prUrl: pr.html_url }, actor);
         continue;
       }

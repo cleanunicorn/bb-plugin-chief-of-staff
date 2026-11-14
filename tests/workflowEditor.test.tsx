@@ -7,7 +7,14 @@ import { afterEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, blankStep, type Step, type WorkflowsDocument } from "../src/workflow";
 import { button, click, container, fields, mount, setValue, unmount } from "./dom";
 
-vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ data: { skills: [] }, error: null, refetch: vi.fn() }) }));
+vi.mock("@get-bb/plugin-sdk/app", () => ({
+  experimental_useRpcQuery: ({ method }: { method: string }) => ({
+    data: method === "cos_get_settings" ? { values: { defaultProviderId: "" }, providers: [] } : method === "cos_provider_models" ? { models: [], error: null } : { skills: [] },
+    error: null,
+    isLoading: false,
+    refetch: vi.fn(),
+  }),
+}));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
 vi.mock("../components/cos/workflowCanvas", async (original) => ({
   ...(await original<typeof import("../components/cos/workflowCanvas")>()),
@@ -426,4 +433,23 @@ it("keeps a model choice mounted while its id is typed", async () => {
   await setValue(id, "tiny");
   expect(fields("Choice id")[0]).toBe(id);
   expect(id.value).toBe("tiny");
+});
+
+it("waits for green CI on a PR ship step, sending red CI back to the code-writing step by default", async () => {
+  // The default workflow waits for CI; start from a ship step that does not.
+  const doc = structuredClone(DEFAULT_DOCUMENT);
+  const ship = doc.workflows[0]!.steps.find((s) => s.id === "ship")! as Extract<Step, { type: "ship" }>;
+  ship.watchCi = false;
+  delete ship.onFail;
+  const editor = await open(doc);
+  await click(button("List"));
+  await click(Array.from(container.querySelectorAll("button[aria-expanded]")).at(-1)!);
+  expect(container.textContent).toContain("Finishes when the PR opens.");
+  expect(fields("When CI is red, go back to")).toEqual([]);
+  await click(button("Wait for green CI"));
+  expect(step(editor.changed(), "ship")).toEqual({ ...ship, watchCi: true, onFail: "build" });
+  editor.expectInputUntouched();
+  await mount(<WorkflowsEditor doc={editor.changed()} onChange={editor.onChange} usedBy={{}} />);
+  expect(container.textContent).toContain("Finishes when the PR's CI is green.");
+  expect(fields("When CI is red, go back to")).toHaveLength(1);
 });

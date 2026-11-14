@@ -84,7 +84,7 @@ function subtitle(s: Step): string {
     case "model":
       return modelMode(s) === "auto" ? "agent picks the best model" : [s.providerId, s.model, s.reasoningLevel].filter(Boolean).join(" · ") || "not set";
     case "ship":
-      return s.action === "merge" ? "finish after merge" : s.action === "push" ? "push branch" : "finish when PR opens";
+      return s.action === "merge" ? "finish after merge" : s.action === "push" ? "push branch" : s.watchCi ? "finish when CI is green" : "finish when PR opens";
   }
 }
 

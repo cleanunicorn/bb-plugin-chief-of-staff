@@ -322,6 +322,18 @@ export const rpcContract = defineRpcContract({
       providers: z.array(z.object({ id: z.string(), displayName: z.string(), available: z.boolean(), enabled: z.boolean() })),
     }),
   },
+  /**
+   * A provider's models and their reasoning levels, for the model fields'
+   * autocomplete. A provider whose models cannot be listed returns none and the
+   * reason; the fields stay free text either way.
+   */
+  cos_provider_models: {
+    input: z.object({ providerId: z.string().min(1).max(200) }),
+    output: z.object({
+      models: z.array(z.object({ id: z.string(), displayName: z.string(), isDefault: z.boolean(), reasoningLevels: z.array(z.string()), defaultReasoningLevel: z.string().nullable() })),
+      error: z.string().nullable(),
+    }),
+  },
   /** Skills agents can use, for the `/` typeahead in step instructions: those of the configured repos' projects, by name. */
   cos_skills: {
     input: z.null(),

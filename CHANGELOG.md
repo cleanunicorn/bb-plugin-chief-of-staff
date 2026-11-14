@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A PR ship step can wait for green CI and have it fixed.** "Wait for green
+  CI" on a ship step that opens a pull request keeps the step open until the
+  PR's CI is green. Red CI sends the failure log back to the "When CI is red,
+  go back to" step (by default the last code-writing step) to be fixed, and
+  the step pushes and watches again, up to its attempts, then asks you. In
+  JSON: `"watchCi": true` on a ship step with `"action": "pr"`. Approving a
+  PR step's escalation now finishes it instead of leaving it waiting.
+  The built-in default workflow has it on. Workflows you already saved keep
+  their ship step as it was.
+
+- **The provider, model and reasoning level fields suggest values.** On a
+  fixed Model step and on an agent step's model choices, the Agent field
+  suggests bb's enabled providers, Model suggests that provider's models (the
+  default provider's when Agent is empty), and Reasoning level suggests the
+  chosen model's levels. Any text is still accepted.
+
 - **Configure's sections are now part of the page address.** Picking
   Workflows, Repositories, General, GitHub access or Advanced JSON updates the
   address to `…/cos/config/<section>`, so Back and Forward move between

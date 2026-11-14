@@ -507,7 +507,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       patch.jobStartedAt = null;
       n.retry = null;
       const s = step(event.step);
-      if (s?.type === "ship" && s.action === "pr") complete(event.step, `Opened pull request #${event.prNumber}`);
+      if (s?.type === "ship" && s.action === "pr" && !s.watchCi) complete(event.step, `Opened pull request #${event.prNumber}`);
       else n.phase = "ci";
       break;
     }
@@ -528,6 +528,9 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         n.phase = "merging";
         patch.jobStartedAt = iso;
         effects.push({ type: "merge", step: id });
+      } else if (s.action === "pr" && s.watchCi) {
+        patch.jobStartedAt = null;
+        complete(id, `CI green on pull request #${item.prNumber ?? "?"}`);
       } else if (n.phase === "ci") {
         n.phase = "ready";
         effects.push({ type: "notify", title: `PR ready to merge: ${label(item)}`, body: item.prUrl ?? "" });
@@ -679,8 +682,8 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!id || !n || !s || n.status !== "waiting" || !n.waiting) break;
       // An open question is answered, not approved; Chief of Staff's own failure is retried.
       if (n.waiting.kind === "question" || n.waiting.kind === "cos_error") break;
-      if (s.type === "ship" && item.prNumber) {
-        // Shipping is not over while the PR is open: keep watching it.
+      if (s.type === "ship" && s.action === "merge" && item.prNumber) {
+        // Merging is not over while the PR is open: keep watching it.
         n.status = "running";
         n.waiting = null;
         n.phase = "ready";
