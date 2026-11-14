@@ -56,7 +56,8 @@ describe("how a finished task ended", () => {
 
   it("says a pull request was closed without merging", async () => {
     await render(task("failed", FINISHED, { outcome: "pr_closed", lastError: PR_CLOSED_ERROR, prNumber: 7 }));
-    expect(ending("PR closed")).toBe(`PR closed · ended ${at(FINISHED)}Why it ended: ${PR_CLOSED_ERROR}`);
+    // The reason already says it: one line, not "PR closed" and then "PR closed without merge".
+    expect(ending("PR closed")).toBe(`${PR_CLOSED_ERROR} · ended ${at(FINISHED)}`);
   });
 
   it("says how a done task ended, without a stale error", async () => {

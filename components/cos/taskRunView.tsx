@@ -12,7 +12,7 @@ import { STATUS, duration, relative } from "./viz";
 import { STEP_TYPE_META, liveTone, type LiveStatus } from "./workflowCanvas";
 import { PIVOTAL_KINDS, journalLine, stepInputs, taskEnd, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail } from "./runModel";
 import { modelMode, stepById, type Step, type Workflow } from "../../src/workflow";
-import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "../../src/outcome";
+import { endSummary, FAILED_OUTCOMES, OUTCOME_META } from "../../src/outcome";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "Queued",
@@ -215,22 +215,16 @@ function LoopList({ workflow, loops }: { workflow: Workflow; loops: LoopSummary 
   );
 }
 
-/**
- * How a finished task ended: the outcome, when, and (when it did not deliver) why. A delivered task's stale error stays
- * hidden, and MARKED_FAILED would only repeat the label. Worded like the card's end reason.
- */
+/** How a finished task ended: the outcome, when, and (when it did not deliver) why. Same rules as the card's line (endSummary). */
 function EndCallout({ task, end }: { task: TaskDetail & { outcome: NonNullable<TaskDetail["outcome"]> }; end: string | null }) {
+  const { headline, reason } = endSummary(task.outcome, task.lastError);
   const meta = OUTCOME_META[task.outcome];
-  const failed = FAILED_OUTCOMES.includes(task.outcome);
-  const reason = failed && task.lastError !== MARKED_FAILED ? task.lastError : null;
-  // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
-  const lead = task.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
-  const color = failed ? STATUS.serious : meta.tone === "good" ? STATUS.good : "var(--muted-foreground)";
+  const color = FAILED_OUTCOMES.includes(task.outcome) ? STATUS.serious : meta.tone === "good" ? STATUS.good : "var(--muted-foreground)";
   return (
     <Callout icon={meta.icon} color={color}>
-      <span className="font-medium">{meta.label}</span>
+      <span className="font-medium">{headline}</span>
       {end ? ` · ended ${new Date(end).toLocaleString()}` : ""}
-      {reason ? <span className="block">{lead} {reason}</span> : null}
+      {reason ? <span className="block">{reason.lead}: {reason.text}</span> : null}
     </Callout>
   );
 }
