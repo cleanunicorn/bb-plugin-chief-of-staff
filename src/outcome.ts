@@ -19,6 +19,14 @@ export type Outcome = (typeof OUTCOMES)[number];
 /** Outcomes that did not deliver: their cards show why the task ended. */
 export const FAILED_OUTCOMES: readonly Outcome[] = ["failed", "marked_failed", "pr_closed"];
 
+/**
+ * Why a task ended, for one that did not deliver: its stored error. A delivered task's stale error is not a reason,
+ * and MARKED_FAILED only repeats the outcome label. The task card and the "since you were here" header (#110) share it.
+ */
+export function endReason(outcome: Outcome | null, lastError: string | null): string | null {
+  return outcome && FAILED_OUTCOMES.includes(outcome) && lastError !== MARKED_FAILED ? lastError : null;
+}
+
 /** Label, icon and tone per outcome. Text and icon differ for every outcome, so none is told apart by colour alone. */
 export const OUTCOME_META: Record<Outcome, { label: string; icon: string; tone: "good" | "neutral" }> = {
   merged: { label: "Merged", icon: "GitMerge", tone: "good" },

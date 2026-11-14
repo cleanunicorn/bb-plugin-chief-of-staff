@@ -97,6 +97,21 @@
   have icons too, and the Needs attention row has a bell instead of
   repeating the hand of its questions and approvals.
 
+- **The Pipeline tab says what changed since your last visit and what needs
+  you.** A summary at the top reads, for example, "Since you were here (5h
+  ago): 3 shipped · 1 failed (Thread archived)". Each count opens the finished
+  tasks, and up to three failures are listed with why they ended. The former
+  Needs attention row now sits in this summary. When nothing finished and
+  nothing waits, it says "All clear — 4 agents working". The last visit is
+  kept in this browser only; a first visit shows the current state without
+  counts, and coming back after 30 minutes away starts a new visit.
+
+- **Pipeline polish.** Loading panels show skeletons instead of "Loading…".
+  With one repository, Capacity shows one meter instead of repeating it as
+  "All repos". On a phone the stage filters take one row that scrolls
+  sideways. `j` and `k` move between task cards, except while typing in a
+  field or with a dialog, menu or sheet open.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

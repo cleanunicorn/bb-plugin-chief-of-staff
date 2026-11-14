@@ -423,3 +423,113 @@ At 1440×1000 a step added from the toolbar below the fitted view is panned to
 line, clicking a step only partly inside the canvas (Review, at 1440×1000 and
 at 390×844) selects it and leaves the pan and zoom as they were. No horizontal
 page overflow at either size, and no error text in the bar in any state. Not checked: a screen reader, Safari, a live BB install.
+
+## What changed, what needs you (issue #110)
+
+What changed on the Pipeline tab:
+
+- **Summary header**, under the Work overview row. It holds the former Needs
+  attention row (same buttons, labels, `aria-pressed` and drill-downs, now a
+  `role="group"` inside `section[aria-label="Summary"]`). Above it, with a
+  baseline: "Since you were here (5h ago): 3 shipped · 1 failed (reason)".
+  Only non-zero counts show; two or more failures are listed as "#N title —
+  reason" (three at most, then "and N more"). A failure without a stored
+  reason shows its outcome label ("Marked failed"); reasons are clipped to 80
+  characters, whole in the tooltip. "Nothing waits on you" ends the line when
+  nothing waits. "All clear — N agents working" needs the roster loaded,
+  nothing waiting and no since counts (or none to load: a first visit, or
+  `cos_since` failed, which `QueryErrors` reports). The shipped and failed
+  counts turn Show finished on, clear the filter and focus the task list
+  heading.
+- **`cos_since`** (read-only RPC): done and failed counts with
+  `COALESCE(finished_at, updated_at) > since`, and the newest three failures
+  with outcome and reason. The reason rule is one helper, `endReason` in
+  `src/outcome.ts`, used by the card and the RPC.
+- **Skeletons** with `aria-busy` and an `sr-only` status replace "Loading…" in
+  the summary, task grid, Throughput, Capacity and Activity. A panel whose
+  first load failed shows none. The "Loading…" lines inside `WorkflowSheet`
+  are out of scope (a sheet, not the tab).
+- **Capacity** hides "All repos" with exactly one repository; the global cap
+  stays in "Task slots".
+- **Stage filters** are one sideways-scrolling row below `sm`, wrapping from
+  `sm` up.
+- **`j`/`k`** move between task cards (clamped), and focus the current card
+  from elsewhere in the Pipeline tab or with nothing focused. The plugin
+  shares BB's document, so a key pressed with focus anywhere else in BB is
+  left alone. They also do nothing with a modifier, while composing, in
+  `input, textarea, select, [contenteditable], [role=textbox]`, with a sheet
+  open, or with an open `[role=dialog]`, `[role=alertdialog]` or `[role=menu]`
+  in the document. Closed overlays (`data-state=closed`, `inert`, `hidden` or
+  `aria-hidden`) do not count: on phones the persistent drawer keeps a closed
+  `role=dialog` mounted after its first opening. `/` is left out: #105, which
+  adds the search field, is still open.
+
+Baseline semantics (`components/cos/lastVisit.ts`): `localStorage
+["cos.lastVisit"]` is when this browser last left the dashboard, written on
+`pagehide`, on the page becoming hidden and when the Pipeline tab unmounts.
+`sessionStorage["cos.visitBaseline"]` is this browser tab's baseline (`"none"`
+on a first visit). Within a visit it is read back unchanged, so live
+refetches, StrictMode remounts, reloads and tab switches keep the counts. A
+visit ends when the Pipeline tab was out of sight for 30 minutes: on mount, or
+when the page becomes visible again, a stale `cos.lastVisit` starts a new
+visit from it. Time on another dashboard tab counts as away, so returning to
+Pipeline after 40 minutes on Configure starts a new visit. `cos.lastVisit` is
+shared by the browser's windows, so another BB window hiding the dashboard
+can end this window's visit when it next becomes visible.
+This amends the plan, which kept the baseline for the browser tab's life; BB
+stays open for days, so that baseline would never move. Storage that throws
+reads as a first visit. Known limit: if the host keeps the panel mounted and
+the page visible while you work elsewhere in BB, the visit continues until the
+panel unmounts or the page is hidden.
+
+Tests: `tests/since.test.ts` (counts on each side of `since` and at it, legacy
+rows without a finish time, failure order and limit, reasons for a failed
+thread, a closed PR, marked failed with and without the stored label, offsets,
+empty), `tests/server.test.ts` (`cos_since` through the RPC, input validation,
+nothing stored), `tests/lastVisit.test.tsx` (first visit, stored visit, reuse
+within a visit, new visit after 30 minutes, invalid values, throwing and
+unreachable storage, writes on `pagehide`/hidden/unmount, a new visit on
+becoming visible), `tests/dashboardUi.test.tsx` (single and multiple
+repository meters, the filter row classes, all clear with 0, 1 and 3 agents,
+each attention kind, loading and failed roster, since counts, first visit,
+the failure list, reason fallback and clipping, the links, counts kept across
+a dashboard tab switch, a failed or loading `cos_since`, skeletons) and
+`tests/pipelineKeyboard.test.tsx` (`j`/`k` from a card, any control and the
+page, clamping, modifiers, the New task fields, an open menu, confirm dialog
+and workflow sheet, focus on a control outside the dashboard, a closed
+dialog or menu left in the document; guard tests assert the key was not claimed, since focus
+traps would undo a move anyway). `npm run check` and `npm run build:ci` pass.
+
+Browser check: headless Chromium (BB browser automation) on a static render of
+the real `Dashboard` with the built `dist/app.css`, simulated host colour
+tokens and a reset layered below the utilities, a stand-in SDK answering RPCs from fixture data (54 tasks:
+4 or 5 active, 49 finished, one repository), and placeholder icons.
+
+| Viewport | Scenario | Summary (top–bottom) | First card top | Filters | Page overflow |
+| --- | --- | --- | --- | --- | --- |
+| 1440×900 | 3 shipped, 1 failed, 1 approval waiting | 145–219 px | 367 px | one 40 px row | 0 |
+| 1440×900 | 7 shipped, 4 failed (3 listed), nothing waits | 145–255 px | 403 px | one 40 px row | 0 |
+| 1440×900 | all clear | 145–195 px | 343 px | one 40 px row | 0 |
+| 390×844 (touch) | 3 shipped, 1 failed, 1 approval waiting | 233–366 px | 514 px | one 40 px row, 959 px of chips scrolling in 334 px | 0 |
+| 390×844 (touch) | 7 shipped, 4 failed (3 listed) | 233–362 px | 510 px | same | 0 |
+| 390×844 (touch) | all clear | 233–283 px | 431 px | same | 0 |
+
+The first pass used an unlayered reset that overrode the plugin's utilities
+(no padding or borders); these numbers are from the second pass, with the
+reset in `@layer base` below `utilities`. That pass also showed a list bullet
+on "and N more" without the host's preflight, so the list now sets
+`list-none` itself.
+
+At 390×844 the loading scenario showed skeletons with five busy regions
+(summary, tasks, throughput, capacity, activity), pulsing, and no "Loading…"
+text. All clear read "All clear — 4 agents working"; a first visit showed only
+the Needs attention row. Capacity showed one meter, named after the repository.
+
+Not checked: a live BB install (host navigation, icons, theme, and whether the
+host unmounts or hides the panel when you open a thread, which decides when a
+visit ends); dark theme; `j`/`k` and the links in a real browser (covered in
+jsdom); reduced-motion rendering of the skeletons (`motion-safe:` only).
+`j`/`k` act only on keys pressed in the Pipeline tab or with nothing focused.
+If the host keeps the panel mounted but hidden, a `j` with nothing focused
+could still move focus to a hidden card; whether the host does that is the
+same unknown as when a visit ends.

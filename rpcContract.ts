@@ -299,6 +299,16 @@ export const rpcContract = defineRpcContract({
       }),
     }),
   },
+  /** "Since you were here" (#110): tasks finished after `since`, the browser's last visit. Reads only. */
+  cos_since: {
+    input: z.object({ since: z.iso.datetime({ offset: true }) }),
+    output: z.object({
+      shipped: z.number(),
+      failed: z.number(),
+      /** The newest failures (at most 3), with the card's "Why it ended"; null when the outcome says it all. */
+      failures: z.array(z.object({ id: z.string(), repo: z.string(), issueNumber: z.number().nullable(), issueTitle: z.string(), outcome: outcomeSchema, reason: z.string().nullable() })),
+    }),
+  },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional(), onlyProblems: z.boolean().default(false), before: z.number().int().positive().optional() }), output: z.object({ entries: z.array(logEntry), nextCursor: z.number().int().nullable() }) },
   cos_get_config: { input: z.null(), output: z.object({ repos: z.string(), workflow: z.string() }) },
   cos_set_config: { input: z.object({ repos: z.string().optional(), workflow: z.string().optional() }), output: z.object({ ok: z.literal(true), warnings: z.array(z.string()) }) },

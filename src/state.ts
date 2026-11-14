@@ -788,6 +788,23 @@ export class StateStore {
     });
   }
 
+  /**
+   * Done and failed items that finished after `sinceIso` (an ISO time in UTC, compared as text), and the newest
+   * `limit` failed ones. A legacy row without a finish time counts by its update time, as the roster sorts it;
+   * the work_items_finished index serves the key.
+   */
+  finishedSince(sinceIso: string, limit: number): { shipped: number; failed: number; failures: WorkItem[] } {
+    const key = "COALESCE(finished_at, updated_at)";
+    const counts = this.db.prepare(`SELECT status, COUNT(*) AS n FROM work_items WHERE ${FINISHED_IN} AND ${key} > @since GROUP BY status`)
+      .all({ since: sinceIso }) as { status: string; n: number }[];
+    const count = (status: string) => counts.find((row) => row.status === status)?.n ?? 0;
+    const failed = count("failed");
+    const failures = failed && limit > 0
+      ? (this.db.prepare(`SELECT * FROM work_items WHERE status = 'failed' AND ${key} > @since ORDER BY ${key} DESC, id DESC LIMIT @limit`).all({ since: sinceIso, limit }) as Row[]).map(rowToWorkItem)
+      : [];
+    return { shipped: count("done"), failed, failures };
+  }
+
   /** Scalar columns and stored usage of every active item and every item started or finished since `sinceIso`, for computeStats. */
   statsRows(sinceIso: string): Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt" | "taskUsage">[] {
     return (this.db.prepare(`SELECT status, created_at, finished_at, updated_at, task_usage_json FROM work_items WHERE ${ACTIVE_IN} OR created_at >= @since OR COALESCE(finished_at, updated_at) >= @since`)

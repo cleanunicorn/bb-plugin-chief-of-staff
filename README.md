@@ -364,6 +364,15 @@ while older pages are open can move onto a page already loaded; it shows once
 the finished list is reloaded (switch the order, or hide and show finished). The workflow
 sheet's header shows Tokens and Cost too.
 
+The summary at the top of the Pipeline tab counts the tasks that shipped or
+failed since this browser last left the dashboard, names up to three failures
+and why they ended, and keeps the Needs attention buttons. With nothing new and
+nothing waiting it says "All clear" with the number of agents working. The last
+visit is stored in the browser's local storage, and the counts stay the same
+while you reload or visit another dashboard tab briefly; after 30 minutes away
+from the Pipeline tab a new visit starts. `j` and `k` move between task cards
+while focus is in the Pipeline tab.
+
 A task whose repository is not in the `repos` setting (removed, renamed, or the
 setting has an error, which leaves it empty) does not wait for capacity. If it
 has not started, or is waiting to reacquire capacity, it stays queued with

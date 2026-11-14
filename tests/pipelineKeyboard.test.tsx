@@ -11,14 +11,14 @@ import { click, container, mount, tabbables, tabbablesAfter, tick, unmount } fro
 
 const DAYS = Array.from({ length: 14 }, (_, i) => ({ date: `2026-11-${String(i + 1).padStart(2, "0")}`, started: 1, done: i % 3, failed: i === 2 ? 1 : 0 }));
 
-const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], call: vi.fn(), navigate: { toThread: vi.fn(), toPluginPanel: vi.fn() } }));
+const mocks = vi.hoisted(() => ({ entries: [] as RosterEntry[], logs: [] as LogEntry[], repos: [] as { key: string; active: number; maxConcurrent: number }[], call: vi.fn(), navigate: { toThread: vi.fn(), toPluginPanel: vi.fn() } }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   definePluginApp: () => ({}),
   useBbNavigate: () => mocks.navigate,
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
   experimental_useRpcQuery: ({ method }: { method: string }) => ({
-    data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 1, medianCycleMinutes: null, daily: DAYS, usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } } : { paused: false, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+    data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_since" ? { shipped: 0, failed: 0, failures: [] } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 1, medianCycleMinutes: null, daily: DAYS, usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } } : { paused: false, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
     error: null, isLoading: false, isFetching: false, refetch: vi.fn(),
   }),
   ThreadTitle: () => null,
@@ -48,6 +48,7 @@ afterEach(async () => {
   document.body.replaceChildren();
   mocks.entries = [];
   mocks.logs = [];
+  mocks.repos = [];
   mocks.call.mockReset();
 });
 
@@ -162,7 +163,7 @@ it("describes the arrow keys on the task group", async () => {
   mocks.entries = tasks(3);
   await page();
   const hint = document.getElementById(group().getAttribute("aria-describedby")!);
-  expect(hint?.textContent).toBe("Arrow keys move between tasks.");
+  expect(hint?.textContent).toBe("Arrow keys or j and k move between tasks.");
 });
 
 it("moves between cards with the arrow keys, Home and End", async () => {
@@ -244,4 +245,173 @@ it("falls back to the first card when the current one leaves the list", async ()
   await page();
   expect(cards()).toHaveLength(2);
   expect(currentCard()).toBe(0);
+});
+
+// ---------- j and k (#110) ----------
+
+/** Press a key and say whether anything claimed it (called preventDefault). */
+const pressed = async (target: Element, key: string) => {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  await act(async () => { target.dispatchEvent(event); });
+  return event.defaultPrevented;
+};
+const summaryOf = (index: number) => cards()[index]!.querySelector("summary")!;
+
+it("moves to the next card with j and the previous one with k, clamped at both ends", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  summaryOf(0).focus();
+  await press(document.activeElement!, "k");
+  expect(document.activeElement).toBe(summaryOf(0));
+  await press(document.activeElement!, "j");
+  expect(document.activeElement).toBe(summaryOf(1));
+  expect(currentCard()).toBe(1);
+  await press(document.activeElement!, "j");
+  await press(document.activeElement!, "j");
+  expect(document.activeElement).toBe(summaryOf(2));
+  await press(document.activeElement!, "k");
+  expect(document.activeElement).toBe(summaryOf(1));
+});
+
+it("moves from any control of a card with j", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  const more = cards()[0]!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  more.focus();
+  await press(more, "j");
+  expect(document.activeElement).toBe(summaryOf(1));
+});
+
+it("focuses the current card when j or k is pressed outside the grid", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  summaryOf(2).focus();
+  await act(async () => {});
+  (document.activeElement as HTMLElement).blur();
+  expect(document.activeElement).toBe(document.body);
+  await press(document.body, "j");
+  expect(document.activeElement).toBe(summaryOf(2));
+  heading("Work overview").focus();
+  await press(document.activeElement!, "k");
+  expect(document.activeElement).toBe(summaryOf(2));
+});
+
+it("focuses the first card from the page when no card has been current yet", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  await press(document.body, "j");
+  expect(document.activeElement).toBe(summaryOf(0));
+});
+
+it("leaves j and k alone with a modifier held", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  summaryOf(0).focus();
+  for (const init of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { shiftKey: true }]) {
+    await press(document.activeElement!, "j", init);
+    expect(document.activeElement).toBe(summaryOf(0));
+  }
+});
+
+it("lets j and k type into the New task form", async () => {
+  mocks.entries = tasks(3);
+  mocks.repos = [{ key: "acme/app", active: 1, maxConcurrent: 4 }];
+  await page();
+  await click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "New task")!);
+  const fields = Array.from(container.querySelectorAll<HTMLElement>("#new-task input, #new-task textarea, #new-task select"));
+  expect(fields.length).toBeGreaterThan(0);
+  for (const field of fields) {
+    field.focus();
+    const event = new KeyboardEvent("keydown", { key: "j", bubbles: true, cancelable: true });
+    await act(async () => { field.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(field);
+  }
+});
+
+it("does nothing with j and k while a menu or a dialog is open", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  const more = cards()[0]!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  more.focus();
+  await press(more, "ArrowDown");
+  await tick();
+  expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
+  const item = document.activeElement!;
+  // Focus traps would pull focus back anyway; the shortcut must not even claim the key.
+  expect(await pressed(item, "j")).toBe(false);
+  expect(document.activeElement).toBe(item);
+  await press(item, "Escape");
+  await tick();
+
+  // A confirm dialog (here a failed card's Restart) is open over the grid.
+  const failed = tasks(3);
+  failed[0] = { ...failed[0]!, detail: "failed", status: "failed", outcome: "failed", current: [], occupiesCapacity: false };
+  mocks.entries = failed;
+  await page();
+  const trigger = cards()[0]!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!;
+  trigger.focus();
+  await press(trigger, "ArrowDown");
+  await tick();
+  const restart = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((m) => m.textContent?.includes("Restart"))!;
+  await act(async () => { restart.click(); });
+  await tick();
+  expect(document.body.querySelector('[role="dialog"], [role="alertdialog"]')).not.toBeNull();
+  const inDialog = document.activeElement!;
+  expect(await pressed(inDialog, "j")).toBe(false);
+  expect(await pressed(inDialog, "k")).toBe(false);
+  expect(document.activeElement).toBe(inDialog);
+});
+
+it("does nothing with j and k while the workflow sheet is open", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  await click(Array.from(cards()[0]!.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Workflow")!);
+  await tick();
+  expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(await pressed(document.activeElement ?? document.body, "j")).toBe(false);
+});
+
+it("leaves j and k to the rest of the app when focus is outside the Pipeline tab", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  // A control of the host app (a sidebar button), outside the dashboard.
+  const outside = document.createElement("button");
+  outside.textContent = "Host button";
+  document.body.append(outside);
+  outside.focus();
+  expect(await pressed(outside, "j")).toBe(false);
+  expect(await pressed(outside, "k")).toBe(false);
+  expect(document.activeElement).toBe(outside);
+  outside.remove();
+});
+
+it("still moves with j and k when a closed dialog or menu stays in the document", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  // On phones the persistent drawer keeps a closed dialog mounted, inert and hidden.
+  const drawer = document.createElement("div");
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("data-state", "closed");
+  drawer.setAttribute("aria-hidden", "true");
+  drawer.inert = true;
+  const menu = document.createElement("div");
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("data-state", "closed");
+  // An overlay hidden with the hidden attribute alone.
+  const hiddenDialog = document.createElement("div");
+  hiddenDialog.setAttribute("role", "alertdialog");
+  hiddenDialog.hidden = true;
+  document.body.append(drawer, menu, hiddenDialog);
+  summaryOf(0).focus();
+  expect(await pressed(document.activeElement!, "j")).toBe(true);
+  expect(document.activeElement).toBe(summaryOf(1));
+  // The same drawer, open, blocks them.
+  drawer.setAttribute("data-state", "open");
+  drawer.removeAttribute("aria-hidden");
+  drawer.inert = false;
+  expect(await pressed(document.activeElement!, "j")).toBe(false);
+  drawer.remove();
+  menu.remove();
+  hiddenDialog.remove();
 });

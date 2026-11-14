@@ -12,7 +12,7 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
-import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
+import { OUTCOME_META, endReason } from "./src/outcome";
 import { edgeCounts, loopBacks, taskEnd, type TaskUsage } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
@@ -30,10 +30,12 @@ import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, usageNote, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
-import { ATTENTION_ICON, CARD_ACTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
+import { CARD_ACTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
-import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
+import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, shortcutBlocked, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
+import { useVisitBaseline } from "@/components/cos/lastVisit";
+import { CardSkeleton, LoadingRegion, Skeleton } from "@/components/cos/skeleton";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -46,6 +48,8 @@ function sharePercent(tokens: number, of: number): string {
   const pct = (tokens / of) * 100;
   return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
 }
+
+type Since = PluginRpcResult<Contract["cos_since"]>;
 
 const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
@@ -488,8 +492,7 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
   const tabIndex = tabbable ? undefined : -1;
   const timer = cardTimer(entry, finished, now);
   // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
-  // MARKED_FAILED only repeats the outcome label.
-  const endReason = entry.outcome && FAILED_OUTCOMES.includes(entry.outcome) && entry.lastError !== MARKED_FAILED ? entry.lastError : null;
+  const reason = endReason(entry.outcome, entry.lastError);
   // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
   const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
   return (
@@ -522,11 +525,11 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
         </span>
       </div>
       {!finished ? <ActivityLine entry={entry} /> : null}
-      {endReason ? (
+      {reason ? (
         <p className="flex items-start gap-1.5 text-sm text-foreground">
           {/* Muted: a failed run is history, not an alarm (#22). */}
           <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={endReason}><span className="text-muted-foreground">{reasonLead}</span> {endReason}</span>
+          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={reason}><span className="text-muted-foreground">{reasonLead}</span> {reason}</span>
         </p>
       ) : null}
       {entry.steps.length ? <details className="group text-xs">
@@ -722,7 +725,128 @@ const medianNote = (median: number | null) => (median != null ? `Median per comp
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
+/** cos_since's input on a first visit, when the query is off: valid, never sent. */
+const FIRST_VISIT = "1970-01-01T00:00:00.000Z";
 const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
+/** Each item of the stage filter row: keeps its width in the phone's single scrolling row. */
+const FILTER_CHIP = "shrink-0 whitespace-nowrap";
+
+/** What the header knows about changes since the last visit. `baseline` is null on a first visit. */
+type SinceState = { baseline: string | null; data: Since | undefined; pending: boolean };
+
+/** Reasons can be whole error messages; the header keeps them to one short phrase. */
+const REASON_MAX = 80;
+function clip(text: string, max = REASON_MAX): string {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+/**
+ * Why a failure ended, in the header: the card's reason, or the outcome's label when it has none ("Marked failed",
+ * "PR closed"). Null for a plain failure with no stored reason: "1 failed (Failed)" would only repeat the count.
+ */
+function failureWhy(failure: Since["failures"][number]): string | null {
+  if (failure.reason) return failure.reason;
+  return failure.outcome === "failed" ? null : OUTCOME_META[failure.outcome].label;
+}
+
+const SINCE_LINK = "rounded font-medium pointer-coarse:py-1.5 text-foreground underline decoration-muted-foreground/60 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** One listed failure: "#N title — why", the why left out when there is none. */
+function FailureItem({ failure }: { failure: Since["failures"][number] }) {
+  const label = taskLabel({ workItemId: failure.id, issueNumber: failure.issueNumber, issueTitle: failure.issueTitle });
+  const why = failureWhy(failure);
+  return (
+    <li className="truncate" title={why ? `${label} — ${why}` : (label ?? undefined)}>
+      <span className="text-foreground">{label}</span>{why ? <> — {clip(why)}</> : null}
+    </li>
+  );
+}
+
+/**
+ * "Since you were here (3h ago): 3 shipped · 1 failed (Thread archived) · Nothing waits on you" (#110). Only the
+ * non-zero counts show; each opens the finished tasks. Two or more failures are listed below, three at most.
+ */
+function SinceLine({ baseline, data, nothingWaits, onShowFinished, now }: { baseline: string; data: Since; nothingWaits: boolean; onShowFinished: () => void; now: number }) {
+  const [first] = data.failures;
+  const listed = data.failed >= 2 ? data.failures : [];
+  return (
+    <div className="flex flex-col gap-1">
+      {/* Inline text with real spaces, so it wraps as a sentence and reads as one. */}
+      <p className="text-sm text-foreground [overflow-wrap:anywhere]">
+        <Icon name="History" fallback="Clock" className="mr-1.5 inline size-3.5 align-[-2px] text-muted-foreground" aria-hidden />
+        <span className="text-muted-foreground">Since you were here (<time dateTime={baseline} title={new Date(baseline).toLocaleString()}>{relative(baseline, now)}</time>):</span>{" "}
+        {data.shipped ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.shipped} shipped</button> : null}
+        {data.shipped && data.failed ? " · " : null}
+        {data.failed ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.failed} failed</button> : null}
+        {data.failed === 1 && first && failureWhy(first) ? <> (<span title={failureWhy(first)!}>{clip(failureWhy(first)!)}</span>)</> : null}
+        {nothingWaits ? <span className="text-muted-foreground"> · Nothing waits on you</span> : null}
+      </p>
+      {listed.length ? (
+        <ul className="flex list-none flex-col gap-0.5 pl-5 text-xs text-muted-foreground">
+          {listed.map((f) => (
+            <FailureItem key={f.id} failure={f} />
+          ))}
+          {data.failed > listed.length ? <li>and {data.failed - listed.length} more</li> : null}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+/** The agents line: "1 agent working", "3 agents working", "no agents working". */
+function agentsWorking(n: number): string {
+  return n === 0 ? "no agents working" : `${n} ${n === 1 ? "agent" : "agents"} working`;
+}
+
+/**
+ * The top of the Pipeline tab (#110): what waits on you, or "All clear" with the agents working. The waiting part
+ * is the former Needs attention row, unchanged; it drills into the matching filter. Nothing is called clear before
+ * the tasks have loaded.
+ */
+function PipelineSummary({ loaded, loading, agents, failures, stalled, humanInput, filter, onFilter, since, onShowFinished, now }: { loaded: boolean; loading: boolean; agents: number; failures: number; stalled: number; humanInput: number; filter: TaskFilter; onFilter: (filter: TaskFilter) => void; since: SinceState; onShowFinished: () => void; now: number }) {
+  const waiting = failures + stalled + humanInput;
+  const changed = since.data !== undefined && since.data.shipped + since.data.failed > 0;
+  // All clear needs the tasks loaded, nothing waiting, and nothing finished since the last visit. The since counts
+  // count once known; on a first visit or when they fail to load, the current state decides alone.
+  const clear = loaded && waiting === 0 && !since.pending && !changed;
+  const shown = changed || waiting > 0 || clear;
+  // Still loading with nothing to say yet: one line of skeleton. Failed with nothing to say: no empty box.
+  if (!shown) {
+    if (!loading && !since.pending) return null;
+    return (
+      <section aria-label="Summary" className="rounded-lg border border-border bg-card px-3 py-2">
+        <LoadingRegion label="Loading the summary…" className="flex items-center gap-2">
+          <Skeleton className="size-8 shrink-0 rounded-lg" />
+          <Skeleton className="h-4 w-full max-w-sm" />
+        </LoadingRegion>
+      </section>
+    );
+  }
+  return (
+    <section aria-label="Summary" className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2">
+      {changed && since.baseline ? <SinceLine baseline={since.baseline} data={since.data!} nothingWaits={loaded && waiting === 0} onShowFinished={onShowFinished} now={now} /> : null}
+      {waiting > 0 ? (
+        <div role="group" aria-label="Needs attention" className="flex flex-wrap items-center gap-2">
+          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon="Hand" tone="warning" />Needs attention</span>
+          {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => onFilter("failures")}>
+            <Icon name="CircleAlert" style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
+          </Button> : null}
+          {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => onFilter("stalled")}>
+            <Icon name="Hourglass" style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
+          </Button> : null}
+          {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => onFilter("input")}>
+            <Icon name="Hand" style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
+          </Button> : null}
+        </div>
+      ) : clear ? (
+        <p className="flex items-center gap-2 text-sm text-foreground">
+          <StateMark icon="CircleCheck" tone="good" />
+          <span><span className="font-semibold">All clear</span> — {agentsWorking(agents)}</span>
+        </p>
+      ) : null}
+    </section>
+  );
+}
 
 export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
   const rpc = useRpc<Contract>();
@@ -734,10 +858,17 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true, finishedOrder } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
+  // This browser tab's last visit (#110); null on a first visit, which asks for no since counts.
+  const baseline = useVisitBaseline();
+  const since = experimental_useRpcQuery<Contract, "cos_since">({ contract: rpcContract, method: "cos_since", input: { since: baseline ?? FIRST_VISIT }, enabled: baseline !== null });
   const refetchAll = useCallback(async () => {
-    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch()]);
-  }, [roster, stats, overview]);
+    await Promise.all([roster.refetch(), stats.refetch(), overview.refetch(), ...(baseline !== null ? [since.refetch()] : [])]);
+  }, [roster, stats, overview, since, baseline]);
   useLiveRefresh(refetchAll);
+  const sinceState: SinceState = baseline === null
+    ? { baseline: null, data: undefined, pending: false }
+    : { baseline, data: since.data, pending: since.data === undefined && !since.error };
+  const tasksHeading = useRef<HTMLHeadingElement>(null);
   const [pausing, setPausing] = useState(false);
   // Every task with an action in flight: one finishing must not re-enable another's buttons.
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
@@ -802,6 +933,13 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     setFinishedOrder(order);
   };
   const finishedTokens = includeDone ? (roster.data?.finishedTokens ?? null) : null;
+  // The since counts open the finished tasks: all of them, with the task list in view (#110).
+  const showFinished = () => {
+    if (!includeDone) toggleFinished();
+    setFilter("all");
+    tasksHeading.current?.focus({ preventScroll: true });
+    tasksHeading.current?.scrollIntoView?.({ block: "start" });
+  };
   const loadOlder = async () => {
     const request = olderRequest.current;
     if (!olderCursor || request.inFlight) return;
@@ -843,12 +981,27 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
   const visible = entries.filter((e) => matchesTaskFilter(e, filter));
   const roving = useRovingCards(visible.map((e) => e.id));
+  const moveCard = roving.move;
+  // j and k move between task cards from anywhere in the Pipeline tab, or with nothing focused, like the arrow
+  // keys inside the grid (#110). Off while a sheet is open; shortcutBlocked also leaves keys pressed elsewhere in
+  // BB alone, and covers typing, modifiers, menus and confirm dialogs.
+  const pipelineRoot = useRef<HTMLDivElement>(null);
+  const sheetOpen = answering !== null || viewing !== null;
+  useEffect(() => {
+    if (sheetOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.key !== "j" && event.key !== "k") || shortcutBlocked(event, pipelineRoot.current)) return;
+      if (moveCard(event.key === "j" ? 1 : -1)) event.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sheetOpen, moveCard]);
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
   return (
-    <div className="flex flex-col gap-4">
-      <QueryErrors errors={[roster.error, stats.error, overview.error, actionError]} />
+    <div ref={pipelineRoot} className="flex flex-col gap-4">
+      <QueryErrors errors={[roster.error, stats.error, overview.error, baseline !== null ? since.error : null, actionError]} />
       <div className="relative flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>
         {/* The first tab stop after the heading: past the filters and every task card (issue #115).
@@ -894,37 +1047,27 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           <span><strong>No new tasks start: Max tasks across all repos is {maxTotal}.</strong> Raise it in Configure → General. Tasks holding a slot keep going; one waiting on CI or a merge waits for a slot before its next agent step.</span>
         </p>
       ) : null}
+      <PipelineSummary loaded={roster.data !== undefined} loading={roster.isLoading} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} since={sinceState} onShowFinished={showFinished} now={now} />
       {newTask ? (
         <div id="new-task">
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
         </div>
       ) : null}
-      {failures + stalled + humanInput > 0 ? (
-        <section aria-label="Needs attention" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
-          <span className="mr-2 flex items-center gap-2 text-sm font-semibold text-foreground"><StateMark icon={ATTENTION_ICON.title} tone="warning" />Needs attention</span>
-          {failures ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "failures"} onClick={() => setFilter("failures")}>
-            <Icon name={ATTENTION_ICON.failures} style={{ color: STATUS.critical }} aria-hidden /> {failures} {failures === 1 ? "failure" : "failures"} needing a decision
-          </Button> : null}
-          {stalled ? <Button size="sm" variant="ghost" aria-pressed={filter === "stalled"} onClick={() => setFilter("stalled")}>
-            <Icon name={ATTENTION_ICON.stalled} style={{ color: STATUS.serious }} aria-hidden /> {stalled} stalled
-          </Button> : null}
-          {humanInput ? <Button size="sm" className="h-auto min-h-8 max-w-full whitespace-normal text-left" variant="ghost" aria-pressed={filter === "input"} onClick={() => setFilter("input")}>
-            <Icon name={ATTENTION_ICON.input} style={{ color: STATUS.warning }} aria-hidden /> {humanInput} questions or approvals
-          </Button> : null}
-        </section>
-      ) : null}
-      <nav aria-label="Filter active tasks" className="flex flex-wrap items-center gap-1 text-xs">
-        <Button size="sm" variant="ghost" aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name={FILTER_ICON.all} aria-hidden />All tasks</Button>
-        {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
+      {/* One row on a phone, scrolling sideways, so the first task is near the top (#110); from sm up the chips wrap.
+          The padding keeps focus rings inside the scroller, which clips them; a focused chip scrolls into view. */}
+      <nav aria-label="Filter active tasks" className="-mx-1 flex flex-nowrap items-center gap-1 overflow-x-auto p-1 text-xs sm:flex-wrap sm:overflow-visible">
+        <Button size="sm" variant="ghost" className={FILTER_CHIP} aria-pressed={filter === "all"} onClick={() => setFilter("all")}><Icon name={FILTER_ICON.all} aria-hidden />All tasks</Button>
+        {STAGES.map((st) => <Button key={st.key} size="sm" variant="ghost" className={FILTER_CHIP} aria-pressed={filter === st.key} onClick={() => setFilter(filter === st.key ? "all" : st.key)}>
           <Icon name={st.icon} aria-hidden /> {st.key === "pr" ? "Awaiting CI / merge" : st.key === "agent" ? "Tasks with agents" : st.label} <strong className="tabular-nums">{byStage[st.key]}</strong>
         </Button>)}
-        <span className="flex items-center gap-1.5 px-2 py-1 text-muted-foreground"><Icon name={FILTER_ICON.taskSlots} className="size-4" aria-hidden />Task slots: {running}{maxTotal !== undefined ? ` / ${maxTotal}` : ""}</span>
+        <span className={cn(FILTER_CHIP, "flex items-center gap-1.5 px-2 py-1 text-muted-foreground")}><Icon name={FILTER_ICON.taskSlots} className="size-4" aria-hidden />Task slots: {running}{maxTotal !== undefined ? ` / ${maxTotal}` : ""}</span>
       </nav>
       {/* Agents */}
       <Panel
         className="border-0 bg-transparent [&>header]:px-0 [&>header]:flex-wrap [&>div]:px-0"
         title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
         icon={PANEL_ICON.tasks}
+        headingRef={tasksHeading}
         dim={roster.isFetching && !roster.isLoading}
         actions={
           <>
@@ -950,7 +1093,11 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           </>
         }
       >
-        {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+        {roster.isLoading ? (
+          <LoadingRegion label="Loading tasks…" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {[0, 1, 2].map((i) => <CardSkeleton key={i} />)}
+          </LoadingRegion>
+        ) : null}
         {!roster.isLoading && !visible.length && (!roster.error || roster.data) ? (
           <Empty icon="Bot" illustration={filter === "all"} title={filter === "all" ? "No active tasks" : "Nothing in this stage"}>
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
@@ -961,7 +1108,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           <div role="group" aria-label="Tasks" aria-describedby={TASK_KEYS_HINT_ID} className="group/tasks flex flex-col gap-1.5" {...roving.groupProps}>
             {/* Above the cards, so it is on screen with the first one. Its space is kept while hidden, so
                 focus entering the grid does not shift the cards. Always the group's description. */}
-            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
+            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys or j and k move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
                 <AgentCard key={e.id} entry={e} finishedTokens={finishedTokens} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode, finished: e.detail === "done" || e.detail === "failed" }); }} onShowActivity={onShowActivity} />
@@ -987,7 +1134,14 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             <ThroughputUsage usage={s.usage} />
           </p> : null}
           {!s ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            // A failed first load is reported above the page; no placeholder waits for it.
+            stats.error ? null : (
+              <LoadingRegion label="Loading throughput…" className="flex flex-col gap-4">
+                <Skeleton className="h-4 w-3/5" />
+                <Skeleton className="h-[120px] w-full" />
+                <Skeleton className="h-3 w-full" />
+              </LoadingRegion>
+            )
           ) : throughputTable ? (
             <DataTable columns={["Day", "Started", "Done", "Failed", "Tokens"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed, d.tokens != null ? compact(d.tokens) : "—"])} />
           ) : (
@@ -1005,8 +1159,19 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           )}
         </Panel>
         <Panel className="lg:col-span-2" title="Capacity" icon={PANEL_ICON.capacity} dim={overview.isFetching && !overview.isLoading}>
+          {!overview.data && !overview.error ? (
+            <LoadingRegion label="Loading capacity…" className="flex flex-col gap-3">
+              {["w-16", "w-24"].map((w) => (
+                <div key={w} className="flex flex-col gap-1.5">
+                  <div className="flex justify-between"><Skeleton className={cn("h-3", w)} /><Skeleton className="h-3 w-8" /></div>
+                  <Skeleton className="h-2 w-full rounded-full" />
+                </div>
+              ))}
+            </LoadingRegion>
+          ) : null}
           <div className="flex flex-col gap-3">
-            {maxTotal !== undefined ? (
+            {/* With one repository its own meter says the same; the global cap stays in Task slots (#110). */}
+            {maxTotal !== undefined && overview.data?.repos.length !== 1 ? (
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-baseline justify-between text-xs">
                   <span className="font-medium text-foreground">All repos</span>
@@ -1385,6 +1550,11 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
       }
     >
       <ErrorLine error={log.error} />
+      {log.isLoading && !log.data ? (
+        <LoadingRegion label="Loading activity…" className="flex flex-col gap-2.5">
+          {["w-4/5", "w-3/5", "w-2/3"].map((w) => <Skeleton key={w} className={cn("h-3.5", w)} />)}
+        </LoadingRegion>
+      ) : null}
       {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : task ? "No activity for this task." : "No activity yet."}</p> : null}
       {entries.length > 0 ? <p className="mb-2 text-xs text-muted-foreground">
         {entries.length} entries · {new Date(entries.at(-1)!.at).toLocaleString()} – {new Date(entries[0]!.at).toLocaleString()}
