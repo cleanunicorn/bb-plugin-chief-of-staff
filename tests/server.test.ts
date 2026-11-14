@@ -80,6 +80,9 @@ describe("chief-of-staff server", () => {
   let resolved: unknown[] = [];
   let sent: unknown[] = [];
   let archivedIds: string[] = [];
+  /** Threads archived now (archive adds, unarchive removes), and whether their workspace was removed. */
+  let archivedNow = new Set<string>();
+  let workspaceRemoved = false;
   let assistantOutput = "Done.\n## Summary\nFixed the login bug.\n## Test evidence\nnpm test → 12 passing";
   let host: ReturnType<typeof createFakePluginHost>;
   const originalFetch: typeof fetch = globalThis.fetch;
@@ -96,6 +99,8 @@ describe("chief-of-staff server", () => {
     resolved = [];
     sent = [];
     archivedIds = [];
+    archivedNow = new Set();
+    workspaceRemoved = false;
     checkHangs = false;
     checkBlocks = null;
     threadUpdatedAt = 0;
@@ -157,7 +162,15 @@ describe("chief-of-staff server", () => {
           },
           get: async (args: { threadId: string }) => {
             const status = perThread[args.threadId]?.status ?? threadStatus;
-            return { ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status, updatedAt: perThread[args.threadId]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status } };
+            return { ...makeThreadResponse({ id: args.threadId, environmentId: "env_1", providerId: "claude-code", status, updatedAt: perThread[args.threadId]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, archivedAt: archivedNow.has(args.threadId) ? 1 : null, canRestoreEnvironment: workspaceRemoved && !archivedNow.has(args.threadId) };
+          },
+          unarchive: async (args: { threadId: string }) => {
+            archivedNow.delete(args.threadId);
+            return { ok: true } as never;
+          },
+          restoreEnvironment: async () => {
+            workspaceRemoved = false;
+            return { ok: true } as never;
           },
           interactions: {
             list: async () => pending as never,
@@ -170,11 +183,12 @@ describe("chief-of-staff server", () => {
           list: async () =>
             ["thr_1", ...[...spawned].filter((id) => id !== "thr_1")].map((id) => {
               const status = perThread[id]?.status ?? threadStatus;
-              return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0 };
+              return { ...makeThreadResponse({ id, environmentId: "env_1", status, updatedAt: perThread[id]?.updatedAt ?? threadUpdatedAt }), runtime: { displayStatus: status }, hasPendingInteraction: pending.length > 0, archivedAt: archivedNow.has(id) ? 1 : null };
             }),
           output: async () => ({ output: assistantOutput }),
           archive: async (args: { threadId: string }) => {
             archivedIds.push(args.threadId);
+            archivedNow.add(args.threadId);
             return { archivedThreadIds: [args.threadId] } as never;
           },
           send: async (args: unknown) => {
@@ -1598,6 +1612,144 @@ describe("chief-of-staff server", () => {
     });
   });
 
+  describe("closing a task by hand (#47)", () => {
+    const markDone = async () => host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_done" });
+    /** The issue is no longer offered, so a sweep only syncs the task's threads. */
+    const intakeOnce = async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [] });
+    };
+
+    it("stays done when the agent's turn ends afterwards: no nudge, threads archived", async () => {
+      await intakeOnce();
+      expect(await roster()).toMatchObject({ detail: "agent", current: ["Build"] });
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", detail: "done", current: [], lastError: "Marked done" });
+      expect(archivedIds).toEqual(["thr_1"]);
+      await idle("I made some changes.");
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+      expect(ranChecks()).toBe(0);
+      const log = (await host.harness.behavior.runCli(["log", "--limit", "20"])).stdout;
+      expect(log.match(/marked done/g)).toHaveLength(1);
+      // Marking it done again changes and logs nothing.
+      await markDone();
+      expect((await host.harness.behavior.runCli(["log", "--limit", "20"])).stdout.match(/marked done/g)).toHaveLength(1);
+    });
+
+    /** Build reported; the Verify check is running and held until the returned release is called. */
+    const checkRunning = async () => {
+      await intakeOnce();
+      await report("build");
+      let release!: () => void;
+      checkBlocks = new Promise<void>((resolve) => (release = resolve));
+      const updatedAt = tick();
+      threadUpdatedAt = updatedAt;
+      await host.harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr_1", environmentId: "env_1", status: "idle", updatedAt }), lastAssistantText: "done" });
+      expect(await roster()).toMatchObject({ current: ["Verify"], detail: "cos" });
+      return release;
+    };
+    const pushes = () => hostCalls.filter((c) => (c.input as { args?: string[] }).args?.[0] === "push").length;
+
+    it("drops the result of a check still running when the task is marked done", async () => {
+      const release = await checkRunning();
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      release();
+      await settleJobs();
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "done", current: [], lastError: "Marked done" });
+      expect(ranChecks()).toBe(1);
+      expect(pushes()).toBe(0);
+      expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(0);
+    });
+
+    it("drops the result of a check still running when the task is marked failed, and retry runs it again", async () => {
+      const release = await checkRunning();
+      const { id } = await roster();
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+      expect(await roster()).toMatchObject({ status: "failed", current: [] });
+      release();
+      await settleJobs();
+      expect(await roster()).toMatchObject({ status: "failed" });
+      expect(pushes()).toBe(0);
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "retry" });
+      await settleJobs();
+      expect(ranChecks()).toBe(2);
+      expect(await roster()).toMatchObject({ status: "done", lastError: null });
+    });
+
+    it("stays failed while the builder is still working", async () => {
+      threadStatus = "active";
+      await intakeOnce();
+      await host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_failed" });
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "failed", lastError: "Marked failed" });
+      expect(archivedIds).toEqual([]);
+    });
+
+    const question = { id: "int_1", status: "pending", threadId: "thr_1", createdAt: 1, payload: { kind: "user_question", questions: [{ id: "q1", prompt: "Which database should I use?", allowFreeText: true, multiSelect: false, required: true }] } };
+    const notifications = () => host.harness.inspection.sdk.callsTo("plugins.callRpc").length;
+
+    it("ignores questions, resumed turns and late reports on a done task", async () => {
+      await intakeOnce();
+      await markDone();
+      const before = notifications();
+      pending = [question];
+      await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+      await host.harness.behavior.emitThreadEvent("thread.active", { thread: makeThreadResponse({ id: "thr_1", status: "active" }) } as never);
+      expect(await roster()).toMatchObject({ status: "done", waitingKind: null, current: [] });
+      expect(notifications()).toBe(before);
+      expect(await report("build")).toBe("This task is already finished.");
+    });
+
+    it("does not read the turns or questions of a task marked failed", async () => {
+      await intakeOnce();
+      await host.harness.behavior.callRpc("cos_item_action", { id: (await roster()).id, action: "mark_failed" });
+      const reads = () => host.harness.inspection.sdk.callsTo("threads.interactions.list").length;
+      const before = [reads(), notifications()];
+      await idle("I made some changes.");
+      pending = [question];
+      await host.harness.behavior.emitThreadEvent("interaction.pending", { thread: makeThreadResponse({ id: "thr_1", status: "active" }), interaction: question as never });
+      expect([reads(), notifications()]).toEqual(before);
+      expect(await roster()).toMatchObject({ status: "failed", waitingKind: null });
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    });
+
+    it("unarchives the threads and restores the workspace when a step of a done task runs again", async () => {
+      await intakeOnce();
+      const { id } = await roster();
+      await markDone();
+      expect([...archivedNow]).toEqual(["thr_1"]);
+      workspaceRemoved = true;
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "rerun_step", step: "build" });
+      await settleJobs();
+      expect(host.harness.inspection.sdk.callsTo("threads.unarchive")).toEqual([[{ threadId: "thr_1" }]]);
+      expect(host.harness.inspection.sdk.callsTo("threads.restoreEnvironment")).toEqual([[{ threadId: "thr_1" }]]);
+      expect(host.harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+      await sweep();
+      expect(await roster()).toMatchObject({ status: "running", detail: "agent", current: ["Build"], lastError: null });
+    });
+
+    it("keeps the threads when archiving is turned off", async () => {
+      await host.harness.behavior.setSettings({ archiveThreadsOnDone: false });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done" });
+      expect(archivedIds).toEqual([]);
+    });
+
+    it("archives the threads of a failed task marked done", async () => {
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      await host.harness.behavior.emitThreadEvent("thread.failed", { thread: makeThreadResponse({ id: "thr_1", status: "error" }), error: "provider crashed" } as never);
+      expect((await roster()).detail).toBe("failed");
+      await markDone();
+      expect(await roster()).toMatchObject({ status: "done", current: [] });
+      expect(archivedIds).toEqual(["thr_1"]);
+    });
+  });
+
   it("handles a turn end once even when the event and the sweep both see it", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     await report("build");
@@ -2052,6 +2204,7 @@ describe("chief-of-staff server", () => {
     const store = new StateStore(host.bb.storage.database());
     const item = store.listWorkItems()[0];
     store.updateWorkItem(item.id, { status: "ready", finishedAt: null, nodes: { ...item.nodes, ship: { ...item.nodes.ship!, status: "running", phase: "ready" } } });
+    archivedNow.clear(); // A task still waiting on its PR has live threads.
     ghRoutes["GET /repos/acme/app/pulls/7"] = () => ({ status: 503 });
     host = await host.harness.lifecycle.reload(plugin);
     await host.harness.behavior.runService("cos-reconcile").done;

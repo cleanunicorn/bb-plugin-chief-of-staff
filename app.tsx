@@ -378,7 +378,8 @@ function WorkflowSheet({ id, onClose, onChanged, restoreFocus }: { id: string; o
 type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
-function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
+/** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
+function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement) => void; now: number }) {
   const navigate = useBbNavigate();
   const [confirming, setConfirming] = useState<"mark_done" | "mark_failed" | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
@@ -519,10 +520,12 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
                 <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
                 Mark done…
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
-                <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Mark failed…
-              </DropdownMenuItem>
+              {entry.detail === "failed" ? null : (
+                <DropdownMenuItem onSelect={() => setConfirming("mark_failed")}>
+                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                  Mark failed…
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}
@@ -530,7 +533,7 @@ function AgentCard({ entry, busy, tabbable, onAction, onAnswer, onWorkflow, now 
       <ConfirmDialog
         open={confirming !== null}
         title={`Mark ‘${title}’ ${confirming === "mark_failed" ? "failed" : "done"}?`}
-        description="Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is."
+        description={`Chief of Staff stops working on this task and its workflow ends. ${confirming === "mark_failed" ? "The agent's thread is left as it is." : archivesOnDone ? "Its threads are archived and their workspace is removed: changes not pushed are lost." : "Its threads are left as they are."}`}
         confirmLabel={confirming === "mark_failed" ? "Mark failed" : "Mark done"}
         tone={confirming === "mark_failed" ? "destructive" : undefined}
         onConfirm={() => {
@@ -607,6 +610,8 @@ export function PipelineTab() {
   }, [active]);
   const s = stats.data;
   const maxTotal = overview.data?.settings.maxConcurrentTotal ?? 0;
+  // The setting defaults to on; until the overview loads, assume it.
+  const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const stalled = active.filter((e) => attentionKind(e) === "stalled").length;
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
@@ -718,7 +723,7 @@ export function PipelineTab() {
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
+                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener) => { sheetFocus.remember(opener); setViewing(id); }} />
               ))}
             </div>
           </div>

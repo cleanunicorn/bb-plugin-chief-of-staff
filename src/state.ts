@@ -506,6 +506,9 @@ export class StateStore {
 
   deleteDeferredEvent(id: number): void { this.db.prepare("DELETE FROM deferred_events WHERE id = ?").run(id); }
 
+  /** Drop every event a pause held for this item. */
+  deleteDeferredEventsFor(itemId: string): void { this.db.prepare("DELETE FROM deferred_events WHERE item_id = ?").run(itemId); }
+
   // ---- work items ----
   insertWorkItem(item: NewWorkItem): WorkItem {
     const at = this.now().toISOString();

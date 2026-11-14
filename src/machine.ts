@@ -137,7 +137,23 @@ export type MachineEvent =
   /** A failed item's builder thread was resumed in BB: un-fail it, no new prompts. */
   | { type: "revive" }
   /** Run a step again from scratch (and everything after it). */
-  | { type: "rerun"; step: string; feedback?: string };
+  | { type: "rerun"; step: string; feedback?: string }
+  /** The operator closed the task by hand (Mark done / Mark failed). */
+  | { type: "close"; outcome: "done" | "failed" };
+
+/** lastError of a task closed by hand: tells it apart from a thread failure or a shipped task. */
+export const MARKED_DONE = "Marked done";
+export const MARKED_FAILED = "Marked failed";
+
+/**
+ * The only events a closed task takes. A done task can be closed as failed or
+ * run again; a failed one also takes the operator's decisions. Everything from
+ * threads, jobs, CI and the sweep is ignored, so a closed task stays closed.
+ */
+const CLOSED_EVENTS: Record<"done" | "failed", readonly MachineEvent["type"][]> = {
+  done: ["close", "rerun"],
+  failed: ["close", "retry", "revive", "rerun", "approve", "revise"],
+};
 
 export interface MachinePolicy {
   maxNudges: number;
@@ -237,6 +253,8 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
   const node = (id: string) => nodes[id];
   const note = (kind: JournalKind, id: string, detail: string | null | undefined, extra: Partial<Pick<JournalEntry, "agent" | "from" | "to">> = {}) =>
     journal.push({ kind, step: id, round: node(id)?.round ?? 0, ...extra, detail: clipDetail(detail, kind === "failed" || kind === "passed") });
+
+  if ((item.status === "done" || item.status === "failed") && !CLOSED_EVENTS[item.status].includes(event.type)) return { nodes, patch, effects, journal };
 
   // ---- primitives ----
 
@@ -543,7 +561,6 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     }
 
     case "pr_closed": {
-      if (item.status === "done" || item.status === "failed") break;
       const ship = shipNode() ?? topoOrder(wf).find((id) => step(id)?.type === "ship" && node(id)?.status !== "done");
       if (ship) note("stopped", ship, `Pull request${item.prNumber ? ` #${item.prNumber}` : ""} was closed without merging`);
       patch.lastError = PR_CLOSED_ERROR;
@@ -734,17 +751,38 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!node(event.step)) break;
       note("rerun", event.step, event.feedback?.trim() || null, { to: event.step });
       resetFrom(event.step, event.feedback?.trim() ? `Feedback from the operator:\n\n${event.feedback.trim()}` : null, null);
-      if (item.status === "failed") {
+      if (item.status === "failed" || item.status === "done") {
         patch.status = undefined;
         patch.lastError = null;
         patch.finishedAt = null;
       }
       break;
     }
+
+    case "close": {
+      if (item.status === event.outcome) return { nodes, patch, effects, journal };
+      for (const s of topoOrder(wf).map(step)) {
+        const n = s && node(s.id);
+        if (!s || !n || (n.status !== "running" && n.status !== "waiting")) continue;
+        if (event.outcome === "done") {
+          complete(s.id, MARKED_DONE);
+          continue;
+        }
+        note("stopped", s.id, MARKED_FAILED);
+        // A job in flight goes back to pending, so a retry or rerun runs it again; its late result is dropped.
+        // Agent steps keep their state: retry restarts the writer that was working.
+        const job = n.status === "running" && (s.type === "check" || (s.type === "ship" && (n.phase === "pushing" || n.phase === "merging")));
+        if (job) Object.assign(n, { ...freshNode(), round: n.round, attempts: n.attempts, output: n.output });
+      }
+      // No notification: the operator did it.
+      Object.assign(patch, { status: event.outcome, lastError: event.outcome === "done" ? MARKED_DONE : MARKED_FAILED, finishedAt: iso, jobStartedAt: null, queuedEvent: null });
+      return { nodes, patch, effects, journal };
+    }
   }
 
   // ---- schedule: start every pending step whose inputs are all done ----
-  const failed = ("status" in patch ? patch.status : item.status) === "failed";
+  const status = "status" in patch ? patch.status : item.status;
+  const failed = status === "failed";
   if (!failed) {
     for (const id of topoOrder(wf)) {
       const n = node(id);
@@ -755,7 +793,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
 
   // ---- finished? ----
   const finals = finalSteps(wf);
-  if (item.status !== "done" && patch.status !== "done" && finals.every((id) => node(id)?.status === "done")) {
+  if (status !== "done" && finals.every((id) => node(id)?.status === "done")) {
     patch.finishedAt = iso;
     patch.jobStartedAt = null;
     const shipped = wf.steps.some((s) => s.type === "ship");
@@ -768,7 +806,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
   // step holds one (a delivery went through, a report arrived, the operator
   // retried, or it was resolved before this rule existed) the error is
   // history and must not stay on the card next to "agent working".
-  const finishing = item.status === "done" || patch.status === "done";
+  const finishing = status === "done";
   const mergeWait = wf.steps.some((s) => s.type === "ship" && (node(s.id)?.phase === "ready" || node(s.id)?.phase === "merging"));
   if (!failed && !finishing && !mergeWait && item.lastError && !item.lastError.startsWith(ENGINE_ERROR_PREFIX) && !("lastError" in patch) && !Object.values(nodes).some(holdsRetry)) {
     patch.lastError = null;

@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { Cos } from "./context";
 import type { RepoConfig } from "./config";
 import { GitHubError, GitHubRateLimitError, prStateFrom, reduceReviews, unlessRateLimited } from "./github";
-import { ENGINE_ERROR_PREFIX, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
+import { ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, deriveStatus, transition, type Effect, type MachineEvent, type Nodes } from "./machine";
 import { nudgePrompt, splitTitle, stepPrompt, stepThreadBrief } from "./prompts";
 import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
@@ -71,23 +71,26 @@ export function dispatch(cos: Cos, itemId: string, event: MachineEvent, actor: s
 /** dispatch() for callers that already hold the item's lock. */
 export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEvent, actor: string, force = false, deferredId?: number): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(itemId);
+  if (item && !item.workflow.steps.length && event.type === "close") return closeWithoutWorkflow(cos, item, event.outcome, actor);
   if (!item || !item.workflow.steps.length) {
     if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
     return null;
   }
-  if (cos.store.isPaused(item.repo)) {
+  // Closing by hand is the operator's call: a pause does not hold it.
+  const held = () => event.type !== "close" && cos.store.isPaused(item.repo);
+  if (held()) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
   if (item.queuedEvent) {
     if (event.type === "start" || event.type === "retry" || event.type === "approve") event = item.queuedEvent;
-    else if (!["rerun", "revise", "pr_closed", "pr_merged"].includes(event.type)) {
+    else if (!["rerun", "revise", "pr_closed", "pr_merged", "close"].includes(event.type)) {
       if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
       return item;
     }
   }
   const { policy, repos, values } = await cos.config();
-  if (cos.store.isPaused(item.repo)) {
+  if (held()) {
     if (deferredId === undefined) cos.store.deferEvent(itemId, event, actor);
     return item;
   }
@@ -116,6 +119,7 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
         ...(event.type === "pr_opened" ? { prNumber: event.prNumber, prUrl: event.prUrl } : {}),
       });
       if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
+      if (item.status === "done") await reopenItemThreads(cos, item, actor);
       cos.invalidate();
       return queued;
     }
@@ -123,11 +127,14 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   const updated = cos.store.transaction(() => {
     const stored = cos.store.updateWorkItem(item.id, patch);
     if (stored) cos.store.appendJournal(item.id, t.journal, actor);
+    // Closed by hand: a decision held by a pause (a rerun, a retry) must not reopen it on resume.
+    if (stored && event.type === "close" && stored.status === event.outcome) cos.store.deleteDeferredEventsFor(item.id);
     return stored;
   });
   if (!updated) return null;
   if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
+  if (item.status === "done" && updated.status !== "done") await reopenItemThreads(cos, updated, actor);
   for (const effect of t.effects) {
     if (effect.type === "check" || effect.type === "ship" || effect.type === "merge") {
       startJob(cos, item.id, effect, actor);
@@ -150,6 +157,23 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
     }
   }
   if (item.status !== "done" && updated.status === "done") await archiveItemThreads(cos, updated, actor);
+  return cos.store.getWorkItem(item.id);
+}
+
+/** A task with no workflow steps has nothing for the engine to settle: write the outcome. */
+async function closeWithoutWorkflow(cos: Cos, item: WorkItem, outcome: "done" | "failed", actor: string): Promise<WorkItem | null> {
+  if (item.status === outcome) return item;
+  const updated = cos.store.transaction(() => {
+    const stored = cos.store.updateWorkItem(item.id, {
+      status: outcome, lastError: outcome === "done" ? MARKED_DONE : MARKED_FAILED, finishedAt: cos.now().toISOString(),
+      jobStartedAt: null, queuedEvent: null, waitingKind: null, waitingReason: null,
+    });
+    if (stored) cos.store.deleteDeferredEventsFor(item.id);
+    return stored;
+  });
+  if (!updated) return null;
+  logChanges(cos, item, updated, { type: "close", outcome }, actor);
+  if (outcome === "done") await archiveItemThreads(cos, updated, actor);
   return cos.store.getWorkItem(item.id);
 }
 
@@ -231,11 +255,37 @@ async function archiveItemThreads(cos: Cos, item: WorkItem, actor: string): Prom
   if (archived.length) cos.store.log({ level: "info", kind: "effect", repo: item.repo, workItemId: item.id, message: `archived ${archived.length} thread${archived.length === 1 ? "" : "s"}: ${archived.join(", ")}`, actor });
 }
 
+/**
+ * A done task runs again (rerun): bring back the threads archiving retired,
+ * parents first, and have the provider rebuild a workspace it already removed,
+ * before any prompt goes out. Otherwise the prompt reaches an archived thread
+ * and the next sweep fails the task with "thread archived". One thread failing
+ * does not stop the rest; its prompt then fails and is retried as usual.
+ */
+async function reopenItemThreads(cos: Cos, item: WorkItem, actor: string): Promise<void> {
+  const ids = (await archiveOrder(cos, item)).reverse();
+  for (const threadId of ids) {
+    try {
+      let thread = await cos.bb.sdk.threads.get({ threadId });
+      if (thread.deletedAt) continue;
+      if (thread.archivedAt) {
+        await cos.bb.sdk.threads.unarchive({ threadId });
+        thread = await cos.bb.sdk.threads.get({ threadId });
+      }
+      if (thread.canRestoreEnvironment) await cos.bb.sdk.threads.restoreEnvironment({ threadId });
+    } catch (error) {
+      const message = await cos.safe(error instanceof Error ? error.message : String(error));
+      cos.store.log({ level: "warn", kind: "effect", repo: item.repo, workItemId: item.id, message: `could not bring back thread ${threadId}: ${message}`, actor });
+    }
+  }
+}
+
 /** The stored patch for a transition: step states plus the status derived from them. */
 export function applyTransition(item: WorkItem, nodes: Nodes, patch: Partial<WorkItem>): Partial<WorkItem> {
+  // Closed stays closed (failed, or done by the workflow or by hand) unless the patch reopens it (retry, revive, rerun).
   const explicit = "status" in patch ? patch.status : item.status;
   const derived = deriveStatus({ status: explicit === "failed" ? "failed" : "queued", workflow: item.workflow }, nodes);
-  const status = explicit === "failed" ? "failed" : patch.status === "done" ? "done" : derived.status;
+  const status = explicit === "failed" || explicit === "done" ? explicit : derived.status;
   const fixAttempts = Object.values(nodes).reduce((sum, n) => sum + n.attempts, 0);
   const finished = status === "done" || status === "failed";
   return {

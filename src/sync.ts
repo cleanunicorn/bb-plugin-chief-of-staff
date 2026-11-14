@@ -11,6 +11,7 @@
 import { acknowledgeReport, deliveryWait, reportMatches, recoverSpawn } from "./deliveryReport";
 import type { Cos } from "./context";
 import { resumeQueued, dispatchLocked, jobRunning, withItemLock } from "./delivery";
+import { MARKED_FAILED } from "./machine";
 import { runningWriter } from "./prompts";
 import { parseTextReport } from "./report";
 import type { ItemThread, WorkItem } from "./state";
@@ -73,6 +74,9 @@ export interface ThreadContext {
   agent: number;
 }
 
+/** Done or failed: the engine ignores what the task's threads do, so observers do not read them. */
+const isClosed = (item: WorkItem) => item.status === "done" || item.status === "failed";
+
 /** Which step (and agent) a thread is working on for an item right now. */
 export function threadContext(cos: Cos, item: WorkItem, threadId: string): ThreadContext | null {
   const row = cos.store.getThread(threadId);
@@ -91,7 +95,7 @@ export function threadContext(cos: Cos, item: WorkItem, threadId: string): Threa
 export async function observeIdle(cos: Cos, itemId: string, threadId: string, thread: Pick<ThreadSnapshot, "updatedAt">, lastText: string | null | undefined, actor: string, opts: { force?: boolean } = {}): Promise<void> {
   await withItemLock(itemId, async () => {
     let item = cos.store.getWorkItem(itemId);
-    if (!item) return;
+    if (!item || isClosed(item)) return;
     const ctx = threadContext(cos, item, threadId);
     if (!ctx?.step) return;
     const step = ctx.step;
@@ -145,7 +149,7 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
 export async function observeActive(cos: Cos, itemId: string, threadId: string, actor: string): Promise<void> {
   await withItemLock(itemId, async () => {
     const item = cos.store.getWorkItem(itemId);
-    if (!item) return;
+    if (!item || isClosed(item)) return;
     cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
     const ctx = threadContext(cos, item, threadId);
     if (!ctx?.step) return;
@@ -166,7 +170,7 @@ export async function observeActive(cos: Cos, itemId: string, threadId: string, 
 export async function observeInteraction(cos: Cos, itemId: string, threadId: string, reason: string, actor: string): Promise<void> {
   await withItemLock(itemId, async () => {
     const item = cos.store.getWorkItem(itemId);
-    if (!item) return;
+    if (!item || isClosed(item)) return;
     const ctx = threadContext(cos, item, threadId);
     if (!ctx?.step) return;
     await dispatchLocked(cos, item.id, { type: "interaction_pending", step: ctx.step.id, agent: ctx.agent, reason }, actor);
@@ -182,7 +186,7 @@ export async function observeFailure(cos: Cos, itemId: string, threadId: string,
   if (opts.errored && (await observeUsageLimit(cos, itemId, threadId, actor, opts.failure))) return;
   await withItemLock(itemId, async () => {
     const item = cos.store.getWorkItem(itemId);
-    if (!item || item.status === "failed" || item.status === "done") return;
+    if (!item || isClosed(item)) return;
     const ctx = threadContext(cos, item, threadId);
     if (!ctx) return;
     if (ctx.role === "builder") {
@@ -311,8 +315,8 @@ export async function syncThreads(cos: Cos, actor: string): Promise<SyncResult> 
       const fresh = cos.store.getWorkItem(item.id) ?? item;
       try {
         if (fresh.status === "failed") {
-          // A resumed builder revives a failed item.
-          if (id === fresh.threadId && BUSY.has(snapshot.status)) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "revive" }, actor));
+          // A resumed builder revives a failed item, unless the operator marked it failed.
+          if (id === fresh.threadId && BUSY.has(snapshot.status) && fresh.lastError !== MARKED_FAILED) await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "revive" }, actor));
           continue;
         }
         await syncThread(cos, fresh, snapshot, actor);
