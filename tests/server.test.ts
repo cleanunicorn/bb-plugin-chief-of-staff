@@ -940,7 +940,7 @@ describe("chief-of-staff server", () => {
     it("runs the next intake after one that throws", async () => {
       const original = StateStore.prototype.listWorkItems;
       let thrown = false;
-      vi.spyOn(StateStore.prototype, "listWorkItems").mockImplementation(function (this: StateStore, ...args) {
+      const spy = vi.spyOn(StateStore.prototype, "listWorkItems").mockImplementation(function (this: StateStore, ...args) {
         if (!thrown) { thrown = true; throw new Error("store unavailable"); }
         return original.apply(this, args);
       });
@@ -948,7 +948,7 @@ describe("chief-of-staff server", () => {
         const [failed, next] = await Promise.allSettled([intake(), intake()]);
         expect(failed).toMatchObject({ status: "rejected", reason: { message: expect.stringContaining("store unavailable") } });
         expect(next).toMatchObject({ status: "fulfilled", value: { results: [{ started: [{ issue: 12, threadId: "thr_1" }] }] } });
-      } finally { vi.restoreAllMocks(); }
+      } finally { spy.mockRestore(); }
     });
 
     it("skips an issue started by something else after its first check, without spawning or commenting", async () => {
@@ -957,6 +957,15 @@ describe("chief-of-staff server", () => {
       await settleJobs();
       expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "active thread exists" }] });
       expect(activeFor12().map((item) => item.id)).toEqual(["other"]);
+      expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+      expect(statusComments()).toHaveLength(0);
+    });
+
+    it("skips an issue when its project is paused after its first check", async () => {
+      duringPrLookup(() => new StateStore(host.bb.storage.database()).setRepoPaused("acme/app", true));
+      const result = await intake();
+      expect(result.results[0]).toMatchObject({ started: [], skipped: [{ issue: 12, reason: "paused" }] });
+      expect(activeFor12()).toHaveLength(0);
       expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
       expect(statusComments()).toHaveLength(0);
     });

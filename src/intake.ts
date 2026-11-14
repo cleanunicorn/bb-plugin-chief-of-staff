@@ -100,6 +100,11 @@ export async function runIntake(cos: Cos, opts: IntakeOptions): Promise<IntakeRe
   intakeInProgress.set(cos, done);
   try {
     await previous;
+    // A sweep whose time budget ran out while it waited leaves everything to the next one.
+    if (opts.deadline !== undefined && cos.now().getTime() >= opts.deadline) {
+      cos.bb.log.info("intake skipped: the sweep's GitHub time budget ran out while another intake ran");
+      return [];
+    }
     return await intakePass(cos, opts);
   } finally {
     release();
@@ -245,8 +250,9 @@ async function newItem(cos: Cos, repo: RepoConfig, fields: { issueNumber: number
 export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue, actor: string, maxTotal: number): Promise<{ item: WorkItem | null } | { skipped: string }> {
   const fresh = await newItem(cos, repo, { issueNumber: issue.number, issueTitle: issue.title, branch: issueBranchName(issue.number, issue.title), source: "intake" });
   // Checked again after the awaits since the caller's check, with none from
-  // here to the insert: something else may have started the issue, or filled
-  // the capacity, in the meantime.
+  // here to the insert: in the meantime the project may have been paused, or
+  // something else may have started the issue or filled the capacity.
+  if (cos.store.isPaused(fresh.repo)) return { skipped: "paused" };
   if (cos.store.findActiveForIssue(fresh.repo, issue.number)) return { skipped: "active thread exists" };
   const capacity = capacityProblem(cos, repo, maxTotal);
   if (capacity) return { skipped: capacity };
