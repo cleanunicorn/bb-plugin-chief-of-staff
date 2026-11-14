@@ -13,7 +13,7 @@ import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
 import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
-import { edgeCounts, loopBacks, type TaskUsage } from "@/components/cos/runModel";
+import { edgeCounts, loopBacks, taskEnd, type TaskUsage } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
@@ -159,11 +159,14 @@ function ActivityLine({ entry }: { entry: RosterEntry }) {
   return <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{entry.activity}</p>;
 }
 
-/** What "Run again from here" resets: the step and every step reachable after it (the server's rerun does the same). */
-function rerunEffect(wf: Workflow, stepId: string, name: string): string {
+/**
+ * What "Run again from here" resets: the step and every step reachable after it (the server's rerun does the same).
+ * On a finished task the rerun also reopens it: the server clears its status, error and finish time.
+ */
+function rerunEffect(wf: Workflow, stepId: string, name: string, finished: boolean): string {
   const after = descendants(wf, stepId).size - 1;
-  if (after <= 0) return `This resets ${name} and runs it again.`;
-  return `This resets ${name} and the ${after === 1 ? "step" : `${after} steps`} after it, then runs ${name} again.`;
+  const resets = after <= 0 ? `This resets ${name} and runs it again.` : `This resets ${name} and the ${after === 1 ? "step" : `${after} steps`} after it, then runs ${name} again.`;
+  return finished ? `${resets} This reopens the finished task, and agents start working on it again.` : resets;
 }
 
 /**
@@ -204,8 +207,12 @@ function useTaskUsage(id: string, task: { status: string; usage?: TaskUsage | nu
   return task?.usage ?? (active ? live : null);
 }
 
-/** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
-function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
+/**
+ * One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here".
+ * A finished task's sheet reads as a record. `finishedHint`: the opener's view of whether the task has finished, used until the sheet's own data loads.
+ * Without one (the Activity feed does not know) the sheet says nothing about the task's state until then.
+ */
+function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; finishedHint?: boolean; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
@@ -214,7 +221,8 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<SheetMode>(initialMode);
   const [busy, setBusy] = useState(false);
-  const [confirmRerun, setConfirmRerun] = useState(false);
+  // Whether the task had finished is kept from when the question opened, so its text holds while it animates closed after the rerun reopens the task.
+  const [confirmRerun, setConfirmRerun] = useState<{ open: boolean; finished: boolean }>({ open: false, finished: false });
   const rerunButton = useRef<HTMLButtonElement>(null);
   const focusRerun = useFocusWhenEnabled(rerunButton, busy);
   const [error, setError] = useState<string | null>(null);
@@ -226,6 +234,9 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
   const column = useRef<HTMLDivElement>(null);
   const aside = useRef<HTMLElement>(null);
   const data = view.data;
+  // undefined: not known yet.
+  const finished = data ? taskEnd(data.task).finished : finishedHint;
+  const sheetTitle = finished === undefined ? "Task workflow" : finished ? "How this task went" : "Where this task is";
   const wf = data?.workflow as Workflow | undefined;
   const live = useMemo(() => (data?.live ?? {}) as Record<string, LiveStatus>, [data?.live]);
   const step = wf?.steps.find((s) => s.id === selected);
@@ -319,7 +330,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
         <header className="flex shrink-0 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
             {/* Basis auto, not 0: the controls drop to a second line before the title is squeezed. */}
-            <DialogTitle className="min-w-0 flex-auto leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+            <DialogTitle className="min-w-0 flex-auto leading-normal tracking-normal text-foreground">{sheetTitle}</DialogTitle>
             {controls}
           </div>
           <p className="line-clamp-3 text-xs text-muted-foreground [overflow-wrap:anywhere]" title={taskLine}>{taskLine ?? "Loading…"}</p>
@@ -328,7 +339,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
         <header className="flex shrink-0 items-start justify-between gap-2">
           <div className="min-w-0">
             <p className={cn(short ? "line-clamp-1" : "line-clamp-2", "text-xs text-muted-foreground")} title={taskLine}>{taskLine ?? "Loading…"}</p>
-            <DialogTitle className="leading-normal tracking-normal text-foreground">Where this task is</DialogTitle>
+            <DialogTitle className="leading-normal tracking-normal text-foreground">{sheetTitle}</DialogTitle>
           </div>
           {controls}
         </header>
@@ -369,7 +380,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
         )}
         <aside ref={aside} aria-label={step ? "Step details" : "Task overview"} className={cn("rounded-lg border border-border text-sm", phoneColumn ? "shrink-0 p-3" : cn("min-h-0 overflow-y-auto", short ? "w-[min(20rem,42%)] shrink-0 p-2.5" : "max-h-[45%] p-3 md:max-h-none md:w-[26rem] md:shrink-0"))}>
           {step ? (
-            <StepPanel itemId={id} workflow={wf} step={step} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
+            <StepPanel itemId={id} workflow={wf} step={step} task={data.task} live={live[step.id]} detail={data.steps?.[step.id]} steps={data.steps} journal={journal} now={now} />
           ) : (
             <TaskOverview itemId={id} title={data.title} workflow={wf} task={data.task} loops={loops} journal={journal} now={now} />
           )}
@@ -382,24 +393,24 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
             <span>
               <b className="text-foreground">{step.name}</b> · {statusLabel(step.id)}
             </span>
-            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun(true)}>
+            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun({ open: true, finished: finished === true })}>
               <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
             </Button>
             <ConfirmDialog
-              open={confirmRerun}
+              open={confirmRerun.open}
               title={`Run ‘${step.name}’ again?`}
-              description={rerunEffect(wf!, step.id, step.name)}
-              confirmLabel="Run again"
+              description={rerunEffect(wf!, step.id, step.name, confirmRerun.finished)}
+              confirmLabel={confirmRerun.finished ? "Reopen and run again" : "Run again"}
               onConfirm={() => {
-                setConfirmRerun(false);
+                setConfirmRerun((c) => ({ ...c, open: false }));
                 void rerun();
               }}
-              onCancel={() => setConfirmRerun(false)}
+              onCancel={() => setConfirmRerun((c) => ({ ...c, open: false }))}
               restoreFocus={focusRerun}
             />
           </>
         ) : (
-          <span>Select a step to run it (and everything after it) again.</span>
+          finished === undefined ? null : <span>{finished ? "Select a step to reopen this task and run it (and everything after it) again." : "Select a step to run it (and everything after it) again."}</span>
         )}
       </footer> : null}
     </Sheet>
@@ -740,7 +751,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
-  const [viewing, setViewing] = useState<{ id: string; mode: SheetMode } | null>(null);
+  const [viewing, setViewing] = useState<{ id: string; mode: SheetMode; finished: boolean } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
@@ -961,7 +972,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} finishedTokens={finishedTokens} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
+                <AgentCard key={e.id} entry={e} finishedTokens={finishedTokens} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode, finished: e.detail === "done" || e.detail === "failed" }); }} onShowActivity={onShowActivity} />
               ))}
             </div>
           </div>
@@ -1030,7 +1041,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       </div>
 
       {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
-      {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
+      {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} finishedHint={viewing.finished} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }
@@ -1096,7 +1107,7 @@ export function ReposTab() {
   }, [overview, roster]);
   useLiveRefresh(refetchAll);
   const [intake, setIntake] = useState<{ results: IntakeResult[]; dryRun: boolean } | null>(null);
-  const [viewing, setViewing] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ id: string; finished: boolean } | null>(null);
   // Closing the workflow sheet returns focus to the row's Workflow button, or to the panel heading when the row is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const [message, setMessage] = useState<string | null>(null);
@@ -1227,14 +1238,14 @@ export function ReposTab() {
           authOk={authOk}
           stage={(e) => <StagePill entry={e} />}
           action={(e) => (
-            <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing(e.id); }}>
+            <Button size="sm" variant="outline" className="ml-auto h-7 px-2" onClick={(event) => { sheetFocus.remember(event.currentTarget); setViewing({ id: e.id, finished: e.detail === "done" || e.detail === "failed" }); }}>
               <Icon name="Network" fallback="Workflow" aria-hidden /> Workflow
             </Button>
           )}
           empty={roster.error && !roster.data ? null : <Empty icon="GitPullRequest" title="No pull requests yet">Pull requests opened by Chief of Staff agents show up here with their state, checks and review.</Empty>}
         />
       </Panel>
-      {viewing ? <WorkflowSheet id={viewing} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
+      {viewing ? <WorkflowSheet id={viewing.id} finishedHint={viewing.finished} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
   );
 }

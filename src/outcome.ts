@@ -68,3 +68,24 @@ export function finishedOutcome(item: Pick<WorkItem, "status" | "lastError" | "p
   }
   return null;
 }
+
+/**
+ * How a finished task ended, split for display: a headline, and why when it did not deliver. A delivered task's stale
+ * error is not a reason; MARKED_FAILED only repeats the label; any other error on a task failed by hand is only the
+ * last one seen, not the cause; and the engine's pr_closed reason, which already says the label ("PR closed without merge"), is the headline.
+ */
+export function endSummary(outcome: Outcome, lastError: string | null): { headline: string; reason: { lead: "Why it ended" | "Last error"; text: string } | null } {
+  const label = OUTCOME_META[outcome].label;
+  if (!FAILED_OUTCOMES.includes(outcome) || !lastError) return { headline: label, reason: null };
+  if (outcome === "marked_failed") return { headline: label, reason: lastError === MARKED_FAILED ? null : { lead: "Last error", text: lastError } };
+  // Only the engine's own pr_closed reason: any other error that happens to start with the label keeps it ("Failed: Failed to push").
+  if (outcome === "pr_closed" && lastError === PR_CLOSED_ERROR) return { headline: lastError, reason: null };
+  return { headline: label, reason: { lead: "Why it ended", text: lastError } };
+}
+
+/** How a finished task ended, on one line, with why when it did not deliver ("Failed: thread archived"). */
+export function describeOutcome(outcome: Outcome, lastError: string | null): string {
+  const { headline, reason } = endSummary(outcome, lastError);
+  if (!reason) return headline;
+  return reason.lead === "Last error" ? `${headline} (last error: ${reason.text})` : `${headline}: ${reason.text}`;
+}

@@ -2347,6 +2347,19 @@ describe("chief-of-staff server", () => {
     expect(stored.build).toMatchObject({ status: "waiting" });
   });
 
+  it("gives the workflow view the task's outcome once it has finished", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const id = store.listWorkItems()[0]!.id;
+    const outcome = async () => ((await host.harness.behavior.callRpc("cos_item_workflow", { id })) as { task: { outcome: string | null } }).task.outcome;
+    expect(await outcome()).toBeNull();
+    store.updateWorkItem(id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString() });
+    expect(await outcome()).toBe("failed");
+    store.updateWorkItem(id, { status: "queued", lastError: null, finishedAt: null });
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_done" });
+    expect(await outcome()).toBe("marked_done");
+  });
+
   it("says a task marked done by hand ended that way, and when", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const before = await roster();

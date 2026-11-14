@@ -7,6 +7,8 @@ import { z } from "zod";
 export const ROSTER_FINISHED_LIMIT = 50;
 export const ROSTER_FINISHED_MAX = 500;
 export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_MAX).default(ROSTER_FINISHED_LIMIT);
+/** How a finished task ended: the values of OUTCOMES in src/outcome.ts (kept out of this file to keep the bundle small; a test checks they match). */
+export const outcomeSchema = z.enum(["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"]);
 /** An earlier roster page's opaque nextBefore cursor. */
 export const rosterCursorSchema = z.string().min(1).max(1000);
 /** How finished roster items are ordered: most recently finished, or most tokens, first. */
@@ -80,7 +82,7 @@ const rosterEntry = z.object({
   /** When a done or failed task finished; null while it runs (and on some legacy rows). */
   finishedAt: z.string().nullable(),
   /** How a finished task ended (src/outcome.ts); null while it runs. */
-  outcome: z.enum(["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"]).nullable(),
+  outcome: outcomeSchema.nullable(),
   lastActivityAt: z.string().nullable(),
   stalled: z.boolean(),
   fixAttempts: z.number(),
@@ -181,6 +183,8 @@ const taskDetail = z.object({
   finishedAt: z.string().nullable(),
   /** A finished task's stored usage over all its threads (no usage calls); null while it runs: read that once with cos_item_usage. */
   usage: itemUsage.nullable().optional(),
+  /** How the task ended (src/outcome.ts); null while it runs. */
+  outcome: outcomeSchema.nullable(),
 });
 
 const stepDetail = z.object({

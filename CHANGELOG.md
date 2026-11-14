@@ -70,6 +70,19 @@
   Cost. Counts stored by an earlier version (builder only) are not reused:
   finished tasks are counted again.
 
+- **A finished task's workflow sheet reads as a record.** Opening Workflow on
+  a done or failed task used to describe it as still running: the sheet was
+  titled "Where this task is", a step the task stopped in showed "Running for"
+  growing on every tick with "Working on it.", and the reason it failed sat in
+  an unlabelled box. The sheet is now titled "How this task went". The
+  overview says how the task ended and when ("Failed · ended …", "Merged ·
+  ended …") and, when it did not deliver, labels why ("Why it ended: thread
+  archived"). The finish time sits next to the start and last activity. A
+  stopped step shows "Ran for 1.0h before the task ended" and "Did not
+  finish." (or "Did not run."), and no duration changes while the sheet is
+  open. Running a step again from a finished task says it reopens the task
+  and starts agent work again.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

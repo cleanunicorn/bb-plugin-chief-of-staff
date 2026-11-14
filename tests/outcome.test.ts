@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { freshNode, type Nodes } from "../src/machine";
-import { finishedOutcome, MARKED_DONE, MARKED_FAILED, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
-import { describeActivity, describeOutcome } from "../src/roster";
+import { describeOutcome, endSummary, finishedOutcome, MARKED_DONE, MARKED_FAILED, OUTCOME_META, OUTCOMES, PR_CLOSED_ERROR } from "../src/outcome";
+import { describeActivity } from "../src/roster";
+import { outcomeSchema } from "../rpcContract";
 import type { WorkItem } from "../src/state";
 import { workflowSchema, type Workflow } from "../src/workflow";
 
@@ -110,5 +111,33 @@ describe("describeActivity on finished items", () => {
     expect(describeActivity(full({ status: "failed", lastError: null }))).toBe("Marked failed");
     // A person ended it: a stored error is only the last one seen, not the cause.
     expect(describeOutcome("marked_failed", "Cannot read properties of undefined (reading 'length')")).toBe("Marked failed (last error: Cannot read properties of undefined (reading 'length'))");
+  });
+});
+
+describe("endSummary", () => {
+  it("gives the label and, when it did not deliver, why", () => {
+    expect(endSummary("failed", "thread archived")).toEqual({ headline: "Failed", reason: { lead: "Why it ended", text: "thread archived" } });
+    expect(endSummary("merged", "flaky CI")).toEqual({ headline: "Merged", reason: null });
+    expect(endSummary("failed", null)).toEqual({ headline: "Failed", reason: null });
+  });
+
+  it("calls an older error on a task failed by hand the last error, and drops the marker", () => {
+    expect(endSummary("marked_failed", "push rejected")).toEqual({ headline: "Marked failed", reason: { lead: "Last error", text: "push rejected" } });
+    expect(endSummary("marked_failed", MARKED_FAILED)).toEqual({ headline: "Marked failed", reason: null });
+  });
+
+  it("does not repeat a reason that already says the label", () => {
+    expect(endSummary("pr_closed", PR_CLOSED_ERROR)).toEqual({ headline: PR_CLOSED_ERROR, reason: null });
+  });
+
+  it("keeps the label on a failure whose error happens to start with it", () => {
+    expect(endSummary("failed", "Failed to push branch")).toEqual({ headline: "Failed", reason: { lead: "Why it ended", text: "Failed to push branch" } });
+    expect(describeOutcome("failed", "failed to push branch")).toBe("Failed: failed to push branch");
+  });
+});
+
+describe("the RPC contract's outcomes", () => {
+  it("match OUTCOMES", () => {
+    expect(outcomeSchema.options).toEqual([...OUTCOMES]);
   });
 });

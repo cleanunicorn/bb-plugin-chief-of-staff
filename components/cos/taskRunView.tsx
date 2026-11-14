@@ -11,8 +11,9 @@ import { cn } from "../../lib/utils";
 import { STATUS, compact, duration, relative } from "./viz";
 import { usageNote } from "./dashboardModel";
 import { STEP_TYPE_META, liveTone, type LiveStatus } from "./workflowCanvas";
-import { PIVOTAL_KINDS, journalLine, stepInputs, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail, type TaskUsage } from "./runModel";
+import { PIVOTAL_KINDS, journalLine, stepInputs, taskEnd, type JournalRecord, type LoopSummary, type StepDetail, type TaskDetail, type TaskUsage } from "./runModel";
 import { modelMode, stepById, type Step, type Workflow } from "../../src/workflow";
+import { endSummary, FAILED_OUTCOMES, OUTCOME_META } from "../../src/outcome";
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "Queued",
@@ -41,6 +42,8 @@ const KIND_COLOR: Record<JournalRecord["kind"], string> = {
 };
 
 const minutesBetween = (from: string | null | undefined, to: string | null | undefined, now: number) => (from ? Math.max(0, (to ? Date.parse(to) : now) - Date.parse(from)) / 60_000 : null);
+/** A finished span: from `from` to `to`, or nothing when the end is not known. Never counts on to now. */
+const minutesTo = (from: string | null | undefined, to: string | null) => (from && to ? Math.max(0, Date.parse(to) - Date.parse(from)) / 60_000 : null);
 /** Dashboard actions (approve, send back, run again) are recorded as "rpc:client". */
 const who = (actor: string) => (actor === "rpc:client" ? "you" : null);
 
@@ -53,7 +56,8 @@ export function TaskSummary({ task, workflow, live, loops, now, usage = null, on
   const done = workflow.steps.filter((s) => live[s.id]?.status === "done").length;
   const items: { icon: string; label: string; value: ReactNode; title?: string }[] = [];
   if (task) items.push({ icon: "Activity", label: "Status", value: STATUS_LABEL[task.status] ?? task.status });
-  if (task) items.push({ icon: "Timer", label: task.finishedAt ? "Took" : "Running for", value: duration(minutesBetween(task.createdAt, task.finishedAt, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
+  const { finished, end } = taskEnd(task);
+  if (task) items.push({ icon: "Timer", label: finished ? "Took" : "Running for", value: duration(finished ? minutesTo(task.createdAt, end) : minutesBetween(task.createdAt, null, now)), title: `Started ${new Date(task.createdAt).toLocaleString()}` });
   items.push({ icon: "ListChecks", label: "Steps done", value: `${done}/${workflow.steps.length}` });
   items.push({
     icon: "Undo2",
@@ -218,8 +222,23 @@ function LoopList({ workflow, loops }: { workflow: Workflow; loops: LoopSummary 
   );
 }
 
+/** How a finished task ended: the outcome, when, and (when it did not deliver) why. Same rules as the card's line (endSummary). */
+function EndCallout({ task, end }: { task: TaskDetail & { outcome: NonNullable<TaskDetail["outcome"]> }; end: string | null }) {
+  const { headline, reason } = endSummary(task.outcome, task.lastError);
+  const meta = OUTCOME_META[task.outcome];
+  const color = FAILED_OUTCOMES.includes(task.outcome) ? STATUS.serious : meta.tone === "good" ? STATUS.good : "var(--muted-foreground)";
+  return (
+    <Callout icon={meta.icon} color={color}>
+      <span className="font-medium">{headline}</span>
+      {end ? ` · ended ${new Date(end).toLocaleString()}` : ""}
+      {reason ? <span className="block">{reason.lead}: {reason.text}</span> : null}
+    </Callout>
+  );
+}
+
 /** With no step selected: the task, why it waits, where work went back, and what happened. */
 export function TaskOverview({ itemId, title, workflow, task, loops, journal, now }: { itemId: string; title: string; workflow: Workflow; task: TaskDetail | undefined; loops: LoopSummary; journal: readonly JournalRecord[]; now: number }) {
+  const { finished, end } = taskEnd(task);
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -227,7 +246,7 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
         <p className="mt-0.5 text-xs text-muted-foreground">Select a step to see what it received and produced.</p>
       </div>
       {task?.waitingReason ? <Callout icon="Hand" color={STATUS.warning}>{task.waitingReason}</Callout> : null}
-      {task?.lastError && task.status !== "done" ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
+      {finished && task?.outcome ? <EndCallout task={{ ...task, outcome: task.outcome }} end={end} /> : task?.lastError && !finished ? <Callout icon="CircleAlert" color={STATUS.serious}>{task.lastError}</Callout> : null}
       {task ? (
         <Section title="Task" icon="FileText">
           {task.body?.trim() ? <TextBlock>{task.body}</TextBlock> : <p className="text-xs text-muted-foreground">{task.issueNumber ? `GitHub issue #${task.issueNumber}.` : "No description."}</p>}
@@ -239,17 +258,19 @@ export function TaskOverview({ itemId, title, workflow, task, loops, journal, no
           <p className="text-[11px] text-muted-foreground">
             {task.repo} · started {relative(task.createdAt, now)}
             {task.lastActivityAt ? ` · last activity ${relative(task.lastActivityAt, now)}` : ""}
+            {end ? ` · finished ${new Date(end).toLocaleString()}` : ""}
           </p>
         </Section>
       ) : null}
       <LoopList workflow={workflow} loops={loops} />
-      <Timeline itemId={itemId} workflow={workflow} entries={journal} now={now} empty={task?.status === "done" || task?.status === "failed" ? "No step history was recorded for this task." : "No history yet. Steps are recorded as they start, report, pass, fail or get sent back."} />
+      <Timeline itemId={itemId} workflow={workflow} entries={journal} now={now} empty={finished ? "No step history was recorded for this task." : "No history yet. Steps are recorded as they start, report, pass, fail or get sent back."} />
       {loops.approximate && journal.length ? <p className="text-[11px] text-muted-foreground">History recorded from {new Date(journal[0]!.at).toLocaleString()}; earlier steps of this task are not in it.</p> : null}
     </div>
   );
 }
 
-function StepSettings({ step, live }: { step: Step; live: LiveStatus | undefined }) {
+/** `finished`: the task has ended, so a step that has not picked a model never will. */
+function StepSettings({ step, live, finished }: { step: Step; live: LiveStatus | undefined; finished: boolean }) {
   return (
     <details className="text-xs">
       <summary className="cursor-pointer rounded font-semibold uppercase tracking-wide text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Step settings</summary>
@@ -259,7 +280,7 @@ function StepSettings({ step, live }: { step: Step; live: LiveStatus | undefined
         {step.type === "ship" ? <p><b>Action:</b> {step.action}</p> : null}
         {step.type === "model" ? (
           modelMode(step) === "auto"
-            ? <p><b>Picked:</b> {live?.picked ?? (live?.status === "done" ? "nothing (kept the current model)" : "not yet: an agent picks the best model for the task")}</p>
+            ? <p><b>Picked:</b> {live?.picked ?? (live?.status === "done" ? "nothing (kept the current model)" : finished ? "nothing (the task ended before a model was picked)" : "not yet: an agent picks the best model for the task")}</p>
             : <p><b>Sets:</b> {[step.providerId, step.model, step.reasoningLevel].filter(Boolean).join(" · ") || "nothing"}</p>
         ) : null}
         {step.instructions ? <TextBlock>{step.instructions}</TextBlock> : null}
@@ -268,8 +289,19 @@ function StepSettings({ step, live }: { step: Step; live: LiveStatus | undefined
   );
 }
 
-/** The selected step: its state, what it received, what it produced, and its runs. */
-export function StepPanel({ itemId, workflow, step, live, detail, steps, journal, now }: { itemId: string; workflow: Workflow; step: Step; live: LiveStatus | undefined; detail: StepDetail | undefined; steps: Record<string, StepDetail> | undefined; journal: readonly JournalRecord[]; now: number }) {
+/**
+ * What the step produced when there is nothing to show. On a finished task nothing more will come: a step that
+ * started reads as one that did not finish (closing a task can send it back to pending with its start kept).
+ */
+function emptyProduced(finished: boolean, live: LiveStatus | undefined, detail: StepDetail | undefined): string {
+  if (!finished) return live?.status === "running" ? "Working on it." : "Nothing yet.";
+  if (detail?.finishedAt || live?.status === "done") return "Nothing.";
+  return detail?.startedAt || live?.status === "stopped" ? "Did not finish." : "Did not run.";
+}
+
+/** The selected step: its state, what it received, what it produced, and its runs. On a finished task it reads as a record: no timer counts on. */
+export function StepPanel({ itemId, workflow, step, task, live, detail, steps, journal, now }: { itemId: string; workflow: Workflow; step: Step; task: TaskDetail | undefined; live: LiveStatus | undefined; detail: StepDetail | undefined; steps: Record<string, StepDetail> | undefined; journal: readonly JournalRecord[]; now: number }) {
+  const { finished, end } = taskEnd(task);
   const tone = liveTone(live);
   const limit = step.type === "agent" ? step.maxRounds : step.type === "model" ? 0 : step.maxAttempts;
   const inputs = stepInputs(workflow, steps, step.id);
@@ -278,7 +310,14 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
   if (live?.round) facts.push(["Run", live.round]);
   if (step.onFail) facts.push(["Failures", `${live?.attempts ?? 0} (limit ${limit})`]);
   if (detail?.startedAt) facts.push(["Started", relative(detail.startedAt, now)]);
-  if (detail?.startedAt) facts.push([detail.finishedAt ? "Took" : "Running for", duration(minutesBetween(detail.startedAt, detail.finishedAt, now))]);
+  if (detail?.startedAt) {
+    if (detail.finishedAt) facts.push(["Took", duration(minutesBetween(detail.startedAt, detail.finishedAt, now))]);
+    else if (!finished) facts.push(["Running for", duration(minutesBetween(detail.startedAt, null, now))]);
+    else {
+      const ran = minutesTo(detail.startedAt, end);
+      facts.push(["Ran for", ran === null ? duration(null) : `${duration(ran)} before the task ended`]);
+    }
+  }
   const onFail = step.onFail ? stepById(workflow, step.onFail)?.name ?? step.onFail : null;
   return (
     <div className="flex flex-col gap-4">
@@ -321,7 +360,7 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
           inputs.map((i) => (
             <div key={i.from} className="flex flex-col gap-1">
               <p className="text-xs font-medium text-foreground">From {i.name}</p>
-              {i.reports.length ? i.reports.map((r) => <TextBlock key={r.agent}>{(i.reports.length > 1 ? `Agent ${r.agent + 1}\n\n` : "") + r.summary}</TextBlock>) : i.output ? <TextBlock mono>{i.output}</TextBlock> : <p className="text-xs text-muted-foreground">Nothing yet.</p>}
+              {i.reports.length ? i.reports.map((r) => <TextBlock key={r.agent}>{(i.reports.length > 1 ? `Agent ${r.agent + 1}\n\n` : "") + r.summary}</TextBlock>) : i.output ? <TextBlock mono>{i.output}</TextBlock> : <p className="text-xs text-muted-foreground">{finished ? "Nothing." : "Nothing yet."}</p>}
             </div>
           ))
         ) : (
@@ -339,11 +378,11 @@ export function StepPanel({ itemId, workflow, step, live, detail, steps, journal
         ) : detail?.output ? (
           <TextBlock mono>{detail.output}</TextBlock>
         ) : (
-          <p className="text-xs text-muted-foreground">{live?.status === "running" ? "Working on it." : "Nothing yet."}</p>
+          <p className="text-xs text-muted-foreground">{emptyProduced(finished, live, detail)}</p>
         )}
       </Section>
-      <Timeline itemId={itemId} workflow={workflow} entries={mine} now={now} empty="No runs recorded for this step yet." />
-      <StepSettings step={step} live={live} />
+      <Timeline itemId={itemId} workflow={workflow} entries={mine} now={now} empty={finished ? "No runs recorded for this step." : "No runs recorded for this step yet."} />
+      <StepSettings step={step} live={live} finished={finished} />
     </div>
   );
 }
