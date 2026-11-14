@@ -44,9 +44,9 @@ function write(store: Storage | null, key: string, value: string): void {
   }
 }
 
-/** An ISO time, or null for anything else. */
+/** The time as a full ISO datetime (what cos_since accepts), or null for anything that is not a time. */
 function time(value: string | null): string | null {
-  return value !== null && Number.isFinite(Date.parse(value)) ? value : null;
+  return value !== null && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 }
 
 /**

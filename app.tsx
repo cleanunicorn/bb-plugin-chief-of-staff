@@ -700,7 +700,7 @@ function SinceLine({ baseline, data, nothingWaits, onShowFinished, now }: { base
         {nothingWaits ? <span className="text-muted-foreground"> · Nothing waits on you</span> : null}
       </p>
       {listed.length ? (
-        <ul className="flex flex-col gap-0.5 pl-5 text-xs text-muted-foreground">
+        <ul className="flex list-none flex-col gap-0.5 pl-5 text-xs text-muted-foreground">
           {listed.map((f) => (
             <li key={f.id} className="truncate" title={`${taskLabel({ workItemId: f.id, issueNumber: f.issueNumber, issueTitle: f.issueTitle })} — ${failureWhy(f)}`}>
               <span className="text-foreground">{taskLabel({ workItemId: f.id, issueNumber: f.issueNumber, issueTitle: f.issueTitle })}</span> — {clip(failureWhy(f))}

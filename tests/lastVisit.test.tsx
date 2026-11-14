@@ -48,6 +48,15 @@ it("starts a new visit from when the dashboard was left, after a long time away"
   expect(sessionStorage.getItem(BASELINE_KEY)).toBe(new Date(NOW + 1_000).toISOString());
 });
 
+it("stores a date-only or offset value as a full ISO datetime", () => {
+  localStorage.setItem(LAST_VISIT_KEY, "2026-11-14T13:00:00+02:00");
+  expect(visitBaseline(NOW)).toBe("2026-11-14T11:00:00.000Z");
+  // Within a visit (left a minute ago) the tab's stored baseline is read back, normalised too.
+  localStorage.setItem(LAST_VISIT_KEY, ago(60_000));
+  sessionStorage.setItem(BASELINE_KEY, "2026-11-13");
+  expect(visitBaseline(NOW)).toBe("2026-11-13T00:00:00.000Z");
+});
+
 it("ignores a stored value that is not a time", () => {
   localStorage.setItem(LAST_VISIT_KEY, "garbage");
   expect(visitBaseline(NOW)).toBeNull();

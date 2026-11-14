@@ -325,15 +325,23 @@ traps would undo a move anyway). `npm run check` and `npm run build:ci` pass.
 
 Browser check: headless Chromium (BB browser automation) on a static render of
 the real `Dashboard` with the built `dist/app.css`, simulated host colour
-tokens and reset, a stand-in SDK answering RPCs from fixture data (54 tasks:
+tokens and a reset layered below the utilities, a stand-in SDK answering RPCs from fixture data (54 tasks:
 4 or 5 active, 49 finished, one repository), and placeholder icons.
 
 | Viewport | Scenario | Summary (top–bottom) | First card top | Filters | Page overflow |
 | --- | --- | --- | --- | --- | --- |
-| 1440×900 | 3 shipped, 1 failed, 1 approval waiting | 119–175 px | 293 px | one 32 px row | 0 |
-| 1440×900 | 7 shipped, 4 failed (3 listed), nothing waits | 119–211 px | 329 px | one 32 px row | 0 |
-| 390×844 (touch) | 3 shipped, 1 failed, 1 approval waiting | 155–230 px | 348 px | one 32 px row, 791 px of chips scrolling in 358 px | 0 |
-| 390×844 (touch) | 7 shipped, 4 failed (3 listed) | 155–266 px | 384 px | same | 0 |
+| 1440×900 | 3 shipped, 1 failed, 1 approval waiting | 145–219 px | 367 px | one 40 px row | 0 |
+| 1440×900 | 7 shipped, 4 failed (3 listed), nothing waits | 145–255 px | 403 px | one 40 px row | 0 |
+| 1440×900 | all clear | 145–195 px | 343 px | one 40 px row | 0 |
+| 390×844 (touch) | 3 shipped, 1 failed, 1 approval waiting | 233–366 px | 514 px | one 40 px row, 959 px of chips scrolling in 334 px | 0 |
+| 390×844 (touch) | 7 shipped, 4 failed (3 listed) | 233–362 px | 510 px | same | 0 |
+| 390×844 (touch) | all clear | 233–283 px | 431 px | same | 0 |
+
+The first pass used an unlayered reset that overrode the plugin's utilities
+(no padding or borders); these numbers are from the second pass, with the
+reset in `@layer base` below `utilities`. That pass also showed a list bullet
+on "and N more" without the host's preflight, so the list now sets
+`list-none` itself.
 
 At 390×844 the loading scenario showed skeletons with five busy regions
 (summary, tasks, throughput, capacity, activity), pulsing, and no "Loading…"
@@ -344,3 +352,6 @@ Not checked: a live BB install (host navigation, icons, theme, and whether the
 host unmounts or hides the panel when you open a thread, which decides when a
 visit ends); dark theme; `j`/`k` and the links in a real browser (covered in
 jsdom); reduced-motion rendering of the skeletons (`motion-safe:` only).
+`j`/`k` listen on `window`: if the host keeps the panel mounted while you work
+elsewhere in BB, they could move focus to a card from there (outside fields,
+dialogs and menus). That is the same unknown as when a visit ends.
