@@ -18,7 +18,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useRpc: () => ({ call: mocks.call }),
   useRealtime: () => {},
   experimental_useRpcQuery: ({ method }: { method: string }) => ({
-    data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 1, medianCycleMinutes: null, daily: DAYS } : { paused: false, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
+    data: method === "cos_log" ? { entries: mocks.logs } : method === "cos_roster" ? { entries: mocks.entries } : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 1, medianCycleMinutes: null, daily: DAYS, usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } } : { paused: false, repos: [], occupiedCapacity: 1, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [] },
     error: null, isLoading: false, isFetching: false, refetch: vi.fn(),
   }),
   ThreadTitle: () => null,

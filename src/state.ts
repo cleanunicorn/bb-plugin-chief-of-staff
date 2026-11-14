@@ -750,11 +750,11 @@ export class StateStore {
     });
   }
 
-  /** Scalar columns of every active item and every item started or finished since `sinceIso`, for computeStats. */
-  statsRows(sinceIso: string): Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt">[] {
-    return (this.db.prepare(`SELECT status, created_at, finished_at, updated_at FROM work_items WHERE ${ACTIVE_IN} OR created_at >= @since OR COALESCE(finished_at, updated_at) >= @since`)
+  /** Scalar columns and stored usage of every active item and every item started or finished since `sinceIso`, for computeStats. */
+  statsRows(sinceIso: string): Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt" | "taskUsage">[] {
+    return (this.db.prepare(`SELECT status, created_at, finished_at, updated_at, task_usage_json FROM work_items WHERE ${ACTIVE_IN} OR created_at >= @since OR COALESCE(finished_at, updated_at) >= @since`)
       .all({ since: sinceIso }) as Row[])
-      .map((row) => ({ status: row.status as WorkStatus, createdAt: row.created_at as string, finishedAt: (row.finished_at as string | null) ?? null, updatedAt: row.updated_at as string }));
+      .map((row) => ({ status: row.status as WorkStatus, createdAt: row.created_at as string, finishedAt: (row.finished_at as string | null) ?? null, updatedAt: row.updated_at as string, taskUsage: parseJson<TaskUsage | null>(row.task_usage_json, null) }));
   }
 
   countWorkItems(): number {

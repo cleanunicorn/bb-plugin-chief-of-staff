@@ -35,6 +35,7 @@ import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
+type UsageStats = PluginRpcResult<Contract["cos_stats"]>["usage"];
 
 const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
@@ -655,6 +656,27 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
 
 // ---------- pipeline tab ----------
 
+/** Throughput's usage figure: " · 412M tokens (3 not counted yet)", over all threads of the tasks finished in the window. */
+function ThroughputUsage({ usage }: { usage: UsageStats }) {
+  const { totalTokens, pending, unreported, cost } = usage;
+  if (totalTokens == null && !pending) return null;
+  const note = [
+    "Tokens of the tasks finished in the window, each summed over all its agent threads",
+    medianNote(usage.medianTokensPerDone),
+    cost.length ? `Cost: ${cost.map((c) => `${c.amount.toFixed(2)} ${c.currency}`).join(", ")}` : null,
+    unreported ? `${unreported} ${unreported === 1 ? "task" : "tasks"} reported no usage` : null,
+    pending ? `${pending} ${pending === 1 ? "task is" : "tasks are"} not counted yet: usage is counted once all of a task's agents have stopped` : null,
+  ].filter(Boolean).join("\n");
+  return (
+    <span title={note}>
+      {totalTokens != null ? ` · ${compact(totalTokens)} tokens` : " · Tokens"}
+      {pending ? (totalTokens != null ? ` (${pending} not counted yet)` : `: ${pending} not counted yet`) : ""}
+    </span>
+  );
+}
+
+const medianNote = (median: number | null) => (median != null ? `Median per completed task: ${compact(median)}` : null);
+
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
@@ -890,11 +912,12 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           {s ? <p className="mb-4 text-sm text-muted-foreground">
             {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
+            <ThroughputUsage usage={s.usage} />
           </p> : null}
           {!s ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : throughputTable ? (
-            <DataTable columns={["Day", "Started", "Done", "Failed"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed])} />
+            <DataTable columns={["Day", "Started", "Done", "Failed", "Tokens"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed, d.tokens != null ? compact(d.tokens) : "—"])} />
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}

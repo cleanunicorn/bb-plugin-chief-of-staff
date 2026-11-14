@@ -261,13 +261,23 @@ export const rpcContract = defineRpcContract({
     input: z.object({ windowDays: z.number().int().min(1).max(90).default(14) }),
     output: z.object({
       byStatus: z.record(z.string(), z.number()),
-      daily: z.array(z.object({ date: z.string(), started: z.number(), done: z.number(), failed: z.number() })),
+      /** `tokens`: of the tasks that finished that day, summed over their threads; null when none reported tokens. */
+      daily: z.array(z.object({ date: z.string(), started: z.number(), done: z.number(), failed: z.number(), tokens: z.number().nullable() })),
       windowDays: z.number(),
       startedInWindow: z.number(),
       doneInWindow: z.number(),
       failedInWindow: z.number(),
       medianCycleMinutes: z.number().nullable(),
       totalTracked: z.number(),
+      /** Token usage of the done and failed tasks finished in the window (src/stats.ts UsageStats). */
+      usage: z.object({
+        totalTokens: z.number().nullable(),
+        cost: z.array(cost),
+        counted: z.number(),
+        unreported: z.number(),
+        pending: z.number(),
+        medianTokensPerDone: z.number().nullable(),
+      }),
     }),
   },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional(), onlyProblems: z.boolean().default(false), before: z.number().int().positive().optional() }), output: z.object({ entries: z.array(logEntry), nextCursor: z.number().int().nullable() }) },

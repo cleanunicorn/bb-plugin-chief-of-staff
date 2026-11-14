@@ -12,7 +12,7 @@ import { clickOutside, tick } from "./dom";
 
 type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number; tokens?: number | null }[], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } as { totalTokens: number | null; cost: { amount: number; currency: string }[]; counted: number; unreported: number; pending: number; medianTokensPerDone: number | null }, failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
   roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
   rosterInputs: [] as RosterInput[],
@@ -32,7 +32,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
-      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily, usage: mocks.usage } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: 8, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -55,7 +55,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.usage = { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null }; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
 
 /** An activity row of task "one", #7 Fix login, in acme/app. */
 const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
@@ -181,7 +181,32 @@ it("opens the Throughput table when the chart is tapped on a coarse pointer", as
   await mount();
   expect(container.querySelector("table")).toBeNull();
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Show throughput as a table"]')!.click());
-  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed"]);
+  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed", "Tokens"]);
+});
+
+it("shows Throughput's total tokens, the tasks not counted yet, and tokens per day in the table", async () => {
+  mocks.entries = [];
+  mocks.daily = [
+    { date: "2026-11-01", started: 1, done: 1, failed: 0, tokens: 412_000_000 },
+    { date: "2026-11-02", started: 1, done: 0, failed: 0, tokens: null },
+  ];
+  mocks.usage = { totalTokens: 412_000_000, cost: [{ amount: 12.5, currency: "USD" }], counted: 1, unreported: 1, pending: 3, medianTokensPerDone: 412_000_000 };
+  await mount();
+  const summary = container.querySelector(`#cos-throughput p`)!;
+  expect(summary.textContent).toContain("· 412.0M tokens (3 not counted yet)");
+  const note = summary.querySelector("span[title]")!.getAttribute("title")!;
+  expect(note).toContain("summed over all its agent threads");
+  expect(note).toContain("Cost: 12.50 USD");
+  expect(note).toContain("1 task reported no usage");
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Table view"]')!.click());
+  const cells = Array.from(container.querySelectorAll("tbody tr")).map((tr) => tr.lastElementChild!.textContent);
+  expect(cells).toEqual(["412.0M", "—"]);
+});
+
+it("leaves usage out of Throughput when no finished task reported or awaits a count", async () => {
+  mocks.entries = [];
+  await mount();
+  expect(container.querySelector(`#cos-throughput p`)!.textContent).not.toContain("okens");
 });
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
