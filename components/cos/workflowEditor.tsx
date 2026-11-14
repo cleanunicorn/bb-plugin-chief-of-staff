@@ -310,6 +310,8 @@ export function StepPanel({ workflow, step, problems = [], onChange, onRemove, s
               )
             }
           </Field>
+          {/* Not a problem: such a step runs, and may be meant to. */}
+          {step.type === "agent" && !step.instructions.trim() ? <p className="-mt-2 text-[11px] text-muted-foreground">No instructions: the agent gets only the task and what earlier steps produced.</p> : null}
 
           {step.type === "agent" ? (
             <div className={two}>

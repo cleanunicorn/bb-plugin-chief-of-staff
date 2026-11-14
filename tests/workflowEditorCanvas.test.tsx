@@ -4,7 +4,7 @@
 import { act, useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_DOCUMENT, workflowProblems, type WorkflowsDocument } from "../src/workflow";
-import { button, container, mount, unmount } from "./dom";
+import { button, container, field, mount, setValue, unmount } from "./dom";
 import { stubReactFlowDom } from "./helpers/reactFlow";
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({ experimental_useRpcQuery: () => ({ data: { skills: [] }, error: null, refetch: vi.fn() }) }));
@@ -53,4 +53,13 @@ it("adds a check after the selected step that writes code with no problems shown
   expect(build.next).toEqual(["new-check"]);
   expect(workflowProblems(doc)).toEqual([]);
   expect(container.querySelector("ul li")).toBeNull();
+});
+
+it("notes that an agent step without instructions works from the task alone, without blocking Save", async () => {
+  const NOTE = "No instructions: the agent gets only the task and what earlier steps produced.";
+  await add("Agent");
+  expect(container.textContent).toContain(NOTE);
+  expect(workflowProblems(doc)).toEqual([]);
+  await setValue(field("Instructions for the agent"), "Update the docs.");
+  expect(container.textContent).not.toContain(NOTE);
 });
