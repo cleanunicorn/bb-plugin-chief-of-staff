@@ -29,7 +29,7 @@ import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabe
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
-import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, useRovingCards } from "@/components/cos/rovingCards";
+import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, shortcutBlocked, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 
 type Contract = typeof rpcContract;
@@ -765,6 +765,19 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
   const visible = entries.filter((e) => matchesTaskFilter(e, filter));
   const roving = useRovingCards(visible.map((e) => e.id));
+  const moveCard = roving.move;
+  // j and k move between task cards from anywhere on the page, like the arrow keys inside the grid (#110).
+  // Off while a sheet is open; shortcutBlocked covers typing, modifiers, menus and confirm dialogs.
+  const sheetOpen = answering !== null || viewing !== null;
+  useEffect(() => {
+    if (sheetOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.key !== "j" && event.key !== "k") || shortcutBlocked(event)) return;
+      if (moveCard(event.key === "j" ? 1 : -1)) event.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sheetOpen, moveCard]);
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
@@ -869,7 +882,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           <div role="group" aria-label="Tasks" aria-describedby={TASK_KEYS_HINT_ID} className="group/tasks flex flex-col gap-1.5" {...roving.groupProps}>
             {/* Above the cards, so it is on screen with the first one. Its space is kept while hidden, so
                 focus entering the grid does not shift the cards. Always the group's description. */}
-            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
+            <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys or j and k move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
                 <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
