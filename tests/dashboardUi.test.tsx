@@ -95,13 +95,29 @@ it("leads with the title, omits missing usage, and opens the task thread", async
 });
 
 it("shows real zero usage and keeps task actions available without a thread", async () => {
-  mocks.entries = [entry({ threadId: null, usage: { inputTokens: null, outputTokens: null, totalTokens: 0, cost: { amount: 0, currency: "USD" } } })];
+  mocks.entries = [entry({ threadId: null, usage: { inputTokens: null, outputTokens: null, totalTokens: 0, cost: { amount: 0, currency: "USD" }, threads: 1, reportedThreads: 1, counted: true } })];
   await mount();
   const card = container.querySelector("article")!;
-  expect(card.textContent).toContain("Tokens0");
+  expect(card.textContent).toContain("Tokens so far · all threads0");
   expect(card.textContent).toContain("Cost0.00 USD");
   expect(card.textContent).not.toContain("Open thread");
   expect(card.textContent).toContain("Workflow");
+});
+
+it("labels usage as covering all threads, and says a finished task's count is pending", async () => {
+  const finished = { detail: "done" as const, status: "done" as const, outcome: "merged" as const, finishedAt: new Date().toISOString(), current: [] };
+  mocks.entries = [
+    entry({ id: "counted", ...finished, issueTitle: "Counted", usage: { inputTokens: 1, outputTokens: 2, totalTokens: 4_200_000, cost: null, threads: 5, reportedThreads: 4, counted: true } }),
+    entry({ id: "pending", ...finished, issueTitle: "Pending", usage: { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 3, reportedThreads: 0, counted: false } }),
+    entry({ id: "quiet", ...finished, issueTitle: "Quiet", usage: { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 2, reportedThreads: 0, counted: true } }),
+  ];
+  await mount();
+  const card = (title: string) => Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes(title))!;
+  expect(card("Counted").textContent).toContain("Tokens · all threads4.2M");
+  expect(card("Counted").querySelector('[title^="Sum over"]')!.getAttribute("title")).toBe("Sum over 5 agent threads (4 reported usage)");
+  expect(card("Pending").textContent).toContain("Tokens · all threadscounting…");
+  // A provider that reported nothing shows no figure, rather than 0.
+  expect(card("Quiet").textContent).not.toContain("Tokens");
 });
 
 it("names the workflow summary as a spaced sentence for screen readers", async () => {

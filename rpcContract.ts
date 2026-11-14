@@ -10,6 +10,23 @@ export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_M
 /** An earlier roster page's opaque nextBefore cursor. */
 export const rosterCursorSchema = z.string().min(1).max(1000);
 
+const cost = z.object({ amount: z.number(), currency: z.string() });
+/**
+ * A task's usage summed over all its agent threads. Token fields are null when
+ * no thread reported them (never 0). `counted` is false for a finished task
+ * whose usage is not counted yet.
+ */
+const itemUsage = z.object({
+  inputTokens: z.number().nullable(),
+  outputTokens: z.number().nullable(),
+  totalTokens: z.number().nullable(),
+  cost: cost.nullable(),
+  /** Agent threads summed, and how many of them reported usage. */
+  threads: z.number(),
+  reportedThreads: z.number(),
+  counted: z.boolean(),
+});
+
 const rosterEntry = z.object({
   occupiesCapacity: z.boolean(),
   id: z.string(),
@@ -71,14 +88,8 @@ const rosterEntry = z.object({
   providerId: z.string().nullable(),
   model: z.string().nullable(),
   source: z.string(),
-  usage: z
-    .object({
-      inputTokens: z.number().nullable(),
-      outputTokens: z.number().nullable(),
-      totalTokens: z.number().nullable(),
-      cost: z.object({ amount: z.number(), currency: z.string() }).nullable(),
-    })
-    .nullable(),
+  /** With withUsage: the task's usage summed over all its agent threads (see ItemUsage); null without. */
+  usage: itemUsage.nullable(),
 });
 
 const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), issueNumber: z.number().nullable(), issueTitle: z.string().nullable(), message: z.string(), actor: z.string() });

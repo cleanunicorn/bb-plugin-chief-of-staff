@@ -6,16 +6,19 @@
 // work_items also stores occupies_capacity (occupiesCapacity of the row, kept
 // by every write and counted in SQL) and detail_pruned_at (when retention
 // removed a finished item's step details; cleared when the item is active again)
-// and final_usage_json (the builder thread's token usage, read once after the
-// item finished; NULL until read, cleared when the item is active again or
-// its builder thread changes).
+// final_usage_json held the builder thread's usage alone and is no longer
+// read or written. task_usage_json (TaskUsage: the sum over every thread of a
+// finished item, NULL until counted), usage_tokens (its totalTokens, for
+// ordering and sums) and usage_checked_at (the last attempt to count it) are
+// written only by setTaskUsage and touchUsageChecked, and cleared when the
+// item is active again.
 // The pr_state* columns and pr_checked_at cache the item's pull request state
 // (see PrState); only setPrState and touchPrChecked write them.
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { ROSTER_FINISHED_LIMIT } from "../rpcContract";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
-import type { ThreadUsage } from "./threads";
+import type { TaskUsage } from "./threads";
 import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
@@ -78,8 +81,12 @@ export interface WorkItem {
    * by insertWorkItem or updateWorkItem.
    */
   prState: PrState | null;
-  /** A finished item's usage, stored once read (all-null: the provider reports none); null until then. */
-  finalUsage?: ThreadUsage | null;
+  /**
+   * A finished item's usage summed over all its threads, stored once counted
+   * (its token fields are null when no thread reported any); null until then.
+   * Written only by setTaskUsage, never by insertWorkItem or updateWorkItem.
+   */
+  taskUsage?: TaskUsage | null;
 }
 
 /** A pull request's state as last read from GitHub. */
@@ -297,6 +304,10 @@ export const MIGRATIONS = [
   `ALTER TABLE work_items ADD COLUMN pr_checked_at TEXT`,
   // A finished item's token usage, so the roster reads it from its thread once.
   `ALTER TABLE work_items ADD COLUMN final_usage_json TEXT`,
+  // A finished item's usage over all its threads (TaskUsage), its total tokens, and the last attempt to count it.
+  `ALTER TABLE work_items ADD COLUMN task_usage_json TEXT`,
+  `ALTER TABLE work_items ADD COLUMN usage_tokens INTEGER`,
+  `ALTER TABLE work_items ADD COLUMN usage_checked_at TEXT`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -423,7 +434,7 @@ function rowToWorkItem(row: Row): WorkItem {
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
     prState: readPrState(row),
-    finalUsage: parseJson<ThreadUsage | null>(row.final_usage_json, null),
+    taskUsage: parseJson<TaskUsage | null>(row.task_usage_json, null),
   };
 }
 
@@ -442,12 +453,14 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END, final_usage_json=CASE WHEN ${activeIn("@status")} OR thread_id IS NOT @threadId THEN NULL ELSE final_usage_json END`;
+/** Written only by setTaskUsage and touchUsageChecked; ITEM_COLUMNS clears them when an item is active again. */
+const USAGE_COLUMNS = ["task_usage_json", "usage_tokens", "usage_checked_at"];
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END, ${USAGE_COLUMNS.map((c) => `${c}=CASE WHEN ${activeIn("@status")} THEN NULL ELSE ${c} END`).join(", ")}`;
 
 // The pr_state* columns are not here: only setPrState and touchPrChecked write them.
 function toRow(item: WorkItem): Record<string, unknown> {
-  // finalUsage is written only by setFinalUsage, and cleared by ITEM_COLUMNS.
-  const { workflow, nodes, queuedEvent, prState: _prState, finalUsage: _finalUsage, ...rest } = item;
+  // taskUsage is written only by setTaskUsage, and cleared by ITEM_COLUMNS.
+  const { workflow, nodes, queuedEvent, prState: _prState, taskUsage: _taskUsage, ...rest } = item;
   return {
     ...rest,
     queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null,
@@ -484,7 +497,7 @@ export function compactNodes(nodes: Nodes): Nodes {
   return out;
 }
 
-export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "prState" | "finalUsage" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
+export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "prState" | "taskUsage" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
 
 export class StateStore {
@@ -545,7 +558,7 @@ export class StateStore {
   // ---- work items ----
   insertWorkItem(item: NewWorkItem): WorkItem {
     const at = this.now().toISOString();
-    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at, prState: null, finalUsage: null };
+    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at, prState: null, taskUsage: null };
     this.db
       .prepare(
         `INSERT INTO work_items (id, created_at, updated_at, status, repo) VALUES (@id, @createdAt, @createdAt, @status, @repo)`,
@@ -555,11 +568,11 @@ export class StateStore {
     return full;
   }
 
-  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt" | "prState" | "finalUsage">>): WorkItem | null {
+  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt" | "prState" | "taskUsage">>): WorkItem | null {
     const current = this.getWorkItem(id);
     if (!current) return null;
     const next: WorkItem = { ...current, ...patch, updatedAt: this.now().toISOString() };
-    next.finalUsage = isActiveStatus(next.status) || next.threadId !== current.threadId ? null : (current.finalUsage ?? null);
+    next.taskUsage = isActiveStatus(next.status) ? null : (current.taskUsage ?? null);
     this.db.prepare(`UPDATE work_items SET ${ITEM_COLUMNS} WHERE id=@id`).run(toRow(next));
     return next;
   }
@@ -595,13 +608,30 @@ export class StateStore {
     return rows.map((row) => ({ id: row.id as string, repo: row.repo as string, prNumber: row.pr_number as number, prState: readPrState(row) }));
   }
   /**
-   * Store a finished item's usage, read from its builder thread. Leaves
-   * updated_at alone (stats key on it) and sends no change event: the value
-   * only saves the roster a read. False when the item is active or its
-   * builder thread changed.
+   * Store a finished item's usage, summed over all its threads, as counted.
+   * Only while the item is still the finished one that was read: false when
+   * it is active again, or finished again since (`finishedAt` differs).
+   * Leaves updated_at alone, so stats and retention do not move.
    */
-  setFinalUsage(id: string, threadId: string, usage: ThreadUsage): boolean {
-    return this.db.prepare(`UPDATE work_items SET final_usage_json = ? WHERE id = ? AND thread_id = ? AND ${FINISHED_IN}`).run(JSON.stringify(usage), id, threadId).changes > 0;
+  setTaskUsage(id: string, finishedAt: string | null, usage: TaskUsage, at: string): boolean {
+    return this.db.prepare(`UPDATE work_items SET task_usage_json = ?, usage_tokens = ?, usage_checked_at = ? WHERE id = ? AND finished_at IS ? AND ${FINISHED_IN}`)
+      .run(JSON.stringify(usage), usage.totalTokens, at, id, finishedAt).changes > 0;
+  }
+
+  /** Record an attempt to count a finished item's usage that stored nothing (a thread busy, a read failed). */
+  touchUsageChecked(id: string, at: string): void {
+    this.db.prepare(`UPDATE work_items SET usage_checked_at = ? WHERE id = ? AND ${FINISHED_IN}`).run(at, id);
+  }
+
+  /**
+   * Up to `limit` finished items whose usage is not counted, last attempted
+   * before `staleBeforeIso`: never attempted first (most recently finished
+   * first), then the oldest attempt, so items that keep failing cannot
+   * starve the others.
+   */
+  listUsageDue(staleBeforeIso: string, limit: number): WorkItem[] {
+    return (this.db.prepare(`SELECT * FROM work_items WHERE ${FINISHED_IN} AND task_usage_json IS NULL AND (usage_checked_at IS NULL OR usage_checked_at < ?)
+      ORDER BY usage_checked_at IS NOT NULL, usage_checked_at, COALESCE(finished_at, updated_at) DESC, id DESC LIMIT ?`).all(staleBeforeIso, limit) as Row[]).map(rowToWorkItem);
   }
 
   getWorkItem(id: string): WorkItem | null {

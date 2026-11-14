@@ -25,7 +25,7 @@ import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, usageNote, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
@@ -440,6 +440,7 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
+  const usage = entry.usage;
   // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
   const showingActivity = useRef(false);
   const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed, archivesOnDone);
@@ -530,13 +531,14 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Activity" className="size-3.5" aria-hidden />Last activity</dt>
           <dd className="font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
         </div>
-        {entry.usage?.totalTokens != null ? <div>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Tokens</dt>
-          <dd className="font-medium text-foreground tabular-nums">{compact(entry.usage.totalTokens)}</dd>
+        {/* Usage covers every agent thread of the task (planner, reviewers, replaced builders), and says so. */}
+        {usage && (!usage.counted || usage.totalTokens != null) ? <div title={usageNote(usage)}>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />{finished ? "Tokens" : "Tokens so far"} · all threads</dt>
+          <dd className="font-medium text-foreground tabular-nums">{usage.totalTokens != null ? compact(usage.totalTokens) : "counting…"}</dd>
         </div> : null}
-        {entry.usage?.cost != null ? <div>
+        {usage?.cost != null ? <div title={usageNote(usage)}>
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Cost</dt>
-          <dd className="font-medium text-foreground tabular-nums">{entry.usage.cost.amount.toFixed(2)} {entry.usage.cost.currency}</dd>
+          <dd className="font-medium text-foreground tabular-nums">{usage.cost.amount.toFixed(2)} {usage.cost.currency}</dd>
         </div> : null}
         {entry.fixAttempts > 0 ? <div>
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="RefreshCw" className="size-3.5" aria-hidden />Fix cycles</dt>
