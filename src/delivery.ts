@@ -233,7 +233,7 @@ export function replayDeferred(cos: Cos): Promise<void> {
 
 /** Resume older deferred transitions before admitting fresh intake. */
 export async function resumeQueued(cos: Cos, actor: string): Promise<void> {
-  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER })
+  const items = cos.store.listWorkItems({ activeOnly: true })
     .filter((i) => i.queuedEvent && !cos.store.isPaused(i.repo))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   for (const item of items) await dispatch(cos, item.id, { type: "start" }, actor);
@@ -702,7 +702,7 @@ function trackingPull(item: WorkItem): boolean {
  * time budget as `deadline` (epoch ms): no further PR is polled after it.
  */
 export async function watchCi(cos: Cos, actor: string, opts: { deadline?: number } = {}): Promise<void> {
-  const items = cos.store.listWorkItems({ activeOnly: true, limit: Number.MAX_SAFE_INTEGER }).filter((i) => i.prNumber && trackingPull(i) && !cos.store.isPaused(i.repo));
+  const items = cos.store.listWorkItems({ activeOnly: true }).filter((i) => i.prNumber && trackingPull(i) && !cos.store.isPaused(i.repo));
   if (!items.length) return;
   const github = await cos.github();
   if (!github.hasToken) return;

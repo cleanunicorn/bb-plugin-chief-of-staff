@@ -595,7 +595,12 @@ export class StateStore {
     return row ? rowToWorkItem(row) : null;
   }
 
-  listWorkItems(opts: { repo?: string; activeOnly?: boolean; limit?: number } = {}): WorkItem[] {
+  /**
+   * Work items, newest first. No limit unless `limit` is given: the engine
+   * loops must reach every item. With `activeOnly`, `failedSince` (ISO) also
+   * selects failed items that finished at or after it.
+   */
+  listWorkItems(opts: { repo?: string; activeOnly?: boolean; failedSince?: string; limit?: number } = {}): WorkItem[] {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts.repo) {
@@ -603,11 +608,19 @@ export class StateStore {
       params.push(opts.repo);
     }
     if (opts.activeOnly) {
-      where.push(`status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`);
+      const active = `status IN (${ACTIVE_STATUSES.map(() => "?").join(",")})`;
       params.push(...ACTIVE_STATUSES);
+      if (opts.failedSince === undefined) where.push(active);
+      else {
+        where.push(`(${active} OR (status = 'failed' AND finished_at >= ?))`);
+        params.push(opts.failedSince);
+      }
     }
-    const sql = `SELECT * FROM work_items ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`;
-    params.push(opts.limit ?? 200);
+    let sql = `SELECT * FROM work_items ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC`;
+    if (opts.limit !== undefined) {
+      sql += " LIMIT ?";
+      params.push(opts.limit);
+    }
     return (this.db.prepare(sql).all(...params) as Row[]).map(rowToWorkItem);
   }
 
