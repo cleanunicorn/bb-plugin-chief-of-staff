@@ -289,7 +289,7 @@ export function WorkflowsEditor({ doc, onChange, usedBy, onDelete, problems, rev
             </div>
           ) : null}
           <div className={cn("grid gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]", expanded && "min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_24rem] md:grid-rows-1")}>
-            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setRevealed(null); }} problems={problemCounts} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
+            <WorkflowCanvas workflow={wf} onChange={setWf} selected={selected} onSelect={(id) => { setSelected(id); setRevealed(null); }} problems={problemCounts} reveal={revealed?.nonce} expanded={expanded} onToggleExpanded={() => setExpanded((v) => !v)} className={expanded ? "h-full min-h-0" : "h-[520px]"} />
             <div className={cn("min-w-0", expanded && "min-h-0 max-h-[40vh] overflow-y-auto md:max-h-full")}>
               {selectedStep ? (
                 <StepPanel key={selectedStep.id} workflow={wf} step={selectedStep} problems={stepProblems(selectedStep)} reveal={revealed?.id === selectedStep.id ? revealed.nonce : undefined} onChange={(s) => setStep(selectedStep.id, s)} onRemove={() => removeStep(selectedStep.id)} skills={skills} narrow />

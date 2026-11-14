@@ -7,7 +7,7 @@ import { stubReactFlowDom } from "./helpers/reactFlow";
 
 vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
 vi.mock("@xyflow/react/dist/style.css", () => ({}));
-import { WorkflowCanvas, layout, liveTone, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
+import { WorkflowCanvas, inView, layout, liveTone, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
 
 const live = (extra: Partial<LiveStatus>): LiveStatus => ({ status: "pending", phase: null, reported: 0, agents: 1, waitingKind: null, retrying: false, attempts: 0, round: 1, ...extra });
 
@@ -17,6 +17,17 @@ it("maps a React Flow selection to the step to show", () => {
   // An arrow or several steps selected: leave the open step alone.
   expect(selectionTarget({ nodes: [], edges: [{ id: "next:plan:build" }] })).toBeUndefined();
   expect(selectionTarget({ nodes: [{ id: "plan" }, { id: "build" }], edges: [] })).toBeUndefined();
+});
+
+it("tells whether a step is fully inside the canvas at the current pan and zoom", () => {
+  const frame = { width: 400, height: 300 };
+  const step = { x: 100, y: 100, width: 200, height: 60 };
+  expect(inView(step, { x: 0, y: 0, zoom: 1 }, frame)).toBe(true);
+  // Pushed past the bottom edge by panning, or cut off by zooming in.
+  expect(inView(step, { x: 0, y: 200, zoom: 1 }, frame)).toBe(false);
+  expect(inView(step, { x: 0, y: 0, zoom: 2 }, frame)).toBe(false);
+  expect(inView({ ...step, y: 600 }, { x: 0, y: 0, zoom: 0.5 }, frame)).toBe(false);
+  expect(inView({ ...step, y: 400 }, { x: 0, y: 0, zoom: 0.5 }, frame)).toBe(true);
 });
 
 it("words live status the same for the canvas and the step list", () => {

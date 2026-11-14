@@ -71,6 +71,13 @@ function subtitle(s: Step): string {
 }
 
 /** `problems`: how many things to fix in this step before the workflow can be saved. */
+/** Whether `box` (flow coordinates) lies wholly inside a `frame`-sized canvas panned and zoomed by `viewport`. */
+export function inView(box: { x: number; y: number; width: number; height: number }, viewport: { x: number; y: number; zoom: number }, frame: { width: number; height: number }): boolean {
+  const left = box.x * viewport.zoom + viewport.x;
+  const top = box.y * viewport.zoom + viewport.y;
+  return left >= 0 && top >= 0 && left + box.width * viewport.zoom <= frame.width && top + box.height * viewport.zoom <= frame.height;
+}
+
 type StepNodeData = { step: Step; live?: LiveStatus; selected: boolean; problems?: number };
 
 /** The step a React Flow selection points at: one step, none (`null`), or `undefined` to leave the current one (an arrow or several steps are selected). */
@@ -162,13 +169,15 @@ export interface WorkflowCanvasProps {
   onToggleExpanded?: () => void;
   /** Read-only: how often each arrow was taken, by edge id (`next:a:b`, `fail:a:b`); shown from 1 for fail arrows, from 2 otherwise. */
   edgeCounts?: Record<string, number>;
+  /** Edit mode: a new value pans the selected step into view again, e.g. when a problem about it is opened. */
+  reveal?: number;
   /** Edit mode: problems to fix per step id; those steps are marked. Keep the object stable between renders. */
   problems?: Record<string, number>;
 }
 
-function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts, problems }: WorkflowCanvasProps) {
+function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts, problems, reveal }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
-  const { fitView } = useReactFlow();
+  const { fitView, getInternalNode, getViewport, setCenter } = useReactFlow();
   const fit = editable ? FIT_EDIT : FIT_VIEW;
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
@@ -314,6 +323,31 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
       observer.disconnect();
     };
   }, [editable, fitView]);
+
+  // A selected step outside the visible part of the canvas (opened from a problem, or just added) is
+  // panned to, keeping the zoom. A step added in this render reaches React Flow's store a few frames
+  // later, so it is looked for until then.
+  useEffect(() => {
+    if (!editable || !selected) return;
+    let raf = 0;
+    let tries = 10;
+    const pan = () => {
+      const el = frame.current;
+      // No layout (jsdom): nothing to pan.
+      if (!el || !el.clientWidth) return;
+      const node = getInternalNode(selected);
+      if (!node?.measured.width) {
+        if (--tries > 0) raf = requestAnimationFrame(pan);
+        return;
+      }
+      const box = { ...node.internals.positionAbsolute, width: node.measured.width, height: node.measured.height ?? 0 };
+      const viewport = getViewport();
+      if (inView(box, viewport, { width: el.clientWidth, height: el.clientHeight })) return;
+      void setCenter(box.x + box.width / 2, box.y + box.height / 2, { zoom: viewport.zoom, duration: 200 });
+    };
+    raf = requestAnimationFrame(pan);
+    return () => cancelAnimationFrame(raf);
+  }, [editable, selected, reveal, getInternalNode, getViewport, setCenter]);
 
   const relayout = () => {
     const fresh = layout(workflow, true);
