@@ -3,7 +3,7 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { sweep } from "../src/sweep";
 import type { Cos } from "../src/context";
 
-const mocks = vi.hoisted(() => ({ intake: vi.fn(), ci: vi.fn(), sync: vi.fn(), pr: vi.fn() }));
+const mocks = vi.hoisted(() => ({ intake: vi.fn(), ci: vi.fn(), sync: vi.fn(), pr: vi.fn(), usage: vi.fn() }));
 vi.mock("../src/intake", () => ({ runIntake: mocks.intake }));
 vi.mock("../src/delivery", () => ({ watchCi: mocks.ci }));
 vi.mock("../src/prState", () => ({ refreshPrStates: mocks.pr }));
@@ -11,6 +11,7 @@ vi.mock("../src/roster", () => ({ detectStalls: async () => {} }));
 vi.mock("../src/sync", () => ({ syncThreads: mocks.sync, tickItems: async () => {} }));
 vi.mock("../src/threadGroups", () => ({ groupExistingThreads: async () => {} }));
 vi.mock("../src/retention", () => ({ maybeRunRetention: async () => {} }));
+vi.mock("../src/usage", () => ({ countFinishedUsage: mocks.usage }));
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => {
@@ -26,6 +27,7 @@ function setup(options: { intake?: number; ci?: number; pr?: number; failIntake?
   let paused = false;
   const calls: string[] = [];
   mocks.sync.mockResolvedValue(undefined);
+  mocks.usage.mockResolvedValue([]);
   mocks.intake.mockImplementation(async () => {
     calls.push("intake");
     now += options.intake ?? 125_000;
@@ -111,4 +113,14 @@ it("skips the PR state refresh during a rate limit or a pause", async () => {
   expect(await pass()).toEqual(["intake"]);
   pause(false);
   expect(await pass()).toEqual(["intake", "pr"]);
+});
+
+it("counts a batch of finished tasks' usage every sweep, and not while paused", async () => {
+  const t = setup();
+  await t.pass();
+  await t.pass();
+  expect(mocks.usage).toHaveBeenCalledTimes(2);
+  t.pause(true);
+  await t.pass();
+  expect(mocks.usage).toHaveBeenCalledTimes(2);
 });

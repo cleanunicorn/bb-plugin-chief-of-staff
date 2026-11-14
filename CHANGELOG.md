@@ -55,6 +55,21 @@
   repositories with problems that are not on screen, and opening Workflows
   from there selects the first problem's step.
 
+- **Token usage covers every thread of a task, and is totalled.** A card's
+  figure used to count the builder thread alone. Now it sums every agent
+  thread the task spawned: model chooser, planner, reviewers and replaced
+  builders. It is labelled "Tokens · all threads", and its tooltip gives the
+  thread count. A finished task is counted once, in the background, after all
+  of its agents have stopped. Until then its card says "counting…", and
+  opening the dashboard makes no usage calls for finished tasks. Throughput
+  adds the window's total ("· 412M tokens") and a Tokens column in the table
+  view, and `cos_stats` reports the total, cost per currency, the median per
+  completed task, and the tasks that reported no usage or are not counted yet.
+  With finished tasks shown, **Most tokens** orders them by usage, and each
+  finished card shows its share. The workflow sheet's header adds Tokens and
+  Cost. Counts stored by an earlier version (builder only) are not reused:
+  finished tasks are counted again.
+
 - **A task waits out a Claude or Codex usage limit instead of failing.** When
   an agent's turn stops on the provider's subscription window (the 5-hour
   limit), its step keeps running and shows "usage limit reached; continues

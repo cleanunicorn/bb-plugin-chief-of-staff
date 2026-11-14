@@ -6,16 +6,20 @@
 // work_items also stores occupies_capacity (occupiesCapacity of the row, kept
 // by every write and counted in SQL) and detail_pruned_at (when retention
 // removed a finished item's step details; cleared when the item is active again)
-// and final_usage_json (the builder thread's token usage, read once after the
-// item finished; NULL until read, cleared when the item is active again or
-// its builder thread changes).
+// final_usage_json held the builder thread's usage alone and is no longer
+// read or written. task_usage_json (TaskUsage: the sum over every thread of a
+// finished item, NULL until counted), usage_tokens (its totalTokens, for
+// ordering and sums) and usage_checked_at (the last attempt to count it) are
+// written only by setTaskUsage and touchUsageChecked, and cleared when the
+// item is active again.
 // The pr_state* columns and pr_checked_at cache the item's pull request state
 // (see PrState); only setPrState and touchPrChecked write them.
 import type { Database } from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { ROSTER_FINISHED_LIMIT } from "../rpcContract";
+import type { z } from "zod";
+import { ROSTER_FINISHED_LIMIT, type finishedOrderSchema } from "../rpcContract";
 import type { JournalEntry, JournalKind, MachineEvent, NodeState, Nodes, StepReport } from "./machine";
-import type { ThreadUsage } from "./threads";
+import type { TaskUsage } from "./threads";
 import { normalizeWorkflow, type Workflow } from "./workflow";
 
 /**
@@ -78,8 +82,12 @@ export interface WorkItem {
    * by insertWorkItem or updateWorkItem.
    */
   prState: PrState | null;
-  /** A finished item's usage, stored once read (all-null: the provider reports none); null until then. */
-  finalUsage?: ThreadUsage | null;
+  /**
+   * A finished item's usage summed over all its threads, stored once counted
+   * (its token fields are null when no thread reported any); null until then.
+   * Written only by setTaskUsage, never by insertWorkItem or updateWorkItem.
+   */
+  taskUsage?: TaskUsage | null;
 }
 
 /** A pull request's state as last read from GitHub. */
@@ -297,6 +305,10 @@ export const MIGRATIONS = [
   `ALTER TABLE work_items ADD COLUMN pr_checked_at TEXT`,
   // A finished item's token usage, so the roster reads it from its thread once.
   `ALTER TABLE work_items ADD COLUMN final_usage_json TEXT`,
+  // A finished item's usage over all its threads (TaskUsage), its total tokens, and the last attempt to count it.
+  `ALTER TABLE work_items ADD COLUMN task_usage_json TEXT`,
+  `ALTER TABLE work_items ADD COLUMN usage_tokens INTEGER`,
+  `ALTER TABLE work_items ADD COLUMN usage_checked_at TEXT`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -316,19 +328,32 @@ const activeIn = (expr: string) => `${expr} IN (${ACTIVE_STATUSES.map((s) => `'$
 const ACTIVE_IN = activeIn("status");
 const FINISHED_IN = "status IN ('done', 'failed')";
 
-/** Opaque roster cursor: the last finished item's sort key and id. */
-function encodeRosterCursor(at: string, id: string): string {
-  return Buffer.from(JSON.stringify([at, id])).toString("base64url");
+/** How the roster orders finished items: most recently finished, or most tokens. */
+export type FinishedOrder = z.output<typeof finishedOrderSchema>;
+
+/**
+ * Opaque roster cursor: the last finished item's sort key and id. A
+ * "recent" cursor is [finished key, id]; a "tokens" cursor is
+ * ["tokens", usage_tokens or null, id]. Each order rejects the other's.
+ */
+type RosterCursor = { order: "recent"; at: string; id: string } | { order: "tokens"; tokens: number | null; id: string };
+function encodeRosterCursor(cursor: RosterCursor): string {
+  const value = cursor.order === "recent" ? [cursor.at, cursor.id] : ["tokens", cursor.tokens, cursor.id];
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
-function decodeRosterCursor(cursor: string): [string, string] {
+function decodeRosterCursor(cursor: string, order: FinishedOrder): RosterCursor {
   let value: unknown;
   try {
     value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   } catch {
     value = null;
   }
-  if (!Array.isArray(value) || value.length !== 2 || !value.every((v) => typeof v === "string" && v)) throw new Error("invalid cursor");
-  return value as [string, string];
+  const id = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+  if (Array.isArray(value)) {
+    if (order === "recent" && value.length === 2 && id(value[0]) && id(value[1])) return { order, at: value[0], id: value[1] };
+    if (order === "tokens" && value.length === 3 && value[0] === "tokens" && (value[1] === null || Number.isSafeInteger(value[1])) && id(value[2])) return { order, tokens: value[1] as number | null, id: value[2] };
+  }
+  throw new Error("invalid cursor");
 }
 
 export function isActiveStatus(status: WorkStatus): boolean {
@@ -423,7 +448,7 @@ function rowToWorkItem(row: Row): WorkItem {
     nodes: parseJson<Nodes>(row.nodes_json, {}),
     queuedEvent: parseJson<MachineEvent | null>(row.queued_event_json, null),
     prState: readPrState(row),
-    finalUsage: parseJson<ThreadUsage | null>(row.final_usage_json, null),
+    taskUsage: parseJson<TaskUsage | null>(row.task_usage_json, null),
   };
 }
 
@@ -442,12 +467,14 @@ function rowToThread(row: Row): ItemThread {
   };
 }
 
-const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END, final_usage_json=CASE WHEN ${activeIn("@status")} OR thread_id IS NOT @threadId THEN NULL ELSE final_usage_json END`;
+/** Written only by setTaskUsage and touchUsageChecked; ITEM_COLUMNS clears them when an item is active again. */
+const USAGE_COLUMNS = ["task_usage_json", "usage_tokens", "usage_checked_at"];
+const ITEM_COLUMNS = `repo=@repo, issue_number=@issueNumber, issue_title=@issueTitle, thread_id=@threadId, environment_id=@environmentId, branch=@branch, pr_number=@prNumber, pr_url=@prUrl, status=@status, provider_id=@providerId, model=@model, fix_attempts=@fixAttempts, retry_count=@retryCount, last_error=@lastError, source=@source, updated_at=@updatedAt, last_activity_at=@lastActivityAt, finished_at=@finishedAt, waiting_reason=@waitingReason, waiting_kind=@waitingKind, job_started_at=@jobStartedAt, task_body=@taskBody, workflow_json=@workflowJson, nodes_json=@nodesJson, queued_event_json=@queuedEventJson, occupies_capacity=@occupiesCapacity, detail_pruned_at=CASE WHEN ${activeIn("@status")} THEN NULL ELSE detail_pruned_at END, ${USAGE_COLUMNS.map((c) => `${c}=CASE WHEN ${activeIn("@status")} THEN NULL ELSE ${c} END`).join(", ")}`;
 
 // The pr_state* columns are not here: only setPrState and touchPrChecked write them.
 function toRow(item: WorkItem): Record<string, unknown> {
-  // finalUsage is written only by setFinalUsage, and cleared by ITEM_COLUMNS.
-  const { workflow, nodes, queuedEvent, prState: _prState, finalUsage: _finalUsage, ...rest } = item;
+  // taskUsage is written only by setTaskUsage, and cleared by ITEM_COLUMNS.
+  const { workflow, nodes, queuedEvent, prState: _prState, taskUsage: _taskUsage, ...rest } = item;
   return {
     ...rest,
     queuedEventJson: queuedEvent ? JSON.stringify(queuedEvent) : null,
@@ -484,7 +511,7 @@ export function compactNodes(nodes: Nodes): Nodes {
   return out;
 }
 
-export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "prState" | "finalUsage" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
+export type NewWorkItem = Omit<WorkItem, "createdAt" | "updatedAt" | "prState" | "taskUsage" | "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount"> &
   Partial<Pick<WorkItem, "waitingReason" | "waitingKind" | "jobStartedAt" | "taskBody" | "fixAttempts" | "retryCount">>;
 
 export class StateStore {
@@ -545,7 +572,7 @@ export class StateStore {
   // ---- work items ----
   insertWorkItem(item: NewWorkItem): WorkItem {
     const at = this.now().toISOString();
-    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at, prState: null, finalUsage: null };
+    const full: WorkItem = { waitingReason: null, waitingKind: null, jobStartedAt: null, taskBody: null, fixAttempts: 0, retryCount: 0, ...item, createdAt: at, updatedAt: at, prState: null, taskUsage: null };
     this.db
       .prepare(
         `INSERT INTO work_items (id, created_at, updated_at, status, repo) VALUES (@id, @createdAt, @createdAt, @status, @repo)`,
@@ -555,11 +582,11 @@ export class StateStore {
     return full;
   }
 
-  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt" | "prState" | "finalUsage">>): WorkItem | null {
+  updateWorkItem(id: string, patch: Partial<Omit<WorkItem, "id" | "createdAt" | "prState" | "taskUsage">>): WorkItem | null {
     const current = this.getWorkItem(id);
     if (!current) return null;
     const next: WorkItem = { ...current, ...patch, updatedAt: this.now().toISOString() };
-    next.finalUsage = isActiveStatus(next.status) || next.threadId !== current.threadId ? null : (current.finalUsage ?? null);
+    next.taskUsage = isActiveStatus(next.status) ? null : (current.taskUsage ?? null);
     this.db.prepare(`UPDATE work_items SET ${ITEM_COLUMNS} WHERE id=@id`).run(toRow(next));
     return next;
   }
@@ -595,13 +622,30 @@ export class StateStore {
     return rows.map((row) => ({ id: row.id as string, repo: row.repo as string, prNumber: row.pr_number as number, prState: readPrState(row) }));
   }
   /**
-   * Store a finished item's usage, read from its builder thread. Leaves
-   * updated_at alone (stats key on it) and sends no change event: the value
-   * only saves the roster a read. False when the item is active or its
-   * builder thread changed.
+   * Store a finished item's usage, summed over all its threads, as counted.
+   * Only while the item is still the finished one that was read: false when
+   * it is active again, or finished again since (`finishedAt` differs).
+   * Leaves updated_at alone, so stats and retention do not move.
    */
-  setFinalUsage(id: string, threadId: string, usage: ThreadUsage): boolean {
-    return this.db.prepare(`UPDATE work_items SET final_usage_json = ? WHERE id = ? AND thread_id = ? AND ${FINISHED_IN}`).run(JSON.stringify(usage), id, threadId).changes > 0;
+  setTaskUsage(id: string, finishedAt: string | null, usage: TaskUsage, at: string): boolean {
+    return this.db.prepare(`UPDATE work_items SET task_usage_json = ?, usage_tokens = ?, usage_checked_at = ? WHERE id = ? AND finished_at IS ? AND ${FINISHED_IN}`)
+      .run(JSON.stringify(usage), usage.totalTokens, at, id, finishedAt).changes > 0;
+  }
+
+  /** Record an attempt to count a finished item's usage that stored nothing (a thread busy, a read failed). */
+  touchUsageChecked(id: string, at: string): void {
+    this.db.prepare(`UPDATE work_items SET usage_checked_at = ? WHERE id = ? AND ${FINISHED_IN}`).run(at, id);
+  }
+
+  /**
+   * Up to `limit` finished items whose usage is not counted, last attempted
+   * before `staleBeforeIso`: never attempted first (most recently finished
+   * first), then the oldest attempt, so items that keep failing cannot
+   * starve the others.
+   */
+  listUsageDue(staleBeforeIso: string, limit: number): WorkItem[] {
+    return (this.db.prepare(`SELECT * FROM work_items WHERE ${FINISHED_IN} AND task_usage_json IS NULL AND (usage_checked_at IS NULL OR usage_checked_at < ?)
+      ORDER BY usage_checked_at IS NOT NULL, usage_checked_at, COALESCE(finished_at, updated_at) DESC, id DESC LIMIT ?`).all(staleBeforeIso, limit) as Row[]).map(rowToWorkItem);
   }
 
   getWorkItem(id: string): WorkItem | null {
@@ -669,15 +713,20 @@ export class StateStore {
 
   /**
    * The roster's items: every active item (newest created first), then one
-   * page of finished items (most recently finished first). A `before` cursor
-   * from an earlier page returns only the next finished page. Finished items
-   * are keyed by COALESCE(finished_at, updated_at), with the id as the
-   * tie-break so items finished in the same tick are neither skipped nor
-   * repeated. SQLite filters by the status index and sorts the finished rows
-   * for each page; a (status, key, id) index would avoid that if history grows large.
+   * page of finished items. A `before` cursor from an earlier page of the same
+   * order returns only the next finished page.
+   * - "recent" (default): most recently finished first, keyed by
+   *   COALESCE(finished_at, updated_at). SQLite filters by the status index
+   *   and sorts the finished rows for each page; a (status, key, id) index
+   *   would avoid that if history grows large.
+   * - "tokens": most usage_tokens first; items not counted yet or without
+   *   reported tokens (NULL) last.
+   * The id is the tie-break, so items with the same key are neither skipped
+   * nor repeated.
    */
-  listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
-    const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before);
+  listRosterItems(opts: { repo?: string; includeDone?: boolean; finishedLimit?: number; before?: string; order?: FinishedOrder }): { active: WorkItem[]; finished: WorkItem[]; nextBefore: string | null } {
+    const order = opts.order ?? "recent";
+    const cursor = opts.before === undefined ? null : decodeRosterCursor(opts.before, order);
     // Bind exactly the parameters each statement names.
     const repo = opts.repo ? " AND repo = @repo" : "";
     const repoParams = opts.repo ? { repo: opts.repo } : {};
@@ -685,13 +734,32 @@ export class StateStore {
     if (!cursor && !opts.includeDone) return { active, finished: [], nextBefore: null };
     const limit = Math.max(1, Math.floor(opts.finishedLimit ?? ROSTER_FINISHED_LIMIT));
     const key = "COALESCE(finished_at, updated_at)";
-    const after = cursor ? ` AND (${key} < @at OR (${key} = @at AND id < @id))` : "";
-    const rows = this.db.prepare(`SELECT *, ${key} AS finished_key FROM work_items WHERE ${FINISHED_IN}${repo}${after} ORDER BY ${key} DESC, id DESC LIMIT @limit`)
-      .all({ ...repoParams, ...(cursor ? { at: cursor[0], id: cursor[1] } : {}), limit: limit + 1 }) as Row[];
+    let after = "";
+    let params: Record<string, unknown> = {};
+    if (cursor?.order === "recent") {
+      after = ` AND (${key} < @at OR (${key} = @at AND id < @id))`;
+      params = { at: cursor.at, id: cursor.id };
+    } else if (cursor?.order === "tokens") {
+      after = cursor.tokens === null
+        ? " AND usage_tokens IS NULL AND id < @id"
+        : " AND (usage_tokens < @tokens OR (usage_tokens = @tokens AND id < @id) OR usage_tokens IS NULL)";
+      params = cursor.tokens === null ? { id: cursor.id } : { tokens: cursor.tokens, id: cursor.id };
+    }
+    const sort = order === "tokens" ? "usage_tokens IS NULL, usage_tokens DESC, id DESC" : `${key} DESC, id DESC`;
+    const rows = this.db.prepare(`SELECT *, ${key} AS finished_key FROM work_items WHERE ${FINISHED_IN}${repo}${after} ORDER BY ${sort} LIMIT @limit`)
+      .all({ ...repoParams, ...params, limit: limit + 1 }) as Row[];
     const page = rows.slice(0, limit);
     const last = page.at(-1);
-    const nextBefore = rows.length > limit && last ? encodeRosterCursor(last.finished_key as string, last.id as string) : null;
+    const nextBefore = rows.length > limit && last
+      ? encodeRosterCursor(order === "tokens" ? { order, tokens: (last.usage_tokens as number | null) ?? null, id: last.id as string } : { order, at: last.finished_key as string, id: last.id as string })
+      : null;
     return { active, finished: page.map(rowToWorkItem), nextBefore };
+  }
+
+  /** Tokens of all finished items (optionally of one repo), each summed over its threads; null when none reported tokens. */
+  finishedTokens(repo?: string): number | null {
+    const row = this.db.prepare(`SELECT SUM(usage_tokens) AS n FROM work_items WHERE ${FINISHED_IN}${repo ? " AND repo = ?" : ""}`).get(...(repo ? [repo] : [])) as { n: number | null };
+    return row.n ?? null;
   }
 
   /**
@@ -720,11 +788,11 @@ export class StateStore {
     });
   }
 
-  /** Scalar columns of every active item and every item started or finished since `sinceIso`, for computeStats. */
-  statsRows(sinceIso: string): Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt">[] {
-    return (this.db.prepare(`SELECT status, created_at, finished_at, updated_at FROM work_items WHERE ${ACTIVE_IN} OR created_at >= @since OR COALESCE(finished_at, updated_at) >= @since`)
+  /** Scalar columns and stored usage of every active item and every item started or finished since `sinceIso`, for computeStats. */
+  statsRows(sinceIso: string): Pick<WorkItem, "status" | "createdAt" | "finishedAt" | "updatedAt" | "taskUsage">[] {
+    return (this.db.prepare(`SELECT status, created_at, finished_at, updated_at, task_usage_json FROM work_items WHERE ${ACTIVE_IN} OR created_at >= @since OR COALESCE(finished_at, updated_at) >= @since`)
       .all({ since: sinceIso }) as Row[])
-      .map((row) => ({ status: row.status as WorkStatus, createdAt: row.created_at as string, finishedAt: (row.finished_at as string | null) ?? null, updatedAt: row.updated_at as string }));
+      .map((row) => ({ status: row.status as WorkStatus, createdAt: row.created_at as string, finishedAt: (row.finished_at as string | null) ?? null, updatedAt: row.updated_at as string, taskUsage: parseJson<TaskUsage | null>(row.task_usage_json, null) }));
   }
 
   countWorkItems(): number {

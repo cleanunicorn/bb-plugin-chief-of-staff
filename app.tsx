@@ -13,7 +13,7 @@ import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
 import { FAILED_OUTCOMES, MARKED_FAILED, OUTCOME_META } from "./src/outcome";
-import { edgeCounts, loopBacks } from "@/components/cos/runModel";
+import { edgeCounts, loopBacks, type TaskUsage } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
@@ -27,7 +27,7 @@ import { useConfigDrafts } from "@/components/cos/configDrafts";
 import { QuestionSheet } from "@/components/cos/question";
 import { StepFlow, StepProgress } from "@/components/cos/stepFlow";
 import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
-import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
+import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, usageNote, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
@@ -37,6 +37,14 @@ import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
+type UsageStats = PluginRpcResult<Contract["cos_stats"]>["usage"];
+type FinishedOrder = PluginRpcResult<Contract["cos_roster"]>["finishedOrder"];
+
+/** A task's share of all finished tasks' tokens: "12%", or "<1%" for a small non-zero share. */
+function sharePercent(tokens: number, of: number): string {
+  const pct = (tokens / of) * 100;
+  return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
+}
 
 const TABS = [
   { id: "agents", label: "Pipeline", icon: "Workflow" },
@@ -173,11 +181,35 @@ export const SHORT_VIEWPORT_QUERY = "(max-height: 32rem) and (min-width: 40rem)"
 export const PHONE_VIEWPORT_QUERY = "not all and (min-width: 40rem)";
 type SheetMode = "canvas" | "list";
 
+/**
+ * The task's usage over all its agent threads: a finished task's stored count
+ * comes with the run view; an active task's is read once, when the sheet
+ * opens (each read makes usage calls per thread), not on every refresh.
+ */
+function useTaskUsage(id: string, task: { status: string; usage?: TaskUsage | null } | undefined): TaskUsage | null {
+  const rpc = useRpc<Contract>();
+  // Read through a ref: the effect runs when the task opens or becomes active, not when the client object changes.
+  const client = useRef(rpc);
+  useEffect(() => { client.current = rpc; });
+  const [live, setLive] = useState<TaskUsage | null>(null);
+  const active = Boolean(task) && task!.status !== "done" && task!.status !== "failed";
+  useEffect(() => {
+    // Another task's figure must not stand in for this one's while it loads.
+    setLive(null);
+    if (!active) return;
+    let current = true;
+    client.current.call("cos_item_usage", { id }).then((r) => { if (current) setLive(r.usage); }, () => {});
+    return () => { current = false; };
+  }, [active, id]);
+  return task?.usage ?? (active ? live : null);
+}
+
 /** One task's run: the workflow coloured live (canvas or list), the task's details, loop-backs and history, and per step what it received and produced, with "run again from here". */
 function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
   useLiveRefresh(async () => void (await view.refetch()));
+  const usage = useTaskUsage(id, view.data?.task);
   const [selected, setSelected] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [mode, setMode] = useState<SheetMode>(initialMode);
@@ -301,7 +333,7 @@ function WorkflowSheet({ id, initialMode = "canvas", onClose, onChanged, restore
           {controls}
         </header>
       )}
-      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} oneLine={short} /> : null}
+      {wf ? <TaskSummary task={data?.task} workflow={wf} live={live} loops={loops} now={now} usage={usage} oneLine={short} /> : null}
       <ErrorLine error={view.error ?? error} />
       {/* On a phone the row is the one scroller: the canvas at a set height, then the list or overview at natural height. */}
       {wf && data ? <div ref={column} className={cn("flex min-h-0 flex-1", phoneColumn ? "flex-col gap-2 overflow-y-auto overscroll-contain" : short ? "flex-row gap-2" : "flex-col gap-3 md:flex-row")}>
@@ -431,7 +463,8 @@ function cardConfirm(kind: Confirmable, title: string, failed: boolean, archives
 
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
 /** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
-function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
+/** `finishedTokens`: tokens of all finished tasks, for a finished task's share; null when unknown or not shown. */
+function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; finishedTokens?: number | null; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
   // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
   // refetch has changed the task's outcome under it.
@@ -442,6 +475,8 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
   const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
   const title = entry.issueTitle || entry.threadTitle || "Untitled task";
   const finished = entry.detail === "done" || entry.detail === "failed";
+  const usage = entry.usage;
+  const share = finished && usage?.counted && usage.totalTokens != null && finishedTokens ? sharePercent(usage.totalTokens, finishedTokens) : null;
   // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
   const showingActivity = useRef(false);
   const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed, archivesOnDone);
@@ -532,13 +567,18 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Activity" className="size-3.5" aria-hidden />Last activity</dt>
           <dd className="font-medium text-foreground">{relative(entry.lastActivityAt ?? entry.startedAt, now)}</dd>
         </div>
-        {entry.usage?.totalTokens != null ? <div>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Tokens</dt>
-          <dd className="font-medium text-foreground tabular-nums">{compact(entry.usage.totalTokens)}</dd>
+        {/* Usage covers every agent thread of the task (planner, reviewers, replaced builders), and says so. */}
+        {usage && (!usage.counted || usage.totalTokens != null) ? <div title={usageNote(usage)}>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />{finished ? "Tokens" : "Tokens so far"} · all threads</dt>
+          <dd className="font-medium text-foreground tabular-nums">{usage.totalTokens != null ? compact(usage.totalTokens) : "counting…"}</dd>
         </div> : null}
-        {entry.usage?.cost != null ? <div>
+        {share ? <div title={`${share} of finished tasks' tokens`}>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="ChartPie" fallback="Circle" className="size-3.5" aria-hidden />Share</dt>
+          <dd className="font-medium text-foreground tabular-nums">{share}<span className="sr-only"> of finished tasks' tokens</span></dd>
+        </div> : null}
+        {usage?.cost != null ? <div title={usageNote(usage)}>
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="Coins" className="size-3.5" aria-hidden />Cost</dt>
-          <dd className="font-medium text-foreground tabular-nums">{entry.usage.cost.amount.toFixed(2)} {entry.usage.cost.currency}</dd>
+          <dd className="font-medium text-foreground tabular-nums">{usage.cost.amount.toFixed(2)} {usage.cost.currency}</dd>
         </div> : null}
         {entry.fixAttempts > 0 ? <div>
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name="RefreshCw" className="size-3.5" aria-hidden />Fix cycles</dt>
@@ -655,6 +695,27 @@ function AgentCard({ entry, busy, tabbable, archivesOnDone, onAction, onAnswer, 
 
 // ---------- pipeline tab ----------
 
+/** Throughput's usage figure: " · 412M tokens (3 not counted yet)", over all threads of the tasks finished in the window. */
+function ThroughputUsage({ usage }: { usage: UsageStats }) {
+  const { totalTokens, pending, unreported, cost } = usage;
+  if (totalTokens == null && !pending) return null;
+  const note = [
+    "Tokens of the tasks finished in the window, each summed over all its agent threads",
+    medianNote(usage.medianTokensPerDone),
+    cost.length ? `Cost: ${cost.map((c) => `${c.amount.toFixed(2)} ${c.currency}`).join(", ")}` : null,
+    unreported ? `${unreported} ${unreported === 1 ? "task" : "tasks"} reported no usage` : null,
+    pending ? `${pending} ${pending === 1 ? "task is" : "tasks are"} not counted yet: usage is counted once all of a task's agents have stopped` : null,
+  ].filter(Boolean).join("\n");
+  return (
+    <span title={note}>
+      {totalTokens != null ? ` · ${compact(totalTokens)} tokens` : " · Tokens"}
+      {pending ? (totalTokens != null ? ` (${pending} not counted yet)` : `: ${pending} not counted yet`) : ""}
+    </span>
+  );
+}
+
+const medianNote = (median: number | null) => (median != null ? `Median per completed task: ${compact(median)}` : null);
+
 /** The Throughput panel, the skip link's target. One Pipeline tab is mounted at a time. */
 const THROUGHPUT_ID = "cos-throughput";
 const TASK_KEYS_HINT_ID = "cos-task-keys";
@@ -666,7 +727,8 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [includeDone, setIncludeDone] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [throughputTable, setThroughputTable] = useState(false);
-  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true } });
+  const [finishedOrder, setFinishedOrder] = useState<FinishedOrder>("recent");
+  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true, finishedOrder } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
   const refetchAll = useCallback(async () => {
@@ -713,18 +775,30 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const [older, setOlder] = useState<{ entries: RosterEntry[]; before: string | null } | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const olderRequest = useRef<{ generation: number; inFlight: boolean }>({ generation: 0, inFlight: false });
-  const olderCursor = !includeDone ? null : older ? older.before : (roster.data?.nextBefore ?? null);
+  // Until the roster answers for the order chosen, its cursor belongs to the other order (which the server rejects).
+  const orderLoaded = (roster.data?.finishedOrder ?? "recent") === finishedOrder;
+  const olderCursor = !includeDone || !orderLoaded ? null : older ? older.before : (roster.data?.nextBefore ?? null);
   const entries = useMemo(() => {
     if (!older) return liveEntries;
     const ids = new Set(liveEntries.map((e) => e.id));
     return [...liveEntries, ...older.entries.filter((e) => !ids.has(e.id))];
   }, [liveEntries, older]);
-  const toggleFinished = () => {
+  /** Drop the older finished pages: they belong to the list being replaced. */
+  const resetOlder = () => {
     olderRequest.current = { generation: olderRequest.current.generation + 1, inFlight: false };
     setOlder(null);
     setLoadingOlder(false);
+  };
+  const toggleFinished = () => {
+    resetOlder();
     setIncludeDone((v) => !v);
   };
+  const orderFinished = (order: FinishedOrder) => {
+    if (order === finishedOrder) return;
+    resetOlder();
+    setFinishedOrder(order);
+  };
+  const finishedTokens = includeDone ? (roster.data?.finishedTokens ?? null) : null;
   const loadOlder = async () => {
     const request = olderRequest.current;
     if (!olderCursor || request.inFlight) return;
@@ -733,7 +807,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     setActionError(null);
     const snapshot = liveEntries.filter(isFinished);
     try {
-      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true });
+      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true, finishedOrder });
       if (olderRequest.current !== request) return;
       setOlder((prev) => {
         const base = prev?.entries ?? snapshot;
@@ -856,6 +930,16 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
                 <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
               </Button>
             ) : null}
+            {includeDone ? (
+              <div role="group" aria-label="Order finished tasks" className="flex items-center gap-1">
+                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "recent"} onClick={() => orderFinished("recent")}>
+                  <Icon name="CalendarCheck" fallback="Clock" aria-hidden />Recently finished
+                </Button>
+                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "tokens"} onClick={() => orderFinished("tokens")}>
+                  <Icon name="Coins" fallback="Circle" aria-hidden />Most tokens
+                </Button>
+              </div>
+            ) : null}
             <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
               <Icon name={includeDone ? "EyeOff" : "History"} fallback="Circle" aria-hidden />
               {includeDone ? "Hide finished" : "Show finished"}
@@ -877,7 +961,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
+                <AgentCard key={e.id} entry={e} finishedTokens={finishedTokens} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode }); }} onShowActivity={onShowActivity} />
               ))}
             </div>
           </div>
@@ -897,11 +981,12 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           {s ? <p className="mb-4 text-sm text-muted-foreground">
             {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
+            <ThroughputUsage usage={s.usage} />
           </p> : null}
           {!s ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : throughputTable ? (
-            <DataTable columns={["Day", "Started", "Done", "Failed"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed])} />
+            <DataTable columns={["Day", "Started", "Done", "Failed", "Tokens"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed, d.tokens != null ? compact(d.tokens) : "—"])} />
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}

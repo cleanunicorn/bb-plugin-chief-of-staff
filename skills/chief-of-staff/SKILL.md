@@ -31,7 +31,11 @@ files. Never push or open pull requests; Chief of Staff does that.
   each item waits on. Every active item is listed; `--all` adds the 50 (or
   `--finished-limit`) most recently finished. For older ones, run the "More
   finished" command it prints (`--before <cursor>`, which implies `--all`;
-  `nextBefore` in `--json`).
+  `nextBefore` in `--json`). `--usage --json` adds each task's `usage`, summed
+  over all its agent threads (`threads`, `reportedThreads`; `counted: false`
+  while a finished task is not counted yet). Token fields are null, not 0, when
+  nothing was reported. `cos_stats` totals usage for its window (`usage`,
+  `daily[].tokens`).
   Answering or resuming the thread in BB moves the item back to running; the
   plugin re-syncs every thread each minute. In the dashboard, clicking the
   question opens it with its options and context and answers it in place

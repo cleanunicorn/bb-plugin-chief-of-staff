@@ -10,11 +10,11 @@ import { DEFAULT_WORKFLOW } from "../src/workflow";
 import { entry } from "./helpers/roster";
 import { clickOutside, tick } from "./dom";
 
-type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean };
+type RosterInput = { includeDone?: boolean; finishedLimit?: number; before?: string; withUsage?: boolean; finishedOrder?: "recent" | "tokens" };
 const mocks = vi.hoisted(() => ({
-  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, maxConcurrentTotal: 8, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number }[], failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
+  entries: [] as RosterEntry[], logs: [] as (LogEntry | LogRow)[], repos: [] as { key: string }[], paused: false, maxConcurrentTotal: 8, archiveThreadsOnDone: undefined as boolean | undefined, daily: [] as { date: string; started: number; done: number; failed: number; tokens?: number | null }[], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } as { totalTokens: number | null; cost: { amount: number; currency: string }[]; counted: number; unreported: number; pending: number; medianTokensPerDone: number | null }, failing: {} as Record<string, string>, queries: [] as { method: string; input: unknown }[], call: vi.fn(), navigate: { toThread: vi.fn() },
   /** When set, answers cos_roster queries from their input (like the server, which lists finished items only with includeDone). */
-  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null }),
+  roster: null as null | ((input: RosterInput) => { entries: RosterEntry[]; nextBefore?: string | null; finishedTokens?: number | null; finishedOrder?: "recent" | "tokens" }),
   rosterInputs: [] as RosterInput[],
 }));
 vi.mock("@get-bb/plugin-sdk/app", () => ({
@@ -32,7 +32,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
     if (failure) return { data: undefined, error: new Error(failure), isLoading: false, isFetching: false, refetch: vi.fn() };
     const workItemId = (input as { workItemId?: string } | null)?.workItemId;
     return {
-      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: mocks.maxConcurrentTotal, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
+      data: method === "cos_log" ? (() => { const rows = mocks.logs.filter(e => (!workItemId || e.workItemId === workItemId) && (!input.onlyProblems || e.level !== "info") && (input.before === undefined || e.id < input.before)); const entries = rows.slice(0, input.limit ?? 100); return { entries, nextCursor: rows.length > entries.length ? entries.at(-1)!.id : null }; })() : method === "cos_roster" ? (mocks.roster?.(input as RosterInput) ?? { entries: mocks.entries }) : method === "cos_stats" ? { doneInWindow: 13, failedInWindow: 13, medianCycleMinutes: null, daily: mocks.daily, usage: mocks.usage } : method === "cos_item_workflow" ? { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: {}, journal: [], steps: {} } : { paused: mocks.paused, repos: mocks.repos, occupiedCapacity: 1, settings: { maxConcurrentTotal: mocks.maxConcurrentTotal, ...(mocks.archiveThreadsOnDone === undefined ? {} : { archiveThreadsOnDone: mocks.archiveThreadsOnDone }) }, errors: [], warnings: [] },
       error: null, refetch: vi.fn(),
     };
   },
@@ -55,7 +55,7 @@ async function mount(content: ReactNode = <PipelineTab />) {
   root = createRoot(container);
   await act(async () => { root.render(content); });
 }
-afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.maxConcurrentTotal = 8; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container.remove(); document.body.replaceChildren(); document.body.removeAttribute("style"); mocks.paused = false; mocks.maxConcurrentTotal = 8; mocks.archiveThreadsOnDone = undefined; mocks.daily = []; mocks.usage = { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null }; mocks.failing = {}; mocks.repos = []; mocks.logs = []; mocks.queries = []; mocks.roster = null; mocks.rosterInputs = []; mocks.call.mockReset(); mocks.navigate.toThread.mockReset(); vi.unstubAllGlobals(); });
 
 /** An activity row of task "one", #7 Fix login, in acme/app. */
 const logRow = (over: Partial<LogRow> = {}): LogRow => ({ id: 1, at: new Date().toISOString(), level: "info", kind: "spawn", message: "spawned Review thr_abc", actor: "event", repo: "acme/app", workItemId: "one", issueNumber: 7, issueTitle: "Fix login", ...over });
@@ -95,13 +95,29 @@ it("leads with the title, omits missing usage, and opens the task thread", async
 });
 
 it("shows real zero usage and keeps task actions available without a thread", async () => {
-  mocks.entries = [entry({ threadId: null, usage: { inputTokens: null, outputTokens: null, totalTokens: 0, cost: { amount: 0, currency: "USD" } } })];
+  mocks.entries = [entry({ threadId: null, usage: { inputTokens: null, outputTokens: null, totalTokens: 0, cost: { amount: 0, currency: "USD" }, threads: 1, reportedThreads: 1, counted: true } })];
   await mount();
   const card = container.querySelector("article")!;
-  expect(card.textContent).toContain("Tokens0");
+  expect(card.textContent).toContain("Tokens so far · all threads0");
   expect(card.textContent).toContain("Cost0.00 USD");
   expect(card.textContent).not.toContain("Open thread");
   expect(card.textContent).toContain("Workflow");
+});
+
+it("labels usage as covering all threads, and says a finished task's count is pending", async () => {
+  const finished = { detail: "done" as const, status: "done" as const, outcome: "merged" as const, finishedAt: new Date().toISOString(), current: [] };
+  mocks.entries = [
+    entry({ id: "counted", ...finished, issueTitle: "Counted", usage: { inputTokens: 1, outputTokens: 2, totalTokens: 4_200_000, cost: null, threads: 5, reportedThreads: 4, counted: true } }),
+    entry({ id: "pending", ...finished, issueTitle: "Pending", usage: { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 3, reportedThreads: 0, counted: false } }),
+    entry({ id: "quiet", ...finished, issueTitle: "Quiet", usage: { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 2, reportedThreads: 0, counted: true } }),
+  ];
+  await mount();
+  const card = (title: string) => Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes(title))!;
+  expect(card("Counted").textContent).toContain("Tokens · all threads4.2M");
+  expect(card("Counted").querySelector('[title^="Sum over"]')!.getAttribute("title")).toBe("Sum over 5 agent threads (4 reported usage)");
+  expect(card("Pending").textContent).toContain("Tokens · all threadscounting…");
+  // A provider that reported nothing shows no figure, rather than 0.
+  expect(card("Quiet").textContent).not.toContain("Tokens");
 });
 
 it("names the workflow summary as a spaced sentence for screen readers", async () => {
@@ -165,7 +181,32 @@ it("opens the Throughput table when the chart is tapped on a coarse pointer", as
   await mount();
   expect(container.querySelector("table")).toBeNull();
   await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Show throughput as a table"]')!.click());
-  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed"]);
+  expect(Array.from(container.querySelectorAll("th")).map((th) => th.textContent)).toEqual(["Day", "Started", "Done", "Failed", "Tokens"]);
+});
+
+it("shows Throughput's total tokens, the tasks not counted yet, and tokens per day in the table", async () => {
+  mocks.entries = [];
+  mocks.daily = [
+    { date: "2026-11-01", started: 1, done: 1, failed: 0, tokens: 412_000_000 },
+    { date: "2026-11-02", started: 1, done: 0, failed: 0, tokens: null },
+  ];
+  mocks.usage = { totalTokens: 412_000_000, cost: [{ amount: 12.5, currency: "USD" }], counted: 1, unreported: 1, pending: 3, medianTokensPerDone: 412_000_000 };
+  await mount();
+  const summary = container.querySelector(`#cos-throughput p`)!;
+  expect(summary.textContent).toContain("· 412.0M tokens (3 not counted yet)");
+  const note = summary.querySelector("span[title]")!.getAttribute("title")!;
+  expect(note).toContain("summed over all its agent threads");
+  expect(note).toContain("Cost: 12.50 USD");
+  expect(note).toContain("1 task reported no usage");
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Table view"]')!.click());
+  const cells = Array.from(container.querySelectorAll("tbody tr")).map((tr) => tr.lastElementChild!.textContent);
+  expect(cells).toEqual(["412.0M", "—"]);
+});
+
+it("leaves usage out of Throughput when no finished task reported or awaits a count", async () => {
+  mocks.entries = [];
+  await mount();
+  expect(container.querySelector(`#cos-throughput p`)!.textContent).not.toContain("okens");
 });
 
 it("shows compact activity rows with full messages and preserves problem filtering", async () => {
@@ -512,11 +553,11 @@ it("pages older finished tasks without duplicates and drops them when finished a
   expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.includes("Show older finished"))).toBe(false);
   await act(async () => buttonLabelled("Show finished").click());
   await act(async () => buttonLabelled("Show older finished").click());
-  expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: true });
+  expect(mocks.call).toHaveBeenCalledWith("cos_roster", { includeDone: true, before: "c1", withUsage: true, finishedOrder: "recent" });
   expect(titles().filter((t) => t?.includes("Finished one"))).toHaveLength(1);
   expect(container.textContent).toContain("Finished two");
   await act(async () => buttonLabelled("Show older finished").click());
-  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "c2", withUsage: true });
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "c2", withUsage: true, finishedOrder: "recent" });
   expect(container.textContent).toContain("Finished three");
   expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent?.includes("Show older finished"))).toBe(false);
   // The active task comes first, once.
@@ -528,6 +569,44 @@ it("pages older finished tasks without duplicates and drops them when finished a
   await act(async () => buttonLabelled("Show finished").click());
   expect(container.textContent).not.toContain("Finished two");
   expect(buttonLabelled("Show older finished")).toBeDefined();
+});
+
+it("orders finished tasks by tokens, resetting older pages, and shows each one's share", async () => {
+  const counted = (id: string, title: string, totalTokens: number) => ({ ...finished(id, title), usage: { inputTokens: null, outputTokens: null, totalTokens, cost: null, threads: 2, reportedThreads: 2, counted: true } });
+  const recent = [counted("f1", "Small one", 1_000), counted("f2", "Big one", 3_000)];
+  mocks.roster = (input) => (input.includeDone ? { entries: input.finishedOrder === "tokens" ? [...recent].reverse() : recent, nextBefore: input.finishedOrder === "tokens" ? "t1" : "c1", finishedTokens: 400_000, finishedOrder: input.finishedOrder } : { entries: [] });
+  mocks.call.mockImplementation(async (_method: string, input: RosterInput) => ({ entries: [finished(input.before === "t1" ? "f4" : "f3", input.before === "t1" ? "Token page" : "Recent page")], nextBefore: null, finishedTokens: 400_000 }));
+  await mount();
+  expect(container.querySelector('[aria-label="Order finished tasks"]')).toBeNull();
+  await act(async () => buttonLabelled("Show finished").click());
+  expect(buttonLabelled("Recently finished").getAttribute("aria-pressed")).toBe("true");
+  await act(async () => buttonLabelled("Show older finished").click());
+  expect(container.textContent).toContain("Recent page");
+  await act(async () => buttonLabelled("Most tokens").click());
+  expect(mocks.rosterInputs.at(-1)).toMatchObject({ includeDone: true, finishedOrder: "tokens" });
+  // The recent order's older page is gone; the next page follows the tokens order.
+  expect(container.textContent).not.toContain("Recent page");
+  expect(titles()[0]).toContain("Big one");
+  await act(async () => buttonLabelled("Show older finished").click());
+  expect(mocks.call).toHaveBeenLastCalledWith("cos_roster", { includeDone: true, before: "t1", withUsage: true, finishedOrder: "tokens" });
+  expect(container.textContent).toContain("Token page");
+  const big = Array.from(container.querySelectorAll("article")).find((a) => a.textContent!.includes("Big one"))!;
+  expect(big.textContent).toContain("Share<1% of finished tasks' tokens");
+  mocks.roster = (input) => ({ entries: input.includeDone ? [counted("f2", "Big one", 100_000)] : [], nextBefore: null, finishedTokens: 400_000 });
+  await act(async () => { root.render(<PipelineTab />); });
+  expect(container.textContent).toContain("Share25% of finished tasks' tokens");
+});
+
+it("offers no older page while the roster still holds the previous order's cursor", async () => {
+  // The query has not answered for the new order yet: its data and cursor are still the recent order's.
+  mocks.roster = (input) => ({ entries: input.includeDone ? [finished("f1", "Finished one")] : [], nextBefore: "c1", finishedTokens: null, finishedOrder: "recent" });
+  await mount();
+  await act(async () => buttonLabelled("Show finished").click());
+  expect(hasOlderButton()).toBe(true);
+  await act(async () => buttonLabelled("Most tokens").click());
+  expect(hasOlderButton()).toBe(false);
+  await act(async () => buttonLabelled("Recently finished").click());
+  expect(hasOlderButton()).toBe(true);
 });
 
 it("shows a live task once when an appended page still holds its finished copy", async () => {

@@ -24,7 +24,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => {
     cos_skills: () => ({ skills: [] }),
     cos_roster: () => ({ entries: [] }),
     cos_log: () => ({ entries: [] }),
-    cos_stats: () => ({ doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [] }),
+    cos_stats: () => ({ doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } }),
     cos_overview: () => ({ paused: false, repos: [], occupiedCapacity: 0, settings: { maxConcurrentTotal: 8 }, errors: [], warnings: [], tokenSource: "gh-cli" }),
   };
   return {

@@ -15,6 +15,12 @@ to the previous compact rows).
   generic working text, and expose full step progress on expansion. Task age is
   measured from task creation, not from the current step's start.
 - Missing usage fields disappear; zero tokens and zero cost remain visible.
+  Since #119 the figure sums every agent thread of the task ("Tokens · all
+  threads", "Tokens so far" while active). Its tooltip gives the thread count,
+  and a finished task not counted yet shows "counting…". A finished card shows
+  its share of finished tasks' tokens. Throughput's summary adds the window's
+  tokens, and its table adds a Tokens column ("—" for a day with none
+  reported).
   Open thread is primary when available, Workflow remains available without it,
   and existing approval, retry, PR, and overflow actions are retained.
 - Activity uses the previous compact rows: severity icon, event type, repository,

@@ -10,6 +10,8 @@ export type ItemWorkflowView = PluginRpcResult<(typeof rpcContract)["cos_item_wo
 export type JournalRecord = NonNullable<ItemWorkflowView["journal"]>[number];
 export type StepDetail = NonNullable<ItemWorkflowView["steps"]>[string];
 export type TaskDetail = NonNullable<ItemWorkflowView["task"]>;
+/** A task's usage summed over all its agent threads. */
+export type TaskUsage = NonNullable<PluginRpcResult<(typeof rpcContract)["cos_item_usage"]>["usage"]>;
 type Live = ItemWorkflowView["live"];
 
 /** Work sent from one step back to another, `count` times. `from` null: you re-ran it. */

@@ -9,6 +9,25 @@ export const ROSTER_FINISHED_MAX = 500;
 export const finishedLimitSchema = z.number().int().min(1).max(ROSTER_FINISHED_MAX).default(ROSTER_FINISHED_LIMIT);
 /** An earlier roster page's opaque nextBefore cursor. */
 export const rosterCursorSchema = z.string().min(1).max(1000);
+/** How finished roster items are ordered: most recently finished, or most tokens, first. */
+export const finishedOrderSchema = z.enum(["recent", "tokens"]);
+
+const cost = z.object({ amount: z.number(), currency: z.string() });
+/**
+ * A task's usage summed over all its agent threads. Token fields are null when
+ * no thread reported them (never 0). `counted` is false for a finished task
+ * whose usage is not counted yet.
+ */
+const itemUsage = z.object({
+  inputTokens: z.number().nullable(),
+  outputTokens: z.number().nullable(),
+  totalTokens: z.number().nullable(),
+  cost: cost.nullable(),
+  /** Agent threads summed, and how many of them reported usage. */
+  threads: z.number(),
+  reportedThreads: z.number(),
+  counted: z.boolean(),
+});
 
 const rosterEntry = z.object({
   occupiesCapacity: z.boolean(),
@@ -71,14 +90,8 @@ const rosterEntry = z.object({
   providerId: z.string().nullable(),
   model: z.string().nullable(),
   source: z.string(),
-  usage: z
-    .object({
-      inputTokens: z.number().nullable(),
-      outputTokens: z.number().nullable(),
-      totalTokens: z.number().nullable(),
-      cost: z.object({ amount: z.number(), currency: z.string() }).nullable(),
-    })
-    .nullable(),
+  /** With withUsage: the task's usage summed over all its agent threads (see ItemUsage); null without. */
+  usage: itemUsage.nullable(),
 });
 
 const logEntry = z.object({ id: z.number(), at: z.string(), level: z.string(), kind: z.string(), repo: z.string().nullable(), workItemId: z.string().nullable(), issueNumber: z.number().nullable(), issueTitle: z.string().nullable(), message: z.string(), actor: z.string() });
@@ -166,6 +179,8 @@ const taskDetail = z.object({
   createdAt: z.string(),
   lastActivityAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
+  /** A finished task's stored usage over all its threads (no usage calls); null while it runs: read that once with cos_item_usage. */
+  usage: itemUsage.nullable().optional(),
 });
 
 const stepDetail = z.object({
@@ -218,9 +233,18 @@ export const rpcContract = defineRpcContract({
       finishedLimit: finishedLimitSchema,
       /** An earlier page's nextBefore: return only the next page of finished items. */
       before: rosterCursorSchema.optional(),
+      /** Finished items most recently finished first, or most tokens first. A cursor belongs to its order. */
+      finishedOrder: finishedOrderSchema.default("recent"),
       withUsage: z.boolean().default(false),
     }),
-    output: z.object({ entries: z.array(rosterEntry), nextBefore: z.string().nullable() }),
+    output: z.object({
+      entries: z.array(rosterEntry),
+      nextBefore: z.string().nullable(),
+      /** With finished items: tokens of every finished task in scope (all pages), for each task's share; null when none reported tokens. */
+      finishedTokens: z.number().nullable(),
+      /** The order the finished entries and `nextBefore` follow: a cursor only pages the order it came from. */
+      finishedOrder: finishedOrderSchema,
+    }),
   },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: {
@@ -242,6 +266,8 @@ export const rpcContract = defineRpcContract({
       journal: z.array(journalRecord).optional(),
     }),
   },
+  /** A task's usage over all its agent threads: stored for a finished task, read live (several usage calls) for an active one. */
+  cos_item_usage: { input: z.object({ id: z.string() }), output: z.object({ usage: itemUsage.nullable() }) },
   cos_journal_detail: { input: z.object({ itemId: z.string(), id: z.number().int() }), output: z.object({ detail: z.string().nullable() }) },
   cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().max(200).optional(), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },
   cos_question: { input: z.object({ id: z.string() }), output: questionView },
@@ -250,13 +276,23 @@ export const rpcContract = defineRpcContract({
     input: z.object({ windowDays: z.number().int().min(1).max(90).default(14) }),
     output: z.object({
       byStatus: z.record(z.string(), z.number()),
-      daily: z.array(z.object({ date: z.string(), started: z.number(), done: z.number(), failed: z.number() })),
+      /** `tokens`: of the tasks that finished that day, summed over their threads; null when none reported tokens. */
+      daily: z.array(z.object({ date: z.string(), started: z.number(), done: z.number(), failed: z.number(), tokens: z.number().nullable() })),
       windowDays: z.number(),
       startedInWindow: z.number(),
       doneInWindow: z.number(),
       failedInWindow: z.number(),
       medianCycleMinutes: z.number().nullable(),
       totalTracked: z.number(),
+      /** Token usage of the done and failed tasks finished in the window (src/stats.ts UsageStats). */
+      usage: z.object({
+        totalTokens: z.number().nullable(),
+        cost: z.array(cost),
+        counted: z.number(),
+        unreported: z.number(),
+        pending: z.number(),
+        medianTokensPerDone: z.number().nullable(),
+      }),
     }),
   },
   cos_log: { input: z.object({ limit: z.number().int().min(1).max(500).default(100), workItemId: z.string().optional(), onlyProblems: z.boolean().default(false), before: z.number().int().positive().optional() }), output: z.object({ entries: z.array(logEntry), nextCursor: z.number().int().nullable() }) },

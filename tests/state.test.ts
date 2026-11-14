@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type PrState, type WorkItem } from "../src/state";
+import { MIGRATIONS, migrationsForDatabase, occupiesCapacity, StateStore, type NewWorkItem, type PrState, type WorkItem } from "../src/state";
 import { freshNode, transition, type Nodes } from "../src/machine";
 import { applyTransition } from "../src/delivery";
 import { normalizeWorkflow, workflowSchema } from "../src/workflow";
@@ -413,65 +413,155 @@ describe("roster items: every active item plus a page of finished ones", () => {
 });
 
 
-describe("final usage of finished items", () => {
-  const usage = { inputTokens: 10, outputTokens: 20, totalTokens: 30, cost: { amount: 0.5, currency: "USD" } };
-  const nothing = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null };
-  const updatedAt = (db: ReturnType<typeof storeSetup>["db"], id: string) => (db.prepare("SELECT updated_at FROM work_items WHERE id = ?").get(id) as { updated_at: string }).updated_at;
+describe("finished items ordered by tokens", () => {
+  const usage = (totalTokens: number | null) => ({ inputTokens: null, outputTokens: null, totalTokens, cost: null, threads: 1, reportedThreads: totalTokens == null ? 0 : 1 });
+  function seed() {
+    const t = storeSetup();
+    const finish = (id: string, tokens: number | null | undefined, repo = "a/b") => {
+      const finishedAt = "2026-11-10T00:00:00.000Z";
+      t.add(id, { repo, status: "done", finishedAt });
+      if (tokens !== undefined) t.store.setTaskUsage(id, finishedAt, usage(tokens), "2026-11-12T10:00:00.000Z");
+    };
+    finish("big", 900);
+    finish("tie-a", 500);
+    finish("tie-b", 500);
+    finish("tie-c", 500);
+    finish("small", 0);
+    finish("unreported", null);
+    finish("pending-a", undefined);
+    finish("pending-b", undefined);
+    finish("theirs", 10_000, "c/d");
+    t.add("active", { status: "agent" });
+    return t;
+  }
+  const all = (store: StateStore, repo: string | undefined, limit: number) => {
+    const ids: string[] = [];
+    let before: string | undefined;
+    for (let i = 0; i < 20; i++) {
+      const page = store.listRosterItems({ repo, includeDone: true, finishedLimit: limit, before, order: "tokens" });
+      if (i > 0) expect(page.active).toEqual([]);
+      ids.push(...page.finished.map((x) => x.id));
+      if (!page.nextBefore) return ids;
+      before = page.nextBefore;
+    }
+    throw new Error("did not end");
+  };
 
-  it("is unknown until stored, and an all-null value counts as known", () => {
-    const { store, add } = storeSetup();
-    add("a", { status: "done", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
-    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
-    expect(store.setFinalUsage("a", "t-a", nothing)).toBe(true);
-    expect(store.getWorkItem("a")!.finalUsage).toEqual(nothing);
-    expect(store.setFinalUsage("a", "t-a", usage)).toBe(true);
-    expect(store.listWorkItems()[0]!.finalUsage).toEqual(usage);
+  it("orders by tokens, most first, then not counted or unreported last, paging across ties and nulls", () => {
+    const { store } = seed();
+    const expected = ["big", "tie-c", "tie-b", "tie-a", "small", "unreported", "pending-b", "pending-a"];
+    for (const limit of [1, 2, 3, 50]) expect(all(store, "a/b", limit)).toEqual(expected);
+    expect(all(store, undefined, 2)[0]).toBe("theirs");
+    expect(store.listRosterItems({ includeDone: true, order: "tokens" }).active.map((i) => i.id)).toEqual(["active"]);
   });
 
-  it("does not touch updated_at, and only stores for a finished item on the same thread", () => {
+  it("sums finished tokens in scope, and rejects a cursor of the other order", () => {
+    const { store } = seed();
+    expect(store.finishedTokens("a/b")).toBe(2400);
+    expect(store.finishedTokens()).toBe(12_400);
+    expect(store.finishedTokens("x/y")).toBeNull();
+    const tokens = store.listRosterItems({ includeDone: true, finishedLimit: 1, order: "tokens" }).nextBefore!;
+    const recent = store.listRosterItems({ includeDone: true, finishedLimit: 1 }).nextBefore!;
+    expect(() => store.listRosterItems({ includeDone: true, before: tokens })).toThrow("invalid cursor");
+    expect(() => store.listRosterItems({ includeDone: true, before: recent, order: "tokens" })).toThrow("invalid cursor");
+    for (const bad of [["tokens", "5", "x"], ["tokens", 5], ["tokens", 1.5, "x"], ["recent", 5, "x"]]) {
+      expect(() => store.listRosterItems({ includeDone: true, order: "tokens", before: Buffer.from(JSON.stringify(bad)).toString("base64url") })).toThrow("invalid cursor");
+    }
+  });
+});
+
+describe("usage of finished items, summed over their threads", () => {
+  const usage = { inputTokens: 10, outputTokens: 20, totalTokens: 30, cost: { amount: 0.5, currency: "USD" }, threads: 3, reportedThreads: 2 };
+  const nothing = { inputTokens: null, outputTokens: null, totalTokens: null, cost: null, threads: 2, reportedThreads: 0 };
+  const FINISHED = "2026-11-12T09:00:00Z";
+  const AT = "2026-11-12T10:00:00.000Z";
+  const row = (db: ReturnType<typeof storeSetup>["db"], id: string) => db.prepare("SELECT updated_at, usage_tokens, usage_checked_at, task_usage_json FROM work_items WHERE id = ?").get(id) as { updated_at: string; usage_tokens: number | null; usage_checked_at: string | null; task_usage_json: string | null };
+
+  it("is not counted until stored; an all-null count is stored as counted, with no tokens", () => {
+    const { db, store, add } = storeSetup();
+    add("a", { status: "done", finishedAt: FINISHED });
+    expect(store.getWorkItem("a")!.taskUsage).toBeNull();
+    expect(store.setTaskUsage("a", FINISHED, nothing, AT)).toBe(true);
+    expect(store.getWorkItem("a")!.taskUsage).toEqual(nothing);
+    expect(row(db, "a").usage_tokens).toBeNull();
+    expect(store.setTaskUsage("a", FINISHED, usage, AT)).toBe(true);
+    expect(store.listWorkItems()[0]!.taskUsage).toEqual(usage);
+    expect(row(db, "a")).toMatchObject({ usage_tokens: 30, usage_checked_at: AT });
+  });
+
+  it("does not touch updated_at, and stores only for the finished item that was read", () => {
     const { db, store, add, setClock } = storeSetup();
-    add("done", { status: "done", threadId: "t-done", finishedAt: "2026-11-12T09:00:00Z" });
-    add("active", { status: "agent", threadId: "t-active" });
-    const before = updatedAt(db, "done");
+    add("done", { status: "done", finishedAt: FINISHED });
+    add("active", { status: "agent" });
+    const before = row(db, "done").updated_at;
     setClock("2026-11-12T11:00:00Z");
-    store.setFinalUsage("done", "t-done", usage);
-    expect(updatedAt(db, "done")).toBe(before);
-    expect(store.setFinalUsage("done", "t-other", nothing)).toBe(false);
-    expect(store.getWorkItem("done")!.finalUsage).toEqual(usage);
-    expect(store.setFinalUsage("active", "t-active", usage)).toBe(false);
-    expect(store.getWorkItem("active")!.finalUsage).toBeNull();
+    store.setTaskUsage("done", FINISHED, usage, AT);
+    store.touchUsageChecked("done", AT);
+    expect(row(db, "done").updated_at).toBe(before);
+    // Finished again since it was read: another finish time.
+    expect(store.setTaskUsage("done", "2026-11-12T08:00:00Z", nothing, AT)).toBe(false);
+    expect(store.getWorkItem("done")!.taskUsage).toEqual(usage);
+    expect(store.setTaskUsage("active", null, usage, AT)).toBe(false);
+    store.touchUsageChecked("active", AT);
+    expect(row(db, "active")).toMatchObject({ task_usage_json: null, usage_checked_at: null });
   });
 
-  it("is kept when a finished item is saved, and cleared when it is reopened", () => {
-    const { store, add } = storeSetup();
-    add("a", { status: "failed", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
-    store.setFinalUsage("a", "t-a", usage);
-    expect(store.updateWorkItem("a", { lastError: "boom" })!.finalUsage).toEqual(usage);
-    expect(store.getWorkItem("a")!.finalUsage).toEqual(usage);
+  it("is kept when a finished item is saved, and cleared with its attempts when it is reopened", () => {
+    const { db, store, add } = storeSetup();
+    add("a", { status: "failed", threadId: "t-a", finishedAt: FINISHED });
+    store.setTaskUsage("a", FINISHED, usage, AT);
+    expect(store.updateWorkItem("a", { lastError: "boom", threadId: "t-b" })!.taskUsage).toEqual(usage);
+    expect(store.getWorkItem("a")!.taskUsage).toEqual(usage);
     const reopened = store.updateWorkItem("a", { status: "agent", finishedAt: null });
-    expect(reopened!.finalUsage).toBeNull();
-    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+    expect(reopened!.taskUsage).toBeNull();
+    expect(row(db, "a")).toMatchObject({ task_usage_json: null, usage_tokens: null, usage_checked_at: null });
     // Finishing again does not bring the old value back.
     store.updateWorkItem("a", { status: "done", finishedAt: "2026-11-12T10:00:00Z" });
-    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
-  });
-
-  it("is cleared when the item's builder thread changes", () => {
-    const { store, add } = storeSetup();
-    add("a", { status: "done", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z" });
-    store.setFinalUsage("a", "t-a", usage);
-    expect(store.updateWorkItem("a", { threadId: "t-b" })!.finalUsage).toBeNull();
-    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+    expect(store.getWorkItem("a")!.taskUsage).toBeNull();
   });
 
   it("is cleared when a failed item is revived through the machine", () => {
     const { store, add } = storeSetup();
-    add("a", { status: "failed", threadId: "t-a", finishedAt: "2026-11-12T09:00:00Z", nodes: nodes({ status: "running", round: 1, reports: [null], nudges: [0] }) });
-    store.setFinalUsage("a", "t-a", usage);
+    add("a", { status: "failed", threadId: "t-a", finishedAt: FINISHED, nodes: nodes({ status: "running", round: 1, reports: [null], nudges: [0] }) });
+    store.setTaskUsage("a", FINISHED, usage, AT);
     const item = store.getWorkItem("a")!;
     const t = transition(item, { type: "revive" });
     const after = store.updateWorkItem("a", applyTransition(item, t.nodes, t.patch))!;
     expect(after.status).not.toBe("failed");
-    expect(store.getWorkItem("a")!.finalUsage).toBeNull();
+    expect(store.getWorkItem("a")!.taskUsage).toBeNull();
+  });
+
+  it("lists finished items not counted yet: never tried first (latest finished first), then the oldest attempt, past the retry time", () => {
+    const { store, add } = storeSetup();
+    add("old", { status: "done", finishedAt: "2026-11-01T00:00:00Z" });
+    add("new", { status: "failed", finishedAt: "2026-11-10T00:00:00Z" });
+    add("tried-late", { status: "done", finishedAt: "2026-11-11T00:00:00Z" });
+    add("tried-early", { status: "done", finishedAt: "2026-11-11T00:00:00Z" });
+    add("recent-try", { status: "done", finishedAt: "2026-11-11T00:00:00Z" });
+    add("counted", { status: "done", finishedAt: "2026-11-11T00:00:00Z" });
+    add("active", { status: "agent" });
+    store.touchUsageChecked("tried-late", "2026-11-12T09:30:00.000Z");
+    store.touchUsageChecked("tried-early", "2026-11-12T09:00:00.000Z");
+    store.touchUsageChecked("recent-try", "2026-11-12T09:55:00.000Z");
+    store.setTaskUsage("counted", "2026-11-11T00:00:00Z", nothing, AT);
+    const due = (limit: number) => store.listUsageDue("2026-11-12T09:50:00.000Z", limit).map((i) => i.id);
+    expect(due(10)).toEqual(["new", "old", "tried-early", "tried-late"]);
+    expect(due(2)).toEqual(["new", "old"]);
+  });
+
+  it("adds its columns on top of the shipped migrations, without reusing the builder-only figure", () => {
+    const host = createFakePluginHost({ pluginId: "usage-upgrade" });
+    hosts.push(host);
+    const db = host.bb.storage.database();
+    const shipped = MIGRATIONS.slice(0, MIGRATIONS.indexOf("ALTER TABLE work_items ADD COLUMN final_usage_json TEXT") + 1);
+    expect(shipped.length).toBeLessThan(MIGRATIONS.length);
+    host.bb.storage.migrate(db, shipped);
+    db.prepare("INSERT INTO work_items (id, repo, status, created_at, updated_at, finished_at, final_usage_json) VALUES ('old', 'a/b', 'done', ?, ?, ?, ?)")
+      .run(FINISHED, FINISHED, FINISHED, JSON.stringify({ inputTokens: 1, outputTokens: 1, totalTokens: 2, cost: null }));
+    expect(() => host.bb.storage.migrate(db, migrationsForDatabase(db))).not.toThrow();
+    expect(db.prepare("PRAGMA table_info(work_items)").all()).toEqual(expect.arrayContaining(["task_usage_json", "usage_tokens", "usage_checked_at"].map((name) => expect.objectContaining({ name }))));
+    const store = new StateStore(db);
+    expect(store.getWorkItem("old")!.taskUsage).toBeNull();
+    expect(store.listUsageDue(AT, 10).map((i) => i.id)).toEqual(["old"]);
   });
 });
