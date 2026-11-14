@@ -1,7 +1,7 @@
 // One tab stop group for a list of cards (issue #115): only the current card's controls
 // are in the tab order, and the arrow keys move between cards. Without it, Tab visits
 // every control of every card before reaching anything below the list.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FocusEvent, KeyboardEvent } from "react";
 
 /** Put this attribute, set to the card's id, on each card element inside the group. */
@@ -21,14 +21,24 @@ function focusCard(card: HTMLElement): void {
 const TYPING = "input, textarea, select, [contenteditable]:not([contenteditable='false']), [role=textbox]";
 
 /**
- * Whether a page-wide single-letter shortcut (j, k) must leave this key alone: a modifier is held, something
- * handled it already, the user is composing or typing in a field, or a dialog or menu is open over the page.
- * Closed dialogs and menus are unmounted, so their roles are only in the document while open.
+ * An open dialog or menu. Some stay mounted when closed (the persistent phone drawer keeps a `role=dialog` in the
+ * body, `data-state=closed`, inert and hidden), so closed, inert and hidden ones do not count.
  */
-export function shortcutBlocked(event: globalThis.KeyboardEvent): boolean {
+const OPEN_OVERLAY = ["dialog", "alertdialog", "menu"].map((role) => `[role=${role}]:not([data-state=closed]):not([inert]):not([aria-hidden=true])`).join(", ");
+
+/**
+ * Whether a single-letter shortcut (j, k) of the view in `root` must leave this key alone: focus is elsewhere in
+ * the app (outside `root`, and not on the page itself), a modifier is held, something handled it already, the user
+ * is composing or typing in a field, or a dialog or menu is open over the page. The plugin shares the host's
+ * document, so a window listener hears keys meant for the rest of BB.
+ */
+export function shortcutBlocked(event: globalThis.KeyboardEvent, root: Element | null): boolean {
   if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return true;
-  if (event.target instanceof Element && event.target.closest(TYPING)) return true;
-  return document.querySelector("[role=dialog], [role=alertdialog], [role=menu]") !== null;
+  const target = event.target;
+  const onPage = target === document || target === document.body || target === document.documentElement;
+  if (!onPage && !(target instanceof Node && root?.contains(target))) return true;
+  if (target instanceof Element && target.closest(TYPING)) return true;
+  return document.querySelector(OPEN_OVERLAY) !== null;
 }
 
 const STEP: Record<string, (from: number, last: number) => number> = {
@@ -56,7 +66,9 @@ export function useRovingCards(ids: readonly string[]) {
   const active = current !== null && ids.includes(current) ? current : (ids[0] ?? null);
   const group = useRef<HTMLElement | null>(null);
   const latest = useRef(active);
-  latest.current = active;
+  useEffect(() => {
+    latest.current = active;
+  }, [active]);
 
   const onFocus = useCallback((event: FocusEvent<HTMLElement>) => {
     // React events bubble through portals (menus, dialogs); only DOM descendants count.

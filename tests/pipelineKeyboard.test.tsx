@@ -371,3 +371,42 @@ it("does nothing with j and k while the workflow sheet is open", async () => {
   expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
   expect(await pressed(document.activeElement ?? document.body, "j")).toBe(false);
 });
+
+it("leaves j and k to the rest of the app when focus is outside the Pipeline tab", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  // A control of the host app (a sidebar button), outside the dashboard.
+  const outside = document.createElement("button");
+  outside.textContent = "Host button";
+  document.body.append(outside);
+  outside.focus();
+  expect(await pressed(outside, "j")).toBe(false);
+  expect(await pressed(outside, "k")).toBe(false);
+  expect(document.activeElement).toBe(outside);
+  outside.remove();
+});
+
+it("still moves with j and k when a closed dialog or menu stays in the document", async () => {
+  mocks.entries = tasks(3);
+  await page();
+  // On phones the persistent drawer keeps a closed dialog mounted, inert and hidden.
+  const drawer = document.createElement("div");
+  drawer.setAttribute("role", "dialog");
+  drawer.setAttribute("data-state", "closed");
+  drawer.setAttribute("aria-hidden", "true");
+  drawer.inert = true;
+  const menu = document.createElement("div");
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("data-state", "closed");
+  document.body.append(drawer, menu);
+  summaryOf(0).focus();
+  expect(await pressed(document.activeElement!, "j")).toBe(true);
+  expect(document.activeElement).toBe(summaryOf(1));
+  // The same drawer, open, blocks them.
+  drawer.setAttribute("data-state", "open");
+  drawer.removeAttribute("aria-hidden");
+  drawer.inert = false;
+  expect(await pressed(document.activeElement!, "j")).toBe(false);
+  drawer.remove();
+  menu.remove();
+});

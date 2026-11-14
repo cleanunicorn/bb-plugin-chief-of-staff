@@ -286,20 +286,28 @@ What changed on the Pipeline tab:
 - **Stage filters** are one sideways-scrolling row below `sm`, wrapping from
   `sm` up.
 - **`j`/`k`** move between task cards (clamped), and focus the current card
-  from outside the grid. They do nothing with a modifier, while composing,
-  in `input, textarea, select, [contenteditable], [role=textbox]`, with a
-  sheet open, or with any `[role=dialog]`, `[role=alertdialog]` or
-  `[role=menu]` in the document (Radix unmounts closed ones). `/` is left out:
-  #105, which adds the search field, is still open.
+  from elsewhere in the Pipeline tab or with nothing focused. The plugin
+  shares BB's document, so a key pressed with focus anywhere else in BB is
+  left alone. They also do nothing with a modifier, while composing, in
+  `input, textarea, select, [contenteditable], [role=textbox]`, with a sheet
+  open, or with an open `[role=dialog]`, `[role=alertdialog]` or `[role=menu]`
+  in the document. Closed overlays (`data-state=closed`, `inert` or
+  `aria-hidden`) do not count: on phones the persistent drawer keeps a closed
+  `role=dialog` mounted after its first opening. `/` is left out: #105, which
+  adds the search field, is still open.
 
 Baseline semantics (`components/cos/lastVisit.ts`): `localStorage
 ["cos.lastVisit"]` is when this browser last left the dashboard, written on
 `pagehide`, on the page becoming hidden and when the Pipeline tab unmounts.
 `sessionStorage["cos.visitBaseline"]` is this browser tab's baseline (`"none"`
-on a first visit). Within a visit it is read back unchanged, so tab switches,
-live refetches, StrictMode remounts and reloads keep the counts. A visit ends
-when the dashboard was out of sight for 30 minutes: on mount, or when the page
-becomes visible again, a stale `cos.lastVisit` starts a new visit from it.
+on a first visit). Within a visit it is read back unchanged, so live
+refetches, StrictMode remounts, reloads and tab switches keep the counts. A
+visit ends when the Pipeline tab was out of sight for 30 minutes: on mount, or
+when the page becomes visible again, a stale `cos.lastVisit` starts a new
+visit from it. Time on another dashboard tab counts as away, so returning to
+Pipeline after 40 minutes on Configure starts a new visit. `cos.lastVisit` is
+shared by the browser's windows, so another BB window hiding the dashboard
+can end this window's visit when it next becomes visible.
 This amends the plan, which kept the baseline for the browser tab's life; BB
 stays open for days, so that baseline would never move. Storage that throws
 reads as a first visit. Known limit: if the host keeps the panel mounted and
@@ -320,7 +328,8 @@ the failure list, reason fallback and clipping, the links, counts kept across
 a dashboard tab switch, a failed or loading `cos_since`, skeletons) and
 `tests/pipelineKeyboard.test.tsx` (`j`/`k` from a card, any control and the
 page, clamping, modifiers, the New task fields, an open menu, confirm dialog
-and workflow sheet; guard tests assert the key was not claimed, since focus
+and workflow sheet, focus on a control outside the dashboard, a closed
+dialog or menu left in the document; guard tests assert the key was not claimed, since focus
 traps would undo a move anyway). `npm run check` and `npm run build:ci` pass.
 
 Browser check: headless Chromium (BB browser automation) on a static render of
@@ -352,6 +361,7 @@ Not checked: a live BB install (host navigation, icons, theme, and whether the
 host unmounts or hides the panel when you open a thread, which decides when a
 visit ends); dark theme; `j`/`k` and the links in a real browser (covered in
 jsdom); reduced-motion rendering of the skeletons (`motion-safe:` only).
-`j`/`k` listen on `window`: if the host keeps the panel mounted while you work
-elsewhere in BB, they could move focus to a card from there (outside fields,
-dialogs and menus). That is the same unknown as when a visit ends.
+`j`/`k` act only on keys pressed in the Pipeline tab or with nothing focused.
+If the host keeps the panel mounted but hidden, a `j` with nothing focused
+could still move focus to a hidden card; whether the host does that is the
+same unknown as when a visit ends.

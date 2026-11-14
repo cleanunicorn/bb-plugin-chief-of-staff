@@ -1266,3 +1266,16 @@ it("shows no skeleton for a panel whose first load failed", async () => {
   expect(busyRegions()).toEqual([]);
   expect(container.textContent).not.toMatch(/Loading/);
 });
+
+it("does not repeat Failed after the count when a failed task stored no reason", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.entries = [];
+  mocks.since = { shipped: 0, failed: 1, failures: [failure(4, null)] };
+  await mount();
+  expect(summaryText()).toContain("1 failed · Nothing waits on you");
+  expect(summaryText()).not.toContain("(Failed)");
+  mocks.since = { shipped: 0, failed: 2, failures: [failure(4, null), failure(3, "Thread archived")] };
+  await act(async () => { root.render(<PipelineTab key="again" />); });
+  const items = Array.from(summary()!.querySelectorAll("li")).map((li) => li.textContent?.replace(/\s+/g, " ").trim());
+  expect(items).toEqual(["#4 Broke 4", "#3 Broke 3 — Thread archived"]);
+});

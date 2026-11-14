@@ -673,12 +673,27 @@ function clip(text: string, max = REASON_MAX): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
-/** Why a failure ended, in the header: the card's reason, or the outcome's label when it has none. */
-function failureWhy(failure: Since["failures"][number]): string {
-  return failure.reason ?? OUTCOME_META[failure.outcome].label;
+/**
+ * Why a failure ended, in the header: the card's reason, or the outcome's label when it has none ("Marked failed",
+ * "PR closed"). Null for a plain failure with no stored reason: "1 failed (Failed)" would only repeat the count.
+ */
+function failureWhy(failure: Since["failures"][number]): string | null {
+  if (failure.reason) return failure.reason;
+  return failure.outcome === "failed" ? null : OUTCOME_META[failure.outcome].label;
 }
 
-const SINCE_LINK = "rounded font-medium text-foreground underline decoration-muted-foreground/60 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+const SINCE_LINK = "rounded font-medium pointer-coarse:py-1.5 text-foreground underline decoration-muted-foreground/60 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** One listed failure: "#N title — why", the why left out when there is none. */
+function FailureItem({ failure }: { failure: Since["failures"][number] }) {
+  const label = taskLabel({ workItemId: failure.id, issueNumber: failure.issueNumber, issueTitle: failure.issueTitle });
+  const why = failureWhy(failure);
+  return (
+    <li className="truncate" title={why ? `${label} — ${why}` : (label ?? undefined)}>
+      <span className="text-foreground">{label}</span>{why ? <> — {clip(why)}</> : null}
+    </li>
+  );
+}
 
 /**
  * "Since you were here (3h ago): 3 shipped · 1 failed (Thread archived) · Nothing waits on you" (#110). Only the
@@ -696,15 +711,13 @@ function SinceLine({ baseline, data, nothingWaits, onShowFinished, now }: { base
         {data.shipped ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.shipped} shipped</button> : null}
         {data.shipped && data.failed ? " · " : null}
         {data.failed ? <button type="button" className={SINCE_LINK} onClick={onShowFinished}>{data.failed} failed</button> : null}
-        {data.failed === 1 && first ? <> (<span title={failureWhy(first)}>{clip(failureWhy(first))}</span>)</> : null}
+        {data.failed === 1 && first && failureWhy(first) ? <> (<span title={failureWhy(first)!}>{clip(failureWhy(first)!)}</span>)</> : null}
         {nothingWaits ? <span className="text-muted-foreground"> · Nothing waits on you</span> : null}
       </p>
       {listed.length ? (
         <ul className="flex list-none flex-col gap-0.5 pl-5 text-xs text-muted-foreground">
           {listed.map((f) => (
-            <li key={f.id} className="truncate" title={`${taskLabel({ workItemId: f.id, issueNumber: f.issueNumber, issueTitle: f.issueTitle })} — ${failureWhy(f)}`}>
-              <span className="text-foreground">{taskLabel({ workItemId: f.id, issueNumber: f.issueNumber, issueTitle: f.issueTitle })}</span> — {clip(failureWhy(f))}
-            </li>
+            <FailureItem key={f.id} failure={f} />
           ))}
           {data.failed > listed.length ? <li>and {data.failed - listed.length} more</li> : null}
         </ul>
@@ -888,13 +901,15 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const visible = entries.filter((e) => matchesTaskFilter(e, filter));
   const roving = useRovingCards(visible.map((e) => e.id));
   const moveCard = roving.move;
-  // j and k move between task cards from anywhere on the page, like the arrow keys inside the grid (#110).
-  // Off while a sheet is open; shortcutBlocked covers typing, modifiers, menus and confirm dialogs.
+  // j and k move between task cards from anywhere in the Pipeline tab, or with nothing focused, like the arrow
+  // keys inside the grid (#110). Off while a sheet is open; shortcutBlocked also leaves keys pressed elsewhere in
+  // BB alone, and covers typing, modifiers, menus and confirm dialogs.
+  const pipelineRoot = useRef<HTMLDivElement>(null);
   const sheetOpen = answering !== null || viewing !== null;
   useEffect(() => {
     if (sheetOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.key !== "j" && event.key !== "k") || shortcutBlocked(event)) return;
+      if ((event.key !== "j" && event.key !== "k") || shortcutBlocked(event, pipelineRoot.current)) return;
       if (moveCard(event.key === "j" ? 1 : -1)) event.preventDefault();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -904,7 +919,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 
   return (
-    <div className="flex flex-col gap-4">
+    <div ref={pipelineRoot} className="flex flex-col gap-4">
       <QueryErrors errors={[roster.error, stats.error, overview.error, baseline !== null ? since.error : null, actionError]} />
       <div className="relative flex flex-wrap items-center justify-between gap-2">
         <h2 ref={sheetFocus.fallback} tabIndex={-1} className="rounded text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Work overview</h2>

@@ -6,10 +6,12 @@
 // - localStorage `cos.lastVisit`: when this browser last left the dashboard
 //   (pagehide, the page hidden, or the Pipeline tab unmounted).
 // - sessionStorage `cos.visitBaseline`: this browser tab's baseline, copied from
-//   `cos.lastVisit` when a visit starts ("none" on a first visit). Tab switches,
-//   live refetches, StrictMode remounts and reloads read it back unchanged.
-// A visit ends when the dashboard was out of sight for NEW_VISIT_AFTER_MS: BB stays
-// open for days, so a browser tab's life alone would never start a new one.
+//   `cos.lastVisit` when a visit starts ("none" on a first visit). Live refetches,
+//   StrictMode remounts, reloads and tab switches within a visit read it back unchanged.
+// A visit ends when the Pipeline tab was out of sight for NEW_VISIT_AFTER_MS: BB stays
+// open for days, so a browser tab's life alone would never start a new one. "Out of
+// sight" counts time on another dashboard tab too, and `cos.lastVisit` is shared by the
+// browser's windows: another BB window hiding the dashboard can end this one's visit.
 import { useEffect, useState } from "react";
 
 export const LAST_VISIT_KEY = "cos.lastVisit";

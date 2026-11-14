@@ -10,6 +10,7 @@
   nothing waits, it says "All clear — 4 agents working". The last visit is
   kept in this browser only; a first visit shows the current state without
   counts, and coming back after 30 minutes away starts a new visit.
+
 - **Pipeline polish.** Loading panels show skeletons instead of "Loading…".
   With one repository, Capacity shows one meter instead of repeating it as
   "All repos". On a phone the stage filters take one row that scrolls
