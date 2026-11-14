@@ -177,7 +177,7 @@ export interface WorkflowCanvasProps {
 
 function CanvasInner({ workflow, onChange, selected = null, onSelect, live, className, expanded, onToggleExpanded, edgeCounts }: WorkflowCanvasProps) {
   const editable = Boolean(onChange);
-  const { fitView } = useReactFlow();
+  const { fitView, setCenter, getZoom, getInternalNode } = useReactFlow();
   const fit = editable ? FIT_EDIT : FIT_VIEW;
   const positions = useMemo(() => layout(workflow), [workflow]);
   const build = useCallback(
@@ -290,11 +290,23 @@ function CanvasInner({ workflow, onChange, selected = null, onSelect, live, clas
     [editable, workflow, update],
   );
 
+  // A step just added from the toolbar, to centre once React Flow has rendered and measured it.
+  const pendingReveal = useRef<string | null>(null);
   const add = (type: StepType) => {
     const { workflow: next, id } = insertStepAfter(workflow, type, selected);
+    pendingReveal.current = id;
     update(placeNewStep(next, id));
     onSelect?.(id);
   };
+  // Measuring a step updates `nodes`, so this runs again until the new step has a size; the zoom stays as it is.
+  useEffect(() => {
+    const id = pendingReveal.current;
+    const node = id ? getInternalNode(id) : undefined;
+    if (!node?.measured.width || !node.measured.height) return;
+    pendingReveal.current = null;
+    const { x, y } = node.internals.positionAbsolute;
+    void setCenter(x + node.measured.width / 2, y + node.measured.height / 2, { zoom: getZoom(), duration: 200 });
+  }, [nodes, getInternalNode, setCenter, getZoom]);
 
   // The live view keeps the whole workflow in view as the sheet resizes (full screen, side panel, window).
   const frame = useRef<HTMLDivElement>(null);

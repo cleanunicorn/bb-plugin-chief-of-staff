@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_WORKFLOW, insertStepAfter, workflowSchema, type Step } from "../src/workflow";
@@ -271,3 +271,32 @@ it("does not move a later step onto a parallel branch", () => {
   expectNoOverlap(placed);
   expect(layout(placed).get(id)).toEqual({ x: 0, y: 2 * ROW });
 });
+
+/** The editor around the canvas: it holds the workflow and the selection, as the canvas is controlled. */
+let current: typeof DEFAULT_WORKFLOW;
+function Editor({ workflow, selected = null }: { workflow: typeof DEFAULT_WORKFLOW; selected?: string | null }) {
+  const [wf, setWf] = useState(workflow);
+  const [sel, setSel] = useState(selected);
+  current = wf;
+  return <WorkflowCanvas workflow={wf} onChange={setWf} selected={sel} onSelect={setSel} />;
+}
+const expectInView = (id: string) => {
+  const { x, y, zoom } = viewport();
+  const p = layout(current).get(id)!;
+  const left = x + p.x * zoom, top = y + p.y * zoom;
+  expect({ left: left >= 0, top: top >= 0, right: left + 200 * zoom <= PANE.width, bottom: top + 100 * zoom <= PANE.height }).toEqual({ left: true, top: true, right: true, bottom: true });
+};
+
+for (const [label, selected] of [["at the end", null], ["after the selected step", "review"]] as const) {
+  it(`brings a step added ${label} into view, keeping the zoom`, async () => {
+    await act(async () => { root.render(<Editor workflow={SIX_STEPS} selected={selected} />); });
+    await settle();
+    const zoom = viewport().zoom;
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label^="Add Agent step"]')!.click(); });
+    await settle(400);
+    expect(current.steps.at(-1)!.id).toBe("new-agent");
+    expect(current.steps.find((s) => s.next.includes("new-agent"))!.id).toBe(selected ?? "ship");
+    expectInView("new-agent");
+    expect(viewport().zoom).toBeCloseTo(zoom, 3);
+  });
+}
