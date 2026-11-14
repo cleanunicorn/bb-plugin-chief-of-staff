@@ -32,6 +32,7 @@ import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, shortcutBlocked, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 import { useVisitBaseline } from "@/components/cos/lastVisit";
+import { CardSkeleton, LoadingRegion, Skeleton } from "@/components/cos/skeleton";
 
 type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
@@ -722,12 +723,25 @@ function agentsWorking(n: number): string {
  * is the former Needs attention row, unchanged; it drills into the matching filter. Nothing is called clear before
  * the tasks have loaded.
  */
-function PipelineSummary({ loaded, agents, failures, stalled, humanInput, filter, onFilter, since, onShowFinished, now }: { loaded: boolean; agents: number; failures: number; stalled: number; humanInput: number; filter: TaskFilter; onFilter: (filter: TaskFilter) => void; since: SinceState; onShowFinished: () => void; now: number }) {
+function PipelineSummary({ loaded, loading, agents, failures, stalled, humanInput, filter, onFilter, since, onShowFinished, now }: { loaded: boolean; loading: boolean; agents: number; failures: number; stalled: number; humanInput: number; filter: TaskFilter; onFilter: (filter: TaskFilter) => void; since: SinceState; onShowFinished: () => void; now: number }) {
   const waiting = failures + stalled + humanInput;
   const changed = since.data !== undefined && since.data.shipped + since.data.failed > 0;
   // All clear needs the tasks loaded, nothing waiting, and nothing finished since the last visit. The since counts
   // count once known; on a first visit or when they fail to load, the current state decides alone.
   const clear = loaded && waiting === 0 && !since.pending && !changed;
+  const shown = changed || waiting > 0 || clear;
+  // Still loading with nothing to say yet: one line of skeleton. Failed with nothing to say: no empty box.
+  if (!shown) {
+    if (!loading && !since.pending) return null;
+    return (
+      <section aria-label="Summary" className="rounded-lg border border-border bg-card px-3 py-2">
+        <LoadingRegion label="Loading the summary…" className="flex items-center gap-2">
+          <Skeleton className="size-8 shrink-0 rounded-lg" />
+          <Skeleton className="h-4 w-full max-w-sm" />
+        </LoadingRegion>
+      </section>
+    );
+  }
   return (
     <section aria-label="Summary" className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2">
       {changed && since.baseline ? <SinceLine baseline={since.baseline} data={since.data!} nothingWaits={loaded && waiting === 0} onShowFinished={onShowFinished} now={now} /> : null}
@@ -931,7 +945,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         {overview.data?.paused ? <strong className="text-foreground">Chief of Staff is paused. </strong> : null}
         {overview.data?.paused ? "New workflow actions are held until you resume." : "Pause intake and hold new workflow actions."} Already running agents and jobs can continue.
       </p>
-      <PipelineSummary loaded={roster.data !== undefined} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} since={sinceState} onShowFinished={showFinished} now={now} />
+      <PipelineSummary loaded={roster.data !== undefined} loading={roster.isLoading} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} since={sinceState} onShowFinished={showFinished} now={now} />
       {newTask ? (
         <div id="new-task">
           <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
@@ -967,7 +981,11 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           </>
         }
       >
-        {roster.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+        {roster.isLoading ? (
+          <LoadingRegion label="Loading tasks…" className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {[0, 1, 2].map((i) => <CardSkeleton key={i} />)}
+          </LoadingRegion>
+        ) : null}
         {!roster.isLoading && !visible.length && (!roster.error || roster.data) ? (
           <Empty icon="Bot" illustration={filter === "all"} title={filter === "all" ? "No active tasks" : "Nothing in this stage"}>
             {filter === "all" ? "Start a described task above, or use intake to pick up matching issues." : "Pick another stage, or clear the filter."}
@@ -1003,7 +1021,14 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
           </p> : null}
           {!s ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            // A failed first load is reported above the page; no placeholder waits for it.
+            stats.error ? null : (
+              <LoadingRegion label="Loading throughput…" className="flex flex-col gap-4">
+                <Skeleton className="h-4 w-3/5" />
+                <Skeleton className="h-[120px] w-full" />
+                <Skeleton className="h-3 w-full" />
+              </LoadingRegion>
+            )
           ) : throughputTable ? (
             <DataTable columns={["Day", "Started", "Done", "Failed"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed])} />
           ) : (
@@ -1021,6 +1046,16 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           )}
         </Panel>
         <Panel className="lg:col-span-2" title="Capacity" icon="Gauge" dim={overview.isFetching && !overview.isLoading}>
+          {!overview.data && !overview.error ? (
+            <LoadingRegion label="Loading capacity…" className="flex flex-col gap-3">
+              {["w-16", "w-24"].map((w) => (
+                <div key={w} className="flex flex-col gap-1.5">
+                  <div className="flex justify-between"><Skeleton className={cn("h-3", w)} /><Skeleton className="h-3 w-8" /></div>
+                  <Skeleton className="h-2 w-full rounded-full" />
+                </div>
+              ))}
+            </LoadingRegion>
+          ) : null}
           <div className="flex flex-col gap-3">
             {/* With one repository its own meter says the same; the global cap stays in Task slots (#110). */}
             {maxTotal && overview.data?.repos.length !== 1 ? (
@@ -1402,6 +1437,11 @@ export function ActivityFeed({ task: taskProp, onTaskChange, headingRef }: { tas
       }
     >
       <ErrorLine error={log.error} />
+      {log.isLoading && !log.data ? (
+        <LoadingRegion label="Loading activity…" className="flex flex-col gap-2.5">
+          {["w-4/5", "w-3/5", "w-2/3"].map((w) => <Skeleton key={w} className={cn("h-3.5", w)} />)}
+        </LoadingRegion>
+      ) : null}
       {log.data && !entries.length ? <p className="text-sm text-muted-foreground">{before !== undefined ? "No older activity remains within retention." : onlyProblems ? "No warnings or errors within retention." : task ? "No activity for this task." : "No activity yet."}</p> : null}
       {entries.length > 0 ? <p className="mb-2 text-xs text-muted-foreground">
         {entries.length} entries · {new Date(entries.at(-1)!.at).toLocaleString()} – {new Date(entries[0]!.at).toLocaleString()}

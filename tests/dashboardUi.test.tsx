@@ -1227,3 +1227,42 @@ it("does not say all clear while the since counts are loading", async () => {
   await mount();
   expect(summaryText()).not.toContain("All clear");
 });
+
+// ---------- skeletons (#110) ----------
+
+const busyRegions = () => Array.from(container.querySelectorAll<HTMLElement>('[aria-busy="true"]'));
+const statusOf = (el: Element) => el.querySelector('[role="status"]')?.textContent;
+
+it("shows skeletons, not Loading…, while the Pipeline tab loads", async () => {
+  localStorage.setItem("cos.lastVisit", HOURS_AGO(1));
+  mocks.loading = { cos_roster: true, cos_stats: true, cos_overview: true, cos_since: true, cos_log: true };
+  await mount(<Dashboard subPath="agents" />);
+  expect(container.textContent).not.toMatch(/Loading…/);
+  const statuses = busyRegions().map(statusOf);
+  expect(statuses).toEqual(expect.arrayContaining(["Loading the summary…", "Loading tasks…", "Loading throughput…", "Loading capacity…", "Loading activity…"]));
+  for (const region of busyRegions()) expect(region.querySelectorAll("[data-skeleton]").length).toBeGreaterThan(0);
+  // Card-shaped placeholders fill the task grid; the Capacity panel shows two meter bars.
+  const tasksRegion = busyRegions().find((r) => statusOf(r) === "Loading tasks…")!;
+  expect(tasksRegion.querySelectorAll("[data-skeleton-card]")).toHaveLength(3);
+  const capacityRegion = busyRegions().find((r) => statusOf(r) === "Loading capacity…")!;
+  expect(capacityRegion.querySelectorAll("[data-skeleton]").length).toBeGreaterThanOrEqual(2);
+  // Skeletons pulse only when motion is welcome.
+  for (const bone of Array.from(container.querySelectorAll("[data-skeleton]"))) expect(classes(bone)).toContain("motion-safe:animate-pulse");
+  expect(container.querySelector('[role="meter"]')).toBeNull();
+});
+
+it("drops the skeletons once loaded", async () => {
+  mocks.entries = [working("a")];
+  mocks.repos = [{ key: "acme/app", active: 1, maxConcurrent: 4 }];
+  await mount(<Dashboard subPath="agents" />);
+  expect(busyRegions()).toEqual([]);
+  expect(container.querySelector("[data-skeleton]")).toBeNull();
+});
+
+it("shows no skeleton for a panel whose first load failed", async () => {
+  mocks.failing = { cos_stats: "stats down", cos_overview: "overview down" };
+  await mount();
+  expect(container.textContent).toContain("stats down");
+  expect(busyRegions()).toEqual([]);
+  expect(container.textContent).not.toMatch(/Loading/);
+});
