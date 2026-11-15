@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseRepos } from "../src/config";
 import type { RepoConfig } from "../src/config";
-import { blankRepo, capacityWarnings, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
+import { blankRepo, saveWarnings, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseList, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../src/configModel";
 
 const reposJson = JSON.stringify({
   repos: [
@@ -157,27 +157,27 @@ describe("generalSettingsProblems", () => {
   });
 });
 
-describe("capacityWarnings (#125)", () => {
+describe("saveWarnings (#125)", () => {
   const repo = (owner: string, maxConcurrent: number) => ({ ...blankRepo("proj"), owner, repo: "app", maxConcurrent });
 
   it("warns, without blocking, when the changes set the total to 0", () => {
-    expect(capacityWarnings({ maxConcurrentTotal: 0 }, null)).toEqual([{ section: "general", text: "Max tasks across all repos is 0: no new tasks will start until you raise it." }]);
+    expect(saveWarnings({ maxConcurrentTotal: 0 }, null)).toEqual([{ section: "general", text: "Max tasks across all repos is 0: no new tasks will start until you raise it." }]);
   });
 
   it("warns for each repository in a pending draft whose limit is 0, naming it", () => {
-    expect(capacityWarnings({}, [repo("acme", 2), repo("beta", 0), { ...blankRepo("proj"), maxConcurrent: 0 }])).toEqual([
+    expect(saveWarnings({}, [repo("acme", 2), repo("beta", 0), { ...blankRepo("proj"), maxConcurrent: 0 }])).toEqual([
       { section: "repos", repo: 1, text: "beta/app: Max concurrent tasks is 0: no new tasks will start in this repository." },
       { section: "repos", repo: 2, text: "Repository 3: Max concurrent tasks is 0: no new tasks will start in this repository." },
     ]);
   });
 
   it("ignores the placeholder entry, which the server ignores too", () => {
-    expect(capacityWarnings({}, [{ ...repo("owner", 0), repo: "repo" }])).toEqual([]);
+    expect(saveWarnings({}, [{ ...repo("owner", 0), repo: "repo" }])).toEqual([]);
   });
 
   it("finds nothing for limits above 0, untouched settings, or no repository draft", () => {
-    expect(capacityWarnings({ maxConcurrentTotal: 4, stallThresholdMinutes: 10 }, [repo("acme", 1)])).toEqual([]);
-    expect(capacityWarnings({}, null)).toEqual([]);
+    expect(saveWarnings({ maxConcurrentTotal: 4, stallThresholdMinutes: 10 }, [repo("acme", 1)])).toEqual([]);
+    expect(saveWarnings({}, null)).toEqual([]);
   });
 });
 
@@ -200,5 +200,33 @@ describe("detachWorkflow", () => {
     const result = detachWorkflow(repos, "gone");
     expect(result.repos).toBe(repos);
     expect(result.detached).toEqual([]);
+  });
+});
+
+describe("loadRepos against the server's parseRepos", () => {
+  // Advanced JSON keeps Save off while loadRepos fails, so it must never fail on a document the server accepts.
+  it("loads every repositories document the server accepts", async () => {
+    const { parseRepos } = await import("../src/config");
+    const accepted = [
+      "",
+      "  \n",
+      "{}",
+      '{"repos": []}',
+      '{"repos": [{"projectId": "proj_1"}]}',
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "proj_1", "issueFilter": {"labels": []}}]}',
+      '{"repos": [{"owner": "owner", "repo": "repo", "projectId": "proj_xxxxxxxxxx"}]}',
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p"}, {"owner": "acme", "repo": "app", "projectId": "p"}]}',
+      // The old stage settings, converted on load.
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p", "checkCommand": "npm test", "allow": {"intake": true, "openPr": true, "merge": false}}]}',
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p", "issueFilter": {"labels": ["a"], "assignee": ""}}]}',
+    ];
+    for (const raw of accepted) {
+      expect(parseRepos(raw).ok, raw).toBe(true);
+      expect(loadRepos(raw).ok, raw).toBe(true);
+    }
+  });
+
+  it("fails on what the server rejects outright", () => {
+    for (const raw of ["{", "[]", '{"repos": "none"}', '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p", "maxConcurrent": -1}]}']) expect(loadRepos(raw).ok, raw).toBe(false);
   });
 });

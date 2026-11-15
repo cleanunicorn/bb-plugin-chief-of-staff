@@ -22,6 +22,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => {
     cos_get_config: () => mocks.config,
     cos_get_settings: () => mocks.settings,
     cos_skills: () => ({ skills: [] }),
+    cos_provider_models: () => ({ models: [], error: null }),
     cos_roster: () => ({ entries: [] }),
     cos_log: () => ({ entries: [] }),
     cos_stats: () => ({ doneInWindow: 0, failedInWindow: 0, medianCycleMinutes: null, daily: [], usage: { totalTokens: null, cost: [], counted: 0, unreported: 0, pending: 0, medianTokensPerDone: null } }),
@@ -129,11 +130,11 @@ it("Discard clears the lifted drafts", async () => {
 
 it("keeps an Advanced JSON draft across a tab switch", async () => {
   await show("config/advanced");
-  await setValue(field("Workflow"), "{}");
+  await setValue(field("Workflows"), "{}");
   await show("agents");
   await show("config/advanced");
 
-  expect((field("Workflow") as HTMLTextAreaElement).value).toBe("{}");
+  expect((field("Workflows") as HTMLTextAreaElement).value).toBe("{}");
   expect(unsavedSections()).toEqual(["Advanced JSON"]);
 });
 
@@ -167,7 +168,7 @@ it("marks the Configure tab on every tab while a draft is pending, and warns bef
 
 it("marks the Configure tab for an Advanced JSON draft and clears it after Save", async () => {
   await show("config/advanced");
-  await setValue(field("Workflow"), "{}");
+  await setValue(field("Workflows"), `${mocks.config.workflow}\n`);
   expect(configureTabDot()).not.toBeNull();
   await click(button("Save changes"));
   expect(configureTabDot()).toBeNull();

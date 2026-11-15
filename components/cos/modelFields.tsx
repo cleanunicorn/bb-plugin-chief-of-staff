@@ -28,6 +28,35 @@ export interface ModelValues {
   reasoningLevel?: string;
 }
 
+/**
+ * The models `providerId` offers, to suggest from. Empty (and no lookup) for
+ * an empty or unknown provider, or while the lookup has not answered.
+ */
+export function useProviderModels(providerId: string, providers: readonly ProviderOption[] | undefined) {
+  const known = providers?.some((p) => p.id === providerId) ?? false;
+  const query = experimental_useRpcQuery<typeof rpcContract, "cos_provider_models">({ contract: rpcContract, method: "cos_provider_models", input: { providerId: providerId || "-" }, enabled: Boolean(providerId) && known });
+  return { list: known ? (query.data?.models ?? []) : [], isLoading: Boolean(query.isLoading), error: query.data?.error ?? null };
+}
+
+/**
+ * One model field outside a step: the default agent's and a repository's.
+ * Suggests `providerId`'s models; any text is still accepted.
+ */
+export function ModelInput({ id, value, onChange, providerId, providers, placeholder }: { id: string; value: string; onChange: (v: string) => void; providerId: string; providers: readonly ProviderOption[]; placeholder?: string }) {
+  const listId = `${useId()}-models`;
+  const { list } = useProviderModels(providerId.trim(), providers);
+  return (
+    <>
+      <TextInput id={id} list={list.length ? listId : undefined} value={value} onChange={onChange} placeholder={placeholder} mono />
+      <datalist id={listId}>
+        {list.map((m) => (
+          <option key={m.id} value={m.id} label={`${m.displayName}${m.isDefault ? " (default)" : ""}`} />
+        ))}
+      </datalist>
+    </>
+  );
+}
+
 /** Field errors by key ("providerId", "model", "reasoningLevel"). */
 type ErrorOf = (field: keyof ModelValues) => string | undefined;
 
@@ -39,17 +68,16 @@ export function ModelFields({ value, onChange, catalog, error, className, provid
   const providerId = value.providerId?.trim() ?? "";
   // An empty provider keeps the current one: suggest the default provider's models then.
   const lookup = providerId || catalog?.defaultProviderId.trim() || "";
-  const known = catalog?.providers.some((p) => p.id === lookup) ?? false;
-  const models = experimental_useRpcQuery<typeof rpcContract, "cos_provider_models">({ contract: rpcContract, method: "cos_provider_models", input: { providerId: lookup || "-" }, enabled: Boolean(lookup) && known });
-  const list = known ? (models.data?.models ?? []) : [];
+  const models = useProviderModels(lookup, catalog?.providers);
+  const list = models.list;
   const model = list.find((m) => m.id === value.model?.trim());
   const providers = (catalog?.providers ?? []).filter((p) => p.enabled || p.id === providerId);
   const modelHint = !lookup
     ? "Pick an agent to see its models."
     : models.isLoading
       ? "Loading models…"
-      : models.data?.error && !list.length
-        ? `Models could not be listed: ${models.data.error}`
+      : models.error && !list.length
+        ? `Models could not be listed: ${models.error}`
         : !providerId && list.length
           ? `Suggestions from the default agent (${lookup}).`
           : undefined;

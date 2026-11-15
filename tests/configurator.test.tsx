@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
     projects: [{ id: "proj_1", name: "App", remote: "https://github.com/acme/app.git" }],
     providers: [],
   },
+  /** What cos_provider_models answers for a known provider. */
+  models: [] as { id: string; displayName: string; isDefault: boolean; reasoningLevels: string[]; defaultReasoningLevel: string | null }[],
   call: vi.fn(),
   refetchConfig: vi.fn(),
   refetchSettings: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   experimental_useRpcQuery: ({ method }: { method: string }) =>
     method === "cos_get_config" ? query("config", mocks.config, mocks.refetchConfig)
     : method === "cos_get_settings" ? query("settings", mocks.settings, mocks.refetchSettings)
+    : method === "cos_provider_models" ? { data: { models: mocks.models, error: null }, error: null, refetch: vi.fn() }
     : { data: { skills: [] }, error: null, refetch: vi.fn() },
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: ({ name }: { name: string }) => <svg data-icon={name} aria-hidden="true" /> }));
@@ -90,6 +93,9 @@ afterEach(async () => {
   mocks.failed = { config: null, settings: null };
   mocks.neverLoaded = { config: false, settings: false };
   mocks.dialogRenders = [];
+  mocks.models = [];
+  mocks.settings.providers = [];
+  mocks.settings.token = { stored: false, source: "gh-cli" };
 });
 
 it("lists exactly the sections the page address can name, in the same order", () => {
@@ -170,7 +176,7 @@ it("names every section with changes, in the section list's order", async () => 
 
 it("names Advanced JSON in the save bar when only the JSON changed", async () => {
   await mount(<Configurator initialSection="advanced" />);
-  await setValue(field("Workflow"), "{}");
+  await setValue(field("Workflows"), `${serializeWorkflows(DEFAULT_DOCUMENT)}\n`);
   expect(unsavedLine()).toBe("Unsaved changes in Advanced JSON");
   expect(unsavedLabels()).toEqual(["Advanced JSON"]);
 });
@@ -242,18 +248,18 @@ it.each([
 
 it("asks the same way when only Advanced JSON has changes", async () => {
   await mount(<Configurator initialSection="advanced" />);
-  await setValue(field("Workflow"), "{}");
+  await setValue(field("Workflows"), "{}");
   button("Discard").focus();
   await click(button("Discard"));
   expect(dialog()?.textContent).toContain("Discard changes to Advanced JSON?");
-  expect((field("Workflow") as HTMLTextAreaElement).value).toBe("{}");
+  expect((field("Workflows") as HTMLTextAreaElement).value).toBe("{}");
 
   await click(dialogButton("Keep editing"));
   await tick();
-  expect((field("Workflow") as HTMLTextAreaElement).value).toBe("{}");
+  expect((field("Workflows") as HTMLTextAreaElement).value).toBe("{}");
 
   await confirmDiscard();
-  expect((field("Workflow") as HTMLTextAreaElement).value).toBe(mocks.config.workflow);
+  expect((field("Workflows") as HTMLTextAreaElement).value).toBe(mocks.config.workflow);
   expect(unsavedLabels()).toEqual([]);
   expect(document.activeElement).toBe(navButton("Advanced JSON"));
   expect(mocks.call).not.toHaveBeenCalled();
@@ -550,7 +556,11 @@ it("drops a workflow draft whose document stops loading as well", async () => {
 // ---------- Advanced JSON drafts ----------
 
 const JSON_NOTICE = "You have unsaved Advanced JSON edits. Save or discard them before editing here.";
-const textarea = (label: "Repositories" | "Workflow") => field(label) as HTMLTextAreaElement;
+const textarea = (label: "Repositories" | "Workflows") => field(label) as HTMLTextAreaElement;
+/** The line under a field (its error, warning or hint), or null. */
+const errorOf = (label: string) => container.querySelector(`label[for="${field(label).id}"]`)!.parentElement!.querySelector(":scope > span")?.textContent ?? null;
+/** A workflows document that differs from the loaded text and still loads, so it can be saved. */
+const EDITED_WORKFLOWS = `${serializeWorkflows(DEFAULT_DOCUMENT)}\n`;
 const EDITED_REPOS = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", model: "opus" }] });
 
 it("counts an Advanced JSON edit as unsaved, and typing it back is clean again", async () => {
@@ -567,13 +577,13 @@ it("counts an Advanced JSON edit as unsaved, and typing it back is clean again",
 
 it("keeps an Advanced JSON draft across a section switch, and Discard restores the loaded text", async () => {
   await mount(<Configurator initialSection="advanced" />);
-  await setValue(textarea("Workflow"), "{}");
+  await setValue(textarea("Workflows"), "{}");
   await click(button("General"));
   await click(button("Advanced JSON"));
-  expect(textarea("Workflow").value).toBe("{}");
+  expect(textarea("Workflows").value).toBe("{}");
 
   await confirmDiscard();
-  expect(textarea("Workflow").value).toBe(mocks.config.workflow);
+  expect(textarea("Workflows").value).toBe(mocks.config.workflow);
   expect(unsavedSections()).toEqual([]);
   expect(mocks.call).not.toHaveBeenCalled();
 });
@@ -583,7 +593,7 @@ const REVERT_TITLE = "Revert your Advanced JSON edits?";
 it("asks before Revert, and keeps both documents' edits when it is cancelled", async () => {
   await mount(<Configurator initialSection="advanced" />);
   await setValue(textarea("Repositories"), EDITED_REPOS);
-  await setValue(textarea("Workflow"), "{}");
+  await setValue(textarea("Workflows"), "{}");
   button("Revert").focus();
   await click(button("Revert"));
   expect(dialog()?.textContent).toContain(REVERT_TITLE);
@@ -594,7 +604,7 @@ it("asks before Revert, and keeps both documents' edits when it is cancelled", a
   await tick();
   expect(dialog()).toBeNull();
   expect(textarea("Repositories").value).toBe(EDITED_REPOS);
-  expect(textarea("Workflow").value).toBe("{}");
+  expect(textarea("Workflows").value).toBe("{}");
   expect(unsavedLabels()).toEqual(["Advanced JSON"]);
   expect(document.activeElement).toBe(button("Revert"));
   expect(mocks.call).not.toHaveBeenCalled();
@@ -603,14 +613,14 @@ it("asks before Revert, and keeps both documents' edits when it is cancelled", a
 it("restores the loaded JSON on a confirmed Revert and hands focus to the Advanced JSON section button", async () => {
   await mount(<Configurator initialSection="advanced" />);
   await setValue(textarea("Repositories"), EDITED_REPOS);
-  await setValue(textarea("Workflow"), "{}");
+  await setValue(textarea("Workflows"), "{}");
   button("Revert").focus();
   await click(button("Revert"));
   await click(dialogButton("Revert"));
   await tick();
   expect(dialog()).toBeNull();
   expect(textarea("Repositories").value).toBe(mocks.config.repos);
-  expect(textarea("Workflow").value).toBe(mocks.config.workflow);
+  expect(textarea("Workflows").value).toBe(mocks.config.workflow);
   expect(unsavedLabels()).toEqual([]);
   expect(unsavedLine()).toBeNull();
   expect(button("Revert").disabled).toBe(true);
@@ -644,14 +654,14 @@ it("leaves an Advanced JSON draft alone on cos-changed", async () => {
 it("sends Save JSON once on a double click, and disables both Save buttons while it runs", async () => {
   mocks.call.mockReturnValue(new Promise(() => {}));
   await mount(<Configurator initialSection="advanced" />);
-  await setValue(textarea("Workflow"), "{}");
+  await setValue(textarea("Workflows"), EDITED_WORKFLOWS);
   const saveJson = button("Save JSON");
   await act(async () => {
     saveJson.click();
     saveJson.click();
   });
 
-  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: "{}" });
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: EDITED_WORKFLOWS });
   expect(saveJson.disabled).toBe(true);
   // "Save JSON" and the save bar's Save.
   const busy = Array.from(container.querySelectorAll("button")).filter((b) => b.textContent?.trim() === "Saving…");
@@ -662,15 +672,41 @@ it("sends Save JSON once on a double click, and disables both Save buttons while
 });
 
 it("keeps the Advanced JSON draft and shows the error when the save is rejected", async () => {
-  mocks.call.mockRejectedValue(new Error("Workflow JSON: Unexpected token"));
+  mocks.call.mockRejectedValue(new Error("repos: acme/app: project not found"));
   await mount(<Configurator initialSection="advanced" />);
-  await setValue(textarea("Workflow"), "{");
+  await setValue(textarea("Workflows"), EDITED_WORKFLOWS);
   await click(button("Save JSON"));
 
-  expect(text()).toContain("Workflow JSON: Unexpected token");
-  expect(textarea("Workflow").value).toBe("{");
+  expect(text()).toContain("repos: acme/app: project not found");
+  expect(textarea("Workflows").value).toBe(EDITED_WORKFLOWS);
   expect(unsavedSections()).toEqual(["Advanced JSON"]);
   expect(mocks.refetchConfig).not.toHaveBeenCalled();
+});
+
+it("checks an Advanced JSON document as it is typed, and keeps both Save buttons off until it loads", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Workflows"), "{");
+
+  expect(errorOf("Workflows")).toContain("invalid JSON");
+  expect(textarea("Workflows").getAttribute("aria-invalid")).toBe("true");
+  expect(errorOf("Repositories")).toBeNull();
+  expect(bar().textContent).toContain("JSON to fix before saving");
+  expect(button("Save JSON").disabled).toBe(true);
+  expect(button("Save changes").disabled).toBe(true);
+
+  await setValue(textarea("Workflows"), EDITED_WORKFLOWS);
+  expect(errorOf("Workflows")).toBeNull();
+  expect(textarea("Workflows").hasAttribute("aria-invalid")).toBe(false);
+  expect(button("Save JSON").disabled).toBe(false);
+  await click(button("Save JSON"));
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: EDITED_WORKFLOWS });
+});
+
+it("flags a repositories document that is JSON but not a repositories list", async () => {
+  await mount(<Configurator initialSection="advanced" />);
+  await setValue(textarea("Repositories"), '{"repos": "none"}');
+  expect(errorOf("Repositories")).toContain("repos");
+  expect(button("Save JSON").disabled).toBe(true);
 });
 
 it("clears the Advanced JSON draft and shows the warnings after a save", async () => {
@@ -691,12 +727,12 @@ it("saves an Advanced JSON draft from the save bar even when the loaded config f
   // No BB project: the visual editor flags this entry.
   mocks.config.repos = JSON.stringify({ repos: [{ owner: "acme", repo: "app" }] });
   await mount(<Configurator initialSection="advanced" />);
-  await setValue(textarea("Workflow"), "{}");
+  await setValue(textarea("Workflows"), EDITED_WORKFLOWS);
 
   expect(text()).not.toContain("to fix");
   expect(button("Save changes").disabled).toBe(false);
   await click(button("Save changes"));
-  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: "{}" });
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_config", { workflow: EDITED_WORKFLOWS });
 });
 
 // ---------- problems the server would reject, and partial saves ----------
@@ -778,7 +814,7 @@ it("shows no capacity warning for a total above 0", async () => {
 it("explains a repository's limit and warns before a limit of 0 is saved", async () => {
   await mount(<Configurator initialSection="repos" />);
   await click(container.querySelector("article button[aria-expanded]")!);
-  expect(hintOf("Max concurrent tasks")).toBe("Tasks running at once in this repository. 0 starts no new tasks here.");
+  expect(hintOf("Max concurrent tasks")).toBe("Tasks running at once in this repository, picked up or started by you. 0 starts no new tasks here.");
   await setValue(field("Max concurrent tasks"), "0");
   expect(saveBarWarnings()).toEqual(["Repositories · acme/app: Max concurrent tasks is 0: no new tasks will start in this repository."]);
   expect(button("Save changes").disabled).toBe(false);
@@ -1238,4 +1274,87 @@ describe("removing items and workflows (#66)", () => {
     expect(repoWorkflow().value).toBe("gone");
     expect(repoWorkflow().selectedOptions[0]!.textContent).toBe("Missing: gone (runs the default)");
   });
+});
+
+// ---------- repository intake, model suggestions, token removal ----------
+
+const openFirstRepo = () => click(container.querySelector("article button[aria-expanded]")!);
+
+it("says that intake with no label and no assignee picks up nothing, and warns before it is saved", async () => {
+  mocks.config.repos = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: [] } }] });
+  await mount(<Configurator initialSection="repos" />);
+  expect(text()).toContain("no issue filter, picks up nothing");
+  await openFirstRepo();
+  expect(errorOf("Issue labels")).toBe("No label and no assignee: no issues are picked up. Add one of them.");
+  // Not a blocking problem: nothing to fix, and other edits still save.
+  expect(text()).not.toContain("to fix");
+
+  await setValue(field("Max concurrent tasks"), "7");
+  expect(saveBarWarnings()).toEqual(["Repositories · acme/app: Pick up issues is on with no label and no assignee: no issues will be picked up."]);
+  expect(button("Save changes").disabled).toBe(false);
+
+  await setValue(field("Assignee"), "octocat");
+  expect(saveBarWarnings()).toEqual([]);
+  expect(errorOf("Issue labels")).toBe("Issues must carry all of these. Comma separated.");
+  expect(text()).toContain("issues assigned to octocat");
+});
+
+it("marks the issue filter as unused while Pick up issues is off, and keeps it editable", async () => {
+  mocks.config.repos = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", intake: false, issueFilter: { labels: [] } }] });
+  await mount(<Configurator initialSection="repos" />);
+  expect(text()).toContain("intake paused");
+  await openFirstRepo();
+  expect(errorOf("Issue labels")).toBe("Not used while Pick up issues is off.");
+  expect(errorOf("Assignee")).toBe("Not used while Pick up issues is off.");
+  expect((field("Issue labels") as HTMLInputElement).disabled).toBe(false);
+});
+
+it("explains the chosen permission mode", async () => {
+  await mount(<Configurator initialSection="repos" />);
+  await openFirstRepo();
+  expect(errorOf("Permission mode")).toBe("Works in a workspace sandbox; the provider reviews escalations automatically.");
+  await setValue(field("Permission mode"), "full");
+  expect(errorOf("Permission mode")).toContain("Bypasses the sandbox and approvals");
+});
+
+/** The values the input labelled `label` suggests. */
+const suggested = (label: string) => {
+  const list = field(label).getAttribute("list");
+  return list ? Array.from(container.querySelectorAll<HTMLOptionElement>(`datalist[id="${list}"] option`)).map((o) => o.value) : null;
+};
+
+it("suggests the default provider's models for the default model and a repository's model", async () => {
+  mocks.settings.providers = [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true }] as never;
+  mocks.settings.values.defaultProviderId = "claude-code";
+  mocks.models = [{ id: "claude-opus-5-5", displayName: "Opus 5.5", isDefault: true, reasoningLevels: [], defaultReasoningLevel: null }];
+  await mount(<Configurator initialSection="general" />);
+  expect(suggested("Model")).toEqual(["claude-opus-5-5"]);
+  // Any text is still accepted.
+  await setValue(field("Model"), "my-own-model");
+  expect(unsavedSections()).toEqual(["General"]);
+
+  await click(sectionButton("Repositories"));
+  await openFirstRepo();
+  expect(suggested("Model")).toEqual(["claude-opus-5-5"]);
+});
+
+it("offers no model suggestions without a known provider", async () => {
+  await mount(<Configurator initialSection="general" />);
+  expect(suggested("Model")).toBeNull();
+});
+
+it("asks before removing the stored token, and keeps it when the answer is no", async () => {
+  mocks.settings.token = { stored: true, source: "setting" };
+  await mount(<Configurator initialSection="access" />);
+  await click(button("Remove stored token"));
+  expect(dialog()?.textContent).toContain("Remove the stored GitHub token?");
+  expect(mocks.call).not.toHaveBeenCalled();
+  await click(dialogButton("Keep token"));
+  expect(mocks.call).not.toHaveBeenCalled();
+
+  await click(button("Remove stored token"));
+  await click(dialogButton("Remove token"));
+  await tick();
+  expect(mocks.call).toHaveBeenCalledExactlyOnceWith("cos_set_settings", { clearGithubToken: true });
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("Stored token removed.");
 });

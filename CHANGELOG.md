@@ -18,6 +18,30 @@
   too, and `j` and `k` move between its rows. The Show finished, Hide finished
   and Show older finished buttons are gone.
 
+- **Configure got a pass over its forms.** From an audit of the five sections:
+  - *Repositories.* A repository that picks up issues with no label and no
+    assignee picks up nothing, and used to say only "issues labelled (none)".
+    Its row now reads "no issue filter, picks up nothing", the Issue labels
+    field says so, and the save bar warns before you save it (it still
+    saves). While "Pick up issues" is off, the filter fields are dimmed and
+    marked as not used; they stay editable. "Max concurrent tasks" moved from
+    Issue intake to "Agent and limits", since it also limits tasks you start,
+    and Permission mode explains the chosen mode.
+  - *Model fields.* The default model (General) and a repository's model
+    suggest the chosen provider's models, like the workflow steps' model
+    fields. Any text is still accepted; with "bb default" as the provider
+    there is nothing to suggest from.
+  - *Advanced JSON.* Each document is checked as you type, with the parsers
+    the server uses: the reason shows under the document, and Save JSON and
+    the save bar's Save stay off until it loads. On wide windows the editors
+    are taller; they show a focus ring, and the second one is labelled
+    "Workflows".
+  - *GitHub access.* "Remove stored token" asks first: the token is never
+    shown again, so removing it cannot be undone from here.
+  - *Switch rows.* The whole row toggles its switch, not only the switch.
+  - The save and token status lines are marked as status messages for
+    screen readers.
+
 - **A PR ship step can wait for green CI and have it fixed.** "Wait for green
   CI" on a ship step that opens a pull request keeps the step open until the
   PR's CI is green. Red CI sends the failure log back to the "When CI is red,
