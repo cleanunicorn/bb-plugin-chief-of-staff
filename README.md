@@ -526,7 +526,8 @@ dashboard, or the plugin's page under Settings. It edits:
   returned to the browser, or logged.
 - **Advanced JSON**: the raw documents, for bulk edits. It can't be edited
   at the same time as the visual sections: save or discard one before
-  editing the other.
+  editing the other. Each document is checked as you type, and Save
+  stays off until it loads.
 
 Unsaved edits stay while you switch sections or dashboard tabs; the
 Configure tab shows a dot while any are pending, and the browser asks

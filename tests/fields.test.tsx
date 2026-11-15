@@ -190,3 +190,25 @@ it("ConfirmRemove shows its notice only while asking", async () => {
   await click(button("Delete Fast"));
   expect(container.textContent).toContain("acme/app will use the default workflow.");
 });
+
+it("Field shows a warning in place of the hint, without marking the field as a problem", async () => {
+  await mount(<Field label="Issue labels" hint="Comma separated." warning="No issues are picked up.">{(id) => <TextInput id={id} value="" onChange={() => {}} />}</Field>);
+  expect(container.textContent).toContain("No issues are picked up.");
+  expect(container.textContent).not.toContain("Comma separated.");
+  expect(container.querySelector("[data-problem]")).toBeNull();
+
+  await mount(<Field label="Issue labels" warning="No issues are picked up." error="Too long">{(id) => <TextInput id={id} value="" onChange={() => {}} />}</Field>);
+  expect(container.textContent).toContain("Too long");
+  expect(container.textContent).not.toContain("No issues are picked up.");
+});
+
+it("ToggleRow toggles from its text and hint as well as from the switch, once per click", async () => {
+  const onChange = vi.fn();
+  await mount(<ToggleRow label="Pick up issues" hint="Off: only tasks you start." checked={false} onChange={onChange} />);
+  const row = container.querySelector("label")!;
+  expect(row.contains(button("Pick up issues"))).toBe(true);
+  await click(Array.from(row.querySelectorAll("span")).find((s) => s.textContent === "Off: only tasks you start.")!);
+  expect(onChange).toHaveBeenCalledExactlyOnceWith(true);
+  await click(button("Pick up issues"));
+  expect(onChange).toHaveBeenCalledTimes(2);
+});
