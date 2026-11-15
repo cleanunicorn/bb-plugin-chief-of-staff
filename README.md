@@ -102,12 +102,34 @@ Every task has one status, derived from its steps:
 | `ready` | You | PR is green and ready to merge. |
 | `waiting_on_human` | You | A question, an approval or a decision. |
 | `blocked` | You | Stalled: no activity past the stall threshold. |
-| `done` / `failed` | Nobody | Finished. Shown with **Show finished**. |
+| `done` / `failed` | Nobody | Finished. Listed under **Finished**. |
 
-A finished card says how the task ended: **Merged**, **PR opened**,
-**Completed**, **Marked done**, **Failed**, **Marked failed** or **PR closed**.
-It also says when the task finished and how long it took, and why it ended if it
-did not deliver. Steps it left unfinished show as **stopped**.
+### Finished tasks
+
+Finished tasks never mix with active cards. They are listed in the
+**Finished** section, below the active tasks and above Throughput, as one row
+each, newest first, under the day they finished (**Today**, **Yesterday**,
+**Nov 8**; days are UTC, like Throughput's). A row says how the task ended:
+**Merged**, **PR opened**, **Completed**, **Marked done**, **Failed**, **Marked
+failed** or **PR closed**. It also says when the task finished and how long it
+took, its tokens and share of all finished tasks' tokens, and why it ended if
+it did not deliver, with links to the issue, the PR, the thread and the
+workflow, and the same More actions as a card. **Most tokens** lists the
+finished tasks by usage instead (uncounted ones last), in one list without day
+headings; **Recently finished** goes back to newest first.
+
+The section shows 8 rows, then **Show 20 more**. Filter it by outcome
+(**Shipped**, **Marked done**, **Failed**; pick several), by repository, or
+search the title and the issue or PR number (`#12`). Filters search the
+finished tasks loaded so far; **Search older** loads the next page. Click a
+Throughput day (or a day in its table view) to see the tasks finished that
+day, or **N completed** / **N historical failed runs** to see the window's
+tasks with that outcome; the date filter shows as a chip you can remove. The
+section's view and filters are kept when you switch tabs and when you reload;
+the date filter lasts until you leave the dashboard. A Throughput click, and
+the shipped and failed counts in the summary, switch back to newest first.
+**Collapse** folds the section away. `j` and `k` move between the rows while
+focus is in them, as they do between the cards.
 
 ### Read a task card
 
@@ -423,10 +445,9 @@ capacity. Stage filters count tasks; task slots retain the admission semantics
 above. “Failures needing a decision” counts active human waits caused by an
 escalation, a missing report, or a Chief of Staff error. Stalled work is shown
 separately. Terminal failed runs are historical outcomes, not unresolved
-incidents; they remain accessible with **Show finished**, which adds the most
-recently finished tasks after every active one; **Show older finished** loads
-the next page. Retrying work stays in Checks & shipping until it requires a
-decision.
+incidents; they are listed in the **Finished** section below the active tasks,
+which stage and attention filters never hide. Retrying work stays in Checks &
+shipping until it requires a decision.
 
 **Token usage.** A card's "Tokens · all threads" figure (and cost, when the
 provider reports one) is the sum over every agent thread of the task: model
@@ -435,14 +456,15 @@ the thread count and how many threads reported usage. An active task's figure
 is read live and labelled "so far". A finished task is counted once by the
 background sweep (up to 10 tasks a minute), when none of its threads is still
 running, or a day after it finished if a thread still looks busy (its host
-gone, for example). Until then its card says "counting…", and opening the
+gone, for example). Until then its row in **Finished** says "Counting
+tokens…", and opening the
 dashboard makes no usage calls for finished tasks. A task whose provider reported nothing shows
 no figure, rather than 0. Throughput adds the window's total, by the day each
-task finished, and the table view has a Tokens column. With **Show finished**,
-**Most tokens** orders finished tasks by usage (uncounted ones last), and each
-finished card shows its share of all finished tasks' tokens. A task counted
+task finished, and the table view has a Tokens column. In the **Finished**
+section, **Most tokens** orders finished tasks by usage (uncounted ones last),
+and each row shows its share of all finished tasks' tokens. A task counted
 while older pages are open can move onto a page already loaded; it shows once
-the finished list is reloaded (switch the order, or hide and show finished). The workflow
+the finished list is reloaded (switch the order and back). The workflow
 sheet's header shows Tokens and Cost too.
 
 The summary at the top of the Pipeline tab counts the tasks that shipped or

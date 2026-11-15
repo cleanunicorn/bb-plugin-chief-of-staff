@@ -58,6 +58,14 @@ export const CARD_ACTION_ICON = {
   showActivity: SHOW_ACTIVITY_ICON,
 } as const;
 
+/** The Pipeline tab's Finished section (#105): its title and outcome filters. */
+export const FINISHED_ICON = {
+  panel: "History",
+  shipped: "CircleCheck",
+  markedDone: "UserCheck",
+  failed: "CircleX",
+} as const;
+
 /** Panel titles on the dashboard. */
 export const PANEL_ICON = {
   tasks: "Bot",
@@ -81,8 +89,6 @@ export const ATTENTION_ICON = {
 export const FILTER_ICON = {
   all: "LayoutGrid",
   taskSlots: "Layers",
-  showFinished: "History",
-  hideFinished: "EyeOff",
 } as const;
 
 /** The Throughput panel's chart / table switch. */

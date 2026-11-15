@@ -26,9 +26,9 @@ const series = [
 
 const container = document.createElement("div");
 let root: ReturnType<typeof createRoot> | null = null;
-async function mount(onShowTable?: () => void) {
+async function mount(onShowTable?: () => void, onSelect?: (x: string) => void) {
   root = createRoot(container);
-  await act(async () => { root!.render(<ColumnChart label="Throughput" rows={rows} series={series} xKey="date" formatX={(d) => d.slice(5)} onShowTable={onShowTable} />); });
+  await act(async () => { root!.render(<ColumnChart label="Throughput" rows={rows} series={series} xKey="date" formatX={(d) => d.slice(5)} onShowTable={onShowTable} onSelect={onSelect} />); });
 }
 const dayButtons = () => Array.from(container.querySelectorAll("button")).filter((b) => /^\d\d-\d\d: /.test(b.getAttribute("aria-label") ?? ""));
 const showTable = () => container.querySelector<HTMLButtonElement>('button[aria-label="Show throughput as a table"]');
@@ -88,4 +88,32 @@ it("spaces and enlarges the view toggle buttons on a coarse pointer, keeping the
   for (const b of Array.from(group.querySelectorAll("button"))) {
     expect(b.className.split(/\s+/)).toEqual(expect.arrayContaining(["p-1", "pointer-coarse:p-2.5", "focus-visible:ring-1"]));
   }
+});
+
+it("with onSelect, makes each day a mouse-only button that selects it, named with its numbers", async () => {
+  const onSelect = vi.fn();
+  await mount(vi.fn(), onSelect);
+  const days = dayButtons();
+  expect(days).toHaveLength(14);
+  // Not tab stops: keyboard users pick a day from the table view (#115).
+  expect(days.every((b) => b.tabIndex === -1)).toBe(true);
+  expect(days[2]!.getAttribute("aria-label")).toBe("11-03: Done 2, Failed 0");
+  await act(async () => days[2]!.click());
+  expect(onSelect).toHaveBeenCalledWith("2026-11-03");
+  await act(async () => { days[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+  expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("11-02");
+});
+
+it("on a coarse pointer, keeps the columns inert even with onSelect, and the chart one button for the table", async () => {
+  coarse = true;
+  await mount(vi.fn(), vi.fn());
+  expect(dayButtons()).toHaveLength(0);
+  expect(showTable()).not.toBeNull();
+});
+
+it("names a selectable day by what clicking it does, then its numbers", async () => {
+  root = createRoot(container);
+  await act(async () => { root!.render(<ColumnChart label="Throughput" rows={rows} series={series} xKey="date" formatX={(d) => d.slice(5)} onSelect={vi.fn()} selectLabel={(d) => `Show tasks finished ${d.slice(5)}`} />); });
+  const day = container.querySelectorAll("button[aria-label]")[2]!;
+  expect(day.getAttribute("aria-label")).toBe("Show tasks finished 11-03 (Done 2, Failed 0)");
 });

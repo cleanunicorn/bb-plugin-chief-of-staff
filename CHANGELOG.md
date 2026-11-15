@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Finished tasks get their own section, with filters.** Show finished used
+  to pour every finished task, as a full card, into the active grid, mixed
+  with active work and in no particular order. Finished tasks are now listed
+  in a **Finished** section below the active tasks and above Throughput: one
+  compact row each (how it ended, title, issue, PR, when it finished and how
+  long it took, tokens and share, actions), newest first and grouped by day,
+  or by **Most tokens** in one list. It shows 8 rows,
+  then 20 more per click. Filter by outcome (Shipped, Marked done, Failed), by
+  repository, or search the title and issue or PR number. Clicking a
+  Throughput day, or its "completed" or "failed" count, opens the section
+  filtered to it. The section's view and filters survive switching tabs and
+  reloading. Stage filters apply to active tasks only and no longer hide
+  finished ones. The summary's shipped and failed counts open the section
+  too, and `j` and `k` move between its rows. The Show finished, Hide finished
+  and Show older finished buttons are gone.
+
 - **Configure got a pass over its forms.** From an audit of the five sections:
   - *Repositories.* A repository that picks up issues with no label and no
     assignee picks up nothing, and used to say only "issues labelled (none)".
@@ -101,13 +117,13 @@
   thread the task spawned: model chooser, planner, reviewers and replaced
   builders. It is labelled "Tokens · all threads", and its tooltip gives the
   thread count. A finished task is counted once, in the background, after all
-  of its agents have stopped. Until then its card says "counting…", and
+  of its agents have stopped. Until then it says "Counting tokens…", and
   opening the dashboard makes no usage calls for finished tasks. Throughput
   adds the window's total ("· 412M tokens") and a Tokens column in the table
   view, and `cos_stats` reports the total, cost per currency, the median per
   completed task, and the tasks that reported no usage or are not counted yet.
-  With finished tasks shown, **Most tokens** orders them by usage, and each
-  finished card shows its share. The workflow sheet's header adds Tokens and
+  In the Finished section, **Most tokens** orders finished tasks by usage, and
+  each row shows its share. The workflow sheet's header adds Tokens and
   Cost. Counts stored by an earlier version (builder only) are not reused:
   finished tasks are counted again.
 

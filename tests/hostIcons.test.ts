@@ -105,7 +105,7 @@ describe("host icon catalog", () => {
   });
 
   it("scans the real source: it sees the names the issue calls out", () => {
-    for (const name of ["CalendarCheck", "EyeOff", "SquareCheck", "Timer", "MessageCircleQuestion"]) expect(REQUESTED.has(name), name).toBe(true);
+    for (const name of ["CalendarCheck", "UserCheck", "SquareCheck", "Timer", "MessageCircleQuestion"]) expect(REQUESTED.has(name), name).toBe(true);
   });
 
   it("resolves every icon the source requests to artwork, never the host's Zap or Circle stand-in", () => {

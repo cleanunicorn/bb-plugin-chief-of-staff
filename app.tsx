@@ -12,13 +12,16 @@ import type { Tone } from "@/components/cos/viz";
 import { STAGES, stageColor, stageOf } from "@/components/cos/stages";
 import { STEP_TYPE_META, ShrinkGlyph, WorkflowCanvas, liveTone, type LiveStatus } from "@/components/cos/workflowCanvas";
 import { descendants, topoOrder, type Workflow } from "./src/workflow";
-import { OUTCOME_META, endReason } from "./src/outcome";
+import { OUTCOME_META } from "./src/outcome";
 import { edgeCounts, loopBacks, taskEnd, type TaskUsage } from "@/components/cos/runModel";
 import { StepPanel, TaskOverview, TaskSummary } from "@/components/cos/taskRunView";
 import { Sheet, useSheetFocus } from "@/components/cos/sheet";
 import { DialogClose, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { FinishedSection, useFinishedTasks, useFinishedView, type FinishedViewState } from "@/components/cos/finished";
+import { NO_FILTER, fmtDay, type FinishedView } from "@/components/cos/finishedModel";
+import { TaskActionsMenu, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { configSectionFromSubPath, configSubPath } from "@/components/cos/configRoute";
@@ -30,7 +33,7 @@ import { StateMark, QueueIllustration } from "./components/cos/taskVisuals";
 import { attentionKind, matchesTaskFilter, recentTasks, splitThreadIds, taskLabel, usageNote, type ActivityTask, type TaskFilter } from "./components/cos/dashboardModel";
 import { NewTaskForm } from "@/components/cos/newTaskForm";
 import { PrStatePill, PullRequestList } from "@/components/cos/prState";
-import { CARD_ACTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, SHOW_ACTIVITY_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
+import { CARD_ACTION_ICON, CARD_ICON, DETAIL_ICON, FILTER_ICON, PANEL_ICON, STALLED_ICON, WAITING_LABEL } from "@/components/cos/dashboardIcons";
 import { useMediaQuery } from "@/components/ui/hooks/use-media-query";
 import { CARD_ATTRIBUTE, ENTRY_ATTRIBUTE, shortcutBlocked, useRovingCards } from "@/components/cos/rovingCards";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
@@ -41,13 +44,6 @@ type Contract = typeof rpcContract;
 type RosterEntry = PluginRpcResult<Contract["cos_roster"]>["entries"][number];
 type IntakeResult = PluginRpcResult<Contract["cos_intake_now"]>["results"][number];
 type UsageStats = PluginRpcResult<Contract["cos_stats"]>["usage"];
-type FinishedOrder = PluginRpcResult<Contract["cos_roster"]>["finishedOrder"];
-
-/** A task's share of all finished tasks' tokens: "12%", or "<1%" for a small non-zero share. */
-function sharePercent(tokens: number, of: number): string {
-  const pct = (tokens / of) * 100;
-  return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
-}
 
 type Since = PluginRpcResult<Contract["cos_since"]>;
 
@@ -415,86 +411,21 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onCh
 
 // ---------- agent card ----------
 
-type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
-type Confirmable = "mark_done" | "mark_failed" | "restart";
-
-/** Active cards count the task's age; finished cards say when it finished and how long it took. */
-function cardTimer(entry: RosterEntry, finished: boolean, now: number): { text: string; label: string; title: string } {
-  const started = new Date(entry.startedAt).toLocaleString();
-  if (!finished) {
-    const age = duration((now - Date.parse(entry.startedAt)) / 60_000);
-    return { text: age, label: `Task age ${age}`, title: `Task started ${started}` };
-  }
-  // Some legacy rows have no finish time: say only what is known.
-  if (!entry.finishedAt) {
-    const text = `Started ${relative(entry.startedAt, now)}`;
-    return { text, label: text, title: `Task started ${started}` };
-  }
-  const ago = relative(entry.finishedAt, now);
-  const took = duration((Date.parse(entry.finishedAt) - Date.parse(entry.startedAt)) / 60_000);
-  return { text: `Finished ${ago} · took ${took}`, label: `Finished ${ago}, took ${took}`, title: `Finished ${new Date(entry.finishedAt).toLocaleString()} · started ${started}` };
+/** An active card counts the task's age. */
+function cardTimer(entry: RosterEntry, now: number): { text: string; label: string; title: string } {
+  const age = duration((now - Date.parse(entry.startedAt)) / 60_000);
+  return { text: age, label: `Task age ${age}`, title: `Task started ${new Date(entry.startedAt).toLocaleString()}` };
 }
 
-/**
- * What each confirm on a card says and sends. A failed task is no longer worked on, so its copy differs.
- * `archivesOnDone`: marking done archives the task's threads ("Archive threads when a task is done").
- */
-function cardConfirm(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
-  switch (kind) {
-    case "restart":
-      return {
-        title: `Restart ‘${title}’ on a new thread?`,
-        // Server `retry` on a failed item reopens it, which usually takes a slot whether or not an agent starts. It
-        // restarts an unfinished writing step on a fresh thread; steps not yet started then run through the scheduler.
-        description: "This reopens the task, so it usually takes one of the task slots again, or waits for one to free up. Chief of Staff carries on from where it stopped: an unfinished writing step restarts on a new thread, and steps that had not started run as usual. The old thread is left as it is.",
-        confirmLabel: "Restart",
-        action: "retry",
-      };
-    case "mark_done":
-      return {
-        title: `Mark ‘${title}’ done?`,
-        description: `${failed ? "The task is recorded as done instead of failed. No agent work starts." : "Chief of Staff stops working on this task and its workflow ends."} ${archivesOnDone ? "Its threads are archived and their workspace is removed: changes not pushed are lost." : "Its threads are left as they are."}`,
-        confirmLabel: "Mark done",
-        action: "mark_done",
-      };
-    case "mark_failed":
-      return {
-        title: `Mark ‘${title}’ failed?`,
-        description: "Chief of Staff stops working on this task and its workflow ends. The agent's thread is left as it is.",
-        confirmLabel: "Mark failed",
-        tone: "destructive",
-        action: "mark_failed",
-      };
-  }
-}
-
-/** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. */
-/** `archivesOnDone`: marking the task done archives its threads ("Archive threads when a task is done"). */
-/** `finishedTokens`: tokens of all finished tasks, for a finished task's share; null when unknown or not shown. */
-function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDone, onAction, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; finishedTokens?: number | null; busy: boolean; tabbable: boolean; archivesOnDone: boolean; onAction: (id: string, action: ItemAction) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
+/** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. Active tasks only: finished ones are rows in the Finished section. */
+function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
-  // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
-  // refetch has changed the task's outcome under it.
-  const [confirming, setConfirming] = useState<{ kind: Confirmable; failed: boolean; open: boolean }>({ kind: "mark_done", failed: false, open: false });
-  const ask = (kind: Confirmable) => setConfirming({ kind, failed: entry.detail === "failed", open: true });
-  const closeConfirm = () => setConfirming((c) => ({ ...c, open: false }));
-  const menuTrigger = useRef<HTMLButtonElement>(null);
-  const focusTrigger = useFocusWhenEnabled(menuTrigger, busy);
-  const title = entry.issueTitle || entry.threadTitle || "Untitled task";
-  const finished = entry.detail === "done" || entry.detail === "failed";
+  const title = taskTitle(entry);
   const usage = entry.usage;
-  const share = finished && usage?.counted && usage.totalTokens != null && finishedTokens ? sharePercent(usage.totalTokens, finishedTokens) : null;
-  // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
-  const showingActivity = useRef(false);
-  const confirmCopy = cardConfirm(confirming.kind, title, confirming.failed, archivesOnDone);
   const needsHuman = entry.status === "waiting on human" || entry.status === "blocked";
   const visual = entryTone(entry);
   const tabIndex = tabbable ? undefined : -1;
-  const timer = cardTimer(entry, finished, now);
-  // Why it ended, on tasks that did not deliver; a delivered task's stale error stays hidden.
-  const reason = endReason(entry.outcome, entry.lastError);
-  // A hand-failed task holding another error (stored before #146 wrote MARKED_FAILED) shows it as the last seen, not the cause.
-  const reasonLead = entry.outcome === "marked_failed" ? "Last error:" : "Why it ended:";
+  const timer = cardTimer(entry, now);
   return (
     <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
       <header className="flex items-start gap-2">
@@ -514,24 +445,17 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
           </p>
         </div>
       </header>
-      <div className={cn("flex items-start justify-between gap-2", finished && "flex-wrap gap-y-1")}>
+      <div className="flex items-start justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <StagePill entry={entry} />
           {entry.stalled ? <StatusPill tone="serious" label="Stalled" icon={STALLED_ICON} /> : null}
         </div>
-        <span className={cn("flex items-center gap-1 text-xs text-muted-foreground tabular-nums", finished ? "min-w-0" : "shrink-0")} title={timer.title} aria-label={timer.label}>
-          <Icon name={finished ? CARD_ICON.finishedAge : CARD_ICON.age} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
+        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground tabular-nums" title={timer.title} aria-label={timer.label}>
+          <Icon name={CARD_ICON.age} fallback="Clock" className="size-3.5 shrink-0" aria-hidden />
           {timer.text}
         </span>
       </div>
-      {!finished ? <ActivityLine entry={entry} /> : null}
-      {reason ? (
-        <p className="flex items-start gap-1.5 text-sm text-foreground">
-          {/* Muted: a failed run is history, not an alarm (#22). */}
-          <Icon name="Info" fallback="Circle" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" title={reason}><span className="text-muted-foreground">{reasonLead}</span> {reason}</span>
-        </p>
-      ) : null}
+      <ActivityLine entry={entry} />
       {entry.steps.length ? <details className="group text-xs">
         <summary {...{ [ENTRY_ATTRIBUTE]: "" }} tabIndex={tabIndex} className="flex cursor-pointer list-none items-center gap-2 rounded py-0.5 pointer-coarse:py-2 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
           <Icon name="ChevronRight" fallback="Circle" className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
@@ -545,7 +469,7 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
         </summary>
         <div className="pt-2 pb-1"><StepFlow entry={entry} /></div>
       </details> : null}
-      {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId && !finished ? (
+      {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId ? (
         <button
           type="button"
           tabIndex={tabIndex}
@@ -562,7 +486,7 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
           </span>
         </button>
       ) : null}
-      {entry.lastError && !finished && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
+      {entry.lastError && entry.detail !== "retrying" && entry.detail !== "ready" && entry.waitingKind !== "cos_error" ? (
         <p className="flex items-start gap-1.5 text-sm text-foreground">
           <Icon name={CARD_ICON.error} fallback="Circle" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.serious }} aria-hidden />
           <span className="line-clamp-2">{entry.lastError}</span>
@@ -575,12 +499,8 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
         </div>
         {/* Usage covers every agent thread of the task (planner, reviewers, replaced builders), and says so. */}
         {usage && (!usage.counted || usage.totalTokens != null) ? <div title={usageNote(usage)}>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.tokens} className="size-3.5" aria-hidden />{finished ? "Tokens" : "Tokens so far"} · all threads</dt>
+          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.tokens} className="size-3.5" aria-hidden />Tokens so far · all threads</dt>
           <dd className="font-medium text-foreground tabular-nums">{usage.totalTokens != null ? compact(usage.totalTokens) : "counting…"}</dd>
-        </div> : null}
-        {share ? <div title={`${share} of finished tasks' tokens`}>
-          <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.share} fallback="Circle" className="size-3.5" aria-hidden />Share</dt>
-          <dd className="font-medium text-foreground tabular-nums">{share}<span className="sr-only"> of finished tasks' tokens</span></dd>
         </div> : null}
         {usage?.cost != null ? <div title={usageNote(usage)}>
           <dt className="flex items-center gap-1.5 text-muted-foreground"><Icon name={CARD_ICON.cost} className="size-3.5" aria-hidden />Cost</dt>
@@ -620,79 +540,8 @@ function AgentCard({ entry, finishedTokens = null, busy, tabbable, archivesOnDon
             </Button>
           ) : null}
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button ref={menuTrigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
-              <Icon name={CARD_ACTION_ICON.moreActions} fallback="MoreHorizontal" aria-hidden />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            side="top"
-            // Show the activity once the menu has closed: an open menu keeps focus inside itself.
-            onCloseAutoFocus={(event) => {
-              if (!showingActivity.current || !onShowActivity) return;
-              showingActivity.current = false;
-              event.preventDefault();
-              onShowActivity({ id: entry.id, label: taskLabel({ workItemId: entry.id, issueNumber: entry.issueNumber, issueTitle: entry.issueTitle || null }) ?? title });
-            }}
-          >
-            {onShowActivity ? (
-              <DropdownMenuItem onSelect={() => { showingActivity.current = true; }}>
-                <Icon name={SHOW_ACTIVITY_ICON} fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Show activity
-              </DropdownMenuItem>
-            ) : null}
-            {entry.detail === "done" ? (
-              // A re-run puts a done task back to work; the sheet asks before running it. Focus returns to More actions,
-              // because this item is gone once the menu closes.
-              <DropdownMenuItem onSelect={() => onWorkflow(entry.id, menuTrigger.current!, "list")}>
-                <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                Run a step again…
-              </DropdownMenuItem>
-            ) : entry.detail === "failed" ? (
-              <>
-                <DropdownMenuItem onSelect={() => ask("restart")}>
-                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Restart on a new thread…
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => ask("mark_done")}>
-                  <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark done…
-                </DropdownMenuItem>
-              </>
-            ) : (
-              <>
-                <DropdownMenuItem onSelect={() => onAction(entry.id, "retry")}>
-                  <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Retry the stuck step
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => ask("mark_done")}>
-                  <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark done…
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => ask("mark_failed")}>
-                  <Icon name="CircleX" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                  Mark failed…
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <TaskActionsMenu task={entry} busy={busy} tabIndex={tabIndex} onAction={onAction} onAsk={onAsk} onRerun={(id, trigger) => onWorkflow(id, trigger, "list")} onShowActivity={onShowActivity} />
       </div>
-      <ConfirmDialog
-        open={confirming.open}
-        title={confirmCopy.title}
-        description={confirmCopy.description}
-        confirmLabel={confirmCopy.confirmLabel}
-        tone={confirmCopy.tone}
-        onConfirm={() => {
-          onAction(entry.id, confirmCopy.action);
-          closeConfirm();
-        }}
-        onCancel={closeConfirm}
-        restoreFocus={focusTrigger}
-      />
     </article>
   );
 }
@@ -730,6 +579,8 @@ const FIRST_VISIT = "1970-01-01T00:00:00.000Z";
 const isFinished = (e: RosterEntry) => e.detail === "done" || e.detail === "failed";
 /** Each item of the stage filter row: keeps its width in the phone's single scrolling row. */
 const FILTER_CHIP = "shrink-0 whitespace-nowrap";
+/** A Throughput number or day that opens the Finished section: text that reads as a link. */
+const SUMMARY_LINK = "rounded text-foreground underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /** What the header knows about changes since the last visit. `baseline` is null on a first visit. */
 type SinceState = { baseline: string | null; data: Since | undefined; pending: boolean };
@@ -848,14 +699,19 @@ function PipelineSummary({ loaded, loading, agents, failures, stalled, humanInpu
   );
 }
 
-export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: ActivityTask) => void } = {}) {
+/** `finishedView`: the Finished section's view, held by the Dashboard so it survives switching tabs. Without it, the tab holds its own. */
+export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShowActivity?: (task: ActivityTask) => void; finishedView?: FinishedViewState } = {}) {
   const rpc = useRpc<Contract>();
   const now = useNow();
-  const [includeDone, setIncludeDone] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [throughputTable, setThroughputTable] = useState(false);
-  const [finishedOrder, setFinishedOrder] = useState<FinishedOrder>("recent");
-  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone, withUsage: true, finishedOrder } });
+  const [actionError, setActionError] = useState<string | null>(null);
+  const ownView = useFinishedView(!heldView);
+  const finishedView = heldView ?? ownView;
+  const finishedOrder = finishedView.view.order;
+  // One query for both lists: every active task (the grid) and the first page of finished ones in the Finished
+  // section's order. One query reads the active tasks' live usage once.
+  const roster = experimental_useRpcQuery<Contract, "cos_roster">({ contract: rpcContract, method: "cos_roster", input: { includeDone: true, withUsage: true, finishedOrder } });
   const stats = experimental_useRpcQuery<Contract, "cos_stats">({ contract: rpcContract, method: "cos_stats", input: { windowDays: WINDOW_DAYS } });
   const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
   // This browser tab's last visit (#110); null on a first visit, which asks for no since counts.
@@ -868,14 +724,12 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const sinceState: SinceState = baseline === null
     ? { baseline: null, data: undefined, pending: false }
     : { baseline, data: since.data, pending: since.data === undefined && !since.error };
-  const tasksHeading = useRef<HTMLHeadingElement>(null);
   const [pausing, setPausing] = useState(false);
   // Every task with an action in flight: one finishing must not re-enable another's buttons.
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [answering, setAnswering] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
   const [viewing, setViewing] = useState<{ id: string; mode: SheetMode; finished: boolean } | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const throughputHeading = useRef<HTMLHeadingElement>(null);
@@ -900,68 +754,10 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   );
 
   const live = roster.data?.entries;
-  const liveEntries = useMemo(() => live ?? [], [live]);
-  // Counts and attention come from the live query's active items, never from finished pages.
-  const active = liveEntries.filter((e) => !isFinished(e));
-  // Finished pages loaded with "Show older finished": the live query's finished
-  // items at the first click, then each older page. The live query wins on
-  // duplicates (a retried item is active again).
-  const [older, setOlder] = useState<{ entries: RosterEntry[]; before: string | null } | null>(null);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const olderRequest = useRef<{ generation: number; inFlight: boolean }>({ generation: 0, inFlight: false });
-  // Until the roster answers for the order chosen, its cursor belongs to the other order (which the server rejects).
-  const orderLoaded = (roster.data?.finishedOrder ?? "recent") === finishedOrder;
-  const olderCursor = !includeDone || !orderLoaded ? null : older ? older.before : (roster.data?.nextBefore ?? null);
-  const entries = useMemo(() => {
-    if (!older) return liveEntries;
-    const ids = new Set(liveEntries.map((e) => e.id));
-    return [...liveEntries, ...older.entries.filter((e) => !ids.has(e.id))];
-  }, [liveEntries, older]);
-  /** Drop the older finished pages: they belong to the list being replaced. */
-  const resetOlder = () => {
-    olderRequest.current = { generation: olderRequest.current.generation + 1, inFlight: false };
-    setOlder(null);
-    setLoadingOlder(false);
-  };
-  const toggleFinished = () => {
-    resetOlder();
-    setIncludeDone((v) => !v);
-  };
-  const orderFinished = (order: FinishedOrder) => {
-    if (order === finishedOrder) return;
-    resetOlder();
-    setFinishedOrder(order);
-  };
-  const finishedTokens = includeDone ? (roster.data?.finishedTokens ?? null) : null;
-  // The since counts open the finished tasks: all of them, with the task list in view (#110).
-  const showFinished = () => {
-    if (!includeDone) toggleFinished();
-    setFilter("all");
-    tasksHeading.current?.focus({ preventScroll: true });
-    tasksHeading.current?.scrollIntoView?.({ block: "start" });
-  };
-  const loadOlder = async () => {
-    const request = olderRequest.current;
-    if (!olderCursor || request.inFlight) return;
-    request.inFlight = true;
-    setLoadingOlder(true);
-    setActionError(null);
-    const snapshot = liveEntries.filter(isFinished);
-    try {
-      const page = await rpc.call("cos_roster", { includeDone: true, before: olderCursor, withUsage: true, finishedOrder });
-      if (olderRequest.current !== request) return;
-      setOlder((prev) => {
-        const base = prev?.entries ?? snapshot;
-        const seen = new Set(base.map((e) => e.id));
-        return { entries: [...base, ...page.entries.filter((e) => !seen.has(e.id))], before: page.nextBefore ?? null };
-      });
-    } catch (error) {
-      if (olderRequest.current === request) setActionError(errorText(error));
-    } finally {
-      request.inFlight = false;
-      if (olderRequest.current === request) setLoadingOlder(false);
-    }
-  };
+  // Counts and attention come from the active tasks, never from finished ones.
+  const active = useMemo(() => (live ?? []).filter((e) => !isFinished(e)), [live]);
+  const finished = useFinishedTasks(roster, finishedOrder, setActionError);
+  const finishedHeading = useRef<HTMLHeadingElement>(null);
   const byStage = useMemo(() => {
     const counts = Object.fromEntries(STAGES.map((s) => [s.key, 0])) as Record<StageKey, number>;
     for (const e of active) {
@@ -975,13 +771,19 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
   const maxTotal = overview.data?.settings.maxConcurrentTotal;
   // The setting defaults to on; until the overview loads, assume it.
   const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
+  const configuredRepos = overview.data?.repos;
+  const repoKeys = useMemo(() => (configuredRepos ?? []).map((r) => r.key), [configuredRepos]);
+  const confirm = useTaskConfirm({ archivesOnDone, busy, onAction: (id, action) => void act(id, action), fallback: (fromFinished) => (fromFinished ? finishedHeading : sheetFocus.fallback).current?.focus() });
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const stalled = active.filter((e) => attentionKind(e) === "stalled").length;
   const failures = active.filter((e) => attentionKind(e) === "failures").length;
   const humanInput = active.filter((e) => attentionKind(e) === "human").length;
-  const visible = entries.filter((e) => matchesTaskFilter(e, filter));
+  const visible = active.filter((e) => matchesTaskFilter(e, filter));
   const roving = useRovingCards(visible.map((e) => e.id));
   const moveCard = roving.move;
+  // j and k move between finished rows instead while focus is in them.
+  const moveFinished = useRef<((delta: number) => boolean) | null>(null);
+  const finishedRows = useRef<HTMLDivElement>(null);
   // j and k move between task cards from anywhere in the Pipeline tab, or with nothing focused, like the arrow
   // keys inside the grid (#110). Off while a sheet is open; shortcutBlocked also leaves keys pressed elsewhere in
   // BB alone, and covers typing, modifiers, menus and confirm dialogs.
@@ -991,13 +793,24 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
     if (sheetOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.key !== "j" && event.key !== "k") || shortcutBlocked(event, pipelineRoot.current)) return;
-      if (moveCard(event.key === "j" ? 1 : -1)) event.preventDefault();
+      const delta = event.key === "j" ? 1 : -1;
+      const inFinished = event.target instanceof Node && finishedRows.current?.contains(event.target);
+      if (inFinished ? moveFinished.current?.(delta) : moveCard(delta)) event.preventDefault();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [sheetOpen, moveCard]);
   const filterLabel = filter === "failures" ? "Failures needing a decision" : filter === "stalled" ? "Stalled work" : filter === "input" ? "Questions and approvals" : STAGES.find((st) => st.key === filter)?.label;
-  const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+  // Throughput's days and counts, and the since counts, open the Finished section filtered to them (#105). Other
+  // filters are cleared, so the rows shown are the ones counted; newest first, the order dates page in.
+  const showFinished = (patch: Partial<FinishedView> = {}) => {
+    finishedView.update({ ...NO_FILTER, open: true, order: "recent", ...patch });
+    const heading = finishedHeading.current;
+    heading?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    heading?.focus({ preventScroll: true });
+  };
+  const windowRange = s?.daily.length ? { from: s.daily[0]!.date, to: s.daily.at(-1)!.date } : null;
+  const showDay = (date: string) => showFinished({ range: { from: date, to: date } });
 
   return (
     <div ref={pipelineRoot} className="flex flex-col gap-4">
@@ -1047,10 +860,10 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
           <span><strong>No new tasks start: Max tasks across all repos is {maxTotal}.</strong> Raise it in Configure → General. Tasks holding a slot keep going; one waiting on CI or a merge waits for a slot before its next agent step.</span>
         </p>
       ) : null}
-      <PipelineSummary loaded={roster.data !== undefined} loading={roster.isLoading} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} since={sinceState} onShowFinished={showFinished} now={now} />
+      <PipelineSummary loaded={roster.data !== undefined} loading={roster.isLoading} agents={byStage.agent} failures={failures} stalled={stalled} humanInput={humanInput} filter={filter} onFilter={setFilter} since={sinceState} onShowFinished={() => showFinished()} now={now} />
       {newTask ? (
         <div id="new-task">
-          <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={(overview.data?.repos ?? []).map((r) => r.key)} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
+          <NewTaskForm startTask={(input) => rpc.call("cos_start_task", input)} repos={repoKeys} onCancel={() => setNewTask(false)} onStarted={async () => { setNewTask(false); await refetchAll(); }} />
         </div>
       ) : null}
       {/* One row on a phone, scrolling sideways, so the first task is near the top (#110); from sm up the chips wrap.
@@ -1065,32 +878,15 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
       {/* Agents */}
       <Panel
         className="border-0 bg-transparent [&>header]:px-0 [&>header]:flex-wrap [&>div]:px-0"
-        title={filter === "all" ? (includeDone ? "All tasks" : "Active tasks") : filterLabel ?? "Active tasks"}
+        title={filter === "all" ? "Active tasks" : filterLabel ?? "Active tasks"}
         icon={PANEL_ICON.tasks}
-        headingRef={tasksHeading}
         dim={roster.isFetching && !roster.isLoading}
         actions={
-          <>
-            {filter !== "all" ? (
-              <Button size="sm" variant="ghost" onClick={() => setFilter("all")}>
-                <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
-              </Button>
-            ) : null}
-            {includeDone ? (
-              <div role="group" aria-label="Order finished tasks" className="flex items-center gap-1">
-                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "recent"} onClick={() => orderFinished("recent")}>
-                  <Icon name="CalendarCheck" fallback="Clock" aria-hidden />Recently finished
-                </Button>
-                <Button size="sm" variant="ghost" aria-pressed={finishedOrder === "tokens"} onClick={() => orderFinished("tokens")}>
-                  <Icon name={CARD_ICON.tokens} fallback="Circle" aria-hidden />Most tokens
-                </Button>
-              </div>
-            ) : null}
-            <Button size="sm" variant="ghost" aria-pressed={includeDone} onClick={toggleFinished}>
-              <Icon name={includeDone ? FILTER_ICON.hideFinished : FILTER_ICON.showFinished} fallback="Circle" aria-hidden />
-              {includeDone ? "Hide finished" : "Show finished"}
+          filter !== "all" ? (
+            <Button size="sm" variant="ghost" onClick={() => setFilter("all")}>
+              <Icon name="X" fallback="Circle" aria-hidden /> Clear filter
             </Button>
-          </>
+          ) : null
         }
       >
         {roster.isLoading ? (
@@ -1111,25 +907,37 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
             <p id={TASK_KEYS_HINT_ID} className="invisible text-xs text-muted-foreground group-focus-within/tasks:visible">Arrow keys or j and k move between tasks.</p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {visible.map((e) => (
-                <AgentCard key={e.id} entry={e} finishedTokens={finishedTokens} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} archivesOnDone={archivesOnDone} onAction={(id, action) => void act(id, action)} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode, finished: e.detail === "done" || e.detail === "failed" }); }} onShowActivity={onShowActivity} />
+                <AgentCard key={e.id} entry={e} now={now} busy={busy.has(e.id)} tabbable={e.id === roving.current} onAction={(id, action) => void act(id, action)} onAsk={confirm.ask} onAnswer={(id, opener) => { sheetFocus.remember(opener); setAnswering(id); }} onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode, finished: false }); }} onShowActivity={onShowActivity} />
               ))}
             </div>
           </div>
         ) : null}
-        {/* Stage and attention filters never match finished tasks. */}
-        {olderCursor && filter === "all" ? (
-          <div className="mt-3 flex justify-center">
-            <Button size="sm" variant="outline" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => void loadOlder()}>
-              <Icon name="History" fallback="Circle" aria-hidden />Show older finished
-            </Button>
-          </div>
-        ) : null}
       </Panel>
+
+      {/* Below the active work and above Throughput: history never mixes with active cards (#105). */}
+      <div ref={finishedRows}>
+        <FinishedSection
+          finished={finished}
+          now={now}
+          busy={busy}
+          view={finishedView.view}
+          onViewChange={finishedView.update}
+          repos={repoKeys}
+          headingRef={finishedHeading}
+          moveRef={moveFinished}
+          onAction={(id, action) => void act(id, action)}
+          onAsk={confirm.ask}
+          onWorkflow={(id, opener, mode = "canvas") => { sheetFocus.remember(opener); setViewing({ id, mode, finished: true }); }}
+          onShowActivity={onShowActivity}
+        />
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-5">
         <Panel id={THROUGHPUT_ID} headingRef={throughputHeading} className="lg:col-span-3" title={`Throughput · last ${WINDOW_DAYS} days`} icon={PANEL_ICON.throughput} dim={stats.isFetching && !stats.isLoading} actions={<ViewToggle table={throughputTable} onChange={setThroughputTable} />}>
           {s ? <p className="mb-4 text-sm text-muted-foreground">
-            {s.doneInWindow} completed · {s.failedInWindow} historical failed runs
+            {windowRange && s.doneInWindow ? <button type="button" className={SUMMARY_LINK} onClick={() => showFinished({ range: windowRange, outcomes: ["shipped", "marked_done"] })}>{s.doneInWindow} completed</button> : `${s.doneInWindow} completed`}
+            {" · "}
+            {windowRange && s.failedInWindow ? <button type="button" className={SUMMARY_LINK} onClick={() => showFinished({ range: windowRange, outcomes: ["failed"] })}>{s.failedInWindow} historical failed runs</button> : `${s.failedInWindow} historical failed runs`}
             {s.medianCycleMinutes != null ? ` · Median completion ${duration(s.medianCycleMinutes)}` : ""}
             <ThroughputUsage usage={s.usage} />
           </p> : null}
@@ -1143,11 +951,23 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
               </LoadingRegion>
             )
           ) : throughputTable ? (
-            <DataTable columns={["Day", "Started", "Done", "Failed", "Tokens"]} rows={s.daily.map((d) => [fmtDay(d.date), d.started, d.done, d.failed, d.tokens != null ? compact(d.tokens) : "—"])} />
+            <DataTable
+              columns={["Day", "Started", "Done", "Failed", "Tokens"]}
+              rows={s.daily.map((d) => [
+                // The keyboard and touch way to open a day's finished tasks: the chart's columns are not tab stops (#115) and too narrow to tap (#116).
+                <button key="day" type="button" aria-label={`Show tasks finished ${fmtDay(d.date)}`} className={cn(SUMMARY_LINK, "pointer-coarse:min-h-10")} onClick={() => showDay(d.date)}>{fmtDay(d.date)}</button>,
+                d.started,
+                d.done,
+                d.failed,
+                d.tokens != null ? compact(d.tokens) : "—",
+              ])}
+            />
           ) : (
             <ColumnChart
               label={`Issues finished per day over the last ${WINDOW_DAYS} days`}
               onShowTable={() => setThroughputTable(true)}
+              onSelect={showDay}
+              selectLabel={(d) => `Show tasks finished ${fmtDay(d)}`}
               rows={s.daily.map((d) => ({ date: d.date, done: d.done, failed: d.failed }))}
               xKey="date"
               formatX={fmtDay}
@@ -1197,6 +1017,7 @@ export function PipelineTab({ onShowActivity }: { onShowActivity?: (task: Activi
         </Panel>
       </div>
 
+      {confirm.dialog}
       {answering ? <QuestionSheet itemId={answering} onClose={() => setAnswering(null)} onAnswered={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
       {viewing ? <WorkflowSheet id={viewing.id} initialMode={viewing.mode} finishedHint={viewing.finished} onClose={() => setViewing(null)} onChanged={() => void refetchAll()} restoreFocus={sheetFocus.restore} /> : null}
     </div>
@@ -1627,6 +1448,8 @@ export function Dashboard({ subPath }: { subPath: string }) {
   const [alert, setAlert] = useState<{ title: string; body: string } | null>(null);
   // Held here so a task card's "Show activity" can narrow the feed, and the choice survives switching tabs.
   const [activityTask, setActivityTask] = useState<ActivityTask | null>(null);
+  // Held here too: the Pipeline tab unmounts on every switch, and its Finished view should not reset.
+  const finishedView = useFinishedView();
   const activityHeading = useRef<HTMLHeadingElement | null>(null);
   const showActivity = useCallback((task: ActivityTask) => {
     setActivityTask(task);
@@ -1683,7 +1506,7 @@ export function Dashboard({ subPath }: { subPath: string }) {
             </button>
           </div>
         ) : null}
-        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} section={configSection} onSectionChange={goConfigSection} />}
+        {tab === "agents" ? <PipelineTab onShowActivity={showActivity} finishedView={finishedView} /> : tab === "issues" ? <ReposTab /> : <Configurator drafts={configDrafts} section={configSection} onSectionChange={goConfigSection} />}
         {tab === "config" ? null : <ActivityFeed task={activityTask} onTaskChange={setActivityTask} headingRef={activityHeading} />}
       </div>
     </PaletteProvider>
