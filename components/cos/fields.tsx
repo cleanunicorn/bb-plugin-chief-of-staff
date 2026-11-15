@@ -1,6 +1,6 @@
 // Form primitives shared by the configurator and the workflow editor.
 import { useEffect, useId, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { parseList } from "../../src/configModel";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -38,8 +38,8 @@ export function Field({ label, hint, children, className, error, warning }: { la
  * `list`: the id of a `<datalist>` whose options the input suggests as you type (any text is still accepted).
  * Such an input leaves autocomplete on: Firefox hides a datalist's suggestions on `autocomplete="off"`.
  */
-export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus, list, autoComplete }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean; list?: string; /** Overrides the default ("off", or the browser's own with a `list`). */ autoComplete?: string }) {
-  return <input id={id} type={type} autoFocus={autoFocus} list={list} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete={autoComplete ?? (list ? undefined : "off")} onChange={(e) => onChange(e.target.value)} />;
+export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus, list, autoComplete, inputRef }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean; list?: string; /** Overrides the default ("off", or the browser's own with a `list`). */ autoComplete?: string; inputRef?: Ref<HTMLInputElement> }) {
+  return <input ref={inputRef} id={id} type={type} autoFocus={autoFocus} list={list} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete={autoComplete ?? (list ? undefined : "off")} onChange={(e) => onChange(e.target.value)} />;
 }
 
 /**

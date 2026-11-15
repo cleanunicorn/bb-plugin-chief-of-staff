@@ -558,7 +558,7 @@ it("drops a workflow draft whose document stops loading as well", async () => {
 const JSON_NOTICE = "You have unsaved Advanced JSON edits. Save or discard them before editing here.";
 const textarea = (label: "Repositories" | "Workflows") => field(label) as HTMLTextAreaElement;
 /** The line under a field (its error, warning or hint), or null. */
-const errorOf = (label: string) => field(label).parentElement!.querySelector(":scope > span")?.textContent ?? null;
+const errorOf = (label: string) => container.querySelector(`label[for="${field(label).id}"]`)!.parentElement!.querySelector(":scope > span")?.textContent ?? null;
 /** A workflows document that differs from the loaded text and still loads, so it can be saved. */
 const EDITED_WORKFLOWS = `${serializeWorkflows(DEFAULT_DOCUMENT)}\n`;
 const EDITED_REPOS = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", model: "opus" }] });

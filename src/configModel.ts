@@ -208,17 +208,17 @@ export function intakeHasNoFilter(repo: RepoConfig): boolean {
   return repo.intake && !repo.issueFilter.labels.length && !(repo.issueFilter.assignee ?? "").trim();
 }
 
-// ---------- capacity warnings ----------
+// ---------- save warnings ----------
 
-export type CapacityWarning = { section: "general" | "repos"; repo?: number; text: string };
+export type SaveWarning = { section: "general" | "repos"; repo?: number; text: string };
 
 /**
  * Limits of 0 in what would be saved, and intake that would pick up nothing.
  * Both are valid, so they warn without blocking (#125). `repos` is the repositories draft,
  * or null when it has no unsaved edits.
  */
-export function capacityWarnings(changes: Partial<GeneralSettings>, repos: RepoConfig[] | null): CapacityWarning[] {
-  const out: CapacityWarning[] = [];
+export function saveWarnings(changes: Partial<GeneralSettings>, repos: RepoConfig[] | null): SaveWarning[] {
+  const out: SaveWarning[] = [];
   if (changes.maxConcurrentTotal === 0) out.push({ section: "general", text: `${GENERAL_LABELS.maxConcurrentTotal} is 0: no new tasks will start until you raise it.` });
   repos?.forEach((repo, i) => {
     if (isPlaceholderRepo(repo)) return;

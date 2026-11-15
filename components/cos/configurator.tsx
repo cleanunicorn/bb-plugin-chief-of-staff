@@ -8,7 +8,7 @@ import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, capacityWarnings, detachWorkflow, generalSettingsProblems, inferIdentity, intakeHasNoFilter, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { blankRepo, saveWarnings, detachWorkflow, generalSettingsProblems, inferIdentity, intakeHasNoFilter, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
 import { DEFAULT_DOCUMENT, parseWorkflows, problemKey, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
 import { WorkflowsEditor, type WorkflowReveal } from "./workflowEditor";
@@ -200,12 +200,12 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
           </Group>
           <Group title="Issue intake" icon="Inbox" cols={2}>
             <ToggleRow className="sm:col-span-2" label="Pick up issues" hint="Starts a task for each open issue that matches the filter below. Off: only tasks you start." checked={repo.intake} onChange={(v) => set("intake", v)} />
-            {/* Kept editable while intake is off, so the filter can be set up before turning it on. */}
-            <Field className={cn(!repo.intake && "opacity-60")} label="Issue labels" hint={repo.intake ? "Issues must carry all of these. Comma separated." : "Not used while Pick up issues is off."} warning={noFilter ? "No label and no assignee: no issues are picked up. Add one of them." : null}>
-              {(id) => <ListInput id={id} value={repo.issueFilter.labels} onChange={(v) => set("issueFilter", { ...repo.issueFilter, labels: v })} placeholder="agent-ready" />}
+            {/* Kept editable while intake is off, so the filter can be set up before turning it on. Only the inputs dim: the hints stay readable. */}
+            <Field label="Issue labels" hint={repo.intake ? "Issues must carry all of these. Comma separated." : "Not used while Pick up issues is off."} warning={noFilter ? "No label and no assignee: no issues are picked up. Add one of them." : null}>
+              {(id) => <div className={cn(!repo.intake && "opacity-60")}><ListInput id={id} value={repo.issueFilter.labels} onChange={(v) => set("issueFilter", { ...repo.issueFilter, labels: v })} placeholder="agent-ready" /></div>}
             </Field>
-            <Field className={cn(!repo.intake && "opacity-60")} label="Assignee" hint={repo.intake ? "Optional GitHub login: only issues assigned to them." : "Not used while Pick up issues is off."}>
-              {(id) => <TextInput id={id} value={repo.issueFilter.assignee ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, assignee: v })} placeholder="anyone" />}
+            <Field label="Assignee" hint={repo.intake ? "Optional GitHub login: only issues assigned to them." : "Not used while Pick up issues is off."}>
+              {(id) => <div className={cn(!repo.intake && "opacity-60")}><TextInput id={id} value={repo.issueFilter.assignee ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, assignee: v })} placeholder="anyone" /></div>}
             </Field>
           </Group>
           <Group title="Agent and limits" icon="Bot" cols={2}>
@@ -297,7 +297,7 @@ function AccessEditor({ token, onSaved }: { token: SettingsData["token"]; onSave
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
   const [removing, setRemoving] = useState(false);
   const removeButton = useRef<HTMLButtonElement>(null);
-  const tokenInput = useRef<HTMLDivElement>(null);
+  const tokenInput = useRef<HTMLInputElement>(null);
   const source = token.source === "setting" ? { tone: "good" as const, label: "Using the stored token" } : token.source === "gh-cli" ? { tone: "good" as const, label: "Using gh auth on the server" } : { tone: "critical" as const, label: "No GitHub credentials" };
   const run = async (input: { githubToken: string } | { clearGithubToken: true }, done: string) => {
     setBusy(true);
@@ -329,12 +329,10 @@ function AccessEditor({ token, onSaved }: { token: SettingsData["token"]; onSave
           if (value.trim()) void run({ githubToken: value.trim() }, "Token saved.");
         }}
       >
-        <div ref={tokenInput} className="flex min-w-64 flex-1">
-          <Field label={token.stored ? "Replace token" : "GitHub token"} className="flex-1">
-            {/* new-password: keeps password managers from offering a saved site password here. */}
-            {(id) => <TextInput id={id} type="password" autoComplete="new-password" value={value} onChange={setValue} placeholder="ghp_… or github_pat_…" mono />}
-          </Field>
-        </div>
+        <Field label={token.stored ? "Replace token" : "GitHub token"} className="min-w-64 flex-1">
+          {/* new-password: keeps password managers from offering a saved site password here. */}
+          {(id) => <TextInput id={id} inputRef={tokenInput} type="password" autoComplete="new-password" value={value} onChange={setValue} placeholder="ghp_… or github_pat_…" mono />}
+        </Field>
         <Button size="sm" type="submit" disabled={busy || !value.trim()}>
           <Icon name="Save" fallback="Circle" aria-hidden /> Save token
         </Button>
@@ -359,7 +357,7 @@ function AccessEditor({ token, onSaved }: { token: SettingsData["token"]; onSave
         }}
         onCancel={() => setRemoving(false)}
         // Removing takes the button away with the stored token; the token field is what is left to act on.
-        restoreFocus={() => (removeButton.current?.isConnected && !removeButton.current.disabled ? removeButton.current : tokenInput.current?.querySelector("input"))?.focus()}
+        restoreFocus={() => (removeButton.current?.isConnected && !removeButton.current.disabled ? removeButton.current : tokenInput.current)?.focus()}
       />
     </div>
   );
@@ -555,7 +553,7 @@ export function Configurator({
     return out;
   }, [repoIssues, repoDraft, workflowIssues, generalIssues]);
   /** Valid but worth a second look (a limit of 0 starts no new tasks); never blocks saving. */
-  const warnings = useMemo(() => capacityWarnings(generalChanges, dirty.repos ? repoDraft : null), [generalChanges, dirty.repos, repoDraft]);
+  const warnings = useMemo(() => saveWarnings(generalChanges, dirty.repos ? repoDraft : null), [generalChanges, dirty.repos, repoDraft]);
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
   // The save bar shows a count; expanded, the sections (and repositories) with problems that are not on screen.
   const [barOpen, setBarOpen] = useState(false);
