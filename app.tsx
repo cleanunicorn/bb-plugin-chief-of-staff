@@ -1716,5 +1716,5 @@ function SettingsSection() {
 
 export default definePluginApp((app) => {
   app.slots.navPanel({ id: "cos-dashboard", title: "Chief of Staff", icon: "chief-of-staff/chef-hat", path: "cos", component: Dashboard });
-  app.slots.settingsSection({ id: "cos-config", title: "Configure Chief of Staff", description: "Workflow stages, repositories, limits and GitHub access, edited visually and validated before saving.", component: SettingsSection });
+  app.slots.settingsSection({ id: "cos-config", title: "Configure Chief of Staff", description: "Workflows, repositories, limits and GitHub access, edited visually and validated before saving.", component: SettingsSection });
 });

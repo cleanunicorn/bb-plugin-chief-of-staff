@@ -202,3 +202,31 @@ describe("detachWorkflow", () => {
     expect(result.detached).toEqual([]);
   });
 });
+
+describe("loadRepos against the server's parseRepos", () => {
+  // Advanced JSON keeps Save off while loadRepos fails, so it must never fail on a document the server accepts.
+  it("loads every repositories document the server accepts", async () => {
+    const { parseRepos } = await import("../src/config");
+    const accepted = [
+      "",
+      "  \n",
+      "{}",
+      '{"repos": []}',
+      '{"repos": [{"projectId": "proj_1"}]}',
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "proj_1", "issueFilter": {"labels": []}}]}',
+      '{"repos": [{"owner": "owner", "repo": "repo", "projectId": "proj_xxxxxxxxxx"}]}',
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p"}, {"owner": "acme", "repo": "app", "projectId": "p"}]}',
+      // The old stage settings, converted on load.
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p", "checkCommand": "npm test", "allow": {"intake": true, "openPr": true, "merge": false}}]}',
+      '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p", "issueFilter": {"labels": ["a"], "assignee": ""}}]}',
+    ];
+    for (const raw of accepted) {
+      expect(parseRepos(raw).ok, raw).toBe(true);
+      expect(loadRepos(raw).ok, raw).toBe(true);
+    }
+  });
+
+  it("fails on what the server rejects outright", () => {
+    for (const raw of ["{", "[]", '{"repos": "none"}', '{"repos": [{"owner": "acme", "repo": "app", "projectId": "p", "maxConcurrent": -1}]}']) expect(loadRepos(raw).ok, raw).toBe(false);
+  });
+});

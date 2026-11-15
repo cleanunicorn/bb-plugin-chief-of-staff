@@ -11,7 +11,7 @@ import { STATUS } from "./viz";
 export const inputClass =
   "h-8 w-full min-w-0 rounded-md border border-input bg-transparent px-2.5 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50";
 
-export function Field({ label, hint, children, className, error }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null }) {
+export function Field({ label, hint, children, className, error, warning }: { label: string; hint?: ReactNode; children: (id: string) => ReactNode; className?: string; error?: string | null; /** Worth a second look but valid: shown in place of the hint, never blocks. */ warning?: string | null }) {
   const id = useId();
   return (
     // `data-problem` lets "Show" in the save bar find the first field to fix.
@@ -20,7 +20,16 @@ export function Field({ label, hint, children, className, error }: { label: stri
         {label}
       </label>
       {children(id)}
-      {error ? <span className="text-[11px]" style={{ color: STATUS.critical }}>{error}</span> : hint ? <span className="text-[11px] text-muted-foreground">{hint}</span> : null}
+      {error ? (
+        <span className="text-[11px]" style={{ color: STATUS.critical }}>{error}</span>
+      ) : warning ? (
+        <span className="flex items-start gap-1 text-[11px] text-foreground">
+          <Icon name="TriangleAlert" fallback="Circle" className="mt-px size-3 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
+          {warning}
+        </span>
+      ) : hint ? (
+        <span className="text-[11px] text-muted-foreground">{hint}</span>
+      ) : null}
     </div>
   );
 }
@@ -29,8 +38,8 @@ export function Field({ label, hint, children, className, error }: { label: stri
  * `list`: the id of a `<datalist>` whose options the input suggests as you type (any text is still accepted).
  * Such an input leaves autocomplete on: Firefox hides a datalist's suggestions on `autocomplete="off"`.
  */
-export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus, list }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean; list?: string }) {
-  return <input id={id} type={type} autoFocus={autoFocus} list={list} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete={list ? undefined : "off"} onChange={(e) => onChange(e.target.value)} />;
+export function TextInput({ id, value, onChange, placeholder, mono, type = "text", autoFocus, list, autoComplete }: { id?: string; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; type?: string; autoFocus?: boolean; list?: string; /** Overrides the default ("off", or the browser's own with a `list`). */ autoComplete?: string }) {
+  return <input id={id} type={type} autoFocus={autoFocus} list={list} className={cn(inputClass, mono && "font-mono text-xs")} value={value} placeholder={placeholder} spellCheck={false} autoComplete={autoComplete ?? (list ? undefined : "off")} onChange={(e) => onChange(e.target.value)} />;
 }
 
 /**
@@ -120,18 +129,19 @@ export function Switch({ checked, onChange, label, disabled }: { checked: boolea
   );
 }
 
-export function ToggleRow({ label, hint, checked, onChange, accent }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; accent?: ReactNode }) {
+/** The whole row is the switch's label: clicking the text or the hint toggles it, a larger target than the switch alone. */
+export function ToggleRow({ label, hint, checked, onChange, accent, className }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; accent?: ReactNode; className?: string }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-md border border-border px-3 py-2">
-      <div className="min-w-0">
-        <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+    <label className={cn("flex cursor-pointer items-start justify-between gap-3 rounded-md border border-border px-3 py-2", className)}>
+      <span className="min-w-0">
+        <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
           {label}
           {accent}
-        </div>
-        {hint ? <div className="text-[11px] text-muted-foreground">{hint}</div> : null}
-      </div>
+        </span>
+        {hint ? <span className="block text-[11px] text-muted-foreground">{hint}</span> : null}
+      </span>
       <Switch checked={checked} onChange={onChange} label={label} />
-    </div>
+    </label>
   );
 }
 
