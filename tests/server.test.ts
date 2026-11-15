@@ -226,7 +226,14 @@ describe("chief-of-staff server", () => {
         environments: { get: async () => ({ id: "env_1", hostId: "host_1", path: "/work/app/.bb/wt-1", branchName: "cos/issue-12-fix-login", status: "ready" }) as never },
         plugins: { callRpc: async () => ({ ok: true, channels: ["web"] }) },
         skills: { list: async () => ({ skills: [{ id: "skill_1", name: "tdd", description: "Test first", filePath: "/x/SKILL.md", manageable: false, pluginId: null, provider: null, registrySkillId: null, scope: "bb-project" }] }) as never },
-        providers: { catalog: async () => [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true, info: {} }] as never },
+        providers: {
+          catalog: async () => [{ id: "claude-code", displayName: "Claude Code", available: true, enabled: true, info: {} }] as never,
+          models: async (args?: { providerId?: string }) => {
+            if (args?.providerId === "broken") throw new Error("provider exploded");
+            if (args?.providerId === "codex") return { models: [], modelLoadError: { code: "auth_required", detail: null, providerId: "codex" }, permissionCeiling: "full" } as never;
+            return { models: [{ id: "claude-opus-5-5", model: "claude-opus-5-5", displayName: "Opus 5.5", description: "", isDefault: true, reasoningDiscovery: "known", defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }, { reasoningEffort: "high", description: "" }] }], modelLoadError: null, permissionCeiling: "full" } as never;
+          },
+        },
       },
     });
     await plugin(host.bb);
@@ -1028,6 +1035,22 @@ describe("chief-of-staff server", () => {
       expect(result.results[0].skipped).toEqual([{ issue: 14, reason: "global max concurrency (1)" }, { issue: 15, reason: "global max concurrency (1)" }]);
     });
 
+    // 0 is a valid limit that starts no new tasks (#125).
+    it("starts nothing at a total limit of 0, and says why", async () => {
+      await configure(5, 0);
+      const result = await intake();
+      expect(result.results[0].started).toEqual([]);
+      expect(result.results[0].skipped).toEqual([13, 14, 15].map((issue) => ({ issue, reason: "global max concurrency (0)" })));
+      expect(new StateStore(host.bb.storage.database()).listWorkItems()).toHaveLength(0);
+    });
+
+    it("starts nothing in a repository whose limit is 0, and says why", async () => {
+      await configure(0);
+      const result = await intake();
+      expect(result.results[0].started).toEqual([]);
+      expect(result.results[0].skipped).toEqual([13, 14, 15].map((issue) => ({ issue, reason: "repo at max concurrency (0)" })));
+    });
+
     it("starts in a real run exactly what the dry run reported", async () => {
       await configure(2);
       const dry = await intake(true);
@@ -1746,6 +1769,23 @@ describe("chief-of-staff server", () => {
       ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [] });
     };
 
+    it("reports tasks finished since a visit through cos_since, and stores nothing (#110)", async () => {
+      const before = new Date(Date.now() - 60_000).toISOString();
+      await intakeOnce();
+      const id = (await roster()).id;
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_failed" });
+      const db = host.bb.storage.database();
+      const rows = () => db.prepare("SELECT COUNT(*) AS n FROM work_items").get();
+      const count = rows();
+      expect(await host.harness.behavior.callRpc("cos_since", { since: before })).toEqual({
+        shipped: 0, failed: 1,
+        failures: [{ id, repo: "acme/app", issueNumber: 12, issueTitle: "Fix login", outcome: "marked_failed", reason: null }],
+      });
+      expect(await host.harness.behavior.callRpc("cos_since", { since: new Date(Date.now() + 60_000).toISOString() })).toEqual({ shipped: 0, failed: 0, failures: [] });
+      expect(rows()).toEqual(count);
+      await expect(host.harness.behavior.callRpc("cos_since", { since: "yesterday" })).rejects.toThrow();
+    });
+
     it("stays done when the agent's turn ends afterwards: no nudge, threads archived", async () => {
       await intakeOnce();
       expect(await roster()).toMatchObject({ detail: "agent", current: ["Build"] });
@@ -2272,6 +2312,46 @@ describe("chief-of-staff server", () => {
     expect(sent.slice(before).filter((m) => (m as { threadId: string }).threadId === "thr_1")).toHaveLength(0);
   });
 
+  it("keeps a PR ship step with watchCi open until CI is green, sending red CI back to the builder", async () => {
+    const doc = { default: "default", workflows: [{ id: "default", name: "Build and watch", steps: [
+      { id: "build", name: "Build", type: "agent", writes: true, next: ["ship"] },
+      { id: "ship", name: "Ship", type: "ship", action: "pr", watchCi: true, onFail: "build", maxAttempts: 2 },
+    ] }] };
+    const pinned = JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", issueFilter: { labels: ["agent-ready"] }, workflow: "default" }] });
+    await host.harness.behavior.callRpc("cos_set_config", { workflow: JSON.stringify(doc), repos: pinned });
+    // Saved and read back with the option intact.
+    const saved = JSON.parse(((await host.harness.behavior.callRpc("cos_get_config", null)) as { workflow: string }).workflow);
+    expect(saved.workflows[0].steps[1]).toMatchObject({ action: "pr", watchCi: true, onFail: "build" });
+    let checks = "failure";
+    ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: checks, html_url: "https://github.com/acme/app/actions/runs/99" }] } });
+    ghRoutes["GET /repos/acme/app/actions/runs/99/jobs"] = () => ({ body: { jobs: [] } });
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]!.workflow.steps[1]).toMatchObject({ watchCi: true });
+    await report("build");
+    await idle();
+    // The PR is open, and the step stays on it.
+    expect(await roster()).toMatchObject({ detail: "ci", prNumber: 7 });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await sweep();
+      const fixing = (await roster()) as Entry & { steps: { id: string; attempts: number }[] };
+      expect(fixing).toMatchObject({ current: ["Build"] });
+      expect(fixing.steps.find((st) => st.id === "ship")!.attempts).toBe(1);
+      checks = "success";
+      vi.setSystemTime(Date.now() + 3 * 60_000);
+      await report("build");
+      await idle();
+      expect(await roster()).toMatchObject({ detail: "ci" });
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      await sweep();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(new StateStore(host.bb.storage.database()).listWorkItems()[0]).toMatchObject({ status: "done", prNumber: 7 });
+    expect(ghCalls.filter((c) => c.method === "POST" && c.path === "/repos/acme/app/pulls")).toHaveLength(1);
+    expect(ghCalls.some((c) => c.method === "PUT" && c.path.endsWith("/merge"))).toBe(false);
+  });
+
   it("counts a CI failure again when a fix pushes no new commit", async () => {
     await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "merge", maxCiFixes: 1 } } }) });
     ghRoutes["GET /repos/acme/app/commits/abc/check-runs"] = () => ({ body: { check_runs: [{ id: 1, name: "ci", status: "completed", conclusion: "failure", html_url: "https://github.com/acme/app/actions/runs/99" }] } });
@@ -2329,6 +2409,19 @@ describe("chief-of-staff server", () => {
     const stored = store.getWorkItem(item.id)!.nodes;
     expect(stored.ship).toMatchObject({ status: "running", phase: "ci" });
     expect(stored.build).toMatchObject({ status: "waiting" });
+  });
+
+  it("gives the workflow view the task's outcome once it has finished", async () => {
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const store = new StateStore(host.bb.storage.database());
+    const id = store.listWorkItems()[0]!.id;
+    const outcome = async () => ((await host.harness.behavior.callRpc("cos_item_workflow", { id })) as { task: { outcome: string | null } }).task.outcome;
+    expect(await outcome()).toBeNull();
+    store.updateWorkItem(id, { status: "failed", lastError: "thread archived", finishedAt: new Date().toISOString() });
+    expect(await outcome()).toBe("failed");
+    store.updateWorkItem(id, { status: "queued", lastError: null, finishedAt: null });
+    await host.harness.behavior.callRpc("cos_item_action", { id, action: "mark_done" });
+    expect(await outcome()).toBe("marked_done");
   });
 
   it("says a task marked done by hand ended that way, and when", async () => {
@@ -2812,6 +2905,15 @@ describe("chief-of-staff server", () => {
     expect((await host.harness.behavior.runCli(["status"])).stdout).not.toContain("More finished");
   });
 
+  it("lists a provider's models and reasoning levels for the model fields, and says why when it cannot", async () => {
+    expect(await host.harness.behavior.callRpc("cos_provider_models", { providerId: "claude-code" })).toEqual({
+      models: [{ id: "claude-opus-5-5", displayName: "Opus 5.5", isDefault: true, reasoningLevels: ["low", "high"], defaultReasoningLevel: "high" }],
+      error: null,
+    });
+    expect(await host.harness.behavior.callRpc("cos_provider_models", { providerId: "codex" })).toEqual({ models: [], error: "auth_required" });
+    expect(await host.harness.behavior.callRpc("cos_provider_models", { providerId: "broken" })).toEqual({ models: [], error: "provider exploded" });
+  });
+
   it("reads and writes settings for the configurator without exposing the token", async () => {
     const read = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { values: Record<string, unknown>; token: { stored: boolean; source: string }; projects: { id: string; remote: string | null }[] };
     expect(JSON.stringify(read)).not.toContain("ghp_secret_token");
@@ -2835,6 +2937,11 @@ describe("chief-of-staff server", () => {
     await host.harness.behavior.callRpc("cos_set_settings", { clearGithubToken: true });
     const cleared = (await host.harness.behavior.callRpc("cos_get_settings", null)) as { token: { stored: boolean } };
     expect(cleared.token.stored).toBe(false);
+  });
+
+  it("accepts a total task limit of 0 and reports it in the overview (#125)", async () => {
+    await host.harness.behavior.callRpc("cos_set_settings", { maxConcurrentTotal: 0 });
+    expect(await host.harness.behavior.callRpc("cos_overview", null)).toMatchObject({ settings: { maxConcurrentTotal: 0 } });
   });
 
   it("sends /skill references in step instructions as skill mentions", async () => {

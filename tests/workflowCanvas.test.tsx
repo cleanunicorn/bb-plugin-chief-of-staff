@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { DEFAULT_WORKFLOW, workflowSchema } from "../src/workflow";
+import { DEFAULT_WORKFLOW, blankStep, insertStepAfter, workflowSchema, type Step } from "../src/workflow";
 import { stubReactFlowDom } from "./helpers/reactFlow";
 
 vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
 vi.mock("@xyflow/react/dist/style.css", () => ({}));
-import { WorkflowCanvas, layout, liveTone, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
+import { WorkflowCanvas, inView, layout, liveTone, placeNewStep, selectionTarget, type LiveStatus } from "../components/cos/workflowCanvas";
 
 const live = (extra: Partial<LiveStatus>): LiveStatus => ({ status: "pending", phase: null, reported: 0, agents: 1, waitingKind: null, retrying: false, attempts: 0, round: 1, ...extra });
 
@@ -17,6 +17,17 @@ it("maps a React Flow selection to the step to show", () => {
   // An arrow or several steps selected: leave the open step alone.
   expect(selectionTarget({ nodes: [], edges: [{ id: "next:plan:build" }] })).toBeUndefined();
   expect(selectionTarget({ nodes: [{ id: "plan" }, { id: "build" }], edges: [] })).toBeUndefined();
+});
+
+it("tells whether a step is fully inside the canvas at the current pan and zoom", () => {
+  const frame = { width: 400, height: 300 };
+  const step = { x: 100, y: 100, width: 200, height: 60 };
+  expect(inView(step, { x: 0, y: 0, zoom: 1 }, frame)).toBe(true);
+  // Pushed past the bottom edge by panning, or cut off by zooming in.
+  expect(inView(step, { x: 0, y: 200, zoom: 1 }, frame)).toBe(false);
+  expect(inView(step, { x: 0, y: 0, zoom: 2 }, frame)).toBe(false);
+  expect(inView({ ...step, y: 600 }, { x: 0, y: 0, zoom: 0.5 }, frame)).toBe(false);
+  expect(inView({ ...step, y: 400 }, { x: 0, y: 0, zoom: 0.5 }, frame)).toBe(true);
 });
 
 it("words live status the same for the canvas and the step list", () => {
@@ -70,6 +81,22 @@ it("names each step for screen readers with its type and live status", async () 
   await render(null);
   expect(node("build").getAttribute("aria-label")).toBe("Build, Agent step, working");
   expect(node("plan").getAttribute("aria-label")).toBe("Plan, Agent step");
+});
+
+it("marks the steps with problems and names the count for screen readers", async () => {
+  await act(async () => { root.render(<WorkflowCanvas workflow={DEFAULT_WORKFLOW} onChange={vi.fn()} problems={{ review: 2 }} selected={null} onSelect={onSelect} />); });
+  expect(node("review").getAttribute("aria-label")).toBe("Review, Agent step, 2 to fix");
+  expect(node("review").querySelector("[data-problems]")?.textContent).toBe("2");
+  expect(node("plan").getAttribute("aria-label")).toBe("Plan, Agent step");
+  expect(node("plan").querySelector("[data-problems]")).toBeNull();
+});
+
+it("keeps a step the parent selects together with a new workflow", async () => {
+  const wider = { ...DEFAULT_WORKFLOW, id: "other", steps: [...DEFAULT_WORKFLOW.steps, blankStep("check", "new-check", "New check")] };
+  await act(async () => { root.render(<WorkflowCanvas workflow={DEFAULT_WORKFLOW} onChange={vi.fn()} selected={null} onSelect={onSelect} />); });
+  await act(async () => { root.render(<WorkflowCanvas workflow={wider} onChange={vi.fn()} selected="new-check" onSelect={onSelect} />); });
+  expect(onSelect).not.toHaveBeenCalled();
+  expect(node("new-check").classList.contains("selected")).toBe(true);
 });
 
 // Keyboard deletion. React Flow listens on the document, so the key goes to document.body, and a keyup
@@ -205,3 +232,163 @@ for (const [label, wf, editable] of [
     expect(fitted.y).toBeCloseTo(opened.y, 1);
   });
 }
+
+// Adding a step (#122): it goes below the step it follows, and the steps after it make room.
+const COL = 320, ROW = 130;
+const tidied = (wf: typeof DEFAULT_WORKFLOW) => {
+  const at = layout(wf, true);
+  return { ...wf, steps: wf.steps.map((s) => ({ ...s, position: at.get(s.id) }) as Step) };
+};
+const expectNoOverlap = (wf: typeof DEFAULT_WORKFLOW) => {
+  const at = [...layout(wf)];
+  for (const [i, [a, p]] of at.entries()) for (const [b, q] of at.slice(i + 1)) expect({ a, b, overlap: Math.abs(p.x - q.x) < COL && Math.abs(p.y - q.y) < ROW }).toEqual({ a, b, overlap: false });
+};
+
+for (const [label, wf] of [["every step placed (after Tidy)", tidied(SIX_STEPS)], ["no step placed", SIX_STEPS]] as const) {
+  it(`places a step inserted mid-flow directly below the one it follows, with ${label}`, () => {
+    const { workflow, id } = insertStepAfter(wf, "agent", "build");
+    const placed = placeNewStep(workflow, id);
+    expectNoOverlap(placed);
+    const at = layout(placed);
+    expect(at.get(id)).toEqual({ x: at.get("build")!.x, y: at.get("build")!.y + ROW });
+    // Steps before it stay where they were.
+    for (const before of ["model", "plan", "review-plan", "build"]) expect(at.get(before)).toEqual(layout(wf).get(before));
+  });
+}
+
+it("moves a new step aside when the spot below the step it follows is taken by a parallel branch", () => {
+  const branches = tidied(workflowSchema.parse({
+    id: "b",
+    name: "b",
+    steps: [
+      { id: "a", name: "A", type: "agent", next: ["b", "c"] },
+      { id: "b", name: "B", type: "agent" },
+      { id: "c", name: "C", type: "agent", next: ["d"] },
+      { id: "d", name: "D", type: "agent" },
+    ],
+  }));
+  const { workflow, id } = insertStepAfter(branches, "agent", "b");
+  expectNoOverlap(placeNewStep(workflow, id));
+});
+
+it("makes room below a step without a stored position when later steps have one", () => {
+  // The old toolbar stored a position on the added step only, so saved workflows mix placed and unplaced steps.
+  const mixed = { ...SIX_STEPS, steps: SIX_STEPS.steps.map((s) => (s.id === "ship" ? ({ ...s, position: { x: 0, y: 5 * ROW } } as Step) : s)) };
+  const { workflow, id } = insertStepAfter(mixed, "agent", "build");
+  const placed = placeNewStep(workflow, id);
+  expectNoOverlap(placed);
+  expect(layout(placed).get(id)).toEqual({ x: 0, y: 4 * ROW });
+});
+
+it("does not move a later step onto a parallel branch", () => {
+  const branches = tidied(workflowSchema.parse({
+    id: "b",
+    name: "b",
+    steps: [
+      { id: "a", name: "A", type: "agent", next: ["b", "c"] },
+      { id: "b", name: "B", type: "agent", next: ["d"] },
+      { id: "c", name: "C", type: "agent", next: ["e"] },
+      { id: "d", name: "D", type: "agent" },
+      { id: "e", name: "E", type: "agent", next: ["f"] },
+      { id: "f", name: "F", type: "agent" },
+    ],
+  }));
+  const { workflow, id } = insertStepAfter(branches, "agent", "b");
+  const placed = placeNewStep(workflow, id);
+  expectNoOverlap(placed);
+  expect(layout(placed).get(id)).toEqual({ x: 0, y: 2 * ROW });
+});
+
+/** The editor around the canvas: it holds the workflow and the selection, as the canvas is controlled. */
+let current: typeof DEFAULT_WORKFLOW;
+function Editor({ workflow, selected = null }: { workflow: typeof DEFAULT_WORKFLOW; selected?: string | null }) {
+  const [wf, setWf] = useState(workflow);
+  const [sel, setSel] = useState(selected);
+  current = wf;
+  return <WorkflowCanvas workflow={wf} onChange={setWf} selected={sel} onSelect={setSel} />;
+}
+const expectInView = (id: string) => {
+  const { x, y, zoom } = viewport();
+  const p = layout(current).get(id)!;
+  const left = x + p.x * zoom, top = y + p.y * zoom;
+  expect({ left: left >= 0, top: top >= 0, right: left + 200 * zoom <= PANE.width, bottom: top + 100 * zoom <= PANE.height }).toEqual({ left: true, top: true, right: true, bottom: true });
+};
+
+for (const [label, selected] of [["at the end", null], ["after the selected step", "review"]] as const) {
+  it(`brings a step added ${label} into view, keeping the zoom`, async () => {
+    await act(async () => { root.render(<Editor workflow={SIX_STEPS} selected={selected} />); });
+    await settle();
+    const zoom = viewport().zoom;
+    await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label^="Add Agent step"]')!.click(); });
+    await settle(400);
+    expect(current.steps.at(-1)!.id).toBe("new-agent");
+    expect(current.steps.find((s) => s.next.includes("new-agent"))!.id).toBe(selected ?? "ship");
+    expectInView("new-agent");
+    expect(viewport().zoom).toBeCloseTo(zoom, 3);
+  });
+}
+
+it("pans to a step added after a selected step that is out of view, keeping the zoom", async () => {
+  await act(async () => { root.render(<Editor workflow={SIX_STEPS} selected="ship" />); });
+  await settle();
+  for (let i = 0; i < 4; i++) {
+    await act(async () => { container.querySelector<HTMLButtonElement>(".react-flow__controls-zoomin")!.click(); });
+    await settle(400);
+  }
+  const zoom = viewport().zoom;
+  // Zoomed in on the middle of the flow: the step after Ship starts outside the pane.
+  const before = viewport();
+  const below = { x: 0, y: layout(SIX_STEPS).get("ship")!.y + 130 };
+  expect(before.y + below.y * zoom > PANE.height).toBe(true);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label^="Add Check step"]')!.click(); });
+  await settle(400);
+  expect(layout(current).get("new-check")).toEqual(below);
+  expectInView("new-check");
+  expect(viewport().zoom).toBeCloseTo(zoom, 3);
+});
+
+it("keeps steps apart when inserting among dragged, off-grid positions", () => {
+  const offsets: Record<string, { x: number; y: number }> = { model: { x: 13, y: -7 }, plan: { x: -40, y: 6 }, "review-plan": { x: 55, y: 9 }, build: { x: 7, y: 33 }, review: { x: -18, y: 41 }, ship: { x: 90, y: 57 } };
+  const base = tidied(SIX_STEPS);
+  const dragged = { ...base, steps: base.steps.map((s) => ({ ...s, position: { x: s.position!.x + offsets[s.id]!.x, y: s.position!.y + offsets[s.id]!.y } }) as Step) };
+  expectNoOverlap(dragged);
+  for (const after of ["plan", "build", "review", null]) {
+    const { workflow, id } = insertStepAfter(dragged, "agent", after);
+    expectNoOverlap(placeNewStep(workflow, id));
+  }
+});
+
+// Toolbar and Full screen (#121). jsdom has no layout, so these check the structure that keeps them apart:
+// one in-flow bar above the React Flow frame, with Full screen as its last button.
+const toolbar = () => container.querySelector<HTMLElement>('[role="group"][aria-label="Canvas tools"]');
+const fullScreenButtons = () => Array.from(container.querySelectorAll("button")).filter((b) => b.textContent?.trim() === "Full screen");
+const renderWith = (props: { editable: boolean; expanded?: boolean }) =>
+  act(async () => {
+    root.render(<WorkflowCanvas workflow={DEFAULT_WORKFLOW} selected={null} onSelect={onSelect} onChange={props.editable ? vi.fn() : undefined} expanded={props.expanded} onToggleExpanded={vi.fn()} />);
+  });
+
+it("puts Full screen in the editor's toolbar, as its last button, above the canvas", async () => {
+  await renderWith({ editable: true });
+  const bar = toolbar()!;
+  expect(bar).toBeTruthy();
+  expect(fullScreenButtons()).toHaveLength(1);
+  expect(bar.lastElementChild).toBe(fullScreenButtons()[0]);
+  const labels = Array.from(bar.querySelectorAll("button")).map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim());
+  expect(labels).toEqual([...["Agent", "Check", "Ship", "Model"].map((t) => expect.stringMatching(new RegExp(`^Add ${t} step`))), "Arrange steps by order", "Full screen"]);
+  // In flow, outside the canvas, never floating over it.
+  expect(bar.closest(".react-flow")).toBeNull();
+  expect(bar.querySelector(".react-flow")).toBeNull();
+  expect(bar.className).not.toMatch(/(^|\s|:)absolute(\s|$)/);
+});
+
+it("has no Full screen button once the editor is full screen", async () => {
+  await renderWith({ editable: true, expanded: true });
+  expect(toolbar()).toBeTruthy();
+  expect(fullScreenButtons()).toHaveLength(0);
+});
+
+it("keeps the read-only canvas's own Full screen button and no toolbar", async () => {
+  await renderWith({ editable: false });
+  expect(toolbar()).toBeNull();
+  expect(fullScreenButtons()).toHaveLength(1);
+});

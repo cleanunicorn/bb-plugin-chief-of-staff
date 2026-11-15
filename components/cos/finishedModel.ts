@@ -1,14 +1,25 @@
-// The Finished section of the Pipeline tab (#105): finished tasks as compact rows, newest first, grouped by
-// the day they finished. Pure helpers, so ordering, grouping and paging are tested without rendering.
+// The Finished section of the Pipeline tab (#105): finished tasks as compact rows, newest first and grouped by
+// the day they finished, or most tokens first. Pure helpers, so ordering, grouping and paging are tested without rendering.
 import type { Outcome } from "../../src/outcome";
 import { duration, relative } from "./viz";
 
-/** Rows shown at first, and how many more each "Show 20 more" adds. Eight keep Throughput and Activity within one
- * 1000 px screen below the active tasks at 1440 px, with room for a few failed rows' "Why it ended" lines. */
+/** Rows shown at first, and how many more each "Show 20 more" adds. Eight kept Throughput and Activity within about
+ * one 1000 px screen below the active tasks at 1440 px when measured, before the summary header and token figures
+ * came from main (docs/dashboard-validation.md). */
 export const FINISHED_FIRST = 8;
 export const FINISHED_STEP = 20;
 
 export type OutcomeGroup = "shipped" | "marked_done" | "failed";
+
+/** How the server orders finished tasks (rpcContract finishedOrderSchema): most recently finished, or most tokens, first. */
+export type FinishedOrder = "recent" | "tokens";
+const ORDERS: readonly FinishedOrder[] = ["recent", "tokens"];
+
+/** A task's share of all finished tasks' tokens: "12%", or "<1%" for a small non-zero share. */
+export function sharePercent(tokens: number, of: number): string {
+  const pct = (tokens / of) * 100;
+  return pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`;
+}
 
 const GROUP_OF: Record<Outcome, OutcomeGroup> = {
   merged: "shipped",
@@ -124,8 +135,8 @@ export function rangeLabel(range: DayRange): string {
 }
 
 /**
- * The loaded tasks reach back before `day`: older pages cannot finish on it or later. Pages come newest
- * finished first, so the last task with a finish time is the oldest loaded.
+ * The loaded tasks reach back before `day`: older pages cannot finish on it or later. Only for pages that come
+ * newest finished first (the "recent" order), where the last task with a finish time is the oldest loaded.
  */
 export function loadedPast(entries: readonly { finishedAt: string | null }[], day: string): boolean {
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -158,9 +169,9 @@ export function matchesFinishedFilter(entry: Filterable, f: FinishedFilter): boo
   return number !== null && (entry.issueNumber === Number(number[1]) || entry.prNumber === Number(number[1]));
 }
 
-/** What the Finished section shows: open or collapsed, and its filters. */
-export type FinishedView = FinishedFilter & { open: boolean };
-export const DEFAULT_FINISHED_VIEW: FinishedView = { open: true, ...NO_FILTER };
+/** What the Finished section shows: open or collapsed, its order, and its filters. Clearing the filters keeps the order. */
+export type FinishedView = FinishedFilter & { open: boolean; order: FinishedOrder };
+export const DEFAULT_FINISHED_VIEW: FinishedView = { open: true, order: "recent", ...NO_FILTER };
 
 /** Where the view is kept between visits. The date range is not: it comes from a Throughput click and lasts the session. */
 export const FINISHED_VIEW_KEY = "cos.finishedView.v1";
@@ -175,6 +186,7 @@ export function parseFinishedView(raw: unknown): FinishedView {
   const outcomes = Array.isArray(v.outcomes) ? [...new Set(v.outcomes.filter((g): g is OutcomeGroup => GROUPS.includes(g as OutcomeGroup)))] : [];
   return {
     open: typeof v.open === "boolean" ? v.open : DEFAULT_FINISHED_VIEW.open,
+    order: ORDERS.includes(v.order as FinishedOrder) ? (v.order as FinishedOrder) : DEFAULT_FINISHED_VIEW.order,
     outcomes,
     repo: typeof v.repo === "string" && v.repo ? v.repo : null,
     query: typeof v.query === "string" ? v.query.slice(0, MAX_QUERY) : "",
@@ -184,5 +196,5 @@ export function parseFinishedView(raw: unknown): FinishedView {
 
 /** The part of the view that is stored. */
 export function storedFinishedView(view: FinishedView): Omit<FinishedView, "range"> {
-  return { open: view.open, outcomes: [...view.outcomes], repo: view.repo, query: view.query };
+  return { open: view.open, order: view.order, outcomes: [...view.outcomes], repo: view.repo, query: view.query };
 }

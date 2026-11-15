@@ -7,7 +7,8 @@ boring parts of shipping for you.
 
 A roster of every thread the plugin started: queued, running, waiting on
 human, blocked, done or failed, with repo, issue, PR, start time, last
-activity and token usage when the provider reports it. Stalls and failures
+activity and token usage when the provider reports it, summed over every
+agent thread of the task and totalled in Throughput. Stalls and failures
 raise a notification; you can retry, resume or re-run checks from the panel,
 `bb cos status`, or the `chief_of_staff_status` agent tool. An agent that hits
 its Claude or Codex usage limit (the 5-hour window) is not a failure: its step

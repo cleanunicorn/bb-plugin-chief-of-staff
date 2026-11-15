@@ -3,6 +3,7 @@
 // card shows its own workflow's steps.
 import type { Palette, Tone } from "./viz";
 import { STATUS } from "./viz";
+import { STAGE_ICON } from "./dashboardIcons";
 
 export type StageKey = "queued" | "agent" | "cos" | "pr" | "human";
 
@@ -16,11 +17,11 @@ export interface Stage {
 }
 
 export const STAGES: Stage[] = [
-  { key: "queued", label: "Queued", icon: "Clock", ramp: 0, hint: "Waiting to start" },
-  { key: "agent", label: "Agents working", icon: "Bot", ramp: 2, hint: "An agent is working on a step" },
-  { key: "cos", label: "Checks & shipping", icon: "Cog", ramp: 3, hint: "Chief of Staff runs a check, pushes or merges (or retries after an error)" },
-  { key: "pr", label: "PR open", icon: "GitPullRequest", ramp: 5, hint: "Pull request open: CI running, or green and ready to merge" },
-  { key: "human", label: "Needs you", icon: "Hand", tone: "warning", hint: "A step waits on you: a question, an approval, or a decision" },
+  { key: "queued", label: "Queued", icon: STAGE_ICON.queued, ramp: 0, hint: "Waiting to start" },
+  { key: "agent", label: "Agents working", icon: STAGE_ICON.agent, ramp: 2, hint: "An agent is working on a step" },
+  { key: "cos", label: "Checks & shipping", icon: STAGE_ICON.cos, ramp: 3, hint: "Chief of Staff runs a check, pushes or merges (or retries after an error)" },
+  { key: "pr", label: "PR open", icon: STAGE_ICON.pr, ramp: 5, hint: "Pull request open: CI running, or green and ready to merge" },
+  { key: "human", label: "Needs you", icon: STAGE_ICON.human, tone: "warning", hint: "A step waits on you: a question, an approval, or a decision" },
 ];
 
 /** The dashboard group an entry belongs to (null for finished items). */

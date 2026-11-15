@@ -42,7 +42,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
             all: { type: "boolean", description: "Add the most recently finished items after the active ones" },
             "finished-limit": { type: "integer", description: `Finished items per page with --all (default ${ROSTER_FINISHED_LIMIT})`, min: 1, max: ROSTER_FINISHED_MAX },
             before: { type: "string", description: "Cursor from an earlier page: list only the next page of finished items (implies --all)" },
-            usage: { type: "boolean", description: "Include token usage / cost when the provider reports it" },
+            usage: { type: "boolean", description: "Include each task's token usage / cost over all its agent threads (with --json), when the provider reports it: read live for active tasks, the stored count for finished ones" },
             json: { type: "boolean", description: "JSON output" },
           },
           async run(input) {

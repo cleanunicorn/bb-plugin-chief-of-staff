@@ -158,6 +158,58 @@ export async function readThreadUsage(cos: Cos, threadId: string): Promise<Usage
   return { usage, complete: answered(tokens) && answered(cost) };
 }
 
+/** A task's usage: the sum over its agent threads of what each reported. */
+export interface TaskUsage extends ThreadUsage {
+  /** Agent threads summed. */
+  threads: number;
+  /** Of those, the threads that reported any usage. */
+  reportedThreads: number;
+}
+
+const reportedAny = (u: ThreadUsage) => u.inputTokens != null || u.outputTokens != null || u.totalTokens != null || u.cost != null;
+
+/**
+ * Sum threads' usage. Each field sums only the threads that reported it, and
+ * stays null when none did (never 0). Cost sums when every reported cost has
+ * one currency; with mixed currencies it is null.
+ */
+export function sumUsage(reads: readonly ThreadUsage[]): TaskUsage {
+  const add = (key: "inputTokens" | "outputTokens" | "totalTokens") => reads.reduce<number | null>((sum, u) => (u[key] == null ? sum : (sum ?? 0) + u[key]), null);
+  const costs = reads.flatMap((u) => (u.cost ? [u.cost] : []));
+  const currency = costs[0]?.currency;
+  const cost = currency !== undefined && costs.every((c) => c.currency === currency) ? { amount: costs.reduce((sum, c) => sum + c.amount, 0), currency } : null;
+  return { inputTokens: add("inputTokens"), outputTokens: add("outputTokens"), totalTokens: add("totalTokens"), cost, threads: reads.length, reportedThreads: reads.filter(reportedAny).length };
+}
+
+/** Run `fn` over `items`, at most `limit` at a time. */
+export async function mapLimit<T>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      await fn(items[i]!, i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+/** Threads whose usage is read at once (each read makes two SDK calls). */
+export const USAGE_CONCURRENCY = 4;
+
+/**
+ * Read the usage of several groups of threads (one group per task) with at
+ * most USAGE_CONCURRENCY thread reads in flight, and sum each group. A
+ * group is complete when every one of its reads is.
+ */
+export async function readTasksUsage(cos: Cos, groups: readonly (readonly string[])[]): Promise<{ usage: TaskUsage; complete: boolean }[]> {
+  const reads = groups.map((ids) => ids.map(() => null as UsageRead | null));
+  const pairs = groups.flatMap((ids, g) => ids.map((threadId, t) => ({ g, t, threadId })));
+  await mapLimit(pairs, USAGE_CONCURRENCY, async ({ g, t, threadId }) => {
+    reads[g]![t] = await readThreadUsage(cos, threadId);
+  });
+  return reads.map((group) => ({ usage: sumUsage(group.map((r) => r!.usage)), complete: group.every((r) => r!.complete) }));
+}
+
 export async function sendToThread(cos: Cos, threadId: string, text: string, mentions: SkillMention[] = [], delivery?: DeliveryHooks): Promise<void> {
   delivery?.sending();
   await cos.bb.sdk.threads.send({ threadId, mode: "auto", input: [{ type: "text", text, mentions }] });

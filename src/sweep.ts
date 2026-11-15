@@ -1,6 +1,6 @@
 // Per-minute sweep driven by one durable bb.background.schedule: issue
-// intake, CI watching, PR state, thread sync, retries, stall detection and
-// daily retention.
+// intake, CI watching, PR state, thread sync, retries, stall detection,
+// finished tasks' token usage and daily retention.
 import type { Cos } from "./context";
 import { runIntake } from "./intake";
 import { watchCi } from "./delivery";
@@ -9,6 +9,7 @@ import { detectStalls } from "./roster";
 import { syncThreads, tickItems } from "./sync";
 import { groupExistingThreads } from "./threadGroups";
 import { maybeRunRetention } from "./retention";
+import { countFinishedUsage } from "./usage";
 
 const KV_LAST_INTAKE = "sweep:lastIntakeAt";
 const KV_LAST_CI = "sweep:lastCiAt";
@@ -76,6 +77,8 @@ export async function sweep(cos: Cos): Promise<void> {
     await syncThreads(cos, "schedule:sync").catch(warn("thread sync"));
     await tickItems(cos, "schedule:tick").catch(warn("item tick"));
     await detectStalls(cos, "schedule:stall").catch(warn("stall detection"));
+    // A bounded batch of finished tasks' token usage, summed over all their threads.
+    await countFinishedUsage(cos).catch(warn("usage count"));
     await maybeRunRetention(cos, "schedule:retention").catch(warn("retention"));
     // A limit this sweep ran into: its end refreshes the dashboard too.
     wasLimited ||= limited();

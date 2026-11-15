@@ -8,6 +8,7 @@ import { Icon } from "@/components/ui/icon";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { taskLabel, type ActivityTask } from "./dashboardModel";
+import { CARD_ACTION_ICON } from "./dashboardIcons";
 
 export type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
 export type Confirmable = "mark_done" | "mark_failed" | "restart";
@@ -63,7 +64,7 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button ref={trigger} size="sm" variant="ghost" className="h-7 w-7 shrink-0 p-0 pointer-coarse:size-10" aria-label="More actions" tabIndex={tabIndex} disabled={busy}>
-          <Icon name="Ellipsis" fallback="MoreHorizontal" aria-hidden />
+          <Icon name={CARD_ACTION_ICON.moreActions} fallback="MoreHorizontal" aria-hidden />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -79,7 +80,7 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
       >
         {onShowActivity ? (
           <DropdownMenuItem onSelect={() => { showingActivity.current = true; }}>
-            <Icon name="Activity" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+            <Icon name={CARD_ACTION_ICON.showActivity} fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
             Show activity
           </DropdownMenuItem>
         ) : null}

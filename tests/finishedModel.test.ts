@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Outcome } from "../src/outcome";
-import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, parseFinishedView, storedFinishedView, dayLabel, finishDay, fmtDay, loadedPast, rangeLabel, finishedTimer, groupByDay, isFiltering, matchesFinishedFilter, mergePages, outcomeGroup, visibleSlice } from "../components/cos/finishedModel";
+import { FINISHED_FIRST, FINISHED_STEP, NO_FILTER, parseFinishedView, storedFinishedView, dayLabel, finishDay, fmtDay, loadedPast, rangeLabel, finishedTimer, groupByDay, isFiltering, matchesFinishedFilter, mergePages, outcomeGroup, sharePercent, visibleSlice } from "../components/cos/finishedModel";
 
 const NOW = Date.parse("2026-11-14T15:00:00.000Z");
 
@@ -196,20 +196,28 @@ describe("date range", () => {
   });
 });
 
+describe("sharePercent", () => {
+  it("rounds a share, and says <1% for a small non-zero one", () => {
+    expect(sharePercent(100_000, 400_000)).toBe("25%");
+    expect(sharePercent(3_000, 400_000)).toBe("<1%");
+    expect(sharePercent(0, 400_000)).toBe("0%");
+  });
+});
+
 describe("parseFinishedView", () => {
-  const defaults = { open: true, outcomes: [], repo: null, query: "", range: null };
+  const defaults = { open: true, order: "recent", outcomes: [], repo: null, query: "", range: null };
 
   it("reads a stored view, never its date range", () => {
-    expect(parseFinishedView({ open: false, outcomes: ["failed", "shipped"], repo: "acme/app", query: "login", range: { from: "2026-11-01", to: "2026-11-02" } })).toEqual({ open: false, outcomes: ["failed", "shipped"], repo: "acme/app", query: "login", range: null });
+    expect(parseFinishedView({ open: false, order: "tokens", outcomes: ["failed", "shipped"], repo: "acme/app", query: "login", range: { from: "2026-11-01", to: "2026-11-02" } })).toEqual({ open: false, order: "tokens", outcomes: ["failed", "shipped"], repo: "acme/app", query: "login", range: null });
   });
 
   it("falls back to the default for anything malformed", () => {
     for (const raw of [null, undefined, "x", 3, []]) expect(parseFinishedView(raw)).toEqual(defaults);
-    expect(parseFinishedView({ open: "no", outcomes: ["shipped", "nope", 4, "shipped"], repo: 7, query: null })).toEqual({ ...defaults, outcomes: ["shipped"] });
+    expect(parseFinishedView({ open: "no", order: "size", outcomes: ["shipped", "nope", 4, "shipped"], repo: 7, query: null })).toEqual({ ...defaults, outcomes: ["shipped"] });
     expect(parseFinishedView({ outcomes: "failed", repo: "", query: "x".repeat(500) })).toEqual({ ...defaults, query: "x".repeat(200) });
   });
 
   it("stores the view without its date range", () => {
-    expect(storedFinishedView({ open: false, outcomes: ["failed"], repo: null, query: "q", range: { from: "2026-11-01", to: "2026-11-01" } })).toEqual({ open: false, outcomes: ["failed"], repo: null, query: "q" });
+    expect(storedFinishedView({ open: false, order: "tokens", outcomes: ["failed"], repo: null, query: "q", range: { from: "2026-11-01", to: "2026-11-01" } })).toEqual({ open: false, order: "tokens", outcomes: ["failed"], repo: null, query: "q" });
   });
 });

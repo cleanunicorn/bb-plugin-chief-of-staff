@@ -8,7 +8,8 @@ export const threadParentKey = (itemId: string) => `thread-parent:${itemId}`;
 /** kv key of the item's thread set as of its last complete grouping pass. */
 export const threadGroupKey = (itemId: string) => `thread-group:${itemId}`;
 const parentKey = (item: WorkItem) => threadParentKey(item.id);
-export function itemThreadIds(cos: Cos, item: WorkItem): string[] {
+/** Every agent thread of the item: its item_threads rows, and the builder thread of items older than that table. */
+export function itemThreadIds(cos: Pick<Cos, "store">, item: Pick<WorkItem, "id" | "threadId">): string[] {
   return [...new Set([...cos.store.listThreads(item.id).map((t) => t.threadId), ...(item.threadId ? [item.threadId] : [])])];
 }
 

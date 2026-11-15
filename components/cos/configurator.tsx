@@ -1,21 +1,23 @@
 // Visual configurator: the delivery workflow, repositories, general settings
 // and GitHub access. Edits drafts locally, then saves through cos_set_config (the same
 // JSON documents the server parses) and cos_set_settings (scalar settings).
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { experimental_useRpcQuery, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "../../rpcContract";
 import type { GeneralSettings } from "../../rpcContract";
 import type { RepoConfig } from "../../src/config";
 import { isPlaceholderRepo, repoKey } from "../../src/config";
-import { blankRepo, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
-import { DEFAULT_DOCUMENT, parseWorkflows, serializeWorkflows, workflowProblems } from "../../src/workflow";
+import { blankRepo, capacityWarnings, detachWorkflow, generalSettingsProblems, inferIdentity, loadRepos, parseRepoSlug, selectProject, serializeRepos, validateRepos } from "../../src/configModel";
+import { DEFAULT_DOCUMENT, parseWorkflows, problemKey, serializeWorkflows, workflowProblems } from "../../src/workflow";
 import type { WorkflowsDocument } from "../../src/workflow";
-import { WorkflowsEditor } from "./workflowEditor";
+import { WorkflowsEditor, type WorkflowReveal } from "./workflowEditor";
 import { useConfigDrafts } from "./configDrafts";
+import type { ConfigSection } from "./configRoute";
 import type { ConfigDrafts } from "./configDrafts";
 import { useRowKeys } from "./rowKeys";
 import { Button } from "../ui/button";
+import { ConfirmDialog } from "../ui/confirm-dialog";
 import { Field, TextInput, NumberInput, ListInput, Select, ToggleRow, Group, Problems, ConfirmRemove, inputClass } from "./fields";
 import { Icon } from "../ui/icon";
 import { cn } from "../../lib/utils";
@@ -26,14 +28,19 @@ type SettingsData = PluginRpcResult<Contract["cos_get_settings"]>;
 type Project = SettingsData["projects"][number];
 type Provider = SettingsData["providers"][number];
 
-const SECTIONS = [
+export const SECTIONS = [
   { id: "workflow", label: "Workflows", icon: "Workflow" },
   { id: "repos", label: "Repositories", icon: "FolderGit2" },
   { id: "general", label: "General", icon: "SlidersHorizontal" },
   { id: "access", label: "GitHub access", icon: "KeyRound" },
   { id: "advanced", label: "Advanced JSON", icon: "Braces" },
-] as const;
-type Section = (typeof SECTIONS)[number]["id"];
+] as const satisfies readonly { id: ConfigSection; label: string; icon: string }[];
+type Section = ConfigSection;
+
+/** "A", "A and B", "A, B and C". */
+function joinNames(names: readonly string[]): string {
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : (names[0] ?? "");
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -161,7 +168,11 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
       </header>
       {open ? (
         <div className="flex flex-col gap-5 border-t border-border px-3 py-4">
-          <Problems items={problems} />
+          {problems.length ? (
+            <div data-problem>
+              <Problems items={problems} />
+            </div>
+          ) : null}
           <Group title="Source" icon="FolderGit2">
             <Field label="BB project" hint="The project whose checkout agents work in. Project ids are specific to this bb.">
               {(id) => <ProjectPicker id={id} value={repo.projectId} projects={projects} repo={repo} onChange={(v) => onChange(selectProject(repo, v, projects))} />}
@@ -174,7 +185,7 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
             <ToggleRow label="Pick up issues" hint="Off: only tasks you start." checked={repo.intake} onChange={(v) => set("intake", v)} />
             <Field label="Issue labels" hint="Issues must carry all of these. Comma separated.">{(id) => <ListInput id={id} value={repo.issueFilter.labels} onChange={(v) => set("issueFilter", { ...repo.issueFilter, labels: v })} placeholder="agent-ready" />}</Field>
             <Field label="Assignee" hint="Optional GitHub login.">{(id) => <TextInput id={id} value={repo.issueFilter.assignee ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, assignee: v })} placeholder="any" />}</Field>
-            <Field label="Max concurrent tasks">{(id) => <NumberInput id={id} value={repo.maxConcurrent} min={0} max={50} onChange={(v) => set("maxConcurrent", v)} />}</Field>
+            <Field label="Max concurrent tasks" hint="Tasks running at once in this repository. 0 starts no new tasks here.">{(id) => <NumberInput id={id} value={repo.maxConcurrent} min={0} max={50} onChange={(v) => set("maxConcurrent", v)} />}</Field>
           </Group>
           <Group title="Agent" icon="Bot" cols={3}>
             <Field label="Provider">{(id) => <ProviderPicker id={id} value={repo.providerId ?? ""} providers={providers} allowDefault={`Default (${defaultProvider || "bb default"})`} onChange={(v) => set("providerId", v)} />}</Field>
@@ -237,8 +248,8 @@ function GeneralEditor({ values, onChange, providers, errors = {} }: { values: G
   return (
     <div className="flex flex-col gap-5">
       <Group title="Capacity" icon="Gauge" cols={3}>
-        <Field label="Max tasks across all repos" error={errors.maxConcurrentTotal}>{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
-        <Field label="Intake every (minutes)" error={errors.intakeIntervalMinutes}>{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
+        <Field label="Max tasks across all repos" hint="Tasks running at once, across all repositories. 0 starts no new tasks." error={errors.maxConcurrentTotal}>{(id) => <NumberInput id={id} value={values.maxConcurrentTotal} min={0} max={100} onChange={(v) => set("maxConcurrentTotal", v)} />}</Field>
+        <Field label="Intake every (minutes)" hint="How often each repository is checked for new matching issues." error={errors.intakeIntervalMinutes}>{(id) => <NumberInput id={id} value={values.intakeIntervalMinutes} min={1} max={1440} onChange={(v) => set("intakeIntervalMinutes", v)} />}</Field>
         <Field label="Stalled after (minutes)" hint="No activity for this long marks an agent stalled." error={errors.stallThresholdMinutes}>{(id) => <NumberInput id={id} value={values.stallThresholdMinutes} min={1} max={1440} onChange={(v) => set("stallThresholdMinutes", v)} />}</Field>
       </Group>
       <Group title="Default agent" icon="Bot" cols={2}>
@@ -309,7 +320,8 @@ function AccessEditor({ token, onSaved }: { token: SettingsData["token"]; onSave
 }
 
 /** The raw documents. Controlled: the drafts live with the other unsaved edits. */
-function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, locked, saving, onSave, onRevert }: { repos: string; workflow: string; draftRepos: string | null; draftWorkflow: string | null; onChange: (doc: "repos" | "workflow", text: string) => void; locked: boolean; saving: boolean; onSave: () => void; onRevert: () => void }) {
+/** `onRevert` gets the Revert button, to return focus to if the user keeps their edits. */
+function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, locked, saving, onSave, onRevert }: { repos: string; workflow: string; draftRepos: string | null; draftWorkflow: string | null; onChange: (doc: "repos" | "workflow", text: string) => void; locked: boolean; saving: boolean; onSave: () => void; onRevert: (opener: HTMLElement) => void }) {
   const dirty = draftRepos !== null || draftWorkflow !== null;
   return (
     <div className="flex flex-col gap-3">
@@ -323,7 +335,7 @@ function AdvancedEditor({ repos, workflow, draftRepos, draftWorkflow, onChange, 
         <Button size="sm" disabled={locked || !dirty || saving} onClick={onSave}>
           {saving ? "Saving…" : "Save JSON"}
         </Button>
-        <Button size="sm" variant="outline" disabled={!dirty || saving} onClick={onRevert}>
+        <Button size="sm" variant="outline" disabled={!dirty || saving} onClick={(e) => onRevert(e.currentTarget)}>
           Revert
         </Button>
       </div>
@@ -371,19 +383,47 @@ function LoadFailure({ messages, retrying, onRetry }: { messages: string[]; retr
 /**
  * Pass `drafts` to keep unsaved edits after the Configurator unmounts (the
  * dashboard does, so they survive tab switches); otherwise it keeps its own.
+ * Pass `section` and `onSectionChange` to own the section (the dashboard keeps
+ * it in the page address); otherwise it starts at `initialSection` and keeps its own.
  */
-export function Configurator({ initialSection = "workflow", compact = false, drafts }: { initialSection?: Section; compact?: boolean; drafts?: ConfigDrafts }) {
+export function Configurator({
+  initialSection = "workflow",
+  section: controlledSection,
+  onSectionChange,
+  compact = false,
+  drafts,
+}: {
+  initialSection?: Section;
+  section?: Section;
+  onSectionChange?: (section: Section) => void;
+  compact?: boolean;
+  drafts?: ConfigDrafts;
+}) {
   const rpc = useRpc<Contract>();
   const own = useConfigDrafts();
   const { repos, setRepos, general, setGeneral, workflow, setWorkflow, advancedRepos, setAdvancedRepos, advancedWorkflow, setAdvancedWorkflow, saving, setSaving, status, setStatus, pendingConfig, setPendingConfig, savingRef, clear } = drafts ?? own;
   const config = experimental_useRpcQuery<Contract, "cos_get_config">({ contract: rpcContract, method: "cos_get_config", input: null });
   const settings = experimental_useRpcQuery<Contract, "cos_get_settings">({ contract: rpcContract, method: "cos_get_settings", input: null });
-  const [section, setSection] = useState<Section>(initialSection);
+  const [ownSection, setOwnSection] = useState<Section>(initialSection);
+  const controlled = controlledSection !== undefined && onSectionChange !== undefined;
+  const section = controlled ? controlledSection : ownSection;
+  /** Every section change goes through here; re-selecting the current section does nothing (no extra history entry). */
+  const selectSection = (next: Section) => {
+    if (next === section) return;
+    if (controlled) onSectionChange(next);
+    else setOwnSection(next);
+  };
   const [openRepo, setOpenRepo] = useState<number | null>(null);
   // A "Saved." or error line belongs to this visit; don't show it again after a tab switch.
   useEffect(() => () => setStatus(null), [setStatus]);
   const [retrying, setRetrying] = useState(false);
   const repoKeys = useRowKeys<RepoConfig>();
+  // What was asked outlives the opening: the dialog keeps naming the sections while it closes, after their drafts are gone.
+  const [confirming, setConfirming] = useState<{ kind: "discard" | "revert"; sections: string[]; offScreen: boolean; open: boolean; confirmed: boolean }>({ kind: "discard", sections: [], offScreen: false, open: false, confirmed: false });
+  /** The button that asked, where focus returns when the dialog is cancelled. */
+  const confirmOpener = useRef<HTMLElement | null>(null);
+  /** The nav button of the section on screen: where focus goes once a confirmed Discard or Revert has removed or disabled the button that asked. */
+  const currentSectionButton = useRef<HTMLButtonElement>(null);
 
   // refetch() resolves on failure, so only returned data can confirm a saved document.
   // Compare the draft identity too: edits made while reloading must remain unsaved.
@@ -440,19 +480,39 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   // Only what would be sent: a loaded value out of range must not block other edits.
   const generalIssues = useMemo(() => generalSettingsProblems(generalChanges), [generalChanges]);
   const generalErrors = useMemo(() => Object.fromEntries(generalIssues.map((p) => [p.key, p.text])) as Partial<Record<keyof GeneralSettings, string>>, [generalIssues]);
-  /** Every blocking problem, with where it is, so the save bar can point at it. */
+  /**
+   * Every blocking problem, by where it is, so the section badges and the save bar can count and point at
+   * them; each section lists the problems themselves. `name` is the repository's. Workflow problems are
+   * counted as the Workflows editor lists them.
+   */
   const problems = useMemo(() => {
-    const out: { section: Section; repo?: number; text: string }[] = [];
+    const out: { section: Section; repo?: number; name?: string }[] = [];
     for (const [i, list] of Object.entries(repoIssues)) {
       const r = repoDraft[Number(i)];
       const name = r && r.owner && r.repo ? repoKey(r) : `Repository ${Number(i) + 1}`;
-      for (const text of list) out.push({ section: "repos", repo: Number(i), text: `${name}: ${text}` });
+      for (const _ of list) out.push({ section: "repos", repo: Number(i), name });
     }
-    for (const text of new Set(workflowIssues.map((p) => p.text))) out.push({ section: "workflow", text });
-    for (const p of generalIssues) out.push({ section: "general", text: p.text });
+    for (const _ of new Set(workflowIssues.map(problemKey))) out.push({ section: "workflow" });
+    for (const _ of generalIssues) out.push({ section: "general" });
     return out;
   }, [repoIssues, repoDraft, workflowIssues, generalIssues]);
+  /** Valid but worth a second look (a limit of 0 starts no new tasks); never blocks saving. */
+  const warnings = useMemo(() => capacityWarnings(generalChanges, dirty.repos ? repoDraft : null), [generalChanges, dirty.repos, repoDraft]);
   const sectionProblems = (id: Section) => problems.filter((p) => p.section === id).length;
+  // The save bar shows a count; expanded, the sections (and repositories) with problems that are not on screen.
+  const [barOpen, setBarOpen] = useState(false);
+  /** Set when a Workflows summary is used: the editor opens on that workflow and step. Cleared by ordinary navigation. */
+  const [reveal, setReveal] = useState<WorkflowReveal | null>(null);
+  /** Bumped to bring the first problem in the shown section into view, after it renders. */
+  const [seek, setSeek] = useState(0);
+  const content = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!seek) return;
+    const target = content.current?.querySelector<HTMLElement>("[data-problem]");
+    // jsdom has no scrollIntoView. Centered, so the sticky save bar does not cover it.
+    target?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    target?.querySelector<HTMLElement>("input, select, textarea, button")?.focus({ preventScroll: true });
+  }, [seek]);
   const usedBy = useMemo(() => {
     const out: Record<string, string[]> = {};
     for (const r of repoDraft) {
@@ -590,6 +650,8 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const providers = settings.data?.providers ?? [];
   const counts: Record<Section, number | null> = { workflow: null, repos: reposBlocked ? null : repoDraft.length, general: null, access: null, advanced: null };
   const sectionDirty: Record<Section, boolean> = { workflow: dirty.workflow, repos: dirty.repos, general: dirty.general, access: false, advanced: advancedDirty };
+  /** The labels behind the "unsaved" dots, in the section list's order. */
+  const dirtySections = SECTIONS.filter((s) => sectionDirty[s.id]).map((s) => s.label);
   const loadErrors: { section: Section; title: string; error: string }[] = [
     ...(reposError !== null ? [{ section: "repos" as const, title: "Repositories", error: reposError }] : []),
     ...(workflowError !== null ? [{ section: "workflow" as const, title: "Workflows", error: workflowError }] : []),
@@ -598,11 +660,49 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
   const banner = loadErrors
     .filter((e) => e.section !== section)
     .map((e) => `${e.title} JSON does not load: ${e.error}. ${section === "advanced" ? "Repair it below." : "Repair it in Advanced JSON; until then the visual editor leaves it unchanged and does not save it."}`);
-  const openAdvanced = () => setSection("advanced");
+  /** Discard (the save bar) and Revert (Advanced JSON) drop drafts that cannot be got back, so both ask first. */
+  const ask = (kind: "discard" | "revert", opener: HTMLElement) => {
+    confirmOpener.current = opener;
+    // Revert names no sections: it only ever drops the Advanced JSON drafts.
+    const sections = kind === "discard" ? dirtySections : [];
+    const onScreen = SECTIONS.find((s) => s.id === section)?.label;
+    setConfirming({ kind, sections, offScreen: sections.some((label) => label !== onScreen), open: true, confirmed: false });
+  };
+  const confirmCopy = confirming.kind === "discard"
+    ? { title: `Discard changes to ${joinNames(confirming.sections)}?`, description: `Your edits go back to the saved values${confirming.offScreen ? ", including in sections not on screen" : ""}. This cannot be undone.`, confirmLabel: "Discard" }
+    : { title: "Revert your Advanced JSON edits?", description: "Both documents go back to the saved JSON. This cannot be undone.", confirmLabel: "Revert" };
+  const openAdvanced = () => selectSection("advanced");
   const visualSection = section === "workflow" || section === "repos" || section === "general";
   // A JSON save sends only the JSON documents and the server validates them, so the visual
   // problems (which point into sections that are inert right now) don't block it.
   const blocking = advancedDirty ? [] : problems;
+  const cautions = advancedDirty ? [] : warnings;
+  /** The blocking problems per section, and per repository. */
+  const summaries: { key: string; label: string; count: number; section: Section; repo?: number }[] = [];
+  for (const p of blocking) {
+    const key = p.repo === undefined ? p.section : `${p.section}/${p.repo}`;
+    const found = summaries.find((x) => x.key === key);
+    if (found) found.count++;
+    else summaries.push({ key, label: [SECTIONS.find((x) => x.id === p.section)!.label, p.name].filter(Boolean).join(" · "), count: 1, section: p.section, repo: p.repo });
+  }
+  const order = (id: Section) => SECTIONS.findIndex((x) => x.id === id);
+  summaries.sort((a, b) => order(a.section) - order(b.section));
+  // What is on screen lists its own problems: the Workflows and General sections, and the open repository.
+  const offScreen = summaries.filter((x) => x.section !== section || (x.section === "repos" && x.repo !== openRepo));
+  // Once nothing is left to list, Show starts collapsed again rather than reopening unasked later.
+  if (barOpen && !offScreen.length) setBarOpen(false);
+  const goToSummary = (x: (typeof summaries)[number]) => {
+    selectSection(x.section);
+    if (x.section === "workflow") {
+      const first = workflowIssues.find((p) => p.workflow !== undefined && p.step !== undefined) ?? workflowIssues.find((p) => p.workflow !== undefined);
+      setReveal(first ? { workflow: first.workflow!, step: first.step } : null);
+      if (first?.step === undefined) setSeek((n) => n + 1);
+      return;
+    }
+    setReveal(null);
+    if (x.repo !== undefined) setOpenRepo(x.repo);
+    setSeek((n) => n + 1);
+  };
 
   // A failed refresh keeps the loaded data, so the editor and its drafts stay and the error becomes a banner.
   const failures = Array.from(new Set([config.error, settings.error].filter((e) => e !== null && e !== undefined).map(errorText)));
@@ -615,9 +715,13 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         {SECTIONS.map((s) => (
           <button
             key={s.id}
+            ref={section === s.id ? currentSectionButton : undefined}
             type="button"
             aria-current={section === s.id ? "page" : undefined}
-            onClick={() => setSection(s.id)}
+            onClick={() => {
+              selectSection(s.id);
+              setReveal(null);
+            }}
             className={cn("flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors", section === s.id ? "bg-state-active text-foreground" : "text-muted-foreground hover:bg-state-hover hover:text-foreground")}
           >
             <Icon name={s.icon} fallback="Circle" className="size-4" aria-hidden />
@@ -642,9 +746,9 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
         {advancedDirty && visualSection ? <Problems tone="warning" items={["You have unsaved Advanced JSON edits. Save or discard them before editing here."]} /> : null}
         {visualSection ? (
           // Inert, not unmounted, so the editors keep their place while the JSON draft is pending.
-          <div className={cn("flex flex-col gap-3", advancedDirty && "opacity-50")} inert={advancedDirty}>
+          <div ref={content} className={cn("flex flex-col gap-3", advancedDirty && "opacity-50")} inert={advancedDirty}>
             {section === "workflow" && workflowBlocked ? <BlockedDocument title="Workflows" error={workflowError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
-            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} problems={workflowIssues} /> : null}
+            {section === "workflow" && !workflowBlocked ? <WorkflowsEditor doc={workflowDraft} onChange={editWorkflow} usedBy={usedBy} onDelete={detachRepos} problems={workflowIssues} reveal={reveal ?? undefined} /> : null}
             {section === "repos" && reposBlocked ? <BlockedDocument title="Repositories" error={reposError} locked={anyDirty} onOpenAdvanced={openAdvanced} /> : null}
             {section === "repos" && !reposBlocked ? (
               <>
@@ -655,7 +759,6 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
                     onClick={() => {
                       editRepos([...repoDraft, inferIdentity(blankRepo(projects.length === 1 ? projects[0]!.id : ""), projects)]);
                       setOpenRepo(repoDraft.length);
-                      setSection("repos");
                     }}
                   >
                     <Icon name="Plus" fallback="Circle" aria-hidden /> Add repository
@@ -704,60 +807,113 @@ export function Configurator({ initialSection = "workflow", compact = false, dra
             locked={visualDirty}
             saving={saving}
             onSave={() => void saveAdvanced()}
-            onRevert={revertAdvanced}
+            onRevert={(opener) => ask("revert", opener)}
           />
         ) : null}
 
         {anyDirty || status ? (
-          <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
+          <div role="region" aria-label="Save bar" className="sticky bottom-0 z-10 flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2 shadow-sm">
             {anyDirty ? (
-              <>
-                <span className="flex items-center gap-1.5 text-sm text-foreground">
-                  <span aria-hidden className="size-2 rounded-full" style={{ background: STATUS.warning }} />
-                  Unsaved changes
-                  {blocking.length ? <span className="text-xs" style={{ color: STATUS.critical }}>· {blocking.length} to fix before saving</span> : null}
+              // One row from sm up. Below sm the label shortens to the count and truncates, and Discard and Save take their
+              // own row, Discard at the left edge and Save at the right, so a thumb aimed at one does not land on the other.
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
+                  <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ background: STATUS.warning }} />
+                  <span className={cn("truncate", blocking.length && "hidden sm:inline")}>Unsaved changes in {joinNames(dirtySections)}</span>
+                  {blocking.length ? (
+                    <span className="truncate text-xs" style={{ color: STATUS.critical }}>
+                      <span className="hidden sm:inline">· </span>
+                      {blocking.length} to fix<span className="hidden sm:inline"> before saving</span>
+                    </span>
+                  ) : null}
                 </span>
-                <span className="ml-auto flex gap-1.5">
-                  <Button size="sm" variant="outline" disabled={saving} onClick={discard}>
+                {blocking.length ? (
+                  // With nothing off screen there is nothing to expand: Show brings the section's own list into view.
+                  offScreen.length ? (
+                    <Button size="sm" variant="ghost" className="shrink-0 px-2" aria-expanded={barOpen} onClick={() => setBarOpen(!barOpen)}>
+                      {barOpen ? "Hide" : "Show"}
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="ghost" className="shrink-0 px-2" onClick={() => setSeek((n) => n + 1)}>
+                      Show
+                    </Button>
+                  )
+                ) : null}
+                <span className="flex shrink-0 basis-full justify-between gap-1.5 sm:ml-auto sm:basis-auto sm:justify-end">
+                  <Button size="sm" variant="outline" disabled={saving} onClick={(e) => ask("discard", e.currentTarget)}>
                     Discard
                   </Button>
                   <Button size="sm" disabled={saving || blocking.length > 0} onClick={() => void (advancedDirty ? saveAdvanced() : save())}>
-                    <Icon name="Save" fallback="Circle" aria-hidden /> {saving ? "Saving…" : "Save changes"}
+                    <Icon name="Save" fallback="Circle" aria-hidden />
+                    <span>{saving ? "Saving…" : <>Save<span className="hidden sm:inline"> changes</span></>}</span>
                   </Button>
                 </span>
-                {blocking.length ? (
-                  <ul className="flex basis-full flex-col gap-0.5">
-                    {blocking.slice(0, 5).map((p, i) => (
-                      <li key={i}>
-                        <button
-                          type="button"
-                          className="flex items-start gap-1.5 text-left text-xs hover:underline"
-                          style={{ color: STATUS.critical }}
-                          onClick={() => {
-                            setSection(p.section);
-                            if (p.repo !== undefined) setOpenRepo(p.repo);
-                          }}
-                        >
-                          <Icon name="CircleAlert" fallback="Circle" className="mt-0.5 size-3 shrink-0" aria-hidden />
-                          <span>
-                            <b>{SECTIONS.find((x) => x.id === p.section)?.label}</b> · {p.text}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                    {blocking.length > 5 ? <li className="text-xs text-muted-foreground">and {blocking.length - 5} more</li> : null}
-                  </ul>
-                ) : null}
-              </>
+              </div>
+            ) : null}
+            {anyDirty && barOpen && offScreen.length ? (
+              // About three rows, then it scrolls.
+              <ul className="flex max-h-[4.5rem] flex-col gap-0.5 overflow-y-auto">
+                {offScreen.map((x) => (
+                  <li key={x.key}>
+                    <button type="button" className="flex items-center gap-1.5 text-left text-xs hover:underline" style={{ color: STATUS.critical }} onClick={() => goToSummary(x)}>
+                      <Icon name="CircleAlert" fallback="Circle" className="size-3 shrink-0" aria-hidden />
+                      {x.label} · {x.count} to fix
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {anyDirty && cautions.length ? (
+              <ul aria-label="Warnings" className="flex basis-full flex-col gap-0.5">
+                {cautions.slice(0, 5).map((w, i) => (
+                  <li key={i}>
+                    <button
+                      type="button"
+                      className="flex items-start gap-1.5 text-left text-xs text-foreground hover:underline"
+                      onClick={() => {
+                        selectSection(w.section);
+                        if (w.repo !== undefined) setOpenRepo(w.repo);
+                      }}
+                    >
+                      <Icon name="TriangleAlert" fallback="Circle" className="mt-0.5 size-3 shrink-0" style={{ color: STATUS.warning }} aria-hidden />
+                      <span>
+                        <b>{SECTIONS.find((x) => x.id === w.section)?.label}</b> · {w.text}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+                {cautions.length > 5 ? <li className="text-xs text-muted-foreground">and {cautions.length - 5} more</li> : null}
+              </ul>
             ) : null}
             {status ? (
-              <span className={cn("text-xs", anyDirty && "basis-full")} style={{ color: status.ok ? STATUS.good : STATUS.critical }}>
+              <span className="text-xs" style={{ color: status.ok ? STATUS.good : STATUS.critical }}>
                 {status.text}
               </span>
             ) : null}
           </div>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirming.open}
+        title={confirmCopy.title}
+        description={confirmCopy.description}
+        confirmLabel={confirmCopy.confirmLabel}
+        cancelLabel="Keep editing"
+        tone="destructive"
+        onConfirm={() => {
+          setConfirming((c) => ({ ...c, open: false, confirmed: true }));
+          if (confirming.kind === "discard") discard();
+          else revertAdvanced();
+        }}
+        onCancel={() => setConfirming((c) => ({ ...c, open: false }))}
+        // The dialog has no trigger to return focus to. Cancel returns it to the button that asked; a confirmed answer
+        // removes Discard with the save bar, or disables Revert, so focus goes to the section's button instead. So does
+        // a cancel after the drafts were cleared some other way while the dialog was open, taking the bar with them.
+        restoreFocus={() => {
+          const opener = confirmOpener.current;
+          (!confirming.confirmed && opener?.isConnected ? opener : currentSectionButton.current)?.focus();
+        }}
+      />
     </div>
   );
 }

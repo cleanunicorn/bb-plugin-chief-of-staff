@@ -18,6 +18,13 @@ export function matchesTaskFilter(entry: TaskState, filter: TaskFilter): boolean
   return stageOf(entry)?.key === filter;
 }
 
+/** "Sum over 5 agent threads (4 reported usage)": what a task's usage figure covers. */
+export function usageNote(usage: { threads: number; reportedThreads: number; counted: boolean }): string {
+  if (!usage.counted) return `Counting usage over the task's agent threads once they have all stopped`;
+  const threads = `${usage.threads} agent ${usage.threads === 1 ? "thread" : "threads"}`;
+  return `Sum over ${threads} (${usage.reportedThreads} reported usage)`;
+}
+
 /** How an activity row names its task: "#7 Fix login", "#7", a standalone task's title, or "Untitled task". Null when the row has no task, or its task is gone. */
 export function taskLabel(row: { workItemId: string | null; issueNumber?: number | null; issueTitle?: string | null }): string | null {
   const number = row.issueNumber ?? null;

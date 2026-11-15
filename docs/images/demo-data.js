@@ -13,7 +13,8 @@
   // Like the server: issue-backed tasks carry the issue URL, standalone tasks null.
   const withIssueUrl = (e) => ({ ...e, issueUrl: e.issueNumber ? `https://github.com/${e.repo}/issues/${e.issueNumber}` : null });
   const E = (o) => withIssueUrl({ occupiesCapacity: true, status: "running", detail: "agent", workflowName: "Careful", steps: [], current: [], actor: "agent", activity: "", waitingKind: null, repo: "acme/storefront", issueNumber: null, issueTitle: "", threadId: null, threadStatus: "working", threadTitle: null, branch: null, prNumber: null, prUrl: null, pr: null, startedAt: ago(30), lastActivityAt: ago(1), stalled: false, fixAttempts: 0, retryCount: 0, lastError: null, waitingReason: null, providerId: "claude-code", model: null, source: "intake", usage: null, ...o });
-  const U = (t, c) => ({ inputTokens: null, outputTokens: null, totalTokens: t, cost: c == null ? null : { amount: c, currency: "USD" } });
+  // Usage over all of a task's agent threads (planner, builder, reviewers, …).
+  const U = (t, c, threads = 4) => ({ inputTokens: null, outputTokens: null, totalTokens: t, cost: c == null ? null : { amount: c, currency: "USD" }, threads, reportedThreads: threads, counted: true });
   const active = [
     E({ id: "t1", issueNumber: 212, issueTitle: "Add CSV export to the orders table", steps: careful(["done", "done", "done", "running", "running", "pending"]), current: ["Review", "Docs"], activity: "Review: agent working · Docs: agent working", threadId: "thr_demo1", branch: "cos/issue-212-add-csv-export", startedAt: ago(47), usage: U(1284000, 3.92) }),
     E({ id: "t2", issueNumber: 208, issueTitle: "Rate-limit the password reset endpoint", repo: "acme/api", status: "waiting on human", detail: "waiting_on_human", actor: "human", waitingKind: "approval", waitingReason: "Plan: needs your approval", steps: careful(["waiting", "pending", "pending", "pending", "pending", "pending"], { plan: { waitingKind: "approval" } }), current: ["Plan"], activity: "Plan: needs your approval", threadId: "thr_demo2", threadStatus: "idle", startedAt: ago(12), lastActivityAt: ago(4), usage: U(186000, 0.61) }),
@@ -43,7 +44,8 @@
     { owner: "acme", repo: "storefront", projectId: "proj_storefront", intake: true, issueFilter: { labels: ["agent-ready"] }, maxConcurrent: 3, reviewers: ["alice"], mergeStrategy: "squash", workflow: "careful" },
     { owner: "acme", repo: "api", projectId: "proj_api", intake: true, issueFilter: { labels: ["agent-ready", "backend"] }, maxConcurrent: 2, mergeStrategy: "squash", workflow: "careful" } ] };
   const names = ["Plan", "Build", "Tests", "Review", "Docs", "Ship"];
-  const daily = [2, 3, 1, 0, 0, 4, 5, 3, 4, 2, 0, 1, 6, 3].map((d, i) => ({ date: new Date(now - (13 - i) * 864e5).toISOString().slice(0, 10), started: d + (i % 3 === 0 ? 1 : 0), done: d, failed: i % 5 === 2 ? 1 : 0 }));
+  const daily = [2, 3, 1, 0, 0, 4, 5, 3, 4, 2, 0, 1, 6, 3].map((d, i) => ({ date: new Date(now - (13 - i) * 864e5).toISOString().slice(0, 10), started: d + (i % 3 === 0 ? 1 : 0), done: d, failed: i % 5 === 2 ? 1 : 0, tokens: d ? d * 1_480_000 + (i % 4) * 210_000 : null }));
+  const totalTokens = daily.reduce((a, d) => a + (d.tokens || 0), 0);
   const L = (id, m, kind, repo, message, actor = "chief-of-staff", level = "info") => ({ id, at: ago(m), level, kind, repo, workItemId: null, message, actor });
   const live = (steps) => Object.fromEntries(steps.map((s) => [s.id, { status: s.status, phase: s.phase, reported: s.reported, agents: s.agents, waitingKind: s.waitingKind, retrying: s.retrying, attempts: s.attempts, round: s.round }]));
   // Task t3's run history: Tests and Review each sent work back to Build once.
@@ -78,8 +80,9 @@
   };
   const history = { journal, steps };
   const R = {
-    cos_roster: (i) => ({ entries: i && i.includeDone ? [...active, ...done] : active }),
-    cos_stats: () => ({ byStatus: { queued: 1, agent: 2, cos: 1, ci: 1, ready: 0, waiting_on_human: 1, retrying: 0, blocked: 0, done: 34, failed: 3 }, daily, windowDays: 14, startedInWindow: 43, doneInWindow: 34, failedInWindow: 3, medianCycleMinutes: 38, totalTracked: 43 }),
+    cos_roster: (i) => ({ entries: i && i.includeDone ? [...active, ...done] : active, nextBefore: null, finishedTokens: i && i.includeDone ? totalTokens : null }),
+    cos_stats: () => ({ byStatus: { queued: 1, agent: 2, cos: 1, ci: 1, ready: 0, waiting_on_human: 1, retrying: 0, blocked: 0, done: 34, failed: 3 }, daily, windowDays: 14, startedInWindow: 43, doneInWindow: 34, failedInWindow: 3, medianCycleMinutes: 38, totalTracked: 43, usage: { totalTokens, cost: [{ amount: Math.round(totalTokens / 340_000 * 100) / 100, currency: "USD" }], counted: 35, unreported: 0, pending: 2, medianTokensPerDone: 1_310_000 } }),
+    cos_item_usage: (i) => ({ usage: ([...active, ...done].find((x) => x.id === i.id) || active[0]).usage }),
     cos_overview: () => ({ paused: false, occupiedCapacity: 4, tokenSource: "gh-cli", errors: [], warnings: [], settings: { stallThresholdMinutes: 30, maxConcurrentTotal: 8, intakeIntervalMinutes: 10, archiveThreadsOnDone: true }, repos: [
       { key: "acme/storefront", projectId: "proj_storefront", maxConcurrent: 3, active: 2, labels: ["agent-ready"], intake: true, paused: false, workflowId: "careful", workflowName: "Careful", stepNames: names },
       { key: "acme/api", projectId: "proj_api", maxConcurrent: 2, active: 2, labels: ["agent-ready", "backend"], intake: true, paused: false, workflowId: "careful", workflowName: "Careful", stepNames: names } ] }),
@@ -100,7 +103,7 @@
     cos_skills: () => ({ skills: [{ name: "tdd", description: "Write the failing test first.", scope: "project" }, { name: "review", description: "Review the branch diff.", scope: "project" }] }),
     cos_item_workflow: (i) => {
       const e = [...active, ...done].find((x) => x.id === i.id) || active[0];
-      const task = { repo: e.repo, issueNumber: e.issueNumber, issueUrl: e.issueUrl, body: e.id === "t3" ? "When a cart has both a percentage coupon and a gift card, the checkout total is higher than expected. The gift card should apply after the coupon." : null, status: e.detail, branch: e.branch, prNumber: e.prNumber, prUrl: e.prUrl, threadId: e.threadId, waitingReason: e.waitingReason, lastError: e.lastError, createdAt: e.startedAt, lastActivityAt: e.lastActivityAt, finishedAt: null };
+      const task = { repo: e.repo, issueNumber: e.issueNumber, issueUrl: e.issueUrl, body: e.id === "t3" ? "When a cart has both a percentage coupon and a gift card, the checkout total is higher than expected. The gift card should apply after the coupon." : null, status: e.detail, branch: e.branch, prNumber: e.prNumber, prUrl: e.prUrl, threadId: e.threadId, waitingReason: e.waitingReason, lastError: e.lastError, createdAt: e.startedAt, lastActivityAt: e.lastActivityAt, finishedAt: e.finishedAt || null, usage: e.detail === "done" || e.detail === "failed" ? e.usage : null };
       return { title: (e.issueNumber ? "#" + e.issueNumber + " " : "") + e.issueTitle, workflow: wf.workflows[e.workflowName === "Quick fix" ? 1 : 0], live: live(e.steps), task, ...(e.id === "t3" ? history : { steps: {}, journal: [] }) };
     },
     cos_question: () => ({ itemId: "t2", repo: "acme/api", issueNumber: 208, issueTitle: "Rate-limit the password reset endpoint", threadId: "thr_demo2", threadUrl: null, status: "waiting_on_human", stepId: "plan", stepName: "Plan", waitingKind: "approval", waitingReason: "Plan: needs your approval",

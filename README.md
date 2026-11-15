@@ -41,6 +41,10 @@ no GitHub issue: see [Install](#install).
   repository, issue, PR, age, last activity and token usage (when the provider
   reports it), and who holds the ball: an agent, Chief of Staff, or you. Stalls
   and failures are detected and notified.
+- **Knows what the work cost.** A task's token usage is summed over every agent
+  thread it spawned (planner, builder, reviewers, replaced builders).
+  Throughput totals it for the window and per day, and finished tasks can be
+  ordered by it.
 
 ## How it works
 
@@ -108,8 +112,11 @@ each, newest first, under the day they finished (**Today**, **Yesterday**,
 **Nov 8**; days are UTC, like Throughput's). A row says how the task ended:
 **Merged**, **PR opened**, **Completed**, **Marked done**, **Failed**, **Marked
 failed** or **PR closed**. It also says when the task finished and how long it
-took, and why it ended if it did not deliver, with links to the issue, the PR,
-the thread and the workflow, and the same More actions as a card.
+took, its tokens and share of all finished tasks' tokens, and why it ended if
+it did not deliver, with links to the issue, the PR, the thread and the
+workflow, and the same More actions as a card. **Most tokens** lists the
+finished tasks by usage instead (uncounted ones last), in one list without day
+headings; **Recently finished** goes back to newest first.
 
 The section shows 8 rows, then **Show 20 more**. Filter it by outcome
 (**Shipped**, **Marked done**, **Failed**; pick several), by repository, or
@@ -119,8 +126,10 @@ Throughput day (or a day in its table view) to see the tasks finished that
 day, or **N completed** / **N historical failed runs** to see the window's
 tasks with that outcome; the date filter shows as a chip you can remove. The
 section's view and filters are kept when you switch tabs and when you reload;
-the date filter lasts until you leave the dashboard. **Collapse** folds the
-section away.
+the date filter lasts until you leave the dashboard. A Throughput click, and
+the shipped and failed counts in the summary, switch back to newest first.
+**Collapse** folds the section away. `j` and `k` move between the rows while
+focus is in them, as they do between the cards.
 
 ### Read a task card
 
@@ -201,8 +210,9 @@ are answered the same way.
    screenshot at the top.
 
 With the default workflow, the task stops for your approval after Plan; Build
-and Review then run, and Ship opens a pull request. Nothing is merged unless
-you set the Ship action to `merge`. **Pause everything** on the dashboard
+and Review then run, and Ship opens a pull request and waits for its CI to go
+green, sending red CI back to Build to be fixed. Nothing is merged unless you
+set the Ship action to `merge`. **Pause everything** on the dashboard
 stops intake and holds new workflow events; agents already running continue.
 
 GitHub access needs no setup if `gh` is signed in on the server host;
@@ -249,7 +259,8 @@ button in its side panel; Backspace never removes a step.
 </picture>
 
 The default workflow is **Plan** (needs approval) → **Build** (writes code) →
-**Review** (pass/fail, back to Build) → **Ship** (PR). Each repository picks a
+**Review** (pass/fail, back to Build) → **Ship** (PR, waits for green CI; red
+CI goes back to Build). Each repository picks a
 workflow; a task keeps the workflow it started with.
 
 ### Step types
@@ -261,11 +272,89 @@ Every step has a name, instructions and arrows to the steps after it. Its
 | --- | --- | --- |
 | Agent | Agents work on the instructions. | **Writes code** (runs in the task's main thread, one code-writing step at a time; off = read-only, may run in parallel), **agents in parallel** (read-only steps, e.g. two planners), **needs my approval** (approve the report or send it back), **pass/fail verdict** (fail sends the work back), on fail → step, rounds |
 | Check | Chief of Staff runs a command in the worktree; non-zero exit fails it. | command, timeout, on fail → step, attempts |
-| Ship | Push the branch, finish when a PR opens, or finish after the PR merges with green CI. | action, draft, wait for an approving review, when CI is red → step, attempts |
-| Model | Picks the agent (provider), model and reasoning level for the agent steps after it. **Automatically** (the default): a read-only agent reads the task and your instructions and picks the best model from the ones available. **Fixed**: uses the values you set and does no work. | how it is chosen (automatically / fixed), instructions for the choosing agent, or provider, model, reasoning level (empty = keep the current one) |
+| Ship | Push the branch, finish when a PR opens (or, with **wait for green CI**, when its CI is green), or finish after the PR merges with green CI. | action, draft, wait for green CI, wait for an approving review, when CI is red → step, attempts |
+| Model | Picks the agent (provider), model and reasoning level for the agent steps after it. **Automatically** (the default): a read-only agent reads the task and your instructions and picks the best model from the ones available. **Fixed**: uses the values you set and does no work. | how it is chosen (automatically / fixed), instructions for the choosing agent, or provider, model, reasoning level (empty = keep the current one; each field suggests what bb knows: its agents, the chosen agent's models, the chosen model's reasoning levels) |
 
 An agent finishes a step by reporting it: the `cos_report` tool, or a
 `## Step report` block.
+
+### How each step type runs
+
+A step starts when every step pointing at it is done. Steps with no arrow
+between them run in parallel, and a step with several inputs waits for all of
+them. Steps that change the worktree (code-writing agents, checks, ship) must
+be connected one after another. A check or ship step needs a code-writing step
+before it.
+
+**Agent.** A code-writing step runs in the task's builder thread, one at a
+time. A read-only step runs one to four agents in their own threads, in the
+builder's workspace once code exists (before that, in a fresh worktree of the
+default branch). The step ends when every agent has reported.
+
+```mermaid
+flowchart TD
+  start(["Step starts"]) --> run["1 to 4 agents work on the instructions<br>(plus the reports of earlier steps)"]
+  run --> reported{"Every agent reported"}
+  reported -- "a report failed, verdict on" --> back["Back to on fail,<br>with the findings as feedback"]
+  reported -- "a report failed, verdict off" --> you["Waits for you"]
+  reported -- "model choices, none picked" --> you
+  reported -- "needs my approval" --> approve{"You approve<br>or send it back"}
+  reported -- "otherwise" --> done(["Done"])
+  approve -- "approve" --> done
+  approve -- "send back" --> start
+```
+
+**Check.** Chief of Staff commits any work the agents left uncommitted, then
+runs the command in the task's worktree with the step's timeout. Exit code 0
+passes it. Any other exit code, or a timeout, fails it, and the end of the
+output goes back as feedback. The output also goes into the PR description.
+
+```mermaid
+flowchart LR
+  commit["Commit leftover work"] --> cmd["Run the command<br>in the worktree"]
+  cmd -- "exit 0" --> done(["Done"])
+  cmd -- "non-zero exit or timeout" --> budget{"Attempts left?"}
+  budget -- "yes" --> back["Back to on fail,<br>with the output"]
+  budget -- "no" --> you["Waits for you"]
+```
+
+**Ship.** `push` commits leftover work and force-pushes the branch with lease.
+`pr` refuses when the branch has no commits ahead of the default branch.
+Otherwise it pushes, reuses an open PR for the branch or opens one (as a draft
+if set), requests the repository's reviewers and comments on the issue. A
+`Title:` line in the report of the agent step right before it becomes the PR
+title. `merge`, and `pr` with **wait for green CI**, then watch CI. Red CI goes
+back to on fail. The re-run ship step pushes the fix to the same PR and
+watches again. A PR closed without merging fails the task.
+
+```mermaid
+flowchart TD
+  push["Commit leftover work, push"] --> action{"action"}
+  action -- "push" --> done(["Done"])
+  action -- "pr or merge" --> pr["Open the PR, or reuse the open one"]
+  pr -- "pr" --> done
+  pr -- "pr with wait for green CI, or merge" --> ci{"CI"}
+  ci -- "red, attempts left" --> back["Back to on fail with the CI log;<br>the fix is pushed to the same PR"]
+  ci -- "red, no attempts left" --> you["Waits for you"]
+  ci -- "green, pr" --> done
+  ci -- "green, merge" --> review{"Approving review?<br>(when required)"}
+  review -- "yes" --> merge["Merge with the<br>repository's strategy"] --> done
+  review -- "not yet" --> ci
+```
+
+**Model.** A fixed Model step finishes at once. Each field it sets applies to
+the agent steps after it until another Model step changes that field. An
+automatic one runs a single read-only agent that picks a provider and a model,
+and optionally a reasoning level. The pick replaces all three settings at once.
+A Model step cannot fail.
+
+```mermaid
+flowchart LR
+  mode{"How the model is chosen"} -- "fixed" --> set["Set the fields you filled in"] --> done(["Done"])
+  mode -- "automatically" --> agent["A read-only agent reads the task<br>and lists the providers and models"]
+  agent -- "picks one" --> pick["Use the pick for the steps after it"] --> done
+  agent -- "picks none" --> you["Waits for you"]
+```
 
 ### Going back on failure
 
@@ -329,15 +418,16 @@ the skill; anything else stays plain text.
 | `action` | The ship step finishes when | Afterwards |
 | --- | --- | --- |
 | `push` | The push succeeds. | Nothing is watched. |
-| `pr` | The PR is created, or an existing open PR is confirmed. | Review, CI and merge belong to the PR owner; Chief of Staff does not repair later CI failures. |
+| `pr` | The PR is created, or an existing open PR is confirmed. With `watchCi: true`: the PR's CI is green. | Review and merge belong to the PR owner. Without `watchCi`, so do CI failures; with it, red CI goes back to `onFail` to be fixed (within `maxAttempts`) until CI is green. |
 | `merge` | GitHub confirms the merge. | Until then, Chief of Staff watches CI and repairs failures within the configured budget. |
 
 `requireApproval` controls the approving-review gate in merge mode (on by
-default). Steps configured after shipping still run.
+default). `watchCi` (off by default) applies to `pr` only; `merge` always watches CI. Steps configured after shipping still run.
 
-Merge mode waits for CI to register its checks: a pushed head with no checks
-reported counts as green only after about 5 minutes without any, so a
-repository with no CI merges about 6 minutes after each push. Check runs are
+Merge mode (and `pr` with `watchCi`) waits for CI to register its checks: a
+pushed head with no checks reported counts as green only after about 5 minutes
+without any, so a repository with no CI merges (or finishes the step) about 6
+minutes after each push. Check runs are
 read up to 1,000 per head; a head with more stays pending.
 
 <details>
@@ -358,6 +448,33 @@ separately. Terminal failed runs are historical outcomes, not unresolved
 incidents; they are listed in the **Finished** section below the active tasks,
 which stage and attention filters never hide. Retrying work stays in Checks &
 shipping until it requires a decision.
+
+**Token usage.** A card's "Tokens · all threads" figure (and cost, when the
+provider reports one) is the sum over every agent thread of the task: model
+chooser, planner, builder, reviewers and replaced builders. Its tooltip gives
+the thread count and how many threads reported usage. An active task's figure
+is read live and labelled "so far". A finished task is counted once by the
+background sweep (up to 10 tasks a minute), when none of its threads is still
+running, or a day after it finished if a thread still looks busy (its host
+gone, for example). Until then its row in **Finished** says "Counting
+tokens…", and opening the
+dashboard makes no usage calls for finished tasks. A task whose provider reported nothing shows
+no figure, rather than 0. Throughput adds the window's total, by the day each
+task finished, and the table view has a Tokens column. In the **Finished**
+section, **Most tokens** orders finished tasks by usage (uncounted ones last),
+and each row shows its share of all finished tasks' tokens. A task counted
+while older pages are open can move onto a page already loaded; it shows once
+the finished list is reloaded (switch the order and back). The workflow
+sheet's header shows Tokens and Cost too.
+
+The summary at the top of the Pipeline tab counts the tasks that shipped or
+failed since this browser last left the dashboard, names up to three failures
+and why they ended, and keeps the Needs attention buttons. With nothing new and
+nothing waiting it says "All clear" with the number of agents working. The last
+visit is stored in the browser's local storage, and the counts stay the same
+while you reload or visit another dashboard tab briefly; after 30 minutes away
+from the Pipeline tab a new visit starts. `j` and `k` move between task cards
+while focus is in the Pipeline tab.
 
 A task whose repository is not in the `repos` setting (removed, renamed, or the
 setting has an error, which leaves it empty) does not wait for capacity. If it
@@ -449,7 +566,7 @@ The same settings, as stored:
 | `githubToken` (secret) | Token with `repo` scope. Empty → `gh auth token` on the server host. Never logged. |
 | `workflow` (JSON) | Your workflows and which one is the default, see above. |
 | `repos` (JSON) | Repository list, see below. |
-| `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. |
+| `maxConcurrentTotal`, `stallThresholdMinutes`, `intakeIntervalMinutes` | Limits and cadence. A `maxConcurrentTotal` of 0 starts no new tasks (see `maxConcurrent` below); the Pipeline tab then reads "Task slots: N / 0" with a notice. |
 | `defaultProviderId`, `defaultModel` | Used when a repo does not set its own. |
 | `notifyPush` | Push notifications through the push-notifications plugin. |
 | `archiveThreadsOnDone` | Archive a task's builder and step threads once its workflow is done or you mark it done (default on). Failed tasks keep theirs. |
@@ -481,6 +598,11 @@ so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
 when they carry every label in `issueFilter.labels` and, if
 `issueFilter.assignee` is set, are assigned to that user. With neither set,
 no issue is picked up. Set `intake: false` to run only tasks you start.
+
+`maxConcurrent` (default 2) is how many tasks run at once in the repository.
+At 0 no new task starts there. Tasks holding a slot keep going, but one that
+gave it up (waiting on CI or a merge) waits for a slot before its next agent
+step. The visual editor in Configure warns before you save a limit of 0.
 
 `issueComments` (default `true`) controls the comments Chief of Staff leaves on
 the issue. When an agent starts it posts one status comment and, on a restart
@@ -579,6 +701,9 @@ recently finished tasks after them, 50 by default (`--finished-limit`, up to
 500). When older ones exist, the output ends with the command for the next
 page: `--before <cursor>` lists only that page of finished tasks and implies
 `--all`. `--json` returns the cursor as `nextBefore` (null on the last page).
+`--usage` adds each task's token usage to the `--json` entries, summed over all
+of its agent threads: read live for active tasks, and the stored count for
+finished ones (`counted: false` until it is counted).
 
 | Agent tool | Purpose |
 | --- | --- |
@@ -712,6 +837,11 @@ activity. **Problems only** selects warnings and errors on the server, including
 those older than the newest 60 entries. Changing the filter returns to its newest
 page. Retention still applies: paging cannot recover pruned entries.
 
-The icons in [assets/user-check.svg](assets/user-check.svg) and
-[assets/user-x.svg](assets/user-x.svg) come from [Lucide](https://lucide.dev)
-(ISC License, Copyright (c) Lucide Contributors).
+The icons in [assets/user-check.svg](assets/user-check.svg),
+[assets/user-x.svg](assets/user-x.svg),
+[assets/hourglass.svg](assets/hourglass.svg),
+[assets/octagon-alert.svg](assets/octagon-alert.svg),
+[assets/coins.svg](assets/coins.svg),
+[assets/activity.svg](assets/activity.svg) and
+[assets/trending-up.svg](assets/trending-up.svg) come from
+[Lucide](https://lucide.dev) (ISC License, Copyright (c) Lucide Contributors).

@@ -9,6 +9,8 @@ import { parseWorkflows, stepById, topoOrder } from "./workflow";
 import { dispatch, dispatchLocked, replayDeferred, withItemLock } from "./delivery";
 import { parseRepos } from "./config";
 import { computeStats, statsWindowStart } from "./stats";
+import { itemsUsage } from "./usage";
+import { sinceSummary } from "./since";
 import { answerQuestion, getQuestion } from "./answer";
 import { listSkills } from "./threads";
 import { isReferenceable } from "./skills";
@@ -93,6 +95,13 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
         const live = Object.fromEntries(rosterSteps(item).map((s) => [s.id, { status: s.status, phase: s.phase, reported: s.reported, agents: s.agents, waitingKind: s.waitingKind, retrying: s.retrying, attempts: s.attempts, round: s.round, picked: s.picked ?? null }]));
         return { title: `${item.repo}${item.issueNumber ? `#${item.issueNumber}` : ""} ${item.issueTitle}`, workflow: item.workflow, live, ...itemRunDetail(cos, item) };
       },
+      async cos_item_usage(input) {
+        const item = cos.store.getWorkItem(input.id);
+        if (!item) throw new Error(`work item ${input.id} not found`);
+        // Stored for a finished task; read live over all threads for an active one.
+        const [usage] = await itemsUsage(cos, [item]);
+        return { usage: usage ?? null };
+      },
       async cos_journal_detail(input) {
         return { detail: cos.store.journalDetail(input.itemId, input.id) };
       },
@@ -112,6 +121,9 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
       async cos_stats(input) {
         const now = cos.now();
         return computeStats(cos.store.statsRows(statsWindowStart(now, input.windowDays)), now, input.windowDays, cos.store.countWorkItems());
+      },
+      async cos_since(input) {
+        return sinceSummary(cos.store, input.since);
       },
       async cos_log(input) {
         const rows = cos.store.listLog({ ...input, limit: input.limit + 1 });
@@ -151,6 +163,22 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
           safely(async () => (await cos.bb.sdk.providers.catalog()).map((p) => ({ id: p.id, displayName: p.displayName, available: p.available, enabled: p.enabled }))),
         ]);
         return { values: general, token: { stored: Boolean(values.githubToken && values.githubToken.trim()), source: await cos.tokenSource() }, projects, providers };
+      },
+      async cos_provider_models(input) {
+        try {
+          const result = await cos.bb.sdk.providers.models({ providerId: input.providerId, preferCached: true });
+          const models = result.models.map((m) => ({
+            id: m.id,
+            displayName: m.displayName || m.id,
+            isDefault: m.isDefault,
+            reasoningLevels: m.supportedReasoningEfforts.map((e) => e.reasoningEffort),
+            defaultReasoningLevel: m.defaultReasoningEffort || null,
+          }));
+          const failure = result.modelLoadError;
+          return { models, error: failure ? failure.detail || failure.code : null };
+        } catch (error) {
+          return { models: [], error: error instanceof Error ? error.message : String(error) };
+        }
       },
       async cos_skills() {
         const { repos } = await cos.config();
