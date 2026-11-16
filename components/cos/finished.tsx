@@ -138,6 +138,12 @@ function FinishedRow({ entry, finishedTokens, now, busy, tabbable, onAction, onA
             repoName(entry.repo)
           )}
         </span>
+        {entry.issueSkipped ? (
+          <span className="flex items-center gap-1" title="Intake leaves this issue alone until it is unskipped (More actions)">
+            <Icon name="EyeOff" fallback="Circle" className="size-3.5 shrink-0" aria-hidden />
+            Issue skipped
+          </span>
+        ) : null}
         {entry.prUrl ? (
           <span className="flex items-center gap-1">
             <UrlLink href={entry.prUrl} tabIndex={tabIndex} className="inline-flex items-center gap-1 font-medium text-foreground">

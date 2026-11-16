@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Skip an issue.** Marking a task failed or done still let intake take its
+  issue again after a relabel or reassignment. A task with an issue now has
+  **Skip issue…** in its More actions menu: a running task stops (recorded as
+  marked failed), and intake leaves the issue alone from then on, whatever
+  happens to its labels or assignees. Nothing is written to GitHub. Finished
+  rows say **Issue skipped**, and **Unskip issue** in the same menu undoes it.
+  Also `bb cos item skip-issue|unskip-issue <id>`.
+
 - **Already-fixed issues finish on their own.** An issue fixed by an earlier
   pull request that never closed it (Theralexis/canary#929, fixed by #920)
   used to stall its task: the agent could only report done, failed or a

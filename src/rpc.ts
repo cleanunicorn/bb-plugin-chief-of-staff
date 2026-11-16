@@ -13,6 +13,8 @@ import { itemsUsage } from "./usage";
 import { sinceSummary } from "./since";
 import { answerQuestion, getQuestion } from "./answer";
 import { listSkills } from "./threads";
+import { setIssueSkipped } from "./skippedIssues";
+import type { WorkItem } from "./state";
 import { isReferenceable } from "./skills";
 
 export { rpcContract };
@@ -208,9 +210,9 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
   );
 }
 
-export type ItemAction = "retry" | "rerun_step" | "approve" | "revise" | "mark_done" | "mark_failed";
+export type ItemAction = "retry" | "rerun_step" | "approve" | "revise" | "mark_done" | "mark_failed" | "skip_issue" | "unskip_issue";
 
-export async function itemAction(cos: Cos, id: string, action: ItemAction, actor: string, opts: { step?: string; feedback?: string } = {}) {
+export async function itemAction(cos: Cos, id: string, action: ItemAction, actor: string, opts: { step?: string; feedback?: string } = {}): Promise<WorkItem | null> {
   const item = cos.store.getWorkItem(id);
   if (!item) throw new Error(`work item ${id} not found`);
   if (opts.step && !item.workflow.steps.some((s) => s.id === opts.step)) throw new Error(`step "${opts.step}" is not in this task's workflow (${item.workflow.steps.map((s) => s.id).join(", ")})`);
@@ -226,6 +228,19 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
     case "revise":
       if (!opts.feedback?.trim()) throw new Error("revise needs feedback for the agent");
       return dispatch(cos, id, { type: "revise", step: opts.step, feedback: opts.feedback }, actor);
+    case "skip_issue":
+    case "unskip_issue": {
+      if (!item.issueNumber) throw new Error("this task has no GitHub issue to skip: mark it done or failed instead");
+      const skip = action === "skip_issue";
+      // Skip first: intake must not see the issue free between closing its task and recording the skip.
+      if (await setIssueSkipped(cos, item.repo, item.issueNumber, skip, actor)) {
+        cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `${skip ? "skipped" : "unskipped"} issue #${item.issueNumber}`, actor });
+      }
+      // A skipped issue's task stops, recorded as marked failed; a finished one is left as it ended.
+      const updated: WorkItem | null = skip && item.status !== "done" && item.status !== "failed" ? await itemAction(cos, id, "mark_failed", actor) : cos.store.getWorkItem(id);
+      cos.invalidate();
+      return updated;
+    }
     case "mark_done":
     case "mark_failed": {
       // Through the engine, under the item's lock: live steps settle, a running job's result is dropped, and done archives the threads.

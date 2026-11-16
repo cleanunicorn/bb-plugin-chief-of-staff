@@ -10,11 +10,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { taskLabel, type ActivityTask } from "./dashboardModel";
 import { CARD_ACTION_ICON } from "./dashboardIcons";
 
-export type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
-export type Confirmable = "mark_done" | "mark_failed" | "restart";
+export type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed" | "skip_issue" | "unskip_issue";
+export type Confirmable = "mark_done" | "mark_failed" | "restart" | "skip_issue";
 
-/** What the menu needs to know about a task. */
-export type MenuTask = { id: string; detail: string; issueNumber: number | null; issueTitle: string; threadTitle?: string | null };
+/** What the menu needs to know about a task. `issueSkipped`: intake leaves its issue alone until it is unskipped. */
+export type MenuTask = { id: string; detail: string; issueNumber: number | null; issueTitle: string; threadTitle?: string | null; issueSkipped?: boolean };
 
 export const taskTitle = (task: Pick<MenuTask, "issueTitle" | "threadTitle">) => task.issueTitle || task.threadTitle || "Untitled task";
 
@@ -22,8 +22,18 @@ export const taskTitle = (task: Pick<MenuTask, "issueTitle" | "threadTitle">) =>
  * What each confirm says and sends. A failed task is no longer worked on, so its copy differs.
  * `archivesOnDone`: marking done archives the task's threads ("Archive threads when a task is done").
  */
-export function confirmCopy(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
+export function confirmCopy(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean, finished = failed, issueNumber: number | null = null): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
   switch (kind) {
+    case "skip_issue": {
+      const issue = issueNumber ? `issue #${issueNumber}` : "this issue";
+      return {
+        title: `Skip ${issue}?`,
+        description: `${finished ? "" : "Chief of Staff stops working on this task, which is recorded as marked failed; the agent's thread is left as it is. "}Intake never picks up ${issue} again, even if it is relabelled or reassigned. Nothing changes on GitHub. Unskip issue in this menu undoes it.`,
+        confirmLabel: "Skip issue",
+        tone: "destructive",
+        action: "skip_issue",
+      };
+    }
     case "restart":
       return {
         title: `Restart ‘${title}’ on a new thread?`,
@@ -53,7 +63,8 @@ export function confirmCopy(kind: Confirmable, title: string, failed: boolean, a
 
 /**
  * The More actions menu: done → "Run a step again…"; failed → Restart and Mark done; active → Retry, Mark done
- * and Mark failed; plus "Show activity" when the page has an Activity feed.
+ * and Mark failed; plus "Show activity" when the page has an Activity feed, and, for a task with an issue,
+ * "Skip issue…" (or "Unskip issue" once skipped).
  */
 export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun, onShowActivity }: { task: MenuTask; busy: boolean; tabIndex?: number; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onRerun: (id: string, trigger: HTMLButtonElement) => void; onShowActivity?: (task: ActivityTask) => void }) {
   const trigger = useRef<HTMLButtonElement>(null);
@@ -118,12 +129,24 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
             </DropdownMenuItem>
           </>
         )}
+        {task.issueNumber === null ? null : task.issueSkipped ? (
+          // Unskipping only lets intake consider the issue again: nothing starts now, so it does not ask.
+          <DropdownMenuItem onSelect={() => onAction(task.id, "unskip_issue")}>
+            <Icon name="Play" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+            Unskip issue
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onSelect={() => ask("skip_issue")}>
+            <Icon name="EyeOff" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+            Skip issue…
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; finished: boolean; open: boolean; trigger: HTMLButtonElement | null };
+type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; finished: boolean; open: boolean; trigger: HTMLButtonElement | null; issueNumber?: number | null };
 
 /**
  * The confirm for every task in a list. `busy` holds the tasks with an action in flight (their triggers are
@@ -139,7 +162,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
   const fallbackRef = useRef(fallback);
   fallbackRef.current = fallback;
   const ask = useCallback((task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => {
-    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", finished: task.detail === "done" || task.detail === "failed", open: true, trigger });
+    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", finished: task.detail === "done" || task.detail === "failed", open: true, trigger, issueNumber: task.issueNumber });
   }, []);
   const close = () => setAsked((a) => ({ ...a, open: false }));
   // A confirmed action disables its trigger while the call runs; focus it once the call is over, if focus is still lost.
@@ -159,7 +182,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
     else if (trigger?.isConnected) pending.current = { trigger, finished: asked.finished };
     else fallbackRef.current(asked.finished);
   };
-  const copy = confirmCopy(asked.kind, asked.title, asked.failed, archivesOnDone);
+  const copy = confirmCopy(asked.kind, asked.title, asked.failed, archivesOnDone, asked.finished, asked.issueNumber ?? null);
   const dialog = (
     <ConfirmDialog
       open={asked.open}

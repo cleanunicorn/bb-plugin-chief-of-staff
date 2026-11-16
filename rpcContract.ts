@@ -62,6 +62,8 @@ const rosterEntry = z.object({
   issueNumber: z.number().nullable(),
   issueUrl: z.string().nullable(),
   issueTitle: z.string(),
+  /** The operator skipped the issue: intake leaves it alone until it is unskipped. */
+  issueSkipped: z.boolean(),
   threadId: z.string().nullable(),
   threadStatus: z.string().nullable(),
   threadTitle: z.string().nullable(),
@@ -252,7 +254,7 @@ export const rpcContract = defineRpcContract({
   },
   cos_intake_now: { input: z.object({ repo: z.string().optional(), dryRun: z.boolean().default(false) }), output: z.object({ results: z.array(z.object({ repo: z.string(), considered: z.number(), started: z.array(z.object({ issue: z.number(), threadId: z.string() })), skipped: z.array(z.object({ issue: z.number(), reason: z.string() })), error: z.string().optional() })) }) },
   cos_item_action: {
-    input: z.object({ id: z.string(), action: z.enum(["retry", "rerun_step", "approve", "mark_done", "mark_failed"]), step: z.string().max(40).optional(), feedback: z.string().max(20000).optional() }),
+    input: z.object({ id: z.string(), action: z.enum(["retry", "rerun_step", "approve", "mark_done", "mark_failed", "skip_issue", "unskip_issue"]), step: z.string().max(40).optional(), feedback: z.string().max(20000).optional() }),
     output: z.object({ status: z.string() }),
   },
   cos_item_workflow: {

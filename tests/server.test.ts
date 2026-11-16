@@ -1133,6 +1133,51 @@ describe("chief-of-staff server", () => {
       await expectNotRestarted(FAILED);
     });
 
+    describe("a skipped issue", () => {
+      const SKIPPED = "skipped; unskip it to start again";
+      const T0 = Date.parse("2026-11-06T10:00:00Z");
+      const iso = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+      const at = (minutes: number) => vi.setSystemTime(T0 + minutes * 60_000);
+      const relabelled = () => {
+        ghRoutes["GET /repos/acme/app/issues"] = () => ({ body: [{ ...issue, updated_at: iso(6) }] });
+        ghRoutes["GET /repos/acme/app/issues/12/events"] = () => ({ body: [{ event: "labeled", created_at: iso(6), label: { name: "agent-ready" } }] });
+      };
+      beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
+      afterEach(() => vi.useRealTimers());
+
+      it("stops its running task and is not picked up again, even after a relabel, until it is unskipped", async () => {
+        at(0);
+        await intake();
+        at(5);
+        await action("skip_issue");
+        expect(items()[0]).toMatchObject({ status: "failed", lastError: "Marked failed" });
+        expect(new StateStore(host.bb.storage.database()).listLog({ workItemId: items()[0]!.id }).map((e) => e.message)).toContain("skipped issue #12");
+        relabelled();
+        at(7);
+        await expectNotRestarted(SKIPPED);
+        const [entry] = ((await host.harness.behavior.callRpc("cos_roster", { includeDone: true })) as { entries: { issueSkipped: boolean }[] }).entries;
+        expect(entry!.issueSkipped).toBe(true);
+        // Unskipped: back to the rules after Mark failed, under which the relabel restarts it.
+        await action("unskip_issue");
+        at(8);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        expect(items()).toHaveLength(2);
+      });
+
+      it("leaves a finished task as it ended", async () => {
+        await intake();
+        await action("mark_done");
+        await action("skip_issue");
+        expect(items()[0]).toMatchObject({ status: "done" });
+        await expectNotRestarted(SKIPPED);
+      });
+
+      it("refuses a task without an issue", async () => {
+        const task = (await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", body: "Tidy the README" })) as { id: string };
+        await expect(host.harness.behavior.callRpc("cos_item_action", { id: task.id, action: "skip_issue" })).rejects.toThrow(/no GitHub issue/);
+      });
+    });
+
     it("lets the operator retry the same task instead", async () => {
       await intake();
       await action("mark_failed");

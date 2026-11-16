@@ -82,7 +82,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
         item: cliCommand({
           summary: "Act on a tracked work item",
           positionals: [
-            { name: "action", description: "approve | revise | retry | rerun | done | failed", required: true },
+            { name: "action", description: "approve | revise | retry | rerun | done | failed | skip-issue | unskip-issue", required: true },
             { name: "id", description: "Work item id (see bb cos status --json)", required: true },
           ],
           options: {
@@ -90,7 +90,7 @@ export function registerCli(bb: BbPluginApi, cos: Cos): void {
             message: { type: "string", description: "Feedback for revise / rerun: sent to the agent" },
           },
           async run(input, ctx) {
-            const map = { approve: "approve", revise: "revise", retry: "retry", resume: "retry", rerun: "rerun_step", done: "mark_done", failed: "mark_failed" } as const;
+            const map = { approve: "approve", revise: "revise", retry: "retry", resume: "retry", rerun: "rerun_step", done: "mark_done", failed: "mark_failed", "skip-issue": "skip_issue", "unskip-issue": "unskip_issue" } as const;
             const action = map[input.positionals.action as keyof typeof map];
             if (!action) throw new PluginCliError(`unknown action ${input.positionals.action}`, { hint: Object.keys(map).join(" | ") });
             if (action === "revise" && !input.options.message) throw new PluginCliError("revise needs --message with feedback for the agent");
