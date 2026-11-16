@@ -3,7 +3,7 @@
 // end their message with a "## Step report" block, parsed here.
 import type { ReportOutcome, StepReport } from "./machine";
 
-export const REPORT_OUTCOMES: ReportOutcome[] = ["done", "failed", "needs_input"];
+export const REPORT_OUTCOMES: ReportOutcome[] = ["done", "failed", "needs_input", "resolved"];
 
 const ALIASES: Record<string, ReportOutcome> = {
   done: "done",
@@ -15,6 +15,9 @@ const ALIASES: Record<string, ReportOutcome> = {
   fail: "failed",
   changes_requested: "failed",
   needs_input: "needs_input",
+  resolved: "resolved",
+  already_resolved: "resolved",
+  already_done: "resolved",
 };
 
 /** Parse a trailing "## Step report" (or legacy "## Stage report") block. Null when absent or malformed. */
@@ -39,7 +42,21 @@ export function parseTextReport(text: string | null | undefined, at: string): (S
   // A model pick comes from its own lines above the summary, never from the summary's prose.
   const header = summaryStart ? block.slice(0, summaryStart.index) : block;
   const pick = { providerId: fieldIn(header, "providerId|provider"), model: fieldIn(header, "model"), reasoningLevel: fieldIn(header, "reasoningLevel|reasoning") };
+  const resolvedBy = outcome === "resolved" ? parseResolvedBy(fieldIn(header, "resolvedPr|resolved_pr"), fieldIn(header, "resolvedCommit|resolved_commit")) : null;
   // Fall back to the message before the block when the summary is empty.
   const body = summary || text.slice(0, last.index).trim().slice(-8000);
-  return { ...(field("delivery") ? { delivery: field("delivery")! } : {}), step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), ...(pick.providerId || pick.model || pick.reasoningLevel ? { pick } : {}), at, via: "text" };
+  return { ...(field("delivery") ? { delivery: field("delivery")! } : {}), step, outcome, summary: body, question: question || null, ...(choice ? { choice } : {}), ...(pick.providerId || pick.model || pick.reasoningLevel ? { pick } : {}), ...(resolvedBy ? { resolvedBy } : {}), at, via: "text" };
+}
+
+/** A commit id as an agent may write it: 7 to 40 hex digits. */
+export const COMMIT_SHA = /^[0-9a-f]{7,40}$/i;
+
+/** The evidence of a "resolved" report: "#920", "920" or a PR URL, and a hex commit id. Null when neither is usable. */
+export function parseResolvedBy(pr: string | number | null | undefined, commit: string | null | undefined): { pr?: number; commit?: string } | null {
+  // "#920", "920", "#920 (merged into main)" or a URL ending in /pull/920: the PR's URL number, else the first number.
+  const text = pr?.toString().trim() ?? "";
+  const prNumber = typeof pr === "number" ? pr : Number((/\/pull\/(\d+)/.exec(text) ?? /^#?(\d+)\b/.exec(text))?.[1] ?? NaN);
+  const sha = commit?.trim();
+  const out = { ...(Number.isInteger(prNumber) && prNumber > 0 ? { pr: prNumber } : {}), ...(sha && COMMIT_SHA.test(sha) ? { commit: sha.toLowerCase() } : {}) };
+  return out.pr || out.commit ? out : null;
 }

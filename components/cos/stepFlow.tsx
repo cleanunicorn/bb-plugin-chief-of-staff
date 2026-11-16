@@ -16,7 +16,7 @@ function stateOf(step: Pick<FlowStep, "status" | "retrying">): StepState {
 
 const LABEL: Record<StepState, string> = { done: "Done", running: "Running", retrying: "Retrying", waiting: "Waiting", pending: "Pending", stopped: "Stopped" };
 
-const PHASE_LABEL: Record<NonNullable<FlowStep["phase"]>, string> = { pushing: "Pushing", ci: "Waiting for CI", ready: "Ready to merge", merging: "Merging" };
+const PHASE_LABEL: Record<NonNullable<FlowStep["phase"]>, string> = { pushing: "Pushing", ci: "Waiting for CI", ready: "Ready to merge", merging: "Merging", resolving: "Verifying it is already resolved", closing: "Closing as already resolved" };
 
 /** Pending marks: muted but above the 3:1 non-text contrast floor, unlike the hairline border token. */
 const PENDING_MARK = "var(--muted-foreground)";

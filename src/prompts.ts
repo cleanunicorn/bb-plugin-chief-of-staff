@@ -47,7 +47,7 @@ export function inputReports(wf: Workflow, nodes: Nodes, stepId: string): string
   return out;
 }
 
-function contract(step: AgentWork, delivery?: string): string[] {
+function contract(step: AgentWork, delivery?: string, defaultBranch?: string): string[] {
   const outcomes = step.verdict ? '`"done"` if it passes, or `"failed"` with the findings that must change' : '`"done"`';
   const picks = step.chooses.length > 0;
   const auto = Boolean(step.picksModel);
@@ -57,6 +57,7 @@ function contract(step: AgentWork, delivery?: string): string[] {
     `### When you finish this step`,
     `Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\`, ${delivery ? `\`delivery: "${delivery}"\`, ` : ""}\`outcome\`: ${outcomes}, ${fields}and a Markdown \`summary\` (later steps read it${picks || auto ? "; say which model you picked and why" : ""}).`,
     `Cannot finish? Report \`outcome: "failed"\` and why. Need a person to decide? Ask with your question tool, or report \`outcome: "needs_input"\` with the \`question\`. Never end your turn without one of these: Chief of Staff waits for the report.`,
+    `Already done? If an earlier change already on the default branch does what this task asks (check \`origin/${defaultBranch ?? "<default branch>"}\` after \`git fetch\`: your checkout may be older), report \`outcome: "resolved"\` with \`resolvedPr\` (the merged pull request; preferred) or \`resolvedCommit\` (its commit on the default branch), and the evidence in \`summary\`; in a Step report block, use \`resolvedPr:\` or \`resolvedCommit:\` lines before \`summary:\`. Chief of Staff verifies it on GitHub, then ends the task and closes its GitHub issue, if any${step.approval ? ", once a person approves" : ""}. Only for work that is fully done; partly done work is "done" with a plan for the rest.`,
     `No \`${REPORT_TOOL}\` tool? End your final message with:`,
     "```",
     `## Step report`,
@@ -78,7 +79,7 @@ export function stepPrompt(item: WorkItem, step: AgentWork, agent: number, ctx: 
   if (step.writes) {
     lines.push(`You may change code in this step. Commit on the current branch; do not push or open a pull request (Chief of Staff does).`);
   } else {
-    lines.push(`This step is read-only: do not change, commit or delete files.${ctx.defaultBranch ? ` The work so far is \`git diff origin/${ctx.defaultBranch}...HEAD\`.` : ""}`);
+    lines.push(`This step is read-only: do not change, commit or delete files.${ctx.defaultBranch && item.environmentId ? ` The work so far is \`git diff origin/${ctx.defaultBranch}...HEAD\`.` : ""}`);
   }
   if (step.agents > 1) lines.push(`${step.agents} agents work on this step independently; you are agent ${agent + 1}. Chief of Staff combines the reports.`);
   if (step.approval) lines.push(`A person approves your report before the workflow moves on.`);
@@ -104,7 +105,7 @@ export function stepPrompt(item: WorkItem, step: AgentWork, agent: number, ctx: 
   const inputs = inputReports(wf, item.nodes, step.id);
   if (inputs.length) lines.push(``, `### Input from earlier steps`, ...inputs);
   if (node?.feedback) lines.push(``, `### Why this step runs again`, clip(node.feedback, FEEDBACK_MAX));
-  lines.push(...contract(step, ctx.delivery));
+  lines.push(...contract(step, ctx.delivery, ctx.defaultBranch));
   return lines.join("\n");
 }
 
@@ -120,6 +121,7 @@ export function nudgePrompt(step: AgentWork, delivery?: string): string {
     `You ended your turn without reporting the step **${step.name}**.`,
     `- Finished? Call \`${REPORT_TOOL}\` with \`step: "${step.id}"\`${id}${pick} (or end with the Step report block${delivery ? `, \`delivery: ${delivery}\` included` : ""}).`,
     `- Need a decision? Ask it, or report \`outcome: "needs_input"\` with the question.`,
+    `- Already done on the default branch? Report \`outcome: "resolved"\` with \`resolvedPr\` (the merged pull request) or \`resolvedCommit\` (in a Step report block: \`resolvedPr:\` or \`resolvedCommit:\` lines).`,
     `- Not finished? Keep working, then report.`,
   ].join("\n");
 }

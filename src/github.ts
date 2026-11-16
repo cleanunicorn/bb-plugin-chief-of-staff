@@ -384,6 +384,16 @@ export class GitHubClient {
     return this.request("POST", `/repos/${owner}/${repo}/issues/${number}/comments`, { body });
   }
 
+  /** Close an issue as completed. */
+  closeIssue(owner: string, repo: string, number: number): Promise<GitHubIssue> {
+    return this.request("PATCH", `/repos/${owner}/${repo}/issues/${number}`, { state: "closed", state_reason: "completed" });
+  }
+
+  /** `base...head`: `ahead_by` 0 means every commit of head is in base. */
+  compareCommits(owner: string, repo: string, base: string, head: string): Promise<{ status: string; ahead_by: number; behind_by: number }> {
+    return this.request("GET", `/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=1`);
+  }
+
   updateIssueComment(owner: string, repo: string, commentId: number, body: string): Promise<GitHubComment> {
     return this.request("PATCH", `/repos/${owner}/${repo}/issues/comments/${commentId}`, { body });
   }

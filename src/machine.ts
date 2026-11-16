@@ -8,11 +8,18 @@
 // step's `onFail` target and everything downstream of it, and the work re-runs
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
-import { MARKED_DONE, MARKED_FAILED, PR_CLOSED_ERROR, SKIPPED_STEP } from "./outcome";
+import { ALREADY_RESOLVED, MARKED_DONE, MARKED_FAILED, PR_CLOSED_ERROR, SKIPPED_STEP } from "./outcome";
 import type { WaitingKind, WorkItem } from "./state";
 import { agentWork, chosenModel, descendants, finalSteps, isWriter, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
 
-export type ReportOutcome = "done" | "failed" | "needs_input";
+/** "resolved": the task is already done on the default branch; `resolvedBy` names the evidence Chief of Staff verifies. */
+export type ReportOutcome = "done" | "failed" | "needs_input" | "resolved";
+
+/** What already resolved a task: a merged pull request (preferred) or a commit on the default branch. */
+export interface ResolvedBy {
+  pr?: number | null;
+  commit?: string | null;
+}
 
 export interface StepReport {
   delivery?: string;
@@ -23,12 +30,24 @@ export interface StepReport {
   choice?: string | null;
   /** On an automatic model step: the provider, model and reasoning level the agent picked. */
   pick?: ModelPick | null;
+  /** With outcome "resolved": the evidence. */
+  resolvedBy?: ResolvedBy | null;
   at: string;
   via: "tool" | "text";
 }
 
 export type NodeStatus = "pending" | "running" | "waiting" | "done";
-export type ShipPhase = "pushing" | "ci" | "ready" | "merging";
+/**
+ * Where a running step is beyond its status. Ship steps: pushing → ci → ready → merging.
+ * Agent steps with a "resolved" report: "resolving" verifies the evidence only (the step's
+ * approval gate comes next), "closing" verifies it again and closes the issue.
+ */
+export type NodePhase = "pushing" | "ci" | "ready" | "merging" | "resolving" | "closing";
+
+/** The step's agents reported the task already resolved and Chief of Staff is on it (verifying, or closing). */
+export function isResolving(phase: NodePhase | null | undefined): phase is "resolving" | "closing" {
+  return phase === "resolving" || phase === "closing";
+}
 
 export interface AgentDelivery {
   id: string;
@@ -83,7 +102,7 @@ export interface NodeState {
   /** Why the step is running again (failure output, review findings, operator feedback). */
   feedback: string | null;
   /** Ship only. */
-  phase: ShipPhase | null;
+  phase: NodePhase | null;
   /** Check output or CI log of the latest run. */
   output: string | null;
   /** Infrastructure retry of the step's last effect. */
@@ -108,6 +127,8 @@ export type Effect =
   | { type: "ship"; step: string }
   /** Merge the PR (detached job). */
   | { type: "merge"; step: string }
+  /** Verify a "resolved" report on GitHub; in phase "closing", then close the issue (runs inside the dispatch, not as a detached job). */
+  | { type: "resolve"; step: string }
   | { type: "notify"; title: string; body: string };
 
 export type MachineEvent =
@@ -120,6 +141,8 @@ export type MachineEvent =
   /** An agent's turn failed on the provider's usage limit, which resets at `until`; BB retries the turn then. */
   | { type: "usage_limited"; step: string; agent: number; until: string; threadId: string }
   | { type: "check_result"; step: string; ok: boolean; output: string }
+  /** The resolve effect's verdict: `ok` with what it verified (and did to the issue), or why the evidence does not hold. */
+  | { type: "resolve_result"; step: string; ok: boolean; detail: string }
   | { type: "pushed"; step: string }
   | { type: "pr_opened"; step: string; prNumber: number; prUrl: string }
   | { type: "ship_refused"; step: string; reason: string }
@@ -134,6 +157,8 @@ export type MachineEvent =
   | { type: "retry_due"; step: string }
   /** Jobs this process is not running (restart): start them again. */
   | { type: "resume_job" }
+  /** A "resolved" report whose verification never finished (restart): verify it again. */
+  | { type: "resume_resolve" }
   /** `reason`: why it counts as stalled (default: no activity past the threshold). */
   | { type: "stalled"; step: string; agent: number; reason?: string }
   // Operator decisions. `step` defaults to the step waiting on them.
@@ -150,7 +175,7 @@ export type MachineEvent =
   | { type: "close"; outcome: "done" | "failed" };
 
 /** lastError of a task closed by hand (defined in ./outcome, which the dashboard also reads). */
-export { MARKED_DONE, MARKED_FAILED, SKIPPED_STEP };
+export { ALREADY_RESOLVED, MARKED_DONE, MARKED_FAILED, SKIPPED_STEP };
 
 /**
  * The only events a closed task takes. A done task can be closed as failed or
@@ -356,7 +381,17 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const s = agentWork(step(id));
     const n = node(id);
     if (!s || !n) return;
+    // Already done on the default branch: Chief of Staff checks the evidence before anything else happens.
+    // A step with an approval gate only verifies first: nothing is closed until a person approves.
     const failed = n.reports.filter((r) => r?.outcome === "failed");
+    if (n.reports.some((r) => r?.outcome === "resolved")) {
+      // Agents disagree (another found it failing, or still to do): a person decides; nothing is closed.
+      const other = n.reports.find((r) => r && r.outcome !== "resolved");
+      if (other) return wait(id, "escalation", `Agents disagree: some reported the task already resolved, another reported "${other.outcome}". Approve to continue the workflow, or send the agents instructions. It said: ${other.summary}`);
+      n.phase = s.approval ? "resolving" : "closing";
+      effects.push({ type: "resolve", step: id });
+      return;
+    }
     if (failed.length) {
       if (s.verdict) return fail(id, failed.map((r) => r!.summary).join("\n\n---\n\n"));
       return wait(id, "escalation", `The agent reported it could not finish: ${failed[0]!.summary}`);
@@ -497,6 +532,30 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       break;
     }
 
+    case "resolve_result": {
+      const n = node(event.step);
+      if (!n || n.status !== "running" || !isResolving(n.phase)) break;
+      n.retry = null;
+      if (!event.ok) {
+        n.phase = null;
+        wait(event.step, "escalation", `The agent reported the task is already resolved, but Chief of Staff could not confirm it: ${event.detail} Approve to continue the workflow, or send the agent instructions.`);
+        break;
+      }
+      if (n.phase === "resolving") {
+        // Evidence holds; the step's gate decides. Approve closes the issue and the task, Revise sends the agent back.
+        wait(event.step, "approval", `Already resolved by ${event.detail} Approve to ${item.issueNumber ? "close the issue and end the task" : "end the task"}, or send the agent back.`);
+        break;
+      }
+      // Already done: every step that ran is over; the ones that never ran stay pending (as Mark done leaves them).
+      for (const id of topoOrder(wf)) {
+        const x = node(id);
+        if (x?.status === "running" || x?.status === "waiting") complete(id, `${ALREADY_RESOLVED} by ${event.detail}`);
+      }
+      Object.assign(patch, { status: "done", lastError: ALREADY_RESOLVED, finishedAt: iso, jobStartedAt: null, queuedEvent: null });
+      effects.push({ type: "notify", title: `${ALREADY_RESOLVED}: ${label(item)}`, body: `By ${event.detail}`.slice(0, 500) });
+      return { nodes, patch, effects, journal };
+    }
+
     case "check_result": {
       const n = node(event.step);
       if (!n || n.status !== "running" || step(event.step)?.type !== "check") break;
@@ -624,7 +683,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (event.effect.type === "agent" && previous && !isPromptDeliveryRetry(previous)) break;
       const count = (previous?.count ?? 0) + 1;
       const deferrals = previous?.deferrals ?? 0;
-      if (event.effect.type !== "agent") patch.jobStartedAt = null;
+      if (usesJobSlot(event.effect)) patch.jobStartedAt = null;
       patch.lastError = event.message.slice(0, 1000);
       if (event.uncertain) {
         if (event.effect.type === "agent" && n.deliveries?.[event.effect.agent]) {
@@ -665,7 +724,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!n?.retry?.at || n.status === "waiting") break;
       const effect = n.retry.effect;
       n.retry = { ...n.retry, at: null };
-      if (effect.type !== "agent" && effect.type !== "notify") patch.jobStartedAt = iso;
+      if (usesJobSlot(effect)) patch.jobStartedAt = iso;
       effects.push(effect);
       break;
     }
@@ -683,9 +742,19 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       break;
     }
 
+    case "resume_resolve": {
+      // Verification runs inside the dispatch that asked for it (no job slot, no jobStartedAt): only a restart leaves one behind.
+      for (const s of wf.steps) {
+        const n = node(s.id);
+        if (n?.status === "running" && isResolving(n.phase) && !n.retry?.at) effects.push({ type: "resolve", step: s.id });
+      }
+      break;
+    }
+
     case "stalled": {
       const n = node(event.step);
-      if (n?.status !== "running" || !agentWork(step(event.step))) break;
+      // A step whose agents all reported waits on Chief of Staff's verification, not on an agent.
+      if (n?.status !== "running" || !agentWork(step(event.step)) || isResolving(n.phase)) break;
       wait(event.step, "stalled", event.reason ?? "No activity past the stall threshold.", event.agent);
       break;
     }
@@ -697,6 +766,14 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!id || !n || !s || n.status !== "waiting" || !n.waiting) break;
       // An open question is answered, not approved; Chief of Staff's own failure is retried.
       if (n.waiting.kind === "question" || n.waiting.kind === "cos_error") break;
+      if (n.waiting.kind === "approval" && n.phase === "resolving") {
+        // Approved as already resolved: check the evidence again, then close the issue and the task.
+        n.status = "running";
+        n.waiting = null;
+        n.phase = "closing";
+        effects.push({ type: "resolve", step: id });
+        break;
+      }
       if (s.type === "ship" && s.action === "merge" && item.prNumber) {
         // Merging is not over while the PR is open: keep watching it.
         n.status = "running";
@@ -751,7 +828,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
           n.waiting = null;
         }
         if (effect.type === "agent" && n.agentRetries) selectAgentRetry(n);
-        if (effect.type !== "agent" && effect.type !== "notify") patch.jobStartedAt = iso;
+        if (usesJobSlot(effect)) patch.jobStartedAt = iso;
         effects.push(effect);
       } else if (n.status !== "pending") {
         note("rerun", id, null, { to: id });
@@ -864,11 +941,17 @@ function holdsRetry(n: NodeState | undefined): boolean {
   return !!n && (!!n.retry || Object.keys(n.agentRetries ?? {}).length > 0 || n.waiting?.kind === "cos_error");
 }
 
+/** Effects run as detached jobs, tracked by the item's jobStartedAt (resolve runs inline; agent and notify are not jobs). */
+export function usesJobSlot(effect: Effect): effect is Extract<Effect, { type: "check" | "ship" | "merge" }> {
+  return effect.type === "check" || effect.type === "ship" || effect.type === "merge";
+}
+
 export const EFFECT_LABEL: Record<Effect["type"], string> = {
   agent: "send the agent its prompt",
   check: "run the check command",
   ship: "push the branch and open the pull request",
   merge: "merge the pull request",
+  resolve: "verify that the task is already resolved",
   notify: "send a notification",
 };
 
@@ -890,8 +973,8 @@ export function deriveStatus(item: Pick<WorkItem, "status" | "workflow">, nodes:
   }
   const running = order.map((id) => ({ s: stepById(wf, id)!, n: nodes[id] })).filter((x) => x.n?.status === "running");
   const active = running.filter((x) => !x.n!.retry?.at && !limitedNode(x.n!));
-  if (active.some((x) => agentWork(x.s))) return { status: "agent", waitingKind: null, waitingReason: null };
-  if (active.some((x) => x.s.type === "check" || x.n!.phase === "pushing" || x.n!.phase === "merging")) return { status: "cos", waitingKind: null, waitingReason: null };
+  if (active.some((x) => agentWork(x.s) && !isResolving(x.n!.phase))) return { status: "agent", waitingKind: null, waitingReason: null };
+  if (active.some((x) => x.s.type === "check" || x.n!.phase === "pushing" || x.n!.phase === "merging" || isResolving(x.n!.phase))) return { status: "cos", waitingKind: null, waitingReason: null };
   if (active.some((x) => x.n!.phase === "ci")) return { status: "ci", waitingKind: null, waitingReason: null };
   if (active.some((x) => x.n!.phase === "ready")) return { status: "ready", waitingKind: null, waitingReason: null };
   if (running.length) return { status: "retrying", waitingKind: null, waitingReason: null };

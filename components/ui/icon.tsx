@@ -129,6 +129,7 @@ export const HOST_ICON_FALLBACKS: Record<string, string> = {
   News01: "ComputerTerminal01", // Activity: the log
   Puzzle: "Folder", // skill reference: a skill is a folder
   Rows2: "PanelLeft", // Throughput table view
+  SecurityCheck: "FolderSync", // Already resolved: the default branch already has it
 };
 
 /** The host catalog's name for an icon name used by our UI. */

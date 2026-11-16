@@ -2,7 +2,7 @@
 // state, stall detection, and reconciliation after a restart (including
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
-import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type ShipPhase } from "./machine";
+import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type NodePhase } from "./machine";
 import { occupiesCapacity, type FinishedOrder, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { describeOutcome, finishedOutcome, type Outcome } from "./outcome";
 import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
@@ -21,7 +21,7 @@ export interface RosterStep {
   depth: number;
   /** "stopped": a finished task left this step running or waiting (display only; the stored node keeps its state). */
   status: NodeStatus | "stopped";
-  phase: ShipPhase | null;
+  phase: NodePhase | null;
   agents: number;
   /** Agents that have reported this round. */
   reported: number;
@@ -313,6 +313,8 @@ export function describeActivity(item: WorkItem, steps: RosterStep[] = rosterSte
         if (s.phase === "merging") return `${s.name}: merging PR #${item.prNumber}`;
         return `${s.name}: pushing and opening the PR`;
       }
+      if (s.phase === "resolving") return `${s.name}: checking that it is already resolved`;
+      if (s.phase === "closing") return `${s.name}: closing as already resolved`;
       if (s.nudged) return `${s.name}: agent stopped without reporting; nudged ${s.nudged}×`;
       return s.agents > 1 ? `${s.name}: ${s.reported}/${s.agents} agents reported` : `${s.name}: agent working${s.round > 1 ? ` (round ${s.round})` : ""}`;
     });

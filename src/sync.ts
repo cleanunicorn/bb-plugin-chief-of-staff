@@ -11,7 +11,7 @@
 import { acknowledgeReport, deliveryWait, reportMatches, recoverSpawn } from "./deliveryReport";
 import type { Cos } from "./context";
 import { resumeQueued, dispatchLocked, jobRunning, withItemLock } from "./delivery";
-import { MARKED_FAILED } from "./machine";
+import { isResolving, MARKED_FAILED } from "./machine";
 import { runningWriter } from "./prompts";
 import { parseTextReport } from "./report";
 import type { ItemThread, WorkItem } from "./state";
@@ -137,7 +137,7 @@ export async function observeIdle(cos: Cos, itemId: string, threadId: string, th
     const question = report ? null : plainTextQuestion(text);
     if (row) cos.store.updateThread(threadId, { idleSeenAt: updatedAt || row.idleSeenAt, pendingReport: null });
     try {
-      await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, ...(report.pick ? { pick: report.pick } : {}), at: report.at, via: report.via } : null, question }, actor);
+      await dispatchLocked(cos, item.id, { type: "turn_ended", step: step.id, agent: ctx.agent, round, report: report ? { outcome: report.outcome, summary: report.summary, question: report.question ?? null, choice: report.choice ?? null, ...(report.pick ? { pick: report.pick } : {}), ...(report.resolvedBy ? { resolvedBy: report.resolvedBy } : {}), at: report.at, via: report.via } : null, question }, actor);
     } catch (error) {
       // The engine did not take the turn end: keep the report and the idle
       // unhandled so the next sweep tries again instead of losing them.
@@ -198,6 +198,9 @@ export async function observeFailure(cos: Cos, itemId: string, threadId: string,
     // A step thread from an earlier round, or a step that is over: housekeeping, not a failure.
     const node = ctx.step ? item.nodes[ctx.step.id] : undefined;
     if (!ctx.step || !node || (node.status !== "running" && node.status !== "waiting") || (ctx.row && ctx.row.round !== node.round)) return;
+    // A thread the step has moved on from: a retry keeps the round but sends the agent's prompt to a new thread (or is sending it now).
+    const delivery = node.deliveries?.[ctx.agent];
+    if (delivery && delivery.threadId !== threadId) return;
     await dispatchLocked(cos, item.id, { type: "thread_failed", step: ctx.step.id, agent: ctx.agent, error }, actor);
   });
 }
@@ -356,6 +359,9 @@ export async function tickItems(cos: Cos, actor: string): Promise<void> {
       if (fresh.jobStartedAt && !jobRunning(item.id) && now - Date.parse(fresh.jobStartedAt) > LOST_JOB_GRACE_MS) {
         cos.store.log({ level: "warn", kind: "job", repo: item.repo, workItemId: item.id, message: "a Chief of Staff job was not running (restart?); starting it again", actor });
         await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "resume_job" }, actor));
+      } else if (Object.values(fresh.nodes).some((n) => n.status === "running" && isResolving(n.phase) && !n.retry?.at) && now - Date.parse(fresh.updatedAt) > LOST_JOB_GRACE_MS) {
+        // Verification runs inside one dispatch; still "resolving" a while later means a restart cut it off.
+        await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "resume_resolve" }, actor));
       } else if (fresh.status === "queued" && now - Date.parse(fresh.updatedAt) > LOST_JOB_GRACE_MS) {
         await withItemLock(item.id, () => dispatchLocked(cos, item.id, { type: "start" }, actor));
       }

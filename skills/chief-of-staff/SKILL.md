@@ -19,7 +19,11 @@ exact `cos_report` call (step id, delivery id, outcomes, any model-choice
 fields) and the `## Step report` text block to use when the tool is
 unavailable. Report, then end your turn; Chief of Staff waits for the report.
 Use `outcome: "failed"` when you cannot finish, and `outcome: "needs_input"`
-with a `question` when a person must decide. On a read-only step, do not change
+with a `question` when a person must decide. If the task is already done on the
+default branch (check `origin/<default>` after `git fetch`), report
+`outcome: "resolved"` with `resolvedPr` (the merged pull request) or
+`resolvedCommit`: Chief of Staff verifies it on GitHub, then ends the task and
+closes the issue. On a read-only step, do not change
 files. Never push or open pull requests; Chief of Staff does that.
 
 ## Commands
