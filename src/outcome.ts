@@ -13,6 +13,9 @@ export const PR_CLOSED_ERROR = "PR closed without merge";
 export const MARKED_DONE = "Marked done";
 export const MARKED_FAILED = "Marked failed";
 
+/** How a step the operator skipped is recorded (its journal "passed" detail). */
+export const SKIPPED_STEP = "Skipped by the operator";
+
 export const OUTCOMES = ["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 

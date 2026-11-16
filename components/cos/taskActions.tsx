@@ -10,11 +10,27 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { taskLabel, type ActivityTask } from "./dashboardModel";
 import { CARD_ACTION_ICON } from "./dashboardIcons";
 
-export type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed";
-export type Confirmable = "mark_done" | "mark_failed" | "restart";
+export type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed" | "skip_step";
+export type Confirmable = "mark_done" | "mark_failed" | "restart" | "skip";
 
-/** What the menu needs to know about a task. */
-export type MenuTask = { id: string; detail: string; issueNumber: number | null; issueTitle: string; threadTitle?: string | null };
+/** A step of the task, as the roster lists it. */
+type MenuStep = { id: string; name: string; status: string };
+/** What the menu needs to know about a task. `steps`: its workflow steps in order, to offer skipping the live one. */
+export type MenuTask = { id: string; detail: string; issueNumber: number | null; issueTitle: string; threadTitle?: string | null; steps?: readonly MenuStep[] };
+
+/** The steps Skip can pass: running or waiting ones. */
+export const skippableSteps = (task: Pick<MenuTask, "steps">) => (task.steps ?? []).filter((s) => s.status === "running" || s.status === "waiting");
+
+/** Every other step is done: passing `id` finishes the task. */
+export const finishesWith = (steps: readonly Pick<MenuStep, "id" | "status">[], id: string) => steps.every((s) => s.id === id || s.status === "done");
+
+/** What skipping `step` does: the steps after it start, or, when nothing comes after it, the task finishes. */
+export function skipDescription(name: string, last: boolean, archivesOnDone: boolean): string {
+  const then = last
+    ? `Nothing comes after it, so the task finishes as done.${archivesOnDone ? " Its threads are archived and their workspace is removed: changes not pushed are lost." : ""}`
+    : "The steps after it start now.";
+  return `${name} is recorded as done without its work, and its retries stop. ${then} Work already under way on it is not stopped: an agent's thread is left as it is. If a later step sends the work back, ${name} is passed again rather than run; Run again from here on it undoes the skip.`;
+}
 
 export const taskTitle = (task: Pick<MenuTask, "issueTitle" | "threadTitle">) => task.issueTitle || task.threadTitle || "Untitled task";
 
@@ -22,8 +38,15 @@ export const taskTitle = (task: Pick<MenuTask, "issueTitle" | "threadTitle">) =>
  * What each confirm says and sends. A failed task is no longer worked on, so its copy differs.
  * `archivesOnDone`: marking done archives the task's threads ("Archive threads when a task is done").
  */
-export function confirmCopy(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
+export function confirmCopy(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean, step?: { name: string; last: boolean }): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
   switch (kind) {
+    case "skip":
+      return {
+        title: `Skip ‘${step?.name ?? "the step"}’ of ‘${title}’?`,
+        description: skipDescription(step?.name ?? "The step", step?.last ?? false, archivesOnDone),
+        confirmLabel: "Skip step",
+        action: "skip_step",
+      };
     case "restart":
       return {
         title: `Restart ‘${title}’ on a new thread?`,
@@ -52,10 +75,12 @@ export function confirmCopy(kind: Confirmable, title: string, failed: boolean, a
 }
 
 /**
- * The More actions menu: done → "Run a step again…"; failed → Restart and Mark done; active → Retry, Mark done
- * and Mark failed; plus "Show activity" when the page has an Activity feed.
+ * The More actions menu: done → "Run a step again…"; failed → Restart and Mark done; active → Retry, Skip, Mark done
+ * and Mark failed; plus "Show activity" when the page has an Activity feed. Skip asks about the one live step; with
+ * several running at once it opens the workflow (`onRerun`) to pick one there.
  */
 export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun, onShowActivity }: { task: MenuTask; busy: boolean; tabIndex?: number; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onRerun: (id: string, trigger: HTMLButtonElement) => void; onShowActivity?: (task: ActivityTask) => void }) {
+  const live = skippableSteps(task);
   const trigger = useRef<HTMLButtonElement>(null);
   // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
   const showingActivity = useRef(false);
@@ -108,6 +133,12 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
               <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
               Retry the stuck step
             </DropdownMenuItem>
+            {live.length ? (
+              <DropdownMenuItem onSelect={() => (live.length === 1 ? ask("skip") : onRerun(task.id, trigger.current!))}>
+                <Icon name="ArrowRight" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+                {live.length === 1 ? `Skip ‘${live[0]!.name}’…` : "Skip a step…"}
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem onSelect={() => ask("mark_done")}>
               <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
               Mark done…
@@ -123,7 +154,7 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
   );
 }
 
-type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; finished: boolean; open: boolean; trigger: HTMLButtonElement | null };
+type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; finished: boolean; open: boolean; trigger: HTMLButtonElement | null; step?: { id: string; name: string; last: boolean } };
 
 /**
  * The confirm for every task in a list. `busy` holds the tasks with an action in flight (their triggers are
@@ -131,7 +162,7 @@ type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; fi
  * as it is enabled again; when that button has gone (the task moved to another list), to `fallback`, told
  * whether the task was finished when asked.
  */
-export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { archivesOnDone: boolean; busy: ReadonlySet<string>; onAction: (id: string, action: ItemAction) => void; fallback: (finished: boolean) => void }): { ask: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; dialog: ReactNode } {
+export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { archivesOnDone: boolean; busy: ReadonlySet<string>; onAction: (id: string, action: ItemAction, step?: string) => void; fallback: (finished: boolean) => void }): { ask: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; dialog: ReactNode } {
   // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
   // refetch has changed the task's outcome under it.
   const [asked, setAsked] = useState<Asked>({ id: "", title: "", kind: "mark_done", failed: false, finished: false, open: false, trigger: null });
@@ -139,7 +170,10 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
   const fallbackRef = useRef(fallback);
   fallbackRef.current = fallback;
   const ask = useCallback((task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => {
-    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", finished: task.detail === "done" || task.detail === "failed", open: true, trigger });
+    // Skip names the step it was asked about, so a refetch that moves the task on cannot redirect it.
+    const live = kind === "skip" ? skippableSteps(task)[0] : undefined;
+    const step = live ? { id: live.id, name: live.name, last: finishesWith(task.steps!, live.id) } : undefined;
+    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", finished: task.detail === "done" || task.detail === "failed", open: true, trigger, step });
   }, []);
   const close = () => setAsked((a) => ({ ...a, open: false }));
   // A confirmed action disables its trigger while the call runs; focus it once the call is over, if focus is still lost.
@@ -159,7 +193,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
     else if (trigger?.isConnected) pending.current = { trigger, finished: asked.finished };
     else fallbackRef.current(asked.finished);
   };
-  const copy = confirmCopy(asked.kind, asked.title, asked.failed, archivesOnDone);
+  const copy = confirmCopy(asked.kind, asked.title, asked.failed, archivesOnDone, asked.step);
   const dialog = (
     <ConfirmDialog
       open={asked.open}
@@ -168,7 +202,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
       confirmLabel={copy.confirmLabel}
       tone={copy.tone}
       onConfirm={() => {
-        onAction(asked.id, copy.action);
+        onAction(asked.id, copy.action, asked.kind === "skip" ? asked.step?.id : undefined);
         close();
       }}
       onCancel={close}

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Skip a step.** A step that keeps failing could only be retried, or the
+  whole task marked done or failed. The task's More actions menu now has
+  **Skip a step…**, and the workflow sheet has **Skip this step** for the
+  selected running or waiting step: the step is recorded as done ("Skipped by
+  the operator"), its retries stop, and the steps after it start. When a later
+  step sends the work back to an earlier one, the skipped step is passed again
+  rather than run; work sent back to the skipped step itself, or **Run again
+  from here** on it, runs it again. Also `bb cos item skip <id> [--step <id>]`.
 - **Finished tasks get their own section, with filters.** Show finished used
   to pour every finished task, as a full card, into the active grid, mixed
   with active work and in no particular order. Finished tasks are now listed

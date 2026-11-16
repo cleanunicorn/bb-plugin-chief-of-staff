@@ -143,6 +143,9 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   if (deferredId !== undefined) cos.store.deleteDeferredEvent(deferredId);
   logChanges(cos, item, updated, event, actor);
   if (item.status === "done" && updated.status !== "done") await reopenItemThreads(cos, updated, actor);
+  // A skipped job step's command may still be running: let go of it so the next job starts now. Its late result is
+  // dropped by the token check (jobStartedAt changed), and its unregistering only removes its own entry.
+  if (event.type === "skip" && "jobStartedAt" in t.patch) jobs.delete(item.id);
   for (const effect of t.effects) {
     if (effect.type === "check" || effect.type === "ship" || effect.type === "merge") {
       startJob(cos, item.id, effect, actor);

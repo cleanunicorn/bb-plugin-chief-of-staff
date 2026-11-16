@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { LogEntry, LogRow } from "../src/state";
 import type { ActivityTask } from "../components/cos/dashboardModel";
@@ -1099,6 +1099,42 @@ it("retries the stuck step from the menu at once, without asking", async () => {
   await tick();
   expect(confirmDialog()).toBeNull();
   expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "retry" }]]);
+});
+
+describe("skipping a step from the menu", () => {
+  const step = (id: string, status: "done" | "running" | "waiting" | "pending") => ({ id, name: id[0]!.toUpperCase() + id.slice(1), depth: 0, status, type: "agent" as const, phase: null, agents: 1, reported: 0, nudged: 0, attempts: 0, round: 1, waitingKind: null, retrying: false });
+
+  it("names the live step, asks first, and sends that step", async () => {
+    mocks.entries = [entry({ steps: [step("plan", "done"), step("build", "waiting"), step("ship", "pending")] })];
+    mocks.call.mockResolvedValue({});
+    await mount();
+    await openMenu();
+    expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Skip ‘Build’…", "Mark done…", "Mark failed…"]);
+    await act(async () => menuItem("Skip ‘Build’").click());
+    await tick();
+    expect(confirmDialog()?.textContent).toContain("Skip ‘Build’ of ‘Fix login’?");
+    expect(confirmDialog()?.textContent).toContain("The steps after it start now.");
+    await act(async () => bodyButton("Skip step").click());
+    await tick(5);
+    expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "skip_step", step: "build" }]]);
+  });
+
+  it("warns that skipping the last step left finishes the task", async () => {
+    mocks.entries = [entry({ steps: [step("build", "done"), step("ship", "running")] })];
+    mocks.archiveThreadsOnDone = true;
+    await mount();
+    await openMenu();
+    await act(async () => menuItem("Skip ‘Ship’").click());
+    await tick();
+    expect(confirmDialog()?.textContent).toContain("the task finishes as done. Its threads are archived");
+  });
+
+  it("offers no skip when no step is live", async () => {
+    mocks.entries = [entry({ steps: [step("build", "pending")] })];
+    await mount();
+    await openMenu();
+    expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…", "Mark failed…"]);
+  });
 });
 
 it("keeps Approve and Resume on the card to one click", async () => {
