@@ -208,7 +208,7 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
   );
 }
 
-export type ItemAction = "retry" | "rerun_step" | "skip_step" | "approve" | "revise" | "mark_done" | "mark_failed";
+export type ItemAction = "retry" | "rerun_step" | "approve" | "revise" | "mark_done" | "mark_failed";
 
 export async function itemAction(cos: Cos, id: string, action: ItemAction, actor: string, opts: { step?: string; feedback?: string } = {}) {
   const item = cos.store.getWorkItem(id);
@@ -220,20 +220,6 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
     case "rerun_step": {
       if (!opts.step) throw new Error("rerun needs the step to run again");
       return dispatch(cos, id, { type: "rerun", step: opts.step, feedback: opts.feedback }, actor);
-    }
-    case "skip_step": {
-      // Refused here rather than ignored by the engine, so the caller hears why nothing happened.
-      if (item.status === "done" || item.status === "failed") throw new Error("this task has finished: there is no step to skip (use Run a step again first)");
-      const live = item.workflow.steps.filter((s) => item.nodes[s.id]?.status === "running" || item.nodes[s.id]?.status === "waiting").map((s) => s.id);
-      const step = opts.step ?? (live.length === 1 ? live[0] : undefined);
-      if (!step) throw new Error(live.length ? `more than one step is running (${live.join(", ")}): name the step to skip` : "no step is running or waiting: there is nothing to skip");
-      if (!live.includes(step)) throw new Error(`step "${step}" is not running or waiting, so it cannot be skipped`);
-      const updated = await dispatch(cos, id, { type: "skip", step }, actor);
-      if (updated?.nodes[step]?.skipped) {
-        cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `skipped step ${step}`, actor });
-        cos.invalidate();
-      }
-      return updated;
     }
     case "approve":
       return dispatch(cos, id, { type: "approve", step: opts.step }, actor);

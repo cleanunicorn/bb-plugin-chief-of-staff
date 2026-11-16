@@ -49,14 +49,12 @@ files. Never push or open pull requests; Chief of Staff does that.
   GitHub issue (also the `cos_start_task` agent tool). The repository must be
   configured, but automatic intake need not be enabled. The task follows its
   configured workflow and counts against capacity limits.
-- `bb cos item approve|revise|retry|rerun|skip|done|failed <id> [--step <id>] [--message "..."]`
+- `bb cos item approve|revise|retry|rerun|done|failed <id> [--step <id>] [--message "..."]`
   — act on a tracked work item (ids come from `bb cos status --json`).
   `approve` approves the waiting step or moves past a stuck one; `revise
   --message` sends it back with feedback; `retry` re-runs a step Chief of
   Staff failed on; `rerun --step <id>` runs a step and everything after it
-  again; `skip [--step <id>]` passes a running or waiting step without its
-  work so the steps after it carry on (a loop-back from a later step to an
-  earlier one passes it again; work sent back to it, or a rerun, runs it).
+  again.
 - `bb cos log [--limit n] [--item id]` — activity log with who/what triggered each step.
 
 An uncertain prompt delivery is never resent automatically, even after a

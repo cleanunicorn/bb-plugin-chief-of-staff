@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, MAX_RATE_LIMIT_DEFERRALS, SKIPPED_STEP, limitedNode, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
+import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, MAX_RATE_LIMIT_DEFERRALS, limitedNode, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
 import type { WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
@@ -455,101 +455,6 @@ describe("workflow engine", () => {
     expect(st(after)).toEqual({ plan: "done", build: "running", review: "pending", ship: "pending" });
     expect(after.nodes.build!.feedback).toContain("rename the flag");
     expect(agentFx(fx)).toHaveLength(1);
-  });
-});
-
-describe("skipping a step", () => {
-  const checked = () => wf([
-    { id: "build", name: "Build", type: "agent", writes: true, next: ["test"] },
-    { id: "test", name: "Tests", type: "check", command: "npm test", onFail: "build", maxAttempts: 1, next: ["review"] },
-    { id: "review", name: "Review", type: "agent", verdict: true, onFail: "build", maxRounds: 2 },
-  ]);
-  const transitionOf = (item: WorkItem, event: MachineEvent) => transition(item, event, DEFAULT_POLICY, NOW);
-
-  it("passes a step escalated past its limit, stops its retries and starts the next step", () => {
-    let item = itemFor(checked());
-    [item] = run(item, { type: "start" });
-    [item] = run(item, ended("build", report(), item));
-    [item] = run(item, { type: "check_result", step: "test", ok: false, output: "1 failing" });
-    [item] = run(item, ended("build", report(), item));
-    [item] = run(item, { type: "check_result", step: "test", ok: false, output: "still failing" });
-    expect([item.status, item.waitingKind]).toEqual(["waiting_on_human", "escalation"]);
-    const t = transitionOf(item, { type: "skip", step: "test" });
-    expect(t.journal).toContainEqual(expect.objectContaining({ kind: "passed", step: "test", detail: SKIPPED_STEP }));
-    const [after, fx] = run(item, { type: "skip", step: "test" });
-    expect(st(after)).toEqual({ build: "done", test: "done", review: "running" });
-    expect(after.nodes.test).toMatchObject({ skipped: true, waiting: null, retry: null });
-    expect(agentFx(fx)).toEqual([{ type: "agent", step: "review", agent: 0, kind: "start" }]);
-  });
-
-  it("passes a skipped step again when a later step sends the work back, until it is run again by hand", () => {
-    let item = itemFor(checked());
-    let fx: Effect[];
-    [item] = run(item, { type: "start" });
-    [item] = run(item, ended("build", report(), item));
-    [item] = run(item, { type: "skip", step: "test" });
-    [item] = run(item, ended("review", report("failed", "null case"), item));
-    expect(st(item)).toEqual({ build: "running", test: "pending", review: "pending" });
-    expect(item.nodes.test!.skipped).toBe(true);
-    // Build reports: Tests is passed without running its command, and Review starts.
-    [item, fx] = run(item, ended("build", report(), item));
-    expect(fx.filter((e) => e.type === "check")).toEqual([]);
-    expect(st(item)).toEqual({ build: "done", test: "done", review: "running" });
-    // Run again from here undoes the skip.
-    [item, fx] = run(item, { type: "rerun", step: "test" });
-    expect(item.nodes.test!.skipped).toBeUndefined();
-    expect(fx).toEqual([{ type: "check", step: "test" }]);
-  });
-
-  it("runs a skipped step again when the work is sent back to it, with the feedback", () => {
-    let item = itemFor(checked());
-    [item] = run(item, { type: "start" });
-    [item] = run(item, { type: "skip", step: "build" });
-    [item] = run(item, { type: "check_result", step: "test", ok: true, output: "ok" });
-    const [after, fx] = run(item, ended("review", report("failed", "null case"), item));
-    expect(st(after).build).toBe("running");
-    expect(after.nodes.build!.skipped).toBeUndefined();
-    expect(after.nodes.build!.feedback).toContain("null case");
-    expect(agentFx(fx)).toEqual([{ type: "agent", step: "build", agent: 0, kind: "start" }]);
-  });
-
-  it("drops a running check's late result and clears its job token", () => {
-    let item = itemFor(checked());
-    [item] = run(item, { type: "start" });
-    [item] = run(item, ended("build", report(), item));
-    item = { ...item, jobStartedAt: NOW.toISOString() };
-    expect(item.nodes.test!.status).toBe("running");
-    [item] = run(item, { type: "skip", step: "test" });
-    expect(item.jobStartedAt).toBeNull();
-    const [late] = run(item, { type: "check_result", step: "test", ok: false, output: "late failure" });
-    expect(st(late)).toEqual({ build: "done", test: "done", review: "running" });
-  });
-
-  it("clears an agent step's pending prompt retries and in-flight deliveries", () => {
-    let item = itemFor(checked());
-    [item] = run(item, { type: "start" });
-    [item] = run(item, { type: "effect_error", step: "build", effect: { type: "agent", step: "build", agent: 0, kind: "start" }, message: "bb unavailable" });
-    expect(item.nodes.build!.retry?.at).toBeTruthy();
-    [item] = run(item, { type: "skip", step: "build" });
-    expect(item.nodes.build).toMatchObject({ status: "done", retry: null, agentRetries: {}, deliveries: {} });
-    expect(item.lastError).toBeNull();
-    expect(st(item).test).toBe("running");
-  });
-
-  it("finishes the task when the skipped step was the last one left", () => {
-    let item = itemFor(wf([{ id: "build", name: "Build", type: "agent", writes: true }]));
-    [item] = run(item, { type: "start" });
-    [item] = run(item, { type: "skip", step: "build" });
-    expect(item.status).toBe("done");
-  });
-
-  it("does nothing to a pending or done step, or on a closed task", () => {
-    let item = itemFor(checked());
-    [item] = run(item, { type: "start" });
-    expect(transitionOf(item, { type: "skip", step: "review" }).journal).toEqual([]);
-    const [failed] = run(item, { type: "close", outcome: "failed" });
-    const t = transitionOf(failed, { type: "skip", step: "build" });
-    expect([t.journal, t.patch, t.effects]).toEqual([[], {}, []]);
   });
 });
 

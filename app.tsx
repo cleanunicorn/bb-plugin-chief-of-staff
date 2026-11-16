@@ -21,7 +21,7 @@ import { ConfirmDialog, useFocusWhenEnabled } from "@/components/ui/confirm-dial
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { FinishedSection, useFinishedTasks, useFinishedView, type FinishedViewState } from "@/components/cos/finished";
 import { NO_FILTER, fmtDay, type FinishedView } from "@/components/cos/finishedModel";
-import { TaskActionsMenu, finishesWith, skipDescription, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
+import { TaskActionsMenu, taskTitle, useTaskConfirm, type Confirmable, type ItemAction, type MenuTask } from "@/components/cos/taskActions";
 import type { StageKey } from "@/components/cos/stages";
 import { Configurator } from "@/components/cos/configurator";
 import { configSectionFromSubPath, configSubPath } from "@/components/cos/configRoute";
@@ -207,9 +207,6 @@ function useTaskUsage(id: string, task: { status: string; usage?: TaskUsage | nu
 function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onChanged, restoreFocus }: { id: string; initialMode?: SheetMode; finishedHint?: boolean; onClose: () => void; onChanged: () => void; restoreFocus: () => void }) {
   const rpc = useRpc<Contract>();
   const view = experimental_useRpcQuery<Contract, "cos_item_workflow">({ contract: rpcContract, method: "cos_item_workflow", input: { id } });
-  // Whether finishing the task archives its threads, for the skip question.
-  const overview = experimental_useRpcQuery<Contract, "cos_overview">({ contract: rpcContract, method: "cos_overview", input: null });
-  const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
   useLiveRefresh(async () => void (await view.refetch()));
   const usage = useTaskUsage(id, view.data?.task);
   const [selected, setSelected] = useState<string | null>(null);
@@ -220,10 +217,6 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onCh
   const [confirmRerun, setConfirmRerun] = useState<{ open: boolean; finished: boolean }>({ open: false, finished: false });
   const rerunButton = useRef<HTMLButtonElement>(null);
   const focusRerun = useFocusWhenEnabled(rerunButton, busy);
-  // The step a skip was asked for, kept so the question's text holds while it animates closed.
-  const [confirmSkip, setConfirmSkip] = useState<{ open: boolean; step: string; name: string; last: boolean }>({ open: false, step: "", name: "", last: false });
-  const skipButton = useRef<HTMLButtonElement>(null);
-  const focusSkip = useFocusWhenEnabled(skipButton, busy);
   const [error, setError] = useState<string | null>(null);
   // One class set or the other, never both: `md:` and a height query both match at 844×390.
   const short = useMediaQuery(SHORT_VIEWPORT_QUERY);
@@ -243,14 +236,13 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onCh
   const loops = useMemo(() => (wf ? loopBacks(wf, journal, live) : { total: 0, loops: [], approximate: true }), [wf, journal, live]);
   const counts = useMemo(() => (wf ? edgeCounts(wf, journal, loops) : {}), [wf, journal, loops]);
   const now = useNow();
-  // Skip passes a running or waiting step of an unfinished task.
-  const skippable = finished === false && !!step && (live[step.id]?.status === "running" || live[step.id]?.status === "waiting");
   const statusLabel = (stepId: string) => liveTone(live[stepId])?.label ?? "pending";
-  const runAction = async (action: "rerun_step" | "skip_step", stepId: string) => {
+  const rerun = async () => {
+    if (!selected) return;
     setBusy(true);
     setError(null);
     try {
-      await rpc.call("cos_item_action", { id, action, step: stepId });
+      await rpc.call("cos_item_action", { id, action: "rerun_step", step: selected });
       onChanged();
       await view.refetch();
     } catch (err) {
@@ -393,24 +385,7 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onCh
             <span>
               <b className="text-foreground">{step.name}</b> · {statusLabel(step.id)}
             </span>
-            {skippable ? (
-              <Button ref={skipButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmSkip({ open: true, step: step.id, name: step.name, last: finishesWith(Object.entries(live).map(([sid, l]) => ({ id: sid, status: l.status })), step.id) })}>
-                <Icon name="ArrowRight" fallback="Circle" aria-hidden /> Skip this step
-              </Button>
-            ) : null}
-            <ConfirmDialog
-              open={confirmSkip.open}
-              title={`Skip ‘${confirmSkip.name}’?`}
-              description={skipDescription(confirmSkip.name, confirmSkip.last, archivesOnDone)}
-              confirmLabel="Skip step"
-              onConfirm={() => {
-                setConfirmSkip((c) => ({ ...c, open: false }));
-                void runAction("skip_step", confirmSkip.step);
-              }}
-              onCancel={() => setConfirmSkip((c) => ({ ...c, open: false }))}
-              restoreFocus={focusSkip}
-            />
-            <Button ref={rerunButton} size="sm" variant="outline" className={skippable ? undefined : "ml-auto"} disabled={busy} onClick={() => setConfirmRerun({ open: true, finished: finished === true })}>
+            <Button ref={rerunButton} size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => setConfirmRerun({ open: true, finished: finished === true })}>
               <Icon name="RotateCcw" fallback="Circle" aria-hidden /> Run again from here
             </Button>
             <ConfirmDialog
@@ -420,7 +395,7 @@ function WorkflowSheet({ id, initialMode = "canvas", finishedHint, onClose, onCh
               confirmLabel={confirmRerun.finished ? "Reopen and run again" : "Run again"}
               onConfirm={() => {
                 setConfirmRerun((c) => ({ ...c, open: false }));
-                if (selected) void runAction("rerun_step", selected);
+                void rerun();
               }}
               onCancel={() => setConfirmRerun((c) => ({ ...c, open: false }))}
               restoreFocus={focusRerun}
@@ -759,11 +734,11 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const throughputHeading = useRef<HTMLHeadingElement>(null);
   const act = useCallback(
-    async (id: string, action: ItemAction, step?: string) => {
+    async (id: string, action: ItemAction) => {
       setBusy((ids) => new Set(ids).add(id));
       setActionError(null);
       try {
-        await rpc.call("cos_item_action", { id, action, ...(step ? { step } : {}) });
+        await rpc.call("cos_item_action", { id, action });
         await refetchAll();
       } catch (error) {
         setActionError(errorText(error));
@@ -798,7 +773,7 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
   const archivesOnDone = overview.data?.settings.archiveThreadsOnDone ?? true;
   const configuredRepos = overview.data?.repos;
   const repoKeys = useMemo(() => (configuredRepos ?? []).map((r) => r.key), [configuredRepos]);
-  const confirm = useTaskConfirm({ archivesOnDone, busy, onAction: (id, action, step) => void act(id, action, step), fallback: (fromFinished) => (fromFinished ? finishedHeading : sheetFocus.fallback).current?.focus() });
+  const confirm = useTaskConfirm({ archivesOnDone, busy, onAction: (id, action) => void act(id, action), fallback: (fromFinished) => (fromFinished ? finishedHeading : sheetFocus.fallback).current?.focus() });
   const running = overview.data?.occupiedCapacity ?? active.filter((e) => e.occupiesCapacity).length;
   const stalled = active.filter((e) => attentionKind(e) === "stalled").length;
   const failures = active.filter((e) => attentionKind(e) === "failures").length;

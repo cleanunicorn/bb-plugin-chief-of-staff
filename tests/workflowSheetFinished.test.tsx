@@ -155,7 +155,6 @@ describe("a done task", () => {
     await click(buttonIn(sheet(), "Run again from here"));
     expect(confirm()!.textContent).toContain("This reopens the finished task");
     expect(buttonIn(confirm()!, "Reopen and run again")).toBeDefined();
-    expect(buttonIn(sheet(), "Skip this step")).toBeUndefined();
   });
 });
 
@@ -178,15 +177,6 @@ describe("an active task", () => {
     expect(confirm()!.textContent).toContain("This resets Ship and runs it again.");
     expect(confirm()!.textContent).not.toContain("reopens");
     expect(buttonIn(confirm()!, "Run again")).toBeDefined();
-  });
-
-  it("skips the running step after asking, and says skipping the last one finishes the task", async () => {
-    await selectShip();
-    await click(buttonIn(sheet(), "Skip this step"));
-    expect(confirm()!.textContent).toContain("Skip ‘Ship’?");
-    expect(confirm()!.textContent).toContain("Nothing comes after it, so the task finishes as done.");
-    await click(buttonIn(confirm()!, "Skip step"));
-    expect(mocks.call).toHaveBeenCalledWith("cos_item_action", { id: "one", action: "skip_step", step: "ship" });
   });
 });
 
