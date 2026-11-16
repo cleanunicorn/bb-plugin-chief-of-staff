@@ -189,14 +189,21 @@ export interface AgentSettings {
   complete?: true;
 }
 
-/** The provider, model and reasoning level an agent spawns with: `settings` over the repository's, over the global defaults. */
+/**
+ * The provider, model and reasoning level an agent spawns with: `settings` over
+ * the repository's, over the global defaults. A model or reasoning level is
+ * inherited only from a level meant for the same provider: one that sets that
+ * provider, or sets none and inherits it. A repository that switches to Codex
+ * without a model gets Codex's own default, never the global Claude model.
+ */
 export function resolveAgent(settings: AgentSettings | undefined, repo: AgentSettings, defaults: { providerId?: string; model?: string }): AgentSettings {
   if (settings?.complete) return { providerId: settings.providerId, model: settings.model, reasoningLevel: settings.reasoningLevel };
-  return {
-    providerId: settings?.providerId || repo.providerId || defaults.providerId || undefined,
-    model: settings?.model || repo.model || defaults.model || undefined,
-    reasoningLevel: settings?.reasoningLevel || repo.reasoningLevel || undefined,
-  };
+  const levels: AgentSettings[] = [settings ?? {}, repo, defaults];
+  /** The provider level `i` is meant for: its own, else the one it inherits. */
+  const providerOf = (i: number) => levels.slice(i).find((l) => l.providerId)?.providerId || undefined;
+  const providerId = providerOf(0);
+  const from = (field: "model" | "reasoningLevel") => levels.find((l, i) => l[field] && providerOf(i) === providerId)?.[field] || undefined;
+  return { providerId, model: from("model"), reasoningLevel: from("reasoningLevel") };
 }
 
 export const workflowSchema = z.object({ id: stepId, name: z.string().min(1).max(80), steps: z.array(stepSchema).min(1) });
@@ -360,6 +367,12 @@ export function settingsFor(wf: Workflow, id: string, nodes?: Record<string, { r
     }
     const source = s.type === "model" ? s : s.type === "agent" ? chosenModel(s, nodes?.[sid]) : undefined;
     if (!source) continue;
+    // A switch of provider drops the model and level meant for the one before.
+    const provider = source.providerId?.trim();
+    if (provider && out.providerId && provider !== out.providerId) {
+      delete out.model;
+      delete out.reasoningLevel;
+    }
     for (const key of ["providerId", "model", "reasoningLevel"] as const) {
       const value = source[key]?.trim();
       if (value) out[key] = value;

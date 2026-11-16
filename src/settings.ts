@@ -43,7 +43,7 @@ export const settingDescriptors = {
   stallThresholdMinutes: { type: "number", label: "Stall threshold (minutes)", description: "A running agent with no activity for this long is reported as stalled.", default: 30 },
   intakeIntervalMinutes: { type: "number", label: "Issue intake interval (minutes)", default: 10 },
   defaultProviderId: { type: "string", label: "Default provider id", description: "Used when a repo does not set providerId (e.g. claude-code).", default: "" },
-  defaultModel: { type: "string", label: "Default model", default: "" },
+  defaultModel: { type: "string", label: "Default model", description: "The model for Default provider id (or, when that is empty, for BB's default provider). A repo or step on another provider without a model runs that provider's own default model.", default: "" },
   notifyPush: { type: "boolean", label: "Send BB push notifications", description: "Uses the push-notifications plugin when installed.", default: true },
   archiveThreadsOnDone: { type: "boolean", label: "Archive threads when a task is done", description: "When a task's workflow finishes or you mark it done, archive the builder and step threads it started. Failed tasks keep their threads.", default: true },
 } as const;

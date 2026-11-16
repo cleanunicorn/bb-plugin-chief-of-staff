@@ -13,7 +13,10 @@ export const PR_CLOSED_ERROR = "PR closed without merge";
 export const MARKED_DONE = "Marked done";
 export const MARKED_FAILED = "Marked failed";
 
-export const OUTCOMES = ["merged", "pr_opened", "completed", "marked_done", "failed", "marked_failed", "pr_closed"] as const;
+/** lastError of a task an agent found already done on the default branch, and Chief of Staff verified. */
+export const ALREADY_RESOLVED = "Already resolved";
+
+export const OUTCOMES = ["merged", "pr_opened", "completed", "already_resolved", "marked_done", "failed", "marked_failed", "pr_closed"] as const;
 export type Outcome = (typeof OUTCOMES)[number];
 
 /** Outcomes that did not deliver: their cards show why the task ended. */
@@ -32,6 +35,7 @@ export const OUTCOME_META: Record<Outcome, { label: string; icon: string; tone: 
   merged: { label: "Merged", icon: "GitMerge", tone: "good" },
   pr_opened: { label: "PR opened", icon: "GitPullRequest", tone: "good" },
   completed: { label: "Completed", icon: "CircleCheck", tone: "good" },
+  already_resolved: { label: "Already resolved", icon: "SecurityCheck", tone: "good" },
   marked_done: { label: "Marked done", icon: "UserCheck", tone: "neutral" },
   failed: { label: "Failed", icon: "CircleX", tone: "neutral" },
   marked_failed: { label: "Marked failed", icon: "UserX", tone: "neutral" },
@@ -54,6 +58,8 @@ function markerFor(item: Pick<WorkItem, "finishedAt">, manual: ManualMarker | nu
 export function finishedOutcome(item: Pick<WorkItem, "status" | "lastError" | "prNumber" | "finishedAt" | "workflow" | "nodes">, manual: ManualMarker | null): Outcome | null {
   const marked = markerFor(item, manual);
   if (item.status === "done") {
+    // Before every other test: the engine leaves never-run steps pending, which would read as marked done.
+    if (item.lastError === ALREADY_RESOLVED) return "already_resolved";
     // The engine writes MARKED_DONE on a close; the log row is the fallback for rows closed before it did.
     if (item.lastError === MARKED_DONE || marked === "marked done") return "marked_done";
     // The engine finishes only when every final step is done; mark_done is the

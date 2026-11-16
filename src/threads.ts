@@ -4,6 +4,25 @@ import type { RepoConfig } from "./config";
 import type { KnownSkill, SkillMention } from "./skills";
 import { resolveAgent, type AgentSettings } from "./workflow";
 
+/**
+ * The global fallback for an agent: Chief of Staff's default provider and model. With no
+ * default provider set here, the default model is meant for BB's own default provider (its
+ * general setting), so it is paired with that one: a repository on the same provider keeps
+ * it, one on another provider gets that provider's own default model (#929).
+ */
+export async function agentDefaults(cos: Cos, values: { defaultProviderId?: string; defaultModel?: string }): Promise<{ providerId?: string; model?: string }> {
+  const providerId = values.defaultProviderId?.trim() || undefined;
+  const model = values.defaultModel?.trim() || undefined;
+  if (providerId || !model) return { providerId, model };
+  try {
+    return { providerId: (await cos.bb.sdk.system.config()).generalSettings.defaultProviderId?.trim() || undefined, model };
+  } catch (error) {
+    // Unknown host default: the model still reaches agents for which nothing names a provider.
+    cos.bb.log.debug(`system config failed: ${error instanceof Error ? error.message : String(error)}`);
+    return { model };
+  }
+}
+
 /** A prompt as `prompt`, or as text input carrying skill mentions when there are any. */
 function promptArgs(prompt: string, mentions: SkillMention[] | undefined) {
   return mentions?.length ? { input: [{ type: "text" as const, text: prompt, mentions }] } : { prompt };
@@ -43,7 +62,7 @@ export interface SpawnOptions {
 export async function spawnWorktreeThread(cos: Cos, opts: SpawnOptions) {
   const { values } = await cos.config();
   const checkout = await cos.checkout(opts.repo);
-  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, { providerId: values.defaultProviderId, model: values.defaultModel });
+  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, await agentDefaults(cos, values));
   opts.delivery?.sending();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
@@ -98,7 +117,7 @@ export async function spawnStepThread(cos: Cos, opts: StepSpawnOptions) {
   const environment = opts.environmentId
     ? { type: "reuse" as const, environmentId: opts.environmentId }
     : { type: "host" as const, hostId: (await cos.checkout(opts.repo)).hostId, workspace: { type: "unmanaged" as const, path: null } };
-  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, { providerId: values.defaultProviderId, model: values.defaultModel });
+  const { providerId, model, reasoningLevel } = resolveAgent(opts.settings, opts.repo, await agentDefaults(cos, values));
   opts.delivery?.sending();
   const thread = await cos.bb.sdk.threads.spawn({
     projectId: opts.repo.projectId,
