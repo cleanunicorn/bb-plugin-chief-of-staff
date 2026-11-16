@@ -368,12 +368,14 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     if (!s || !n) return;
     // Already done on the default branch: Chief of Staff checks the evidence before anything else happens.
     // A step with an approval gate only verifies first: nothing is closed until a person approves.
+    const failed = n.reports.filter((r) => r?.outcome === "failed");
     if (n.reports.some((r) => r?.outcome === "resolved")) {
+      // Agents disagree: one found it done, another found it failing. A person decides; nothing is closed.
+      if (failed.length) return wait(id, "escalation", `One agent reported the task already resolved, another that it fails: ${failed[0]!.summary} Approve to continue the workflow, or send the agents instructions.`);
       n.phase = s.approval ? "resolving" : "closing";
       effects.push({ type: "resolve", step: id });
       return;
     }
-    const failed = n.reports.filter((r) => r?.outcome === "failed");
     if (failed.length) {
       if (s.verdict) return fail(id, failed.map((r) => r!.summary).join("\n\n---\n\n"));
       return wait(id, "escalation", `The agent reported it could not finish: ${failed[0]!.summary}`);

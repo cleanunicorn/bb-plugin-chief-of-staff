@@ -135,6 +135,18 @@ describe("engine: a resolved report", () => {
     expect(run(started, { type: "resume_resolve" })[1]).toEqual([]);
   });
 
+  it("agents that disagree (one resolved, one failed) wait on a person; nothing is verified or closed", () => {
+    const pair = workflowSchema.parse({ id: "r", name: "R", steps: [{ id: "review", name: "Review", type: "agent", agents: 2, verdict: true }] });
+    let [item] = run(itemFor(pair), { type: "start" });
+    [item] = run(item, ended("review", resolved(), item));
+    const failing: StepReport = { outcome: "failed", summary: "reload() still drops the cache.", at: NOW.toISOString(), via: "tool" };
+    const [after, fx] = run(item, { ...ended("review", failing, item), agent: 1 } as MachineEvent);
+    expect(after.nodes.review).toMatchObject({ status: "waiting", phase: null, waiting: { kind: "escalation" } });
+    expect(after.waitingReason).toContain("reload() still drops the cache.");
+    expect(fx.some((e) => e.type === "resolve")).toBe(false);
+    expect(after.status).not.toBe("done");
+  });
+
   it("derives cos, not agent, for a step whose agents all reported resolved", () => {
     const [started] = run(itemFor(flow), { type: "start" });
     const [verifying] = run(started, ended("plan", resolved(), started));
@@ -392,6 +404,13 @@ describe("resolveAgent: a model is inherited only for its own provider", () => {
       { id: "a", name: "A", type: "agent" },
     ] });
     expect(settingsFor(steps, "a")).toEqual({ providerId: "codex" });
+  });
+  it("with no global provider, the global model reaches only agents for which nothing names a provider", () => {
+    const unset = { providerId: "", model: "Opus" };
+    expect(resolveAgent({}, {}, unset)).toEqual({ providerId: undefined, model: "Opus", reasoningLevel: undefined });
+    // Chief of Staff cannot tell which provider the host defaults to: a named one, even Claude Code, keeps its own default.
+    expect(resolveAgent({}, { providerId: "claude-code" }, unset)).toEqual({ providerId: "claude-code", model: undefined, reasoningLevel: undefined });
+    expect(resolveAgent({}, { providerId: "codex" }, unset)).toEqual({ providerId: "codex", model: undefined, reasoningLevel: undefined });
   });
   it("drops a repository's model and level when a step switches provider", () => {
     expect(resolveAgent({ providerId: "codex" }, { providerId: "claude-code", model: "Opus", reasoningLevel: "high" }, defaults)).toEqual({ providerId: "codex", model: undefined, reasoningLevel: undefined });
