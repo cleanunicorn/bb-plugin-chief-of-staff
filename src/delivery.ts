@@ -12,6 +12,7 @@ import { occupiesCapacity, type WorkItem } from "./state";
 import { recordEnvironmentBranch, taskBrief } from "./intake";
 import { lastAssistantText, listSkills, publicThreadUrl, sendToThread, spawnStepThread, spawnWorktreeThread } from "./threads";
 import { postStatusComment } from "./statusComment";
+import { verifyResolved } from "./resolve";
 import { referencedSkills, skillMentions } from "./skills";
 import { agentWork, isAuthoredAgent, settingsFor, stepById, topoOrder, type AgentWork, type CheckStep, type ShipStep } from "./workflow";
 import { itemParent, archiveOrder } from "./threadGroups";
@@ -146,6 +147,22 @@ export async function dispatchLocked(cos: Cos, itemId: string, event: MachineEve
   for (const effect of t.effects) {
     if (effect.type === "check" || effect.type === "ship" || effect.type === "merge") {
       startJob(cos, item.id, effect, actor);
+      continue;
+    }
+    if (effect.type === "resolve") {
+      // A few GitHub requests: run under the item lock, so nothing moves the step meanwhile.
+      try {
+        const current = cos.store.getWorkItem(item.id);
+        const repo = current && (await cos.repo(current.repo));
+        if (!current || !repo) throw new Error(`repo ${item.repo} is no longer configured`);
+        await dispatchLocked(cos, item.id, await verifyResolved(cos, current, repo, effect.step), actor);
+      } catch (error) {
+        const message = await cos.safe(error instanceof Error ? error.message : String(error));
+        const retryAt = rateLimitReset(error);
+        if (retryAt) logRateLimited(cos, item.repo, item.id, effect.type, retryAt, actor);
+        else cos.store.log({ level: "error", kind: "effect", repo: item.repo, workItemId: item.id, message: `resolve failed: ${message}`, actor });
+        await dispatchLocked(cos, item.id, { type: "effect_error", step: effect.step, effect, message, ...(retryAt ? { retryAt } : {}) }, actor);
+      }
       continue;
     }
     const beforeDelivery = effect.type === "agent" ? cos.store.getWorkItem(item.id)?.nodes[effect.step]?.deliveries?.[effect.agent]?.id : undefined;
@@ -345,18 +362,30 @@ async function runEffect(cos: Cos, itemId: string, effect: Effect, actor: string
   await promptAgent(cos, item, repo, step, effect, actor);
 }
 
-async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undefined> {
+/** How long a repository's default branch is remembered for prompts (it is renamed rarely). */
+export const DEFAULT_BRANCH_TTL_MS = 60 * 60_000;
+const defaultBranches = new Map<string, { branch: string; at: number }>();
+
+/** The repository's default branch for an agent prompt, one GitHub request per hour per repository; undefined when GitHub cannot say. */
+export async function defaultBranch(cos: Cos, repo: RepoConfig): Promise<string | undefined> {
+  const key = `${repo.owner}/${repo.repo}`;
+  const now = cos.now().getTime();
+  const known = defaultBranches.get(key);
+  if (known && now - known.at < DEFAULT_BRANCH_TTL_MS) return known.branch;
   try {
-    return (await (await cos.github()).getRepo(repo.owner, repo.repo)).default_branch;
+    const branch = (await (await cos.github()).getRepo(repo.owner, repo.repo)).default_branch;
+    defaultBranches.set(key, { branch, at: now });
+    return branch;
   } catch {
-    return undefined;
+    // A failed lookup is not remembered; an older answer still beats none.
+    return known?.branch;
   }
 }
 
 async function promptAgent(cos: Cos, item: WorkItem, repo: RepoConfig, step: AgentWork, effect: Extract<Effect, { type: "agent" }>, actor: string): Promise<void> {
   const round = item.nodes[step.id]?.round ?? 0;
   const deliveryId = randomUUID();
-  const body = effect.kind === "nudge" ? nudgePrompt(step, deliveryId) : stepPrompt(item, step, effect.agent, { delivery: deliveryId, defaultBranch: !step.writes && item.environmentId ? await defaultBranch(cos, repo) : undefined });
+  const body = effect.kind === "nudge" ? nudgePrompt(step, deliveryId) : stepPrompt(item, step, effect.agent, { delivery: deliveryId, defaultBranch: await defaultBranch(cos, repo) });
   // `/skill` references in the instructions become skill mentions (only skills the workspace has).
   const usesSkills = effect.kind !== "nudge" && referencedSkills(step.instructions).length > 0;
   const skills = usesSkills ? await listSkills(cos, repo.projectId, item.environmentId) : [];

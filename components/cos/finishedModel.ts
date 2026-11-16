@@ -25,6 +25,8 @@ const GROUP_OF: Record<Outcome, OutcomeGroup> = {
   merged: "shipped",
   pr_opened: "shipped",
   completed: "shipped",
+  // Delivered, by an earlier change Chief of Staff verified on the default branch.
+  already_resolved: "shipped",
   marked_done: "marked_done",
   failed: "failed",
   marked_failed: "failed",

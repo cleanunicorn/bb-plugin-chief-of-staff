@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { Cos } from "./context";
 import { buildRoster } from "./roster";
 import { finishedLimitSchema, rosterCursorSchema } from "../rpcContract";
-import { REPORT_OUTCOMES } from "./report";
+import { COMMIT_SHA, REPORT_OUTCOMES, parseResolvedBy } from "./report";
 import { threadContext } from "./sync";
 import { startTask } from "./intake";
 import type { ReportOutcome } from "./machine";
@@ -21,13 +21,15 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
     parameters: z.object({
       delivery: z.string().max(100).optional().describe("Delivery id from your current prompt"),
       step: z.string().min(1).max(40).describe("The step id from your prompt"),
-      outcome: z.enum(REPORT_OUTCOMES as [ReportOutcome, ...ReportOutcome[]]).describe('"done"; "failed" on a pass/fail step that does not pass (or when you cannot finish); "needs_input" when a person must decide'),
+      outcome: z.enum(REPORT_OUTCOMES as [ReportOutcome, ...ReportOutcome[]]).describe('"done"; "failed" on a pass/fail step that does not pass (or when you cannot finish); "needs_input" when a person must decide; "resolved" when the task is already done on the default branch (set resolvedPr or resolvedCommit)'),
       summary: z.string().min(1).max(40_000).describe("The step's result in Markdown (a plan, what changed, evidence, findings). The next steps read it."),
       question: z.string().max(4_000).optional().describe('With outcome "needs_input": the question for the human'),
       choice: z.string().max(40).optional().describe("Only when your prompt lists model choices: the id of the one you pick for the steps after this"),
       providerId: z.string().max(200).optional().describe("Only when your step chooses the model: the BB provider id you pick (from `bb provider list`)"),
       model: z.string().max(200).optional().describe("Only when your step chooses the model: the model id you pick (from `bb provider models <providerId>`)"),
       reasoningLevel: z.string().max(50).optional().describe("Only when your step chooses the model: the reasoning level you pick, if the model supports one"),
+      resolvedPr: z.number().int().positive().optional().describe('With outcome "resolved": the merged pull request that already did this task (preferred)'),
+      resolvedCommit: z.string().regex(COMMIT_SHA).optional().describe('With outcome "resolved", when no pull request did it: the commit on the default branch that did'),
     }),
     async execute(params, ctx) {
       const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
@@ -46,6 +48,8 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
         const resumed = node?.status === "waiting" && node.waiting && ["question", "no_report", "stalled"].includes(node.waiting.kind);
         if (node?.status !== "running" && !resumed && !deliveryWait(item, tc.step.id)) return err(`The step ${tc.step.name} is not running (it is ${node?.status ?? "unknown"}).`);
         if (params.outcome === "needs_input" && !params.question?.trim()) return err('With outcome "needs_input", put the question for the human in `question`.');
+        const resolvedBy = params.outcome === "resolved" ? parseResolvedBy(params.resolvedPr, params.resolvedCommit) : null;
+        if (params.outcome === "resolved" && !resolvedBy) return err('With outcome "resolved", set `resolvedPr` (the merged pull request that did it) or `resolvedCommit` (its commit on the default branch).');
         if (tc.step.chooses.length && params.outcome === "done" && !chosenModel(tc.step, { reports: [{ choice: params.choice }] })) {
           return err(`This step picks a model: set \`choice\` to one of ${tc.step.chooses.map((c) => `"${c.id}"`).join(", ")}.`);
         }
@@ -55,14 +59,15 @@ export function registerTools(bb: BbPluginApi, cos: Cos): void {
         }
         if (!reportMatches(cos, item, tc.step, tc.agent, ctx.threadId, params.delivery)) return err("This report is from an earlier or unconfirmed delivery. Use the delivery id from the current prompt.");
         await acknowledgeReport(cos, item, tc.step, tc.agent, ctx.threadId);
-        const report = { ...(params.delivery ? { delivery: params.delivery } : {}), step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, choice: params.choice?.trim() || null, ...(tc.step.picksModel ? { pick } : {}), at: cos.now().toISOString(), via: "tool" as const };
+        const report = { ...(params.delivery ? { delivery: params.delivery } : {}), step: tc.step.id, round: node!.round, outcome: params.outcome, summary: params.summary, question: params.question ?? null, choice: params.choice?.trim() || null, ...(tc.step.picksModel ? { pick } : {}), ...(resolvedBy ? { resolvedBy } : {}), at: cos.now().toISOString(), via: "tool" as const };
         if (tc.row) cos.store.updateThread(ctx.threadId, { pendingReport: report });
         else cos.store.upsertThread({ threadId: ctx.threadId, itemId: item.id, role: "builder", stepId: null, agent: 0, environmentId: item.environmentId, round: node!.round, promptSentAt: null, pendingReport: report });
         cos.store.updateWorkItem(item.id, { lastActivityAt: cos.now().toISOString() });
         cos.store.log({ level: "info", kind: "report", repo: item.repo, workItemId: item.id, message: `${tc.step.name}${tc.step.agents > 1 ? ` agent ${tc.agent + 1}` : ""} reported ${params.outcome}`, actor: `tool:${ctx.threadId}` });
         cos.invalidate();
-        return params.outcome === "needs_input"
-          ? "Recorded. End your turn; your question goes to a human and their answer comes back to this thread."
+        if (params.outcome === "needs_input") return "Recorded. End your turn; your question goes to a human and their answer comes back to this thread.";
+        return params.outcome === "resolved"
+          ? "Recorded. End your turn; Chief of Staff checks the evidence on GitHub, then closes the task and the issue (or asks a person if it does not hold)."
           : `Recorded ${tc.step.name}: ${params.outcome}. End your turn now; Chief of Staff takes it from here.`;
       });
     },

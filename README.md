@@ -119,7 +119,7 @@ finished tasks by usage instead (uncounted ones last), in one list without day
 headings; **Recently finished** goes back to newest first.
 
 The section shows 8 rows, then **Show 20 more**. Filter it by outcome
-(**Shipped**, **Marked done**, **Failed**; pick several), by repository, or
+(**Shipped**, which includes Already resolved, **Marked done**, **Failed**; pick several), by repository, or
 search the title and the issue or PR number (`#12`). Filters search the
 finished tasks loaded so far; **Search older** loads the next page. Click a
 Throughput day (or a day in its table view) to see the tasks finished that
@@ -304,6 +304,25 @@ flowchart TD
   approve -- "send back" --> start
 ```
 
+**Already resolved.** Any agent step may find the task already done on the
+default branch: an earlier pull request fixed it without closing the issue.
+The agent reports `outcome: "resolved"` with the merged pull request
+(`resolvedPr`, preferred) or the commit (`resolvedCommit`); a text report uses
+`resolvedPr:` or `resolvedCommit:` lines before `summary:`. Chief of Staff
+checks the evidence on GitHub: the pull request was merged into the default
+branch, or the commit is on it, and the task has no open pull request of its
+own. That proves the change landed, not that it fixes the issue; that part is
+the agent's judgement. If the reporting step has an approval gate (the default
+workflow's Plan does), the step then waits for you with the evidence: approve
+to close, or send the agent back. Confirmed (and approved, where the step asks
+for it), Chief of Staff checks the evidence again, closes the issue as completed,
+comments the evidence and the agent's findings (unless the repository's issue
+comments are off), and ends the task as **Already resolved**: the steps that
+never ran stay pending, as with Mark done. An issue someone already closed is
+left alone, and a close GitHub refuses is noted on the task. If the evidence
+does not hold, the step waits for you with the reason: approve to continue the
+workflow, or send the agent back.
+
 **Check.** Chief of Staff commits any work the agents left uncommitted, then
 runs the command in the task's worktree with the step's timeout. Exit code 0
 passes it. Any other exit code, or a timeout, fails it, and the end of the
@@ -393,9 +412,11 @@ step that already sets values (from before the choice existed) stays fixed.
 
 **Model steps.** A Model step's settings apply to every agent step after it, not just the next one, until
 another Model step changes them (field by field: a later step that sets only the model keeps the earlier
-provider). They apply to threads started after the step: read-only steps, and the builder when it is first
+provider; one that switches provider drops the earlier model and reasoning level). They apply to threads started after the step: read-only steps, and the builder when it is first
 spawned. An already running builder thread keeps the model it started with. Without a Model step before it,
-a step uses the repository's settings, then the global default.
+a step uses the repository's settings, then the global default. A model or reasoning level is only inherited
+for its own provider: a repository that sets the provider to Codex without a model runs Codex's default model,
+not the global default model meant for the global default provider.
 
 **Letting an agent choose.** An agent step can list **model choices** (an id, a "use when" description and a
 provider, model and reasoning level each). The agent analyses the task and reports the id it picks as `choice`
@@ -686,6 +707,12 @@ can be merged without anyone reviewing it.
 - Avoid `permissionMode: "full"`.
 - Label issues for intake only after reading them, and remember the author can
   still edit them afterwards.
+- An agent that reports a task already resolved, on a step without an approval
+  gate, ends it and closes its issue without a person: Chief of Staff only
+  checks that the pull request or commit it names is on the default branch.
+  Someone who can steer the agent can get an issue closed this way (not code
+  merged). Keep the approval gate on the first step to have a person confirm
+  every such close.
 
 ## CLI and agent tools
 

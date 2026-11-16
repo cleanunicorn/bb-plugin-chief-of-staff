@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Already-fixed issues finish on their own.** An issue fixed by an earlier
+  pull request that never closed it (Theralexis/canary#929, fixed by #920)
+  used to stall its task: the agent could only report done, failed or a
+  question, so the workflow built nothing and waited on you. Agents now report
+  `outcome: "resolved"` with the merged pull request or commit. Chief of Staff
+  checks it is on the default branch, closes the issue with a comment giving
+  the evidence, and ends the task as **Already resolved** (a new outcome,
+  counted with Shipped). On a step with an approval gate, such as the default
+  workflow's Plan, nothing is closed until you approve. Evidence that does not
+  hold waits on you, with the reason.
+
+- **Retry no longer trips over the dead thread.** Retrying a step whose thread
+  had failed sent the agent to a new thread, but the sweep then reported the
+  old thread's failure again and parked the step, so the new agent's report
+  was rejected ("is not running"). A thread the step has moved on from is now
+  ignored.
+
+- **A repository's provider no longer borrows the global model.** A
+  repository set to Codex without a model ran Codex with the global default
+  model ("Opus"), which Codex rejects. A model or reasoning level is now
+  inherited only for its own provider; otherwise the provider's default model
+  applies.
+
 - **Finished tasks get their own section, with filters.** Show finished used
   to pour every finished task, as a full card, into the active grid, mixed
   with active work and in no particular order. Finished tasks are now listed
