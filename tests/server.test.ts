@@ -1060,6 +1060,25 @@ describe("chief-of-staff server", () => {
     });
   });
 
+  describe("skipping a step", () => {
+    const items = () => new StateStore(host.bb.storage.database()).listWorkItems();
+    const skip = (step?: string) => host.harness.behavior.callRpc("cos_item_action", { id: items()[0]!.id, action: "skip_step", ...(step ? { step } : {}) });
+
+    it("passes the only live step, logs it, and refuses once nothing is left to skip", async () => {
+      await host.harness.behavior.setSettings({ workflow: JSON.stringify({ workflow: { plan: { enabled: false }, review: { enabled: false }, ship: { action: "push" } } }) });
+      await host.harness.behavior.callRpc("cos_intake_now", {});
+      const steps = items()[0]!.workflow.steps.map((s) => s.id);
+      const [build, ship] = [steps[0]!, steps.at(-1)!];
+      expect(items()[0]!.nodes[build]!.status).toBe("running");
+      await expect(skip(ship)).rejects.toThrow(/not running or waiting/);
+      await skip();
+      expect(items()[0]!.nodes[build]).toMatchObject({ status: "done", skipped: true });
+      expect(new StateStore(host.bb.storage.database()).listLog({ workItemId: items()[0]!.id }).map((e) => e.message)).toContain(`skipped step ${build}`);
+      await host.harness.behavior.callRpc("cos_item_action", { id: items()[0]!.id, action: "mark_failed" });
+      await expect(skip()).rejects.toThrow(/finished/);
+    });
+  });
+
   describe("an issue whose task finished is not restarted (#48)", () => {
     type Intake = { results: { started: { issue: number; threadId: string }[]; skipped: { issue: number; reason: string }[] }[] };
     const intake = async (dryRun = false) => ((await host.harness.behavior.callRpc("cos_intake_now", dryRun ? { dryRun: true } : {})) as Intake).results[0]!;
@@ -1829,6 +1848,23 @@ describe("chief-of-staff server", () => {
       expect(ranChecks()).toBe(1);
       expect(pushes()).toBe(0);
       expect(ghCalls.filter((c) => c.method === "POST" && c.path.endsWith("/pulls"))).toHaveLength(0);
+    });
+
+    it("skipping a check still running starts the next step at once and drops the check's late result", async () => {
+      checkExit = 1;
+      const release = await checkRunning();
+      const { id } = await roster();
+      await host.harness.behavior.callRpc("cos_item_action", { id, action: "skip_step", step: "verify" });
+      await settleJobs();
+      // Ship ran without waiting for the hung check to end.
+      expect(pushes()).toBe(1);
+      release();
+      await settleJobs();
+      await sweep();
+      const item = new StateStore(host.bb.storage.database()).getWorkItem(id)!;
+      expect(item.nodes.verify).toMatchObject({ status: "done", skipped: true });
+      expect(item.nodes.build!.status).toBe("done");
+      expect(ranChecks()).toBe(1);
     });
 
     it("drops the result of a check still running when the task is marked failed, and retry runs it again", async () => {

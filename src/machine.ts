@@ -8,7 +8,7 @@
 // step's `onFail` target and everything downstream of it, and the work re-runs
 // from there with the failure as feedback, up to the step's limit, then waits
 // on a person. The item is done when every final step is done.
-import { ALREADY_RESOLVED, MARKED_DONE, MARKED_FAILED, PR_CLOSED_ERROR } from "./outcome";
+import { ALREADY_RESOLVED, MARKED_DONE, MARKED_FAILED, PR_CLOSED_ERROR, SKIPPED_STEP } from "./outcome";
 import type { WaitingKind, WorkItem } from "./state";
 import { agentWork, chosenModel, descendants, finalSteps, isWriter, pickedModel, predecessors, stepById, topoOrder, type ModelPick, type Step, type Workflow } from "./workflow";
 
@@ -109,6 +109,11 @@ export interface NodeState {
   retry: InfraRetry | null;
   startedAt: string | null;
   finishedAt: string | null;
+  /**
+   * The operator skipped the step: it counts as done, and a loop-back that resets it from an earlier step
+   * passes it again instead of running it. Work sent back to the step itself, or running it again by hand, clears it.
+   */
+  skipped?: boolean;
 }
 
 export type Nodes = Record<string, NodeState>;
@@ -164,11 +169,13 @@ export type MachineEvent =
   | { type: "revive" }
   /** Run a step again from scratch (and everything after it). */
   | { type: "rerun"; step: string; feedback?: string }
+  /** Pass a running or waiting step without its work; later steps carry on, and loop-backs pass it too. */
+  | { type: "skip"; step: string }
   /** The operator closed the task by hand (Mark done / Mark failed). */
   | { type: "close"; outcome: "done" | "failed" };
 
 /** lastError of a task closed by hand (defined in ./outcome, which the dashboard also reads). */
-export { ALREADY_RESOLVED, MARKED_DONE, MARKED_FAILED };
+export { ALREADY_RESOLVED, MARKED_DONE, MARKED_FAILED, SKIPPED_STEP };
 
 /**
  * The only events a closed task takes. A done task can be closed as failed or
@@ -289,6 +296,12 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const s = step(id);
     const n = node(id);
     if (!s || !n) return;
+    if (n.skipped) {
+      // Skipped by the operator: a loop-back that reset it passes it again instead of running it.
+      Object.assign(n, { status: "done", round: n.round + 1, startedAt: iso, finishedAt: iso });
+      note("passed", id, SKIPPED_STEP);
+      return;
+    }
     const count = agentsOf(s);
     Object.assign(n, { agentRetries: {}, deliveries: {}, limits: undefined, limitCount: undefined, status: "running", round: n.round + 1, reports: Array(count).fill(null), nudges: Array(count).fill(0), waiting: null, phase: null, retry: null, startedAt: iso, finishedAt: null });
     note("started", id, n.feedback);
@@ -331,7 +344,9 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       if (!n) continue;
       // Work in progress downstream is thrown away: say so. The target re-runs and the step that caused the reset has its own entry.
       if ((n.status === "running" || n.status === "waiting") && d !== by && d !== target) note("interrupted", d, null, { ...(by ? { from: by } : {}), to: target });
+      // A skipped step stays skipped when the work comes back past it, but not when the work is sent back to it.
       Object.assign(n, { ...freshNode(), round: n.round, attempts: n.attempts, output: n.output });
+      if (d === target) delete n.skipped;
     }
     const t = node(target);
     if (t) t.feedback = feedback;
@@ -839,6 +854,18 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
         patch.lastError = null;
         patch.finishedAt = null;
       }
+      break;
+    }
+
+    case "skip": {
+      const s = step(event.step);
+      const n = node(event.step);
+      if (!s || !n || (n.status !== "running" && n.status !== "waiting")) break;
+      // A job in flight (a check, a push or a merge) loses its token: its late result is dropped.
+      if (n.status === "running" && (s.type === "check" || (s.type === "ship" && (n.phase === "pushing" || n.phase === "merging")))) patch.jobStartedAt = null;
+      complete(event.step, SKIPPED_STEP);
+      // No delivery is left "sending": the sweep would otherwise report it as interrupted on every pass.
+      Object.assign(n, { deliveries: {}, nudges: n.nudges.map(() => 0), skipped: true });
       break;
     }
 
