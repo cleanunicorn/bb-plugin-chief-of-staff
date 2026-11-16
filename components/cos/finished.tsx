@@ -84,7 +84,19 @@ export function useFinishedTasks(query: RosterQuery, order: FinishedOrder, onErr
       if (request.current === req) setLoadingOlder(false);
     }
   }, [cursor, firstEntries, onError, order, rpc]);
-  return { query, entries, cursor, loadingOlder, loadOlder, failedCursor, orderLoaded, finishedTokens: query.data?.finishedTokens ?? null };
+  /**
+   * Older pages are not refetched: after a skip or unskip, set the new state on every loaded row of the same issue,
+   * so they show it and offer the right action. The first page comes back fresh with the roster refetch.
+   */
+  const setIssueSkipped = useCallback((id: string, skipped: boolean) => {
+    setOlder((prev) => {
+      const task = prev?.entries.find((e) => e.id === id) ?? firstEntries?.find((e) => e.id === id);
+      if (!prev || !task || task.issueNumber === null) return prev;
+      const same = (e: FinishedEntry) => e.repo === task.repo && e.issueNumber === task.issueNumber;
+      return { ...prev, entries: prev.entries.map((e) => (same(e) ? { ...e, issueSkipped: skipped } : e)) };
+    });
+  }, [firstEntries]);
+  return { query, entries, cursor, loadingOlder, loadOlder, failedCursor, orderLoaded, finishedTokens: query.data?.finishedTokens ?? null, setIssueSkipped };
 }
 
 /** "acme/app" → "app". */
@@ -138,6 +150,12 @@ function FinishedRow({ entry, finishedTokens, now, busy, tabbable, onAction, onA
             repoName(entry.repo)
           )}
         </span>
+        {entry.issueSkipped ? (
+          <span className="flex items-center gap-1" title="Intake leaves this issue alone until it is unskipped (More actions)">
+            <Icon name="EyeOff" fallback="Circle" className="size-3.5 shrink-0" aria-hidden />
+            Issue skipped
+          </span>
+        ) : null}
         {entry.prUrl ? (
           <span className="flex items-center gap-1">
             <UrlLink href={entry.prUrl} tabIndex={tabIndex} className="inline-flex items-center gap-1 font-medium text-foreground">

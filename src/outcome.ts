@@ -13,9 +13,6 @@ export const PR_CLOSED_ERROR = "PR closed without merge";
 export const MARKED_DONE = "Marked done";
 export const MARKED_FAILED = "Marked failed";
 
-/** How a step the operator skipped is recorded (its journal "passed" detail). */
-export const SKIPPED_STEP = "Skipped by the operator";
-
 /** lastError of a task an agent found already done on the default branch, and Chief of Staff verified. */
 export const ALREADY_RESOLVED = "Already resolved";
 

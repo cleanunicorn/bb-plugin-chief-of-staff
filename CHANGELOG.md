@@ -2,14 +2,15 @@
 
 ## Unreleased
 
-- **Skip a step.** A step that keeps failing could only be retried, or the
-  whole task marked done or failed. The task's More actions menu now has
-  **Skip a step…**, and the workflow sheet has **Skip this step** for the
-  selected running or waiting step: the step is recorded as done ("Skipped by
-  the operator"), its retries stop, and the steps after it start. When a later
-  step sends the work back to an earlier one, the skipped step is passed again
-  rather than run; work sent back to the skipped step itself, or **Run again
-  from here** on it, runs it again. Also `bb cos item skip <id> [--step <id>]`.
+- **Skip an issue.** Marking a task failed or done still let intake take its
+  issue again after a relabel or reassignment. A task with an issue now has
+  **Skip issue…** in its More actions menu: every running task of the issue
+  stops (recorded as marked failed), and intake leaves the issue alone from
+  then on, whatever happens to its labels or assignees. A skipped issue's task
+  cannot be restarted or rerun until the issue is unskipped. Nothing is written
+  to GitHub. Finished rows say **Issue skipped**, and **Unskip issue** in the
+  same menu undoes it.
+  Also `bb cos item skip-issue|unskip-issue <id>`.
 
 - **Already-fixed issues finish on their own.** An issue fixed by an earlier
   pull request that never closed it (Theralexis/canary#929, fixed by #920)

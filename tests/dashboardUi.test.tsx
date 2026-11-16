@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { LogEntry, LogRow } from "../src/state";
 import type { ActivityTask } from "../components/cos/dashboardModel";
@@ -405,12 +405,12 @@ it("shows a task's activity from its card, finished or not, and moves focus to t
   await mount(<Dashboard subPath="agents" />);
   const [active, done] = Array.from(container.querySelectorAll("article"));
   await openMenuOn(active!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
-  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity", "Retry the stuck step", "Mark done…", "Mark failed…"]);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity", "Retry the stuck step", "Mark done…", "Mark failed…", "Skip issue…"]);
   await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
   await tick();
   await openMenuOn(done!.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!);
   // A done card also offers #135's "Run a step again…" (#108).
-  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity", "Run a step again…"]);
+  expect(menuItemsNow().map((el) => el.textContent?.trim())).toEqual(["Show activity", "Run a step again…", "Skip issue…"]);
   await act(async () => menuItemsNow()[0]!.click());
   await tick(5);
   expect(logQueries().at(-1)).toEqual({ limit: 60, onlyProblems: false, workItemId: "old" });
@@ -617,6 +617,25 @@ it("shows 8 finished tasks, then 20 more per click, fetching the next page when 
   expect(rowTitles()).toHaveLength(55);
   expect(hasButton("Show 20 more")).toBe(false);
   expect(finishedPanel().querySelector("h2")!.textContent).toBe("Finished · 55");
+});
+
+it("marks every loaded row of an issue skipped from an older page, which is not fetched again", async () => {
+  const page1 = Array.from({ length: 8 }, (_, i) => finished(`f${i}`, `Finished ${i}`, "done", { issueNumber: 100 + i }));
+  const page2 = [finished("g0", "Older A", "done", { issueNumber: 5 }), finished("g1", "Older B", "failed", { issueNumber: 5 }), finished("g2", "Other issue", "done", { issueNumber: 6 })];
+  mocks.roster = (input) => ({ entries: input.includeDone ? page1 : [], nextBefore: input.includeDone ? "c1" : null });
+  mocks.call.mockImplementation(async (method: string, input: RosterInput) => (method === "cos_roster" && input.before === "c1" ? { entries: page2, nextBefore: null } : {}));
+  await mount();
+  await act(async () => buttonLabelled("Show 20 more").click());
+  const row = (title: string) => Array.from(finishedPanel().querySelectorAll("article")).find((a) => a.textContent!.includes(title))!;
+  await openMenuOn(row("Older A").querySelector<HTMLElement>('button[aria-label="More actions"]')!);
+  await act(async () => menuItem("Skip issue").click());
+  await tick();
+  await act(async () => bodyButton("Skip issue").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "g0", action: "skip_issue" }]]);
+  expect(["Older A", "Older B", "Other issue"].map((t) => row(t).textContent!.includes("Issue skipped"))).toEqual([true, true, false]);
+  await openMenuOn(row("Older B").querySelector<HTMLElement>('button[aria-label="More actions"]')!);
+  expect(menuItems().map((el) => el.textContent?.trim())).toContain("Unskip issue");
 });
 
 it("orders finished tasks by tokens, resetting older pages, and shows each one's share", async () => {
@@ -1023,7 +1042,7 @@ it("opens More actions from the keyboard, moves through it with arrows, and clos
   await mount();
   await openMenu();
   expect(document.body.querySelector('[role="menu"]')).not.toBeNull();
-  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…", "Mark failed…"]);
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…", "Mark failed…", "Skip issue…"]);
   expect(document.activeElement).toBe(menuItems()[0]);
   await keydown(document.activeElement!, "ArrowDown");
   await tick();
@@ -1101,40 +1120,33 @@ it("retries the stuck step from the menu at once, without asking", async () => {
   expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "retry" }]]);
 });
 
-describe("skipping a step from the menu", () => {
-  const step = (id: string, status: "done" | "running" | "waiting" | "pending") => ({ id, name: id[0]!.toUpperCase() + id.slice(1), depth: 0, status, type: "agent" as const, phase: null, agents: 1, reported: 0, nudged: 0, attempts: 0, round: 1, waitingKind: null, retrying: false });
+it("skips the task's issue after asking, and offers to unskip it once skipped", async () => {
+  mocks.entries = [entry()];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Skip issue").click());
+  await tick();
+  expect(confirmDialog()?.textContent).toContain("Skip issue #1?");
+  expect(confirmDialog()?.textContent).toContain("recorded as marked failed");
+  expect(confirmDialog()?.textContent).toContain("Intake never picks up issue #1 again, even if it is relabelled or reassigned.");
+  await act(async () => bodyButton("Skip issue").click());
+  await tick(5);
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "skip_issue" }]]);
+});
 
-  it("names the live step, asks first, and sends that step", async () => {
-    mocks.entries = [entry({ steps: [step("plan", "done"), step("build", "waiting"), step("ship", "pending")] })];
-    mocks.call.mockResolvedValue({});
-    await mount();
-    await openMenu();
-    expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Skip ‘Build’…", "Mark done…", "Mark failed…"]);
-    await act(async () => menuItem("Skip ‘Build’").click());
-    await tick();
-    expect(confirmDialog()?.textContent).toContain("Skip ‘Build’ of ‘Fix login’?");
-    expect(confirmDialog()?.textContent).toContain("The steps after it start now.");
-    await act(async () => bodyButton("Skip step").click());
-    await tick(5);
-    expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "skip_step", step: "build" }]]);
-  });
-
-  it("warns that skipping the last step left finishes the task", async () => {
-    mocks.entries = [entry({ steps: [step("build", "done"), step("ship", "running")] })];
-    mocks.archiveThreadsOnDone = true;
-    await mount();
-    await openMenu();
-    await act(async () => menuItem("Skip ‘Ship’").click());
-    await tick();
-    expect(confirmDialog()?.textContent).toContain("the task finishes as done. Its threads are archived");
-  });
-
-  it("offers no skip when no step is live", async () => {
-    mocks.entries = [entry({ steps: [step("build", "pending")] })];
-    await mount();
-    await openMenu();
-    expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Retry the stuck step", "Mark done…", "Mark failed…"]);
-  });
+it("unskips a skipped issue at once, and offers no skip for a task without an issue", async () => {
+  mocks.entries = [entry({ issueSkipped: true }), entry({ id: "two", issueTitle: "Repair deploy", issueNumber: null, issueUrl: null })];
+  mocks.call.mockResolvedValue({});
+  await mount();
+  const [first, second] = Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-label="More actions"]'));
+  await openMenuOn(first!);
+  await act(async () => menuItem("Unskip issue").click());
+  await tick();
+  expect(confirmDialog()).toBeNull();
+  expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "unskip_issue" }]]);
+  await openMenuOn(second!);
+  expect(menuItems().map((el) => el.textContent?.trim())).not.toContain("Skip issue…");
 });
 
 it("keeps Approve and Resume on the card to one click", async () => {
@@ -1360,7 +1372,7 @@ it("offers a failed card a restart and Mark done, never Mark failed", async () =
   mocks.entries = [failed()];
   await mount();
   await openMenu();
-  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Restart on a new thread…", "Mark done…"]);
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Restart on a new thread…", "Mark done…", "Skip issue…"]);
 });
 
 it("asks before restarting a failed task, and sends nothing on cancel", async () => {
@@ -1412,11 +1424,31 @@ it("says what Mark done means for a failed task, and sends it on confirm", async
   expect(actionCalls()).toEqual([["cos_item_action", { id: "one", action: "mark_done" }]]);
 });
 
-it("offers a done card only a step re-run", async () => {
+it("offers a done card a step re-run and skipping its issue", async () => {
   mocks.entries = [done()];
   await mount();
   await openMenu();
-  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Run a step again…"]);
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual(["Run a step again…", "Skip issue…"]);
+});
+
+it.each([
+  ["done", done, ["Unskip issue"]],
+  ["failed", failed, ["Mark done…", "Unskip issue"]],
+] as const)("offers a %s card of a skipped issue no re-run or restart, only Unskip", async (_name, card, items) => {
+  mocks.entries = [{ ...card(), issueSkipped: true }];
+  await mount();
+  await openMenu();
+  expect(menuItems().map((el) => el.textContent?.trim())).toEqual([...items]);
+});
+
+it("does not say skipping a finished task's issue stops the task", async () => {
+  mocks.entries = [done()];
+  await mount();
+  await openMenu();
+  await act(async () => menuItem("Skip issue").click());
+  await tick();
+  expect(confirmDialog()?.textContent).toContain("Intake never picks up issue #1 again");
+  expect(confirmDialog()?.textContent).not.toContain("marked failed");
 });
 
 it("opens a done task's workflow at the step list, and returns focus to More actions on close", async () => {

@@ -723,7 +723,7 @@ can be merged without anyone reviewing it.
 bb cos status [--repo owner/repo] [--all [--finished-limit n] [--before cursor]] [--usage] [--json]
 bb cos intake [--repo owner/repo] [--dry-run]
 bb cos task "<prompt>" --repo owner/repo [--body "..."]
-bb cos item approve|revise|retry|rerun|skip|done|failed <id> [--step <id>] [--message "..."]
+bb cos item approve|revise|retry|rerun|done|failed|skip-issue|unskip-issue <id> [--step <id>] [--message "..."]
 bb cos log [--limit n] [--item id]
 ```
 

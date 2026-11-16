@@ -10,27 +10,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { taskLabel, type ActivityTask } from "./dashboardModel";
 import { CARD_ACTION_ICON } from "./dashboardIcons";
 
-export type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed" | "skip_step";
-export type Confirmable = "mark_done" | "mark_failed" | "restart" | "skip";
+export type ItemAction = "retry" | "approve" | "mark_done" | "mark_failed" | "skip_issue" | "unskip_issue";
+export type Confirmable = "mark_done" | "mark_failed" | "restart" | "skip_issue";
 
-/** A step of the task, as the roster lists it. */
-type MenuStep = { id: string; name: string; status: string };
-/** What the menu needs to know about a task. `steps`: its workflow steps in order, to offer skipping the live one. */
-export type MenuTask = { id: string; detail: string; issueNumber: number | null; issueTitle: string; threadTitle?: string | null; steps?: readonly MenuStep[] };
-
-/** The steps Skip can pass: running or waiting ones. */
-export const skippableSteps = (task: Pick<MenuTask, "steps">) => (task.steps ?? []).filter((s) => s.status === "running" || s.status === "waiting");
-
-/** Every other step is done: passing `id` finishes the task. */
-export const finishesWith = (steps: readonly Pick<MenuStep, "id" | "status">[], id: string) => steps.every((s) => s.id === id || s.status === "done");
-
-/** What skipping `step` does: the steps after it start, or, when nothing comes after it, the task finishes. */
-export function skipDescription(name: string, last: boolean, archivesOnDone: boolean): string {
-  const then = last
-    ? `Nothing comes after it, so the task finishes as done.${archivesOnDone ? " Its threads are archived and their workspace is removed: changes not pushed are lost." : ""}`
-    : "The steps after it start now.";
-  return `${name} is recorded as done without its work, and its retries stop. ${then} Work already under way on it is not stopped: an agent's thread is left as it is. If a later step sends the work back, ${name} is passed again rather than run; Run again from here on it undoes the skip.`;
-}
+/** What the menu needs to know about a task. `issueSkipped`: intake leaves its issue alone until it is unskipped. */
+export type MenuTask = { id: string; detail: string; issueNumber: number | null; issueTitle: string; threadTitle?: string | null; issueSkipped?: boolean };
 
 export const taskTitle = (task: Pick<MenuTask, "issueTitle" | "threadTitle">) => task.issueTitle || task.threadTitle || "Untitled task";
 
@@ -38,15 +22,18 @@ export const taskTitle = (task: Pick<MenuTask, "issueTitle" | "threadTitle">) =>
  * What each confirm says and sends. A failed task is no longer worked on, so its copy differs.
  * `archivesOnDone`: marking done archives the task's threads ("Archive threads when a task is done").
  */
-export function confirmCopy(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean, step?: { name: string; last: boolean }): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
+export function confirmCopy({ kind, title, failed, finished, issueNumber, archivesOnDone }: { kind: Confirmable; title: string; failed: boolean; finished: boolean; issueNumber: number | null; archivesOnDone: boolean }): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
   switch (kind) {
-    case "skip":
+    case "skip_issue": {
+      const issue = issueNumber ? `issue #${issueNumber}` : "this issue";
       return {
-        title: `Skip ‘${step?.name ?? "the step"}’ of ‘${title}’?`,
-        description: skipDescription(step?.name ?? "The step", step?.last ?? false, archivesOnDone),
-        confirmLabel: "Skip step",
-        action: "skip_step",
+        title: `Skip ${issue}?`,
+        description: `${finished ? "" : "Chief of Staff stops working on this task, which is recorded as marked failed; the agent's thread is left as it is. "}Intake never picks up ${issue} again, even if it is relabelled or reassigned. Nothing changes on GitHub. Unskip issue in this menu undoes it.`,
+        confirmLabel: "Skip issue",
+        tone: "destructive",
+        action: "skip_issue",
       };
+    }
     case "restart":
       return {
         title: `Restart ‘${title}’ on a new thread?`,
@@ -75,12 +62,11 @@ export function confirmCopy(kind: Confirmable, title: string, failed: boolean, a
 }
 
 /**
- * The More actions menu: done → "Run a step again…"; failed → Restart and Mark done; active → Retry, Skip, Mark done
- * and Mark failed; plus "Show activity" when the page has an Activity feed. Skip asks about the one live step; with
- * several running at once it opens the workflow (`onRerun`) to pick one there.
+ * The More actions menu: done → "Run a step again…"; failed → Restart and Mark done; active → Retry, Mark done
+ * and Mark failed; plus "Show activity" when the page has an Activity feed, and, for a task with an issue,
+ * "Skip issue…" (or "Unskip issue" once skipped). A finished task of a skipped issue offers no re-run or restart.
  */
 export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun, onShowActivity }: { task: MenuTask; busy: boolean; tabIndex?: number; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onRerun: (id: string, trigger: HTMLButtonElement) => void; onShowActivity?: (task: ActivityTask) => void }) {
-  const live = skippableSteps(task);
   const trigger = useRef<HTMLButtonElement>(null);
   // Set when "Show activity" is chosen: the menu hands focus to the Activity panel instead of back to its trigger.
   const showingActivity = useRef(false);
@@ -109,7 +95,15 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
             Show activity
           </DropdownMenuItem>
         ) : null}
-        {task.detail === "done" ? (
+        {task.issueSkipped && (task.detail === "done" || task.detail === "failed") ? (
+          // A skipped issue's work is not restarted (the server refuses): Unskip issue, below, comes first.
+          task.detail === "failed" ? (
+            <DropdownMenuItem onSelect={() => ask("mark_done")}>
+              <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+              Mark done…
+            </DropdownMenuItem>
+          ) : null
+        ) : task.detail === "done" ? (
           // A re-run puts a done task back to work; the sheet asks before running it. Focus returns to More actions,
           // because this item is gone once the menu closes.
           <DropdownMenuItem onSelect={() => onRerun(task.id, trigger.current!)}>
@@ -133,12 +127,6 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
               <Icon name="RotateCcw" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
               Retry the stuck step
             </DropdownMenuItem>
-            {live.length ? (
-              <DropdownMenuItem onSelect={() => (live.length === 1 ? ask("skip") : onRerun(task.id, trigger.current!))}>
-                <Icon name="ArrowRight" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
-                {live.length === 1 ? `Skip ‘${live[0]!.name}’…` : "Skip a step…"}
-              </DropdownMenuItem>
-            ) : null}
             <DropdownMenuItem onSelect={() => ask("mark_done")}>
               <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
               Mark done…
@@ -149,12 +137,24 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
             </DropdownMenuItem>
           </>
         )}
+        {task.issueNumber === null ? null : task.issueSkipped ? (
+          // Unskipping only lets intake consider the issue again: nothing starts now, so it does not ask.
+          <DropdownMenuItem onSelect={() => onAction(task.id, "unskip_issue")}>
+            <Icon name="Play" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+            Unskip issue
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onSelect={() => ask("skip_issue")}>
+            <Icon name="EyeOff" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+            Skip issue…
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; finished: boolean; open: boolean; trigger: HTMLButtonElement | null; step?: { id: string; name: string; last: boolean } };
+type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; finished: boolean; open: boolean; trigger: HTMLButtonElement | null; issueNumber?: number | null };
 
 /**
  * The confirm for every task in a list. `busy` holds the tasks with an action in flight (their triggers are
@@ -162,7 +162,7 @@ type Asked = { id: string; title: string; kind: Confirmable; failed: boolean; fi
  * as it is enabled again; when that button has gone (the task moved to another list), to `fallback`, told
  * whether the task was finished when asked.
  */
-export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { archivesOnDone: boolean; busy: ReadonlySet<string>; onAction: (id: string, action: ItemAction, step?: string) => void; fallback: (finished: boolean) => void }): { ask: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; dialog: ReactNode } {
+export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { archivesOnDone: boolean; busy: ReadonlySet<string>; onAction: (id: string, action: ItemAction) => void; fallback: (finished: boolean) => void }): { ask: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; dialog: ReactNode } {
   // What was asked outlives the opening, so the dialog keeps its text while it animates closed, even after a
   // refetch has changed the task's outcome under it.
   const [asked, setAsked] = useState<Asked>({ id: "", title: "", kind: "mark_done", failed: false, finished: false, open: false, trigger: null });
@@ -170,10 +170,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
   const fallbackRef = useRef(fallback);
   fallbackRef.current = fallback;
   const ask = useCallback((task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => {
-    // Skip names the step it was asked about, so a refetch that moves the task on cannot redirect it.
-    const live = kind === "skip" ? skippableSteps(task)[0] : undefined;
-    const step = live ? { id: live.id, name: live.name, last: finishesWith(task.steps!, live.id) } : undefined;
-    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", finished: task.detail === "done" || task.detail === "failed", open: true, trigger, step });
+    setAsked({ id: task.id, title: taskTitle(task), kind, failed: task.detail === "failed", finished: task.detail === "done" || task.detail === "failed", open: true, trigger, issueNumber: task.issueNumber });
   }, []);
   const close = () => setAsked((a) => ({ ...a, open: false }));
   // A confirmed action disables its trigger while the call runs; focus it once the call is over, if focus is still lost.
@@ -193,7 +190,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
     else if (trigger?.isConnected) pending.current = { trigger, finished: asked.finished };
     else fallbackRef.current(asked.finished);
   };
-  const copy = confirmCopy(asked.kind, asked.title, asked.failed, archivesOnDone, asked.step);
+  const copy = confirmCopy({ kind: asked.kind, title: asked.title, failed: asked.failed, finished: asked.finished, issueNumber: asked.issueNumber ?? null, archivesOnDone });
   const dialog = (
     <ConfirmDialog
       open={asked.open}
@@ -202,7 +199,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
       confirmLabel={copy.confirmLabel}
       tone={copy.tone}
       onConfirm={() => {
-        onAction(asked.id, copy.action, asked.kind === "skip" ? asked.step?.id : undefined);
+        onAction(asked.id, copy.action);
         close();
       }}
       onCancel={close}

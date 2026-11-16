@@ -309,6 +309,8 @@ export const MIGRATIONS = [
   `ALTER TABLE work_items ADD COLUMN task_usage_json TEXT`,
   `ALTER TABLE work_items ADD COLUMN usage_tokens INTEGER`,
   `ALTER TABLE work_items ADD COLUMN usage_checked_at TEXT`,
+  // Issues the operator skipped: intake leaves them alone, even after a relabel, until they are unskipped.
+  `CREATE TABLE IF NOT EXISTS skipped_issues (repo TEXT NOT NULL, issue_number INTEGER NOT NULL, at TEXT NOT NULL, actor TEXT NOT NULL, PRIMARY KEY (repo, issue_number))`,
 ];
 
 /** Preserve both shipped histories; the SDK still validates every recorded hash.
@@ -321,6 +323,9 @@ export function migrationsForDatabase(db: Database): string[] {
   if (row?.statement_hash !== pauseHash) return MIGRATIONS;
   return [...MIGRATIONS.slice(0, 27), MIGRATIONS[28], MIGRATIONS[29], MIGRATIONS[27], ...MIGRATIONS.slice(30)];
 }
+
+/** How a skipped issue is named: `owner/repo#N`. */
+export const skippedIssueKey = (repo: string, issueNumber: number) => `${repo}#${issueNumber}`;
 
 const ACTIVE_STATUSES: WorkStatus[] = ["queued", "agent", "cos", "ci", "ready", "waiting_on_human", "retrying", "blocked"];
 /** SQL: `expr` (a column or parameter) is an active status. */
@@ -549,6 +554,33 @@ export class StateStore {
   setRepoPaused(repo: string, paused: boolean): void {
     if (paused) this.db.prepare("INSERT OR IGNORE INTO paused_repos (repo) VALUES (?)").run(repo);
     else this.db.prepare("DELETE FROM paused_repos WHERE repo = ?").run(repo);
+  }
+
+  /** The operator skipped the issue: intake leaves it alone until it is unskipped. */
+  isIssueSkipped(repo: string, issueNumber: number): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM skipped_issues WHERE repo = ? AND issue_number = ?").get(repo, issueNumber));
+  }
+
+  /** Skip or unskip an issue in one statement (no read-modify-write). Returns whether anything changed. */
+  setIssueSkipped(repo: string, issueNumber: number, skipped: boolean, actor: string): boolean {
+    const result = skipped
+      ? this.db.prepare("INSERT OR IGNORE INTO skipped_issues (repo, issue_number, at, actor) VALUES (?, ?, ?, ?)").run(repo, issueNumber, this.now().toISOString(), actor)
+      : this.db.prepare("DELETE FROM skipped_issues WHERE repo = ? AND issue_number = ?").run(repo, issueNumber);
+    return result.changes > 0;
+  }
+
+  /** Which of these items' issues are skipped, as `owner/repo#N` keys (one query for a roster page). */
+  skippedIssueKeys(items: readonly Pick<WorkItem, "repo" | "issueNumber">[]): Set<string> {
+    const repos = [...new Set(items.filter((i) => i.issueNumber !== null).map((i) => i.repo))];
+    if (!repos.length) return new Set();
+    const rows = this.db.prepare(`SELECT repo, issue_number FROM skipped_issues WHERE repo IN (${repos.map(() => "?").join(",")})`).all(...repos) as { repo: string; issue_number: number }[];
+    return new Set(rows.map((r) => skippedIssueKey(r.repo, r.issue_number)));
+  }
+
+  /** Every active task of the issue (normally at most one), newest first. */
+  listActiveForIssue(repo: string, issueNumber: number): WorkItem[] {
+    const rows = this.db.prepare(`SELECT * FROM work_items WHERE repo = ? AND issue_number = ? AND ${ACTIVE_IN} ORDER BY created_at DESC`).all(repo, issueNumber) as Row[];
+    return rows.map(rowToWorkItem);
   }
 
   setPaused(paused: boolean): void {

@@ -235,6 +235,11 @@ async function intakePass(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]
         const issueIndex = (issueStart + issueOffset) % issues.length;
         const issue = issues[issueIndex]!;
         try {
+          // Read per issue, not once per pass: a skip made while the pass waits on GitHub counts.
+          if (cos.store.isIssueSkipped(key, issue.number)) {
+            result.skipped.push({ issue: issue.number, reason: SKIPPED_ISSUE_REASON });
+            continue;
+          }
           if (cos.store.findActiveForIssue(key, issue.number)) {
             result.skipped.push({ issue: issue.number, reason: "active thread exists" });
             continue;
@@ -295,6 +300,9 @@ async function intakePass(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]
   if (results.some((r) => r.started.length)) cos.invalidate();
   return results;
 }
+
+/** Why intake leaves a skipped issue alone. */
+export const SKIPPED_ISSUE_REASON = "skipped; unskip it to start again";
 
 /**
  * Why intake leaves an issue alone whose newest task failed or is done, or
@@ -398,6 +406,7 @@ export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue,
   // here to the insert: in the meantime the project may have been paused, or
   // something else may have started the issue or filled the capacity.
   if (cos.store.isPaused(fresh.repo)) return { skipped: "paused" };
+  if (cos.store.isIssueSkipped(fresh.repo, issue.number)) return { skipped: SKIPPED_ISSUE_REASON };
   if (cos.store.findActiveForIssue(fresh.repo, issue.number)) return { skipped: "active thread exists" };
   const capacity = capacityProblem(cos, repo, maxTotal);
   if (capacity) return { skipped: capacity };
