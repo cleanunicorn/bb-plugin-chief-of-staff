@@ -42,8 +42,8 @@ export const settingDescriptors = {
   maxConcurrentTotal: { type: "number", label: "Max concurrent tasks (all repos)", description: "Tasks running at once, across all repositories. 0 starts no new tasks; tasks holding a slot keep going.", default: 4 },
   stallThresholdMinutes: { type: "number", label: "Stall threshold (minutes)", description: "A running agent with no activity for this long is reported as stalled.", default: 30 },
   intakeIntervalMinutes: { type: "number", label: "Issue intake interval (minutes)", default: 10 },
-  defaultProviderId: { type: "string", label: "Default provider id", description: "Used when a repo does not set providerId (e.g. claude-code). Set it with Default model: the model is meant for this provider.", default: "" },
-  defaultModel: { type: "string", label: "Default model", description: "Used only by agents on Default provider id (or, when that is empty, by agents for which nothing sets a provider). A repo or step that names a provider without a model runs that provider's own default model.", default: "" },
+  defaultProviderId: { type: "string", label: "Default provider id", description: "Used when a repo does not set providerId (e.g. claude-code).", default: "" },
+  defaultModel: { type: "string", label: "Default model", description: "The model for Default provider id (or, when that is empty, for BB's default provider). A repo or step on another provider without a model runs that provider's own default model.", default: "" },
   notifyPush: { type: "boolean", label: "Send BB push notifications", description: "Uses the push-notifications plugin when installed.", default: true },
   archiveThreadsOnDone: { type: "boolean", label: "Archive threads when a task is done", description: "When a task's workflow finishes or you mark it done, archive the builder and step threads it started. Failed tasks keep their threads.", default: true },
 } as const;

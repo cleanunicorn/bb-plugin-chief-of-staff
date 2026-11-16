@@ -321,8 +321,8 @@ comments are off), and ends the task as **Already resolved**: the steps that
 never ran stay pending, as with Mark done. An issue someone already closed is
 left alone, and a close GitHub refuses is noted on the task. If the evidence
 does not hold, the step waits for you with the reason: approve to continue the
-workflow, or send the agent back. On a step with several agents, one reporting resolved and another
-failed also waits for you: nothing is closed.
+workflow, or send the agent back. On a step with several agents, agents that disagree (one reports
+resolved, another failed or done) also wait for you: nothing is closed.
 
 **Check.** Chief of Staff commits any work the agents left uncommitted, then
 runs the command in the task's worktree with the step's timeout. Exit code 0
@@ -418,9 +418,8 @@ spawned. An already running builder thread keeps the model it started with. With
 a step uses the repository's settings, then the global default. A model or reasoning level is only inherited
 for its own provider: a repository that sets the provider to Codex without a model runs Codex's default model,
 not the global default model meant for the global default provider.
-Set **Default provider id** together with **Default model**: with the provider empty, the global model only
-reaches agents for which nothing names a provider, so a repository that sets `providerId: claude-code` runs
-Claude Code's own default model, not the global one.
+With **Default provider id** empty, the global model is meant for BB's own default provider: a repository
+that names that provider keeps the global model.
 
 **Letting an agent choose.** An agent step can list **model choices** (an id, a "use when" description and a
 provider, model and reasoning level each). The agent analyses the task and reports the id it picks as `choice`

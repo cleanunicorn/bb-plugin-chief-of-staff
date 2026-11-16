@@ -12,7 +12,7 @@
   counted with Shipped). On a step with an approval gate, such as the default
   workflow's Plan, nothing is closed until you approve. Evidence that does not
   hold waits on you, with the reason, and so does a step whose agents disagree
-  (one reports resolved, another failed).
+  (one reports resolved, another anything else).
 
 - **Retry no longer trips over the dead thread.** Retrying a step whose thread
   had failed sent the agent to a new thread, but the sweep then reported the
@@ -24,9 +24,8 @@
   repository set to Codex without a model ran Codex with the global default
   model ("Opus"), which Codex rejects. A model or reasoning level is now
   inherited only for its own provider; otherwise the provider's default model
-  applies. Set **Default provider id** together with **Default model**: with
-  the provider empty, a repository that names any provider (even Claude Code)
-  runs that provider's default model instead of the global one.
+  applies. With **Default provider id** empty, the global model is meant for
+  BB's own default provider, so a repository that names that provider keeps it.
 
 - **Finished tasks get their own section, with filters.** Show finished used
   to pour every finished task, as a full card, into the active grid, mixed

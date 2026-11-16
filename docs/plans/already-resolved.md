@@ -13,7 +13,8 @@
 - [x] M6 The global default model applies only with the global default provider (independent)
 - [x] M7 Tests, typecheck, lint, docs (README, skill, CHANGELOG)
 - [x] M8 Review fixes: the approval gate holds the close; default branch cached per repo; `NodePhase`; nudge and template prompts
-- [ ] Commit and open one PR
+- [x] Commit and open one PR (#169)
+- [x] M9 Review fixes: a step closes as resolved only when every agent reports it (otherwise escalation); with no Chief of Staff default provider, the default model pairs with BB's own default provider (`agentDefaults`)
 - [ ] Deferred: when GitHub's own `Closes #N` already closed the issue, intake never sees it; nothing to do
 - [ ] Deferred: scan merged PRs at intake for unlinked fixes (no reliable signal: #920 never named #929)
 

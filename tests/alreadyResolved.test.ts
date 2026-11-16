@@ -13,6 +13,7 @@ import { observeFailure, observeIdle, tickItems } from "../src/sync";
 import { describeActivity } from "../src/roster";
 import { resolveAgent, settingsFor, workflowSchema, type Workflow } from "../src/workflow";
 import { nudgePrompt, stepPrompt } from "../src/prompts";
+import { agentDefaults } from "../src/threads";
 import { GitHubError } from "../src/github";
 import type { Cos } from "../src/context";
 import type { RepoConfig } from "../src/config";
@@ -142,9 +143,20 @@ describe("engine: a resolved report", () => {
     const failing: StepReport = { outcome: "failed", summary: "reload() still drops the cache.", at: NOW.toISOString(), via: "tool" };
     const [after, fx] = run(item, { ...ended("review", failing, item), agent: 1 } as MachineEvent);
     expect(after.nodes.review).toMatchObject({ status: "waiting", phase: null, waiting: { kind: "escalation" } });
+    expect(after.waitingReason).toContain('another reported "failed". Approve to continue the workflow');
     expect(after.waitingReason).toContain("reload() still drops the cache.");
     expect(fx.some((e) => e.type === "resolve")).toBe(false);
     expect(after.status).not.toBe("done");
+  });
+
+  it("one resolved and one done also waits on a person: closing needs every agent to agree", () => {
+    const pair = workflowSchema.parse({ id: "r", name: "R", steps: [{ id: "plan", name: "Plan", type: "agent", agents: 2 }] });
+    let [item] = run(itemFor(pair), { type: "start" });
+    [item] = run(item, ended("plan", resolved(), item));
+    const done: StepReport = { outcome: "done", summary: "Plan: add reload() to the third page.", at: NOW.toISOString(), via: "tool" };
+    const [after, fx] = run(item, { ...ended("plan", done, item), agent: 1 } as MachineEvent);
+    expect(after.nodes.plan).toMatchObject({ status: "waiting", waiting: { kind: "escalation" } });
+    expect(fx.some((e) => e.type === "resolve")).toBe(false);
   });
 
   it("derives cos, not agent, for a step whose agents all reported resolved", () => {
@@ -408,9 +420,20 @@ describe("resolveAgent: a model is inherited only for its own provider", () => {
   it("with no global provider, the global model reaches only agents for which nothing names a provider", () => {
     const unset = { providerId: "", model: "Opus" };
     expect(resolveAgent({}, {}, unset)).toEqual({ providerId: undefined, model: "Opus", reasoningLevel: undefined });
-    // Chief of Staff cannot tell which provider the host defaults to: a named one, even Claude Code, keeps its own default.
+    // resolveAgent alone cannot tell the host's default provider: agentDefaults supplies it (below).
     expect(resolveAgent({}, { providerId: "claude-code" }, unset)).toEqual({ providerId: "claude-code", model: undefined, reasoningLevel: undefined });
     expect(resolveAgent({}, { providerId: "codex" }, unset)).toEqual({ providerId: "codex", model: undefined, reasoningLevel: undefined });
+  });
+  it("agentDefaults pairs the global model with BB's default provider when Chief of Staff sets none", async () => {
+    const cosWith = (config: () => Promise<unknown>) => ({ bb: { sdk: { system: { config } }, log: { debug: () => {} } } }) as unknown as Cos;
+    const host = cosWith(async () => ({ generalSettings: { defaultProviderId: "claude-code" } }));
+    const unset = await agentDefaults(host, { defaultProviderId: "", defaultModel: "Opus" });
+    expect(unset).toEqual({ providerId: "claude-code", model: "Opus" });
+    expect(resolveAgent({}, { providerId: "claude-code" }, unset)).toMatchObject({ providerId: "claude-code", model: "Opus" });
+    expect(resolveAgent({}, { providerId: "codex" }, unset)).toMatchObject({ providerId: "codex", model: undefined });
+    // A provider set here wins, without asking BB; an unreadable BB config leaves the model unpaired.
+    expect(await agentDefaults(cosWith(async () => { throw new Error("no"); }), { defaultProviderId: "codex", defaultModel: "gpt-6" })).toEqual({ providerId: "codex", model: "gpt-6" });
+    expect(await agentDefaults(cosWith(async () => { throw new Error("no"); }), { defaultProviderId: "", defaultModel: "Opus" })).toEqual({ model: "Opus" });
   });
   it("drops a repository's model and level when a step switches provider", () => {
     expect(resolveAgent({ providerId: "codex" }, { providerId: "claude-code", model: "Opus", reasoningLevel: "high" }, defaults)).toEqual({ providerId: "codex", model: undefined, reasoningLevel: undefined });

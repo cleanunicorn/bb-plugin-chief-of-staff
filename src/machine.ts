@@ -370,8 +370,9 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     // A step with an approval gate only verifies first: nothing is closed until a person approves.
     const failed = n.reports.filter((r) => r?.outcome === "failed");
     if (n.reports.some((r) => r?.outcome === "resolved")) {
-      // Agents disagree: one found it done, another found it failing. A person decides; nothing is closed.
-      if (failed.length) return wait(id, "escalation", `One agent reported the task already resolved, another that it fails: ${failed[0]!.summary} Approve to continue the workflow, or send the agents instructions.`);
+      // Agents disagree (another found it failing, or still to do): a person decides; nothing is closed.
+      const other = n.reports.find((r) => r && r.outcome !== "resolved");
+      if (other) return wait(id, "escalation", `Agents disagree: some reported the task already resolved, another reported "${other.outcome}". Approve to continue the workflow, or send the agents instructions. It said: ${other.summary}`);
       n.phase = s.approval ? "resolving" : "closing";
       effects.push({ type: "resolve", step: id });
       return;
