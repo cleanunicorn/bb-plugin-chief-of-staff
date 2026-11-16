@@ -84,7 +84,19 @@ export function useFinishedTasks(query: RosterQuery, order: FinishedOrder, onErr
       if (request.current === req) setLoadingOlder(false);
     }
   }, [cursor, firstEntries, onError, order, rpc]);
-  return { query, entries, cursor, loadingOlder, loadOlder, failedCursor, orderLoaded, finishedTokens: query.data?.finishedTokens ?? null };
+  /**
+   * Older pages are not refetched: after a skip or unskip, set the new state on every loaded row of the same issue,
+   * so they show it and offer the right action. The first page comes back fresh with the roster refetch.
+   */
+  const setIssueSkipped = useCallback((id: string, skipped: boolean) => {
+    setOlder((prev) => {
+      const task = prev?.entries.find((e) => e.id === id) ?? firstEntries?.find((e) => e.id === id);
+      if (!prev || !task || task.issueNumber === null) return prev;
+      const same = (e: FinishedEntry) => e.repo === task.repo && e.issueNumber === task.issueNumber;
+      return { ...prev, entries: prev.entries.map((e) => (same(e) ? { ...e, issueSkipped: skipped } : e)) };
+    });
+  }, [firstEntries]);
+  return { query, entries, cursor, loadingOlder, loadOlder, failedCursor, orderLoaded, finishedTokens: query.data?.finishedTokens ?? null, setIssueSkipped };
 }
 
 /** "acme/app" → "app". */

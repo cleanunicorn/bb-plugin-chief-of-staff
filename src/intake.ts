@@ -9,7 +9,6 @@ import { dispatch, resumeQueued } from "./delivery";
 import type { NewWorkItem, WorkItem } from "./state";
 import { initialNodes, PR_CLOSED_ERROR } from "./machine";
 import { isStatusComment } from "./statusComment";
-import { skippedIssueKey, skippedIssues } from "./skippedIssues";
 
 export interface IntakeResult {
   repo: string;
@@ -199,8 +198,6 @@ async function intakePass(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]
   const repos = config.repos.filter((repo) => !opts.repo || opts.repo === repoKey(repo));
   const nextRepo = resumable ? await kv.get<string>(repoCursorKey) : null;
   const repoStart = Math.max(0, repos.findIndex((repo) => repoKey(repo) === nextRepo));
-  // Issues the operator skipped stay skipped whatever happens on GitHub.
-  const skipped = await skippedIssues(cos);
   // A dry run starts nothing, so it counts its own would-starts to report what a real run would do.
   let dryRunTotal = 0;
   const outOfTime = () => {
@@ -238,7 +235,8 @@ async function intakePass(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]
         const issueIndex = (issueStart + issueOffset) % issues.length;
         const issue = issues[issueIndex]!;
         try {
-          if (skipped[skippedIssueKey(key, issue.number)]) {
+          // Read per issue, not once per pass: a skip made while the pass waits on GitHub counts.
+          if (cos.store.isIssueSkipped(key, issue.number)) {
             result.skipped.push({ issue: issue.number, reason: SKIPPED_ISSUE_REASON });
             continue;
           }
@@ -408,6 +406,7 @@ export async function startIssue(cos: Cos, repo: RepoConfig, issue: GitHubIssue,
   // here to the insert: in the meantime the project may have been paused, or
   // something else may have started the issue or filled the capacity.
   if (cos.store.isPaused(fresh.repo)) return { skipped: "paused" };
+  if (cos.store.isIssueSkipped(fresh.repo, issue.number)) return { skipped: SKIPPED_ISSUE_REASON };
   if (cos.store.findActiveForIssue(fresh.repo, issue.number)) return { skipped: "active thread exists" };
   const capacity = capacityProblem(cos, repo, maxTotal);
   if (capacity) return { skipped: capacity };

@@ -733,12 +733,15 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
   // Closing a sheet returns focus to the card button that opened it, or to the heading when that button is gone.
   const sheetFocus = useSheetFocus<HTMLHeadingElement>();
   const throughputHeading = useRef<HTMLHeadingElement>(null);
+  // Set once the Finished tasks are read below: a skip or unskip updates their older, cached pages too.
+  const onIssueSkipped = useRef<((id: string, skipped: boolean) => void) | null>(null);
   const act = useCallback(
     async (id: string, action: ItemAction) => {
       setBusy((ids) => new Set(ids).add(id));
       setActionError(null);
       try {
         await rpc.call("cos_item_action", { id, action });
+        if (action === "skip_issue" || action === "unskip_issue") onIssueSkipped.current?.(id, action === "skip_issue");
         await refetchAll();
       } catch (error) {
         setActionError(errorText(error));
@@ -757,6 +760,7 @@ export function PipelineTab({ onShowActivity, finishedView: heldView }: { onShow
   // Counts and attention come from the active tasks, never from finished ones.
   const active = useMemo(() => (live ?? []).filter((e) => !isFinished(e)), [live]);
   const finished = useFinishedTasks(roster, finishedOrder, setActionError);
+  useEffect(() => { onIssueSkipped.current = finished.setIssueSkipped; });
   const finishedHeading = useRef<HTMLHeadingElement>(null);
   const byStage = useMemo(() => {
     const counts = Object.fromEntries(STAGES.map((s) => [s.key, 0])) as Record<StageKey, number>;

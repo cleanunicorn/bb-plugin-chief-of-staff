@@ -4,10 +4,12 @@
 
 - **Skip an issue.** Marking a task failed or done still let intake take its
   issue again after a relabel or reassignment. A task with an issue now has
-  **Skip issue…** in its More actions menu: a running task stops (recorded as
-  marked failed), and intake leaves the issue alone from then on, whatever
-  happens to its labels or assignees. Nothing is written to GitHub. Finished
-  rows say **Issue skipped**, and **Unskip issue** in the same menu undoes it.
+  **Skip issue…** in its More actions menu: every running task of the issue
+  stops (recorded as marked failed), and intake leaves the issue alone from
+  then on, whatever happens to its labels or assignees. A skipped issue's task
+  cannot be restarted or rerun until the issue is unskipped. Nothing is written
+  to GitHub. Finished rows say **Issue skipped**, and **Unskip issue** in the
+  same menu undoes it.
   Also `bb cos item skip-issue|unskip-issue <id>`.
 
 - **Already-fixed issues finish on their own.** An issue fixed by an earlier

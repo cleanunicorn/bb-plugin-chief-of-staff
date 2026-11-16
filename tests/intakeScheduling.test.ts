@@ -34,7 +34,7 @@ function setup({ fail = false, empty = false } = {}) {
     bb: host.bb, config: async () => ({ repos, values: { maxConcurrentTotal: 4 } }),
     github: async () => github, now: () => new Date(now), safe: async (text: string) => text,
     store: {
-      listWorkItems: () => { resumes += 1; return []; }, isPaused: () => false, isRepoPaused: () => false, log: () => {},
+      listWorkItems: () => { resumes += 1; return []; }, isPaused: () => false, isRepoPaused: () => false, isIssueSkipped: () => false, log: () => {},
       findActiveForIssue: (_repo: string, number: number) => { considered.push(number); return true; },
     },
   }) as unknown as Cos;

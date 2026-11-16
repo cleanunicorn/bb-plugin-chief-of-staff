@@ -13,7 +13,6 @@ import { itemsUsage } from "./usage";
 import { sinceSummary } from "./since";
 import { answerQuestion, getQuestion } from "./answer";
 import { listSkills } from "./threads";
-import { setIssueSkipped } from "./skippedIssues";
 import type { WorkItem } from "./state";
 import { isReferenceable } from "./skills";
 
@@ -216,6 +215,10 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
   const item = cos.store.getWorkItem(id);
   if (!item) throw new Error(`work item ${id} not found`);
   if (opts.step && !item.workflow.steps.some((s) => s.id === opts.step)) throw new Error(`step "${opts.step}" is not in this task's workflow (${item.workflow.steps.map((s) => s.id).join(", ")})`);
+  // A skipped issue's work stays stopped: restarting it would run an agent on an issue intake is told to leave alone.
+  if ((action === "retry" || action === "rerun_step") && item.issueNumber && cos.store.isIssueSkipped(item.repo, item.issueNumber)) {
+    throw new Error(`issue #${item.issueNumber} is skipped: unskip it first`);
+  }
   switch (action) {
     case "retry":
       return dispatch(cos, id, { type: "retry", step: opts.step }, actor);
@@ -230,16 +233,31 @@ export async function itemAction(cos: Cos, id: string, action: ItemAction, actor
       return dispatch(cos, id, { type: "revise", step: opts.step, feedback: opts.feedback }, actor);
     case "skip_issue":
     case "unskip_issue": {
-      if (!item.issueNumber) throw new Error("this task has no GitHub issue to skip: mark it done or failed instead");
       const skip = action === "skip_issue";
-      // Skip first: intake must not see the issue free between closing its task and recording the skip.
-      if (await setIssueSkipped(cos, item.repo, item.issueNumber, skip, actor)) {
-        cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `${skip ? "skipped" : "unskipped"} issue #${item.issueNumber}`, actor });
+      if (!item.issueNumber) throw new Error(skip ? "this task has no GitHub issue to skip: mark it done or failed instead" : "this task has no GitHub issue, so there is nothing to unskip");
+      const issue = item.issueNumber;
+      if (!skip) {
+        if (cos.store.setIssueSkipped(item.repo, issue, false, actor)) {
+          cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `unskipped issue #${issue}`, actor });
+          cos.invalidate();
+        }
+        return cos.store.getWorkItem(id);
       }
-      // A skipped issue's task stops, recorded as marked failed; a finished one is left as it ended.
-      const updated: WorkItem | null = skip && item.status !== "done" && item.status !== "failed" ? await itemAction(cos, id, "mark_failed", actor) : cos.store.getWorkItem(id);
+      // Recorded first, so intake cannot start the issue while its tasks close; taken back if closing fails.
+      const added = cos.store.setIssueSkipped(item.repo, issue, true, actor);
+      try {
+        // Every active task of the issue stops, not only the one asked from; each is recorded as marked failed.
+        for (const active of cos.store.listActiveForIssue(item.repo, issue)) {
+          const closed = await itemAction(cos, active.id, "mark_failed", actor);
+          if (closed?.status !== "failed") throw new Error(`could not stop task ${active.id} of issue #${issue}`);
+        }
+      } catch (error) {
+        if (added) cos.store.setIssueSkipped(item.repo, issue, false, actor);
+        throw error;
+      }
+      if (added) cos.store.log({ level: "info", kind: "manual", repo: item.repo, workItemId: id, message: `skipped issue #${issue}`, actor });
       cos.invalidate();
-      return updated;
+      return cos.store.getWorkItem(id);
     }
     case "mark_done":
     case "mark_failed": {

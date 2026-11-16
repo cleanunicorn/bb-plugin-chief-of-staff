@@ -3,14 +3,13 @@
 // adopting items started before custom workflows).
 import type { Cos } from "./context";
 import { actorOf, CAPACITY_REASON, freshNode, initialNodes, limitedNode, repoNotConfiguredReason, resetTime, rosterStatus, type Actor, type NodeStatus, type NodePhase } from "./machine";
-import { occupiesCapacity, type FinishedOrder, type PrState, type WaitingKind, type WorkItem } from "./state";
+import { occupiesCapacity, skippedIssueKey, type FinishedOrder, type PrState, type WaitingKind, type WorkItem } from "./state";
 import { describeOutcome, finishedOutcome, type Outcome } from "./outcome";
 import { ROSTER_FINISHED_LIMIT, ROSTER_FINISHED_MAX } from "../rpcContract";
 import { itemsUsage, storedUsage, type ItemUsage } from "./usage";
 import { applyTransition, dispatch, watchCi } from "./delivery";
 import { isBusy, snapshotOf, syncThreads, threadContext, tickItems } from "./sync";
 import { agentWork, describePick, isAuthoredAgent, isWriter, pickedModel, depths, descendants, stepById, topoOrder, type StepType, type Workflow } from "./workflow";
-import { skippedIssueKey, skippedIssues } from "./skippedIssues";
 
 const isFinished = (item: Pick<WorkItem, "status">) => item.status === "done" || item.status === "failed";
 
@@ -183,7 +182,7 @@ export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<R
   }
   const stallMs = Math.max(1, values.stallThresholdMinutes) * 60_000;
   const now = cos.now().getTime();
-  const skipped = await skippedIssues(cos);
+  const skipped = cos.store.skippedIssueKeys(items);
   const manual = cos.store.latestManualActions(items.filter(isFinished).map((i) => i.id));
   const entries: RosterEntry[] = [];
   for (const item of items) {
@@ -206,7 +205,7 @@ export async function buildRoster(cos: Cos, opts: RosterOptions = {}): Promise<R
       issueNumber: item.issueNumber,
       issueUrl: issueUrlFor(item.repo, item.issueNumber),
       issueTitle: item.issueTitle,
-      issueSkipped: item.issueNumber !== null && Boolean(skipped[skippedIssueKey(item.repo, item.issueNumber)]),
+      issueSkipped: item.issueNumber !== null && skipped.has(skippedIssueKey(item.repo, item.issueNumber)),
       threadId: item.threadId,
       threadStatus: thread?.status ?? null,
       threadTitle: thread?.title ?? null,

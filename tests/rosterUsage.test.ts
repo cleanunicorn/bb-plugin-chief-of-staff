@@ -56,7 +56,7 @@ function setup(opts: { gate?: boolean } = {}) {
     invalidate,
     now: () => new Date(clock),
     config: async () => ({ values: { stallThresholdMinutes: 30 } }),
-    bb: { sdk: { threads: { list: threadsList, events: { list: eventsList } } }, storage: host.bb.storage, log: { debug: vi.fn(), warn: vi.fn() } },
+    bb: { sdk: { threads: { list: threadsList, events: { list: eventsList } } }, log: { debug: vi.fn(), warn: vi.fn() } },
   } as unknown as Cos;
   const add = (id: string, over: Partial<NewWorkItem> = {}) => store.insertWorkItem({
     id, repo: "a/b", status: "agent", issueTitle: id, issueNumber: 1, branch: null, threadId: `t-${id}`, environmentId: null, prNumber: null, prUrl: null,

@@ -565,3 +565,17 @@ describe("usage of finished items, summed over their threads", () => {
     expect(store.listUsageDue(AT, 10).map((i) => i.id)).toEqual(["old"]);
   });
 });
+
+describe("skipped issues", () => {
+  it("keeps each skip in its own row, so skips made together are all kept", () => {
+    const { store } = storeSetup();
+    expect(store.setIssueSkipped("a/b", 12, true, "dashboard")).toBe(true);
+    expect(store.setIssueSkipped("a/b", 13, true, "cli")).toBe(true);
+    expect(store.setIssueSkipped("a/b", 12, true, "cli")).toBe(false);
+    expect([store.isIssueSkipped("a/b", 12), store.isIssueSkipped("a/b", 13), store.isIssueSkipped("c/d", 12)]).toEqual([true, true, false]);
+    expect([...store.skippedIssueKeys([{ repo: "a/b", issueNumber: 12 }, { repo: "c/d", issueNumber: null }])].sort()).toEqual(["a/b#12", "a/b#13"]);
+    expect(store.setIssueSkipped("a/b", 12, false, "cli")).toBe(true);
+    expect(store.setIssueSkipped("a/b", 12, false, "cli")).toBe(false);
+    expect(store.isIssueSkipped("a/b", 13)).toBe(true);
+  });
+});

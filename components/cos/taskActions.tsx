@@ -22,7 +22,7 @@ export const taskTitle = (task: Pick<MenuTask, "issueTitle" | "threadTitle">) =>
  * What each confirm says and sends. A failed task is no longer worked on, so its copy differs.
  * `archivesOnDone`: marking done archives the task's threads ("Archive threads when a task is done").
  */
-export function confirmCopy(kind: Confirmable, title: string, failed: boolean, archivesOnDone: boolean, finished = failed, issueNumber: number | null = null): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
+export function confirmCopy({ kind, title, failed, finished, issueNumber, archivesOnDone }: { kind: Confirmable; title: string; failed: boolean; finished: boolean; issueNumber: number | null; archivesOnDone: boolean }): { title: string; description: string; confirmLabel: string; tone?: "destructive"; action: ItemAction } {
   switch (kind) {
     case "skip_issue": {
       const issue = issueNumber ? `issue #${issueNumber}` : "this issue";
@@ -64,7 +64,7 @@ export function confirmCopy(kind: Confirmable, title: string, failed: boolean, a
 /**
  * The More actions menu: done → "Run a step again…"; failed → Restart and Mark done; active → Retry, Mark done
  * and Mark failed; plus "Show activity" when the page has an Activity feed, and, for a task with an issue,
- * "Skip issue…" (or "Unskip issue" once skipped).
+ * "Skip issue…" (or "Unskip issue" once skipped). A finished task of a skipped issue offers no re-run or restart.
  */
 export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun, onShowActivity }: { task: MenuTask; busy: boolean; tabIndex?: number; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onRerun: (id: string, trigger: HTMLButtonElement) => void; onShowActivity?: (task: ActivityTask) => void }) {
   const trigger = useRef<HTMLButtonElement>(null);
@@ -95,7 +95,15 @@ export function TaskActionsMenu({ task, busy, tabIndex, onAction, onAsk, onRerun
             Show activity
           </DropdownMenuItem>
         ) : null}
-        {task.detail === "done" ? (
+        {task.issueSkipped && (task.detail === "done" || task.detail === "failed") ? (
+          // A skipped issue's work is not restarted (the server refuses): Unskip issue, below, comes first.
+          task.detail === "failed" ? (
+            <DropdownMenuItem onSelect={() => ask("mark_done")}>
+              <Icon name="CircleCheck" fallback="Circle" className="size-3.5 text-muted-foreground" aria-hidden />
+              Mark done…
+            </DropdownMenuItem>
+          ) : null
+        ) : task.detail === "done" ? (
           // A re-run puts a done task back to work; the sheet asks before running it. Focus returns to More actions,
           // because this item is gone once the menu closes.
           <DropdownMenuItem onSelect={() => onRerun(task.id, trigger.current!)}>
@@ -182,7 +190,7 @@ export function useTaskConfirm({ archivesOnDone, busy, onAction, fallback }: { a
     else if (trigger?.isConnected) pending.current = { trigger, finished: asked.finished };
     else fallbackRef.current(asked.finished);
   };
-  const copy = confirmCopy(asked.kind, asked.title, asked.failed, archivesOnDone, asked.finished, asked.issueNumber ?? null);
+  const copy = confirmCopy({ kind: asked.kind, title: asked.title, failed: asked.failed, finished: asked.finished, issueNumber: asked.issueNumber ?? null, archivesOnDone });
   const dialog = (
     <ConfirmDialog
       open={asked.open}

@@ -1172,9 +1172,59 @@ describe("chief-of-staff server", () => {
         await expectNotRestarted(SKIPPED);
       });
 
-      it("refuses a task without an issue", async () => {
+      it("refuses a task without an issue, and says so in unskip's own words", async () => {
         const task = (await host.harness.behavior.callRpc("cos_start_task", { repo: "acme/app", body: "Tidy the README" })) as { id: string };
-        await expect(host.harness.behavior.callRpc("cos_item_action", { id: task.id, action: "skip_issue" })).rejects.toThrow(/no GitHub issue/);
+        await expect(host.harness.behavior.callRpc("cos_item_action", { id: task.id, action: "skip_issue" })).rejects.toThrow("this task has no GitHub issue to skip");
+        await expect(host.harness.behavior.callRpc("cos_item_action", { id: task.id, action: "unskip_issue" })).rejects.toThrow("this task has no GitHub issue, so there is nothing to unskip");
+      });
+
+      it("stops the issue's newer active task when skipped from an older finished one", async () => {
+        at(0);
+        await intake();
+        const first = items()[0]!.id;
+        at(5);
+        await action("mark_failed");
+        relabelled();
+        at(7);
+        expect((await intake()).started.map((s) => s.issue)).toEqual([12]);
+        const second = items().find((i) => i.id !== first)!.id;
+        await host.harness.behavior.callRpc("cos_item_action", { id: first, action: "skip_issue" });
+        expect(new StateStore(host.bb.storage.database()).getWorkItem(second)).toMatchObject({ status: "failed", lastError: "Marked failed" });
+      });
+
+      it("refuses to restart or rerun a skipped issue's task until it is unskipped", async () => {
+        await intake();
+        await action("skip_issue");
+        await expect(action("retry")).rejects.toThrow("issue #12 is skipped: unskip it first");
+        await expect(host.harness.behavior.callRpc("cos_item_action", { id: items()[0]!.id, action: "rerun_step", step: items()[0]!.workflow.steps[0]!.id })).rejects.toThrow("issue #12 is skipped");
+        expect(items()[0]!.status).toBe("failed");
+        await action("unskip_issue");
+        await action("retry");
+        expect(items()[0]!.status).not.toBe("failed");
+      });
+
+      it("takes the skip back when its task cannot be stopped", async () => {
+        await intake();
+        const update = vi.spyOn(StateStore.prototype, "updateWorkItem").mockImplementationOnce(() => { throw new Error("disk full"); });
+        try {
+          await expect(action("skip_issue")).rejects.toThrow("disk full");
+        } finally {
+          update.mockRestore();
+        }
+        const store = new StateStore(host.bb.storage.database());
+        expect(store.isIssueSkipped("acme/app", 12)).toBe(false);
+        expect(store.listLog({ workItemId: items()[0]!.id }).map((e) => e.message)).not.toContain("skipped issue #12");
+        expect(items()[0]!.status).not.toBe("failed");
+      });
+
+      it("sees a skip made while its pass is already running", async () => {
+        // The skip lands after the pass began, while it lists the repository's issues.
+        ghRoutes["GET /repos/acme/app/issues"] = () => {
+          new StateStore(host.bb.storage.database()).setIssueSkipped("acme/app", 12, true, "test");
+          return { body: [issue] };
+        };
+        expect(await intake()).toMatchObject({ started: [], skipped: [{ issue: 12, reason: SKIPPED }] });
+        expect(items()).toHaveLength(0);
       });
     });
 
