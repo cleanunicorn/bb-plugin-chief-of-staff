@@ -2918,6 +2918,25 @@ describe("chief-of-staff server", () => {
     expect(JSON.stringify(answers)).not.toMatch(/docker image|Fix them now/);
   });
 
+  it("asks a question an agent reported from the sheet, in full, with the task's links and its issue on demand", async () => {
+    threadStatus = "active";
+    await host.harness.behavior.callRpc("cos_intake_now", {});
+    const asked = `Which of these should the migration keep?\n\n${"- an option with some detail\n".repeat(40)}`;
+    await report("build", "needs_input", "Need a call", "thr_1", asked);
+    threadStatus = "idle";
+    await idle("Reported. Anything else?");
+    const { id } = await roster();
+    expect(await roster()).toMatchObject({ waitingKind: "question" });
+
+    const view = (await host.harness.behavior.callRpc("cos_question", { id })) as Record<string, unknown>;
+    expect(view).toMatchObject({ stepName: "Build", issueUrl: "https://github.com/acme/app/issues/12", taskBody: null, earlier: [], open: [{ kind: "text", question: asked }] });
+
+    const reads = () => ghCalls.filter((call) => call.path === "/repos/acme/app/issues/12").length;
+    const before = reads();
+    expect(await host.harness.behavior.callRpc("cos_issue_body", { id })).toEqual({ body: "Login breaks" });
+    expect(reads()).toBe(before + 1);
+  });
+
   it("exposes the roster through the agent tool and CLI", async () => {
     await host.harness.behavior.callRpc("cos_intake_now", {});
     const tool = await host.harness.behavior.callAgentTool("chief_of_staff_status", {});

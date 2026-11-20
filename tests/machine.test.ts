@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_POLICY, ENGINE_ERROR_PREFIX, MARKED_DONE, MARKED_FAILED, MAX_RATE_LIMIT_DEFERRALS, limitedNode, initialNodes, transition, type Effect, type MachineEvent, type StepReport } from "../src/machine";
-import type { WorkItem } from "../src/state";
+import { compactNodes, type WorkItem } from "../src/state";
 import { DEFAULT_MODEL_INSTRUCTIONS, DEFAULT_WORKFLOW, agentWork, blankStep, isAuthoredAgent, isWriter, fromStages, modelMode, normalizeWorkflow, parseWorkflows, resolveAgent, settingsFor, validateWorkflow, workflowSchema, type AgentStep, type ModelStep, type Workflow } from "../src/workflow";
 import { parseTextReport } from "../src/report";
 import { nudgePrompt, pipelineLine, stepPrompt } from "../src/prompts";
@@ -276,6 +276,30 @@ describe("workflow engine", () => {
     [item] = run(item, { type: "turn_started", step: "plan", agent: 0 });
     [item] = run(item, ended("plan", { ...report("needs_input"), question: "Keep v1?" }, item));
     expect([item.waitingKind, item.waitingReason]).toEqual(["question", "Plan: Keep v1?"]);
+    expect(item.nodes.plan!.waiting!.question).toBeUndefined();
+  });
+
+  it("keeps a long question in full for the answer sheet, while the reason stays short", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    [item] = run(item, { type: "start" });
+    const long = `Which of these should the migration keep?\n\n${"- an option with some detail\n".repeat(60)}`;
+    [item] = run(item, ended("plan", { ...report("needs_input"), question: long }, item));
+    const waiting = item.nodes.plan!.waiting!;
+    expect(waiting.reason).toHaveLength(600);
+    expect(waiting.question).toBe(long);
+  });
+
+  it("marks a wait on a BB interaction, so the sheet never mistakes its summary for a question", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    [item] = run(item, { type: "start" });
+    [item] = run(item, { type: "interaction_pending", step: "plan", agent: 0, reason: "Approve: run npm install" });
+    expect(item.nodes.plan!.waiting).toMatchObject({ kind: "question", reason: "Approve: run npm install", interaction: true });
+  });
+
+  it("drops a kept question when a finished task's steps are compacted", () => {
+    const nodes = initialNodes(DEFAULT_WORKFLOW);
+    nodes.plan!.waiting = { kind: "question", reason: "short", agent: 0, question: "the long version" };
+    expect(compactNodes(nodes).plan!.waiting).toEqual({ kind: "question", reason: "short", agent: 0 });
   });
 
   it("retries infrastructure errors with backoff, then asks for help, then re-runs the effect", () => {

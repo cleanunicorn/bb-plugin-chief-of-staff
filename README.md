@@ -822,9 +822,11 @@ flowchart TB
   the overview shows a warning, and a step that needed GitHub runs again at
   the reset without using up its retries (after 10 deferrals of one step
   they count again, so a limit that never clears reaches you).
-- Answering from the dashboard: click the question on a waiting card to see
-  the question, its options and the agent's last message, then answer in place
-  or open the thread. Questions, approvals and requests are resolved with
+- Answering from the dashboard: click a waiting card to see the question and
+  its options with what you need to answer it: links to the issue and pull
+  request, the waiting step, the task's description (an issue's is read from
+  GitHub when you expand it), the earlier steps' reports and the agent's last
+  message. Then answer in place or open the thread. Questions, approvals and requests are resolved with
   `threads.interactions.resolve`; a plain-text question gets a reply message.
   The activity log records who answered, not what they wrote.
 - Commands on a checkout (git and check commands) run on the enrolled

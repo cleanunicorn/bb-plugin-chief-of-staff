@@ -154,6 +154,13 @@ const questionView = z.object({
   lastMessage: z.string().nullable(),
   checkOutput: z.string().nullable(),
   lastError: z.string().nullable(),
+  issueUrl: z.string().nullable(),
+  prNumber: z.number().nullable(),
+  prUrl: z.string().nullable(),
+  /** The description of a task not backed by an issue; an issue's loads through cos_issue_body. */
+  taskBody: z.string().nullable(),
+  /** Reports of the finished steps, in workflow order. */
+  earlier: z.array(z.object({ step: z.string(), summary: z.string() })),
 });
 export type QuestionView = z.output<typeof questionView>;
 const answerInput = z.discriminatedUnion("kind", [
@@ -277,6 +284,7 @@ export const rpcContract = defineRpcContract({
   cos_journal_detail: { input: z.object({ itemId: z.string(), id: z.number().int() }), output: z.object({ detail: z.string().nullable() }) },
   cos_start_task: { input: z.object({ repo: z.string().min(3).max(200), title: z.string().max(200).optional(), body: z.string().max(20000).default("") }), output: z.object({ id: z.string(), workflow: z.string(), status: z.string() }) },
   cos_question: { input: z.object({ id: z.string() }), output: questionView },
+  cos_issue_body: { input: z.object({ id: z.string() }), output: z.object({ body: z.string().nullable() }) },
   cos_answer: { input: z.object({ id: z.string(), answer: answerInput }), output: z.object({ status: z.string() }) },
   cos_stats: {
     input: z.object({ windowDays: z.number().int().min(1).max(90).default(14) }),

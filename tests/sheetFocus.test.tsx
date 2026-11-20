@@ -50,7 +50,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   mocks.entries = [waiting()];
   mocks.workflow = { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: { plan: { status: "done", phase: null, reported: 1, agents: 1, waitingKind: null, retrying: false, attempts: 0, round: 1 }, build: { status: "waiting", phase: null, reported: 0, agents: 1, waitingKind: "approval", retrying: false, attempts: 0, round: 1 } } };
-  mocks.question = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: "question", waitingReason: "Which database?", report: null, decidable: false, open: [{ kind: "text", question: "Which database?" }], lastMessage: null, checkOutput: null, lastError: null };
+  mocks.question = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: "question", waitingReason: "Which database?", report: null, decidable: false, open: [{ kind: "text", question: "Which database?" }], lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, taskBody: null, earlier: [] };
   mocks.call.mockReset().mockResolvedValue({});
   document.body.append(container);
   root = createRoot(container);
@@ -154,6 +154,27 @@ it("moves focus into the question sheet, keeps it there, and returns it to the q
   await settle();
   expect(dialog()).toBeNull();
   expect(document.activeElement).toBe(opener);
+});
+
+it("opens the question from anywhere on a waiting card, but not from the card's own controls", async () => {
+  const card = container.querySelector<HTMLElement>("article")!;
+  await click(button("Open thread", card));
+  expect(dialog()).toBeNull();
+  expect(mocks.navigate.toThread).toHaveBeenCalledWith("thread-1");
+
+  await act(async () => { card.querySelector("h3")!.click(); });
+  expect(dialog()).not.toBeNull();
+  await press("Escape");
+  await settle();
+  // Focus goes back to the question button, the card's keyboard path to the sheet.
+  expect(document.activeElement).toBe(button("Open the question", container));
+});
+
+it("does not open a question from a card that waits on nothing", async () => {
+  mocks.entries = [entry()];
+  await render();
+  await act(async () => { container.querySelector("article h3")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+  expect(dialog()).toBeNull();
 });
 
 it("lands on the Pipeline heading when the question button is gone by the time the sheet closes", async () => {

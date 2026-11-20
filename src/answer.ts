@@ -8,11 +8,16 @@ import type { WorkItem } from "./state";
 import { dispatch } from "./delivery";
 import { observeActive, snapshotOf, syncThread } from "./sync";
 import { lastAssistantText, plainTextQuestion, sendToThread, threadUrl } from "./threads";
+import { describeReset } from "./github";
+import { REMOVED_SUMMARY } from "./state";
 import type { NodeState } from "./machine";
 import { agentWork, stepById, topoOrder, type Step } from "./workflow";
 
 const CONTEXT_MAX = 6000;
 const DETAIL_MAX = 4000;
+/** Per earlier step's report, and the task's own description. */
+const REPORT_MAX = 8000;
+const BODY_MAX = 12_000;
 
 export interface QuestionOption {
   label: string;
@@ -53,6 +58,13 @@ export interface QuestionView {
   /** Check or CI output of the waiting step. */
   checkOutput: string | null;
   lastError: string | null;
+  issueUrl: string | null;
+  prNumber: number | null;
+  prUrl: string | null;
+  /** The task's description, for tasks not backed by an issue (an issue's body loads on demand: cos_issue_body). */
+  taskBody: string | null;
+  /** Reports of the steps that already ran, in workflow order. */
+  earlier: { step: string; summary: string }[];
 }
 
 type Payload = Record<string, unknown>;
@@ -71,6 +83,31 @@ export function markdownTail(text: string | null, max: number): string | null {
   return `…\n\n${fences % 2 === 1 ? "```\n" : ""}${cut}`;
 }
 const head = (text: string | null, max: number): string | null => (text && text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** What the finished steps other than `stepId` reported, in workflow order, so the question reads in context. */
+export function earlierReports(item: Pick<WorkItem, "workflow" | "nodes">, stepId: string | null): { step: string; summary: string }[] {
+  const out: { step: string; summary: string }[] = [];
+  for (const id of topoOrder(item.workflow)) {
+    if (id === stepId || item.nodes[id]?.status !== "done") continue;
+    const step = stepById(item.workflow, id);
+    const reports = (item.nodes[id]?.reports ?? []).filter((r): r is NonNullable<typeof r> => Boolean(r?.summary) && r!.summary !== REMOVED_SUMMARY);
+    if (!step || !reports.length) continue;
+    const summary = reports.length > 1 ? reports.map((r, i) => `### Agent ${i + 1}\n${r.summary}`).join("\n\n") : reports[0]!.summary;
+    out.push({ step: step.name, summary: head(summary, REPORT_MAX)! });
+  }
+  return out;
+}
+
+/**
+ * The question a step waits on, when no interaction holds it: what the agent asked (its report's question in full,
+ * or the closing question of its turn), else the closing question of its last message. None when the step waited on
+ * an interaction that is gone (answered in BB): its summary is not a question to reply to.
+ */
+export function textQuestion(waiting: NonNullable<NodeState["waiting"]>, lastMessage: string | null): string | null {
+  if (waiting.interaction) return null;
+  const asked = waiting.question ?? (waiting.reason || plainTextQuestion(lastMessage));
+  return asked ? asked.replace(/^Question:\s*/, "") : null;
+}
 
 /** Normalize one pending interaction into something the UI can render. */
 export function toOpenQuestion(interaction: { id: string; payload?: unknown }): OpenQuestion {
@@ -161,10 +198,11 @@ export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionVie
       open = [];
     }
     lastMessage = await lastAssistantText(cos, asking);
-    if (!open.length && waiting?.node.waiting?.kind === "question") {
-      const question = plainTextQuestion(lastMessage);
-      if (question) open = [{ kind: "text", question: question.replace(/^Question:\s*/, "") }];
-    }
+  }
+  // The question can be on the step without being on the thread (a report asking for input): ask it from the sheet too.
+  if (!open.length && asking && waiting?.node.waiting?.kind === "question") {
+    const question = textQuestion(waiting.node.waiting, lastMessage);
+    if (question) open = [{ kind: "text", question }];
   }
   const reports = waiting ? waiting.node.reports.filter(Boolean) : [];
   const kind = waiting?.node.waiting?.kind ?? null;
@@ -186,7 +224,24 @@ export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionVie
     lastMessage: markdownTail(lastMessage, CONTEXT_MAX),
     checkOutput: tail(waiting?.node.output ?? null, DETAIL_MAX),
     lastError: item.lastError,
+    issueUrl: item.issueNumber ? `https://github.com/${item.repo}/issues/${item.issueNumber}` : null,
+    prNumber: item.prNumber,
+    prUrl: item.prUrl,
+    taskBody: head(item.taskBody, BODY_MAX),
+    earlier: earlierReports(item, waiting?.step.id ?? null),
   };
+}
+
+/** The issue's description, read from GitHub when the sheet asks for it (not with the question, so the form never waits on GitHub). */
+export async function getIssueBody(cos: Cos, itemId: string): Promise<{ body: string | null }> {
+  const item = cos.store.getWorkItem(itemId);
+  if (!item) throw new Error(`work item ${itemId} not found`);
+  if (!item.issueNumber) return { body: head(item.taskBody, BODY_MAX) };
+  const limit = cos.githubLimit();
+  if (limit) throw new Error(`${limit.reason}: GitHub reads resume at ${describeReset(limit.until, cos.now())}. Open the issue on GitHub instead.`);
+  const [owner, repo] = item.repo.split("/");
+  const issue = await (await cos.github()).getIssue(owner!, repo!, item.issueNumber);
+  return { body: head(issue.body?.trim() || null, BODY_MAX) };
 }
 
 export type AnswerInput =
