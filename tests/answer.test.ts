@@ -70,4 +70,8 @@ describe("textQuestion", () => {
     expect(textQuestion({ kind: "question", reason: "Keep v1 or drop it" }, "Reported. Anything else?")).toBe("Keep v1 or drop it");
     expect(textQuestion({ kind: "question", reason: "" }, "I looked around.\n\nShould I keep v1?")).toBe("Should I keep v1?");
   });
+
+  it("asks nothing for an interaction that is gone: its summary is not a question to reply to", () => {
+    expect(textQuestion({ kind: "question", reason: "Run npm install?", interaction: true }, "Should I keep v1?")).toBeNull();
+  });
 });

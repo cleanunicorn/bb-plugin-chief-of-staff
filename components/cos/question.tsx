@@ -231,7 +231,7 @@ export function QuestionSheet({ itemId, onClose, onAnswered, restoreFocus }: { i
             {data.open.length === 0 && !sent && !data.decidable ? (
               <p className="text-sm text-muted-foreground">
                 {data.waitingReason
-                  ? "No open question on the thread right now. It may have been answered in BB, or the item is waiting for another reason (see the context below). You can still send the agent a message."
+                  ? "No open question on the thread right now. It may have been answered in BB, or the item is waiting for another reason (see the background below). You can still send the agent a message."
                   : "The agent is not asking anything right now. You can still send it a message."}
               </p>
             ) : null}

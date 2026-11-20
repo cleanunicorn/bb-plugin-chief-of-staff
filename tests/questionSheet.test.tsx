@@ -16,7 +16,7 @@ vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
 import { QuestionSheet } from "../components/cos/question";
 
 const onClose = vi.fn();
-const base = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: null, waitingReason: null, report: null, decidable: false, open: [], lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, branch: null, taskBody: null, earlier: [] };
+const base = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: null, waitingReason: null, report: null, decidable: false, open: [], lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, taskBody: null, earlier: [] };
 
 const sheet = () => document.querySelector<HTMLElement>('[role="dialog"]');
 const dialogs = () => document.querySelectorAll('[role="dialog"]');

@@ -50,7 +50,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   mocks.entries = [waiting()];
   mocks.workflow = { title: "Fix login", workflow: DEFAULT_WORKFLOW, live: { plan: { status: "done", phase: null, reported: 1, agents: 1, waitingKind: null, retrying: false, attempts: 0, round: 1 }, build: { status: "waiting", phase: null, reported: 0, agents: 1, waitingKind: "approval", retrying: false, attempts: 0, round: 1 } } };
-  mocks.question = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: "question", waitingReason: "Which database?", report: null, decidable: false, open: [{ kind: "text", question: "Which database?" }], lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, branch: null, taskBody: null, earlier: [] };
+  mocks.question = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: "question", waitingReason: "Which database?", report: null, decidable: false, open: [{ kind: "text", question: "Which database?" }], lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, taskBody: null, earlier: [] };
   mocks.call.mockReset().mockResolvedValue({});
   document.body.append(container);
   root = createRoot(container);

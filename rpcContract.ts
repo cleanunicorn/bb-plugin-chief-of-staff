@@ -157,7 +157,6 @@ const questionView = z.object({
   issueUrl: z.string().nullable(),
   prNumber: z.number().nullable(),
   prUrl: z.string().nullable(),
-  branch: z.string().nullable(),
   /** The description of a task not backed by an issue; an issue's loads through cos_issue_body. */
   taskBody: z.string().nullable(),
   /** Reports of the finished steps, in workflow order. */

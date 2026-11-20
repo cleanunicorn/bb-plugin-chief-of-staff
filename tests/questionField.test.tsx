@@ -25,7 +25,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   mocks.call.mockReset().mockResolvedValue({});
   mocks.question = {
-    itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: null, threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: "question", waitingReason: null, report: null, decidable: false, lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, branch: null, taskBody: null, earlier: [],
+    itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: null, threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: "question", waitingReason: null, report: null, decidable: false, lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, taskBody: null, earlier: [],
     open: [{ kind: "question", interactionId: "int-1", questions: [
       { id: "db", prompt: "Which database should it use?", shortLabel: "Database", options: ["postgres", "sqlite", "mysql"].map(option), allowFreeText: false, multiSelect: false, required: true },
       { id: "extras", prompt: "Which extras?", shortLabel: null, options: ["cache", "queue"].map(option), allowFreeText: false, multiSelect: true, required: false },

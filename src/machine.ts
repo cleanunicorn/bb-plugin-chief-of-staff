@@ -98,8 +98,11 @@ export interface NodeState {
   /** One slot per agent working on the step, for the current round. */
   reports: (StepReport | null)[];
   nudges: number[];
-  /** `question`: the full text of a question longer than `reason` keeps, for the answer sheet. */
-  waiting: { kind: WaitingKind; reason: string; agent?: number; question?: string } | null;
+  /**
+   * `question`: the full text of a question longer than `reason` keeps, for the answer sheet.
+   * `interaction`: the wait is on a BB interaction (its summary is the reason), not a question the agent wrote.
+   */
+  waiting: { kind: WaitingKind; reason: string; agent?: number; question?: string; interaction?: true } | null;
   /** Why the step is running again (failure output, review findings, operator feedback). */
   feedback: string | null;
   /** Ship only. */
@@ -470,6 +473,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
       const reason = event.reason ?? "The agent is waiting for a human decision.";
       if (n.waiting?.kind === "question" && n.waiting.reason === reason.slice(0, 600)) break;
       wait(event.step, "question", reason, event.agent);
+      if (n.waiting) n.waiting.interaction = true;
       break;
     }
 

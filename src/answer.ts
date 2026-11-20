@@ -61,7 +61,6 @@ export interface QuestionView {
   issueUrl: string | null;
   prNumber: number | null;
   prUrl: string | null;
-  branch: string | null;
   /** The task's description, for tasks not backed by an issue (an issue's body loads on demand: cos_issue_body). */
   taskBody: string | null;
   /** Reports of the steps that already ran, in workflow order. */
@@ -101,9 +100,11 @@ export function earlierReports(item: Pick<WorkItem, "workflow" | "nodes">, stepI
 
 /**
  * The question a step waits on, when no interaction holds it: what the agent asked (its report's question in full,
- * or the closing question of its turn), else the closing question of its last message.
+ * or the closing question of its turn), else the closing question of its last message. None when the step waited on
+ * an interaction that is gone (answered in BB): its summary is not a question to reply to.
  */
 export function textQuestion(waiting: NonNullable<NodeState["waiting"]>, lastMessage: string | null): string | null {
+  if (waiting.interaction) return null;
   const asked = waiting.question ?? (waiting.reason || plainTextQuestion(lastMessage));
   return asked ? asked.replace(/^Question:\s*/, "") : null;
 }
@@ -226,7 +227,6 @@ export async function getQuestion(cos: Cos, itemId: string): Promise<QuestionVie
     issueUrl: item.issueNumber ? `https://github.com/${item.repo}/issues/${item.issueNumber}` : null,
     prNumber: item.prNumber,
     prUrl: item.prUrl,
-    branch: item.branch,
     taskBody: head(item.taskBody, BODY_MAX),
     earlier: earlierReports(item, waiting?.step.id ?? null),
   };
