@@ -108,7 +108,8 @@
     },
     cos_question: () => ({ itemId: "t2", repo: "acme/api", issueNumber: 208, issueTitle: "Rate-limit the password reset endpoint", threadId: "thr_demo2", threadUrl: null, status: "waiting_on_human", stepId: "plan", stepName: "Plan", waitingKind: "approval", waitingReason: "Plan: needs your approval",
       report: "## Plan (agent 1)\n\n**Approach.** Add a sliding-window limiter keyed on account email and client IP in front of `POST /auth/reset`: 5 requests per 15 minutes, answered with `429` and a `Retry-After` header.\n\n**Files.**\n\n- `src/middleware/rateLimit.ts`: new limiter backed by the existing Redis client\n- `src/routes/auth.ts`: apply it to the reset route\n- `tests/auth.reset.test.ts`: limit, window expiry, per-IP isolation\n\n**Risks.** Shared office IPs could trip the limit; the email key keeps one user from locking out another.\n\n## Plan (agent 2)\n\nSame design. Also proposes logging limited attempts to the audit log so abuse is visible.",
-      decidable: true, open: [], lastMessage: null, checkOutput: null, lastError: null }),
+      decidable: true, open: [], lastMessage: null, checkOutput: null, lastError: null,
+      issueUrl: "https://github.com/acme/api/issues/208", prNumber: null, prUrl: null, branch: null, taskBody: null, earlier: [] }),
   };
   const real = window.fetch.bind(window);
   window.fetch = async (input, init) => {

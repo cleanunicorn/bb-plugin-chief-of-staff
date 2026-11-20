@@ -41,9 +41,10 @@ files. Never push or open pull requests; Chief of Staff does that.
   nothing was reported. `cos_stats` totals usage for its window (`usage`,
   `daily[].tokens`).
   Answering or resuming the thread in BB moves the item back to running; the
-  plugin re-syncs every thread each minute. In the dashboard, clicking the
-  question opens it with its options and context and answers it in place
-  (RPCs `cos_question {id}` and `cos_answer {id, answer}`).
+  plugin re-syncs every thread each minute. In the dashboard, clicking a
+  waiting card opens its question with its options and context (the task, the
+  earlier steps' reports, the agent's last message) and answers it in place
+  (RPCs `cos_question {id}`, `cos_issue_body {id}` and `cos_answer {id, answer}`).
 - `bb cos intake [--repo owner/repo] [--dry-run]` — pick up eligible issues now.
 - `bb cos task "<prompt>" --repo owner/repo [--body "..."]` — start a task with no
   GitHub issue (also the `cos_start_task` agent tool). The repository must be

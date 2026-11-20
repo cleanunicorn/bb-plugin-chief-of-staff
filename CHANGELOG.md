@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Answer a question from its card.** A task card waiting on you now opens
+  its question from anywhere on the card, not just the small **Answer here**
+  box. The answer sheet carries what you need to answer without opening the
+  thread: links to the issue and pull request, the step that is waiting, the
+  task's description (an issue's is read from GitHub when you expand it), what
+  the earlier steps reported, and the agent's last message. A question an agent
+  asked in its step report now shows in full in the sheet, with a reply box,
+  instead of "No open question"; a task waiting for another reason (a Chief of
+  Staff error, for one) says why.
+
 - **Skip an issue.** Marking a task failed or done still let intake take its
   issue again after a relabel or reassignment. A task with an issue now has
   **Skip issue…** in its More actions menu: every running task of the issue

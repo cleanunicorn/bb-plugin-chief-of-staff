@@ -10,12 +10,13 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useRpc: () => ({ call: mocks.call }),
   experimental_useRpcQuery: () => ({ data: mocks.question, error: null, refetch: vi.fn() }),
   Markdown: ({ content }: { content: string }) => <span>{content}</span>,
+  UrlLink: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a>,
 }));
 vi.mock("../components/ui/icon", () => ({ Icon: () => null }));
 import { QuestionSheet } from "../components/cos/question";
 
 const onClose = vi.fn();
-const base = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: null, waitingReason: null, report: null, decidable: false, open: [], lastMessage: null, checkOutput: null, lastError: null };
+const base = { itemId: "one", repo: "acme/app", issueNumber: 1, issueTitle: "Fix login", threadId: "thread-1", threadUrl: null, status: "waiting on human", stepId: "build", stepName: "Build", waitingKind: null, waitingReason: null, report: null, decidable: false, open: [], lastMessage: null, checkOutput: null, lastError: null, issueUrl: null, prNumber: null, prUrl: null, branch: null, taskBody: null, earlier: [] };
 
 const sheet = () => document.querySelector<HTMLElement>('[role="dialog"]');
 const dialogs = () => document.querySelectorAll('[role="dialog"]');
@@ -186,4 +187,39 @@ it("closes without asking after approving, even with feedback typed", async () =
   await press("Escape");
   expect(discardPrompt()).toBeNull();
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("shows what you need to answer: the links, the step, the task and what earlier steps reported", async () => {
+  mocks.question = { ...base, issueNumber: null, prNumber: 7, prUrl: "https://github.com/acme/app/pull/7", taskBody: "Make login remember the user.", earlier: [{ step: "Plan", summary: "Use a session cookie." }], open: [{ kind: "text", question: "Which cookie lifetime?" }] };
+  await open();
+  const text = sheet()!.textContent!;
+  expect(sheet()!.querySelector('a[href="https://github.com/acme/app/pull/7"]')?.textContent).toBe("PR #7");
+  expect(text).toContain("Waiting at Build");
+  expect(text).toContain("Which cookie lifetime?");
+  expect(text).toContain("Make login remember the user.");
+  expect(text).toContain("Plan report");
+  expect(text).toContain("Use a session cookie.");
+  // The answer comes before the background.
+  expect(text.indexOf("Which cookie lifetime?")).toBeLessThan(text.indexOf("Background"));
+});
+
+it("reads the issue's description from GitHub only when it is opened", async () => {
+  mocks.question = { ...base, issueUrl: "https://github.com/acme/app/issues/1" };
+  mocks.call.mockImplementation(async (method: string) => (method === "cos_issue_body" ? { body: "Login fails on Safari." } : {}));
+  await open();
+  expect(mocks.call.mock.calls.filter(([m]) => m === "cos_issue_body")).toHaveLength(0);
+  const details = Array.from(sheet()!.querySelectorAll("details")).find((d) => d.textContent!.includes("Issue #1 description"))!;
+  await act(async () => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
+  await tick(2);
+  expect(mocks.call).toHaveBeenCalledWith("cos_issue_body", { id: "one" });
+  expect(details.textContent).toContain("Login fails on Safari.");
+});
+
+it("says why the task waits when nothing is asked, e.g. a Chief of Staff error", async () => {
+  mocks.question = { ...base, waitingKind: "cos_error", waitingReason: "Build: could not push the branch" };
+  await open();
+  expect(sheet()!.textContent).toContain("Build: could not push the branch");
 });

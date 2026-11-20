@@ -11,7 +11,7 @@ import { parseRepos } from "./config";
 import { computeStats, statsWindowStart } from "./stats";
 import { itemsUsage } from "./usage";
 import { sinceSummary } from "./since";
-import { answerQuestion, getQuestion } from "./answer";
+import { answerQuestion, getIssueBody, getQuestion } from "./answer";
 import { listSkills } from "./threads";
 import type { WorkItem } from "./state";
 import { isReferenceable } from "./skills";
@@ -113,6 +113,9 @@ export function registerRpc(bb: BbPluginApi, cos: Cos): void {
       },
       async cos_question(input) {
         return getQuestion(cos, input.id);
+      },
+      async cos_issue_body(input) {
+        return getIssueBody(cos, input.id);
       },
       async cos_answer(input, ctx) {
         const target = cos.store.getWorkItem(input.id);

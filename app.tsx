@@ -1,6 +1,6 @@
 // Chief of Staff — BB plugin frontend entry: dashboard nav panel + settings section.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode, RefObject } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { UrlLink, definePluginApp, experimental_useRpcQuery, useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import { rpcContract } from "./rpcContract";
@@ -417,6 +417,15 @@ function cardTimer(entry: RosterEntry, now: number): { text: string; label: stri
   return { text: age, label: `Task age ${age}`, title: `Task started ${new Date(entry.startedAt).toLocaleString()}` };
 }
 
+/** Whether a click on a card should open its question: not on a control, a menu or a dialog, and not the end of a text selection. */
+function opensQuestion(event: ReactMouseEvent<HTMLElement>): boolean {
+  const target = event.target;
+  if (!(target instanceof Element) || !event.currentTarget.contains(target)) return false;
+  if (target.closest("a, button, summary, input, textarea, select, label, [role^='menu'], [role='dialog'], [role='alertdialog']")) return false;
+  const selection = window.getSelection();
+  return !selection || selection.isCollapsed || !event.currentTarget.contains(selection.anchorNode);
+}
+
 /** `tabbable`: this card's controls are in the tab order. Only the current card in the task group is. Active tasks only: finished ones are rows in the Finished section. */
 function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflow, onShowActivity, now }: { entry: RosterEntry; busy: boolean; tabbable: boolean; onAction: (id: string, action: ItemAction) => void; onAsk: (task: MenuTask, kind: Confirmable, trigger: HTMLButtonElement) => void; onAnswer: (id: string, opener: HTMLElement) => void; onWorkflow: (id: string, opener: HTMLElement, mode?: SheetMode) => void; onShowActivity?: (task: ActivityTask) => void; now: number }) {
   const navigate = useBbNavigate();
@@ -426,8 +435,17 @@ function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflo
   const visual = entryTone(entry);
   const tabIndex = tabbable ? undefined : -1;
   const timer = cardTimer(entry, now);
+  const answerable = Boolean((entry.waitingReason || entry.status === "waiting on human") && entry.threadId);
+  const answerRef = useRef<HTMLButtonElement>(null);
   return (
-    <article {...{ [CARD_ATTRIBUTE]: entry.id }} className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border")} style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}>
+    <article
+      {...{ [CARD_ATTRIBUTE]: entry.id }}
+      // A card waiting on you opens its question from anywhere on it. Keyboard and screen readers use the
+      // question button inside; clicks on the card's own controls (and menus portalled out of it) do their own thing.
+      onClick={answerable ? (event) => { if (answerRef.current && opensQuestion(event)) onAnswer(entry.id, answerRef.current); } : undefined}
+      className={cn("flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3", entry.stalled || needsHuman ? "border-[color:var(--cos-attn)]" : "border-border", answerable && "group/card cursor-pointer")}
+      style={{ ["--cos-attn" as string]: entry.stalled ? STATUS.serious : STATUS.warning }}
+    >
       <header className="flex items-start gap-2">
         <StateMark icon={entry.stalled ? STALLED_ICON : visual.icon} tone={entry.stalled ? "serious" : visual.tone} />
         <div className="min-w-0">
@@ -469,12 +487,13 @@ function AgentCard({ entry, busy, tabbable, onAction, onAsk, onAnswer, onWorkflo
         </summary>
         <div className="pt-2 pb-1"><StepFlow entry={entry} /></div>
       </details> : null}
-      {(entry.waitingReason || entry.status === "waiting on human") && entry.threadId ? (
+      {answerable ? (
         <button
+          ref={answerRef}
           type="button"
           tabIndex={tabIndex}
           onClick={(event) => onAnswer(entry.id, event.currentTarget)}
-          className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+          className="group flex items-start gap-1.5 rounded-md bg-muted px-2 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-state-hover group-hover/card:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
           aria-label={entry.waitingKind === "approval" ? "Open the report to approve it" : "Open the question to answer it"}
         >
           <Icon name="MessageCircleQuestion" fallback="MessageSquare" className="mt-0.5 size-3.5 shrink-0" style={{ color: STATUS.warning }} aria-hidden />

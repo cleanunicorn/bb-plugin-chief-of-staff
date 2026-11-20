@@ -98,7 +98,8 @@ export interface NodeState {
   /** One slot per agent working on the step, for the current round. */
   reports: (StepReport | null)[];
   nudges: number[];
-  waiting: { kind: WaitingKind; reason: string; agent?: number } | null;
+  /** `question`: the full text of a question longer than `reason` keeps, for the answer sheet. */
+  waiting: { kind: WaitingKind; reason: string; agent?: number; question?: string } | null;
   /** Why the step is running again (failure output, review findings, operator feedback). */
   feedback: string | null;
   /** Ship only. */
@@ -206,6 +207,8 @@ export interface JournalEntry {
 }
 
 export const JOURNAL_DETAIL_MAX = 4_000;
+/** Longest question text a waiting step keeps in full. */
+export const QUESTION_MAX = 8_000;
 /** Failures and check output keep their end (where the error is); the rest keeps its start. */
 const clipDetail = (text: string | null | undefined, keepEnd: boolean) => {
   if (!text || text.length <= JOURNAL_DETAIL_MAX) return text || null;
@@ -318,7 +321,7 @@ export function transition(item: WorkItem, event: MachineEvent, policy: MachineP
     const n = node(id);
     if (!n) return;
     n.status = "waiting";
-    n.waiting = { kind, reason: reason.slice(0, 600), ...(agent !== undefined ? { agent } : {}) };
+    n.waiting = { kind, reason: reason.slice(0, 600), ...(agent !== undefined ? { agent } : {}), ...(kind === "question" && reason.length > 600 ? { question: reason.slice(0, QUESTION_MAX) } : {}) };
     note("waiting", id, reason);
     effects.push({ type: "notify", title: `${WAIT_TITLE[kind]}: ${label(item)}`, body: `${step(id)?.name ?? id}: ${reason}`.slice(0, 500) });
   };

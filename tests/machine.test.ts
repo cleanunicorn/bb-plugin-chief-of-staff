@@ -276,6 +276,17 @@ describe("workflow engine", () => {
     [item] = run(item, { type: "turn_started", step: "plan", agent: 0 });
     [item] = run(item, ended("plan", { ...report("needs_input"), question: "Keep v1?" }, item));
     expect([item.waitingKind, item.waitingReason]).toEqual(["question", "Plan: Keep v1?"]);
+    expect(item.nodes.plan!.waiting!.question).toBeUndefined();
+  });
+
+  it("keeps a long question in full for the answer sheet, while the reason stays short", () => {
+    let item = itemFor(DEFAULT_WORKFLOW);
+    [item] = run(item, { type: "start" });
+    const long = `Which of these should the migration keep?\n\n${"- an option with some detail\n".repeat(60)}`;
+    [item] = run(item, ended("plan", { ...report("needs_input"), question: long }, item));
+    const waiting = item.nodes.plan!.waiting!;
+    expect(waiting.reason).toHaveLength(600);
+    expect(waiting.question).toBe(long);
   });
 
   it("retries infrastructure errors with backoff, then asks for help, then re-runs the effect", () => {

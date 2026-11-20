@@ -510,6 +510,10 @@ export function compactNodes(nodes: Nodes): Nodes {
     const compact: NodeState = { ...node, feedback: null, output: null };
     delete compact.deliveries;
     delete compact.agentRetries;
+    if (node.waiting?.question) {
+      const { question: _question, ...waiting } = node.waiting;
+      compact.waiting = waiting;
+    }
     if (Array.isArray(node.reports)) compact.reports = node.reports.map((r) => (r && typeof r === "object" ? { ...r, summary: REMOVED_SUMMARY, ...(r.question ? { question: null } : {}) } : r));
     out[id] = compact;
   }
