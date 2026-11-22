@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Oldest issues first.** Intake took matching issues newest first (GitHub's
+  default listing order), so a long-waiting issue could sit behind every new
+  one. It now takes the oldest first. Each repository has a **Pick up first**
+  setting under Configure → Issue intake (`issueOrder: "oldest" | "newest"` in
+  the repos JSON) to switch back. Scheduled intake also used to start each
+  complete pass where the previous one ended, so the order never decided who
+  went first; a complete pass now starts at the head of the list, and only a
+  pass cut short by the time budget resumes where it stopped.
+
 - **Answer a question from its card.** A task card waiting on you now opens
   its question from anywhere on the card, not just the small **Answer here**
   box. The answer sheet carries what you need to answer without opening the

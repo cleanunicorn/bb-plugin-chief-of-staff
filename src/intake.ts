@@ -35,7 +35,7 @@ export async function eligibleIssues(github: GitHubClient, repo: RepoConfig): Pr
   const filter = repo.issueFilter;
   // No filter would mean "every open issue": never do that implicitly.
   if (!filter.labels.length && !filter.assignee) return [];
-  return github.listOpenIssues(repo.owner, repo.repo, { labels: filter.labels, assignee: filter.assignee });
+  return github.listOpenIssues(repo.owner, repo.repo, { labels: filter.labels, assignee: filter.assignee, order: repo.issueOrder });
 }
 
 /**
@@ -223,17 +223,21 @@ async function intakePass(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]
     try {
       const issues = await eligibleIssues(github, repo);
       result.considered = issues.length;
-      const issueCursorKey = `intake:nextIssue:${key}`;
+      // The cursor only resumes a pass cut short; it belongs to one order, so a
+      // changed order (or one saved before orders existed) starts at the head.
+      const issueCursorKey = `intake:nextIssue:${key}:${repo.issueOrder}`;
       const nextIssue = resumable ? await kv.get<number>(issueCursorKey) : null;
       const issueStart = Math.max(0, issues.findIndex((issue) => issue.number === nextIssue));
       let dryRunRepo = 0;
       // The repository's open PRs, listed on first need and then reused for every issue of this run.
       let openPulls: Promise<GitHubPull[]> | null = null;
+      let visited = 0;
       for (let issueOffset = 0; issueOffset < issues.length; issueOffset++) {
         if (cos.store.isPaused(key)) break;
         if ((issueOffset > 0 || !resumable) && outOfTime()) break repos;
         const issueIndex = (issueStart + issueOffset) % issues.length;
         const issue = issues[issueIndex]!;
+        visited += 1;
         try {
           // Read per issue, not once per pass: a skip made while the pass waits on GitHub counts.
           if (cos.store.isIssueSkipped(key, issue.number)) {
@@ -285,6 +289,8 @@ async function intakePass(cos: Cos, opts: IntakeOptions): Promise<IntakeResult[]
           if (resumable) await kv.set(issueCursorKey, issues[(issueIndex + 1) % issues.length]!.number);
         }
       }
+      // A complete pass leaves nothing to resume: the next one starts at the head, in the configured order.
+      if (resumable && visited === issues.length) await kv.delete(issueCursorKey);
     } catch (error) {
       // Every later request would be refused too (the limit itself is logged once).
       if (error instanceof GitHubRateLimitError) {

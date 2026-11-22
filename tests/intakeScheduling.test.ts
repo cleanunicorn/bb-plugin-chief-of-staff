@@ -9,7 +9,7 @@ afterEach(async () => {
   for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose();
 });
 
-function setup({ fail = false, empty = false } = {}) {
+function setup({ fail = false, empty = false, slow = true } = {}) {
   const host = createFakePluginHost({ pluginId: "test" });
   hosts.push(host);
   const repos = ["slow", "fast"].map((repo) => repoConfigSchema.parse({ owner: "acme", repo, projectId: "project" }) as RepoConfig);
@@ -25,7 +25,7 @@ function setup({ fail = false, empty = false } = {}) {
       listed.push(repo);
       if (repo === "fast") return [];
       // Five 25-second pages can use the budget without any request timing out.
-      now += 125_000;
+      if (slow) now += 125_000;
       if (fail) throw new Error("listing failed");
       return empty ? [] : issues.map((number) => ({ number }));
     },
@@ -43,7 +43,7 @@ function setup({ fail = false, empty = false } = {}) {
     await runIntake(context(), { actor: "test", ...options, ...(options.bounded === false ? {} : { deadline: now + 120_000 }) });
     return [...listed];
   };
-  return { poll, considered, context, listed, resumes: () => resumes, removeIssue: (number: number) => { issues = issues.filter((n) => n !== number); } };
+  return { host, poll, considered, context, listed, resumes: () => resumes, removeIssue: (number: number) => { issues = issues.filter((n) => n !== number); } };
 }
 
 it("resumes across repositories and issues after a slow listing, including across reloads", async () => {
@@ -88,4 +88,15 @@ it("skips a scheduled intake whose budget ran out while it waited for another", 
   expect(scheduled).toEqual([]);
   expect(listed).toEqual(["slow", "fast"]);
   expect(resumes()).toBe(1);
+});
+
+it("starts every complete scheduled pass at the head of the list, so the configured order decides who goes first", async () => {
+  const { host, poll, considered } = setup({ slow: false });
+  // A cursor saved under the old, newest-first listing must not pin the start.
+  await host.bb.storage.kv.set("intake:nextIssue:acme/slow", 3);
+  await host.bb.storage.kv.set("intake:nextIssue:acme/slow:newest", 3);
+  await poll();
+  await poll();
+  expect(considered).toEqual([1, 2, 3, 1, 2, 3]);
+  expect(await host.bb.storage.kv.get("intake:nextIssue:acme/slow:oldest")).toBeUndefined();
 });

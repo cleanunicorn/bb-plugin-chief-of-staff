@@ -12,8 +12,20 @@ describe("config parsing", () => {
     const result = parseRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1" }] }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value[0]).toMatchObject({ intake: true, issueComments: true, briefComments: "trusted", maxConcurrent: 2, mergeStrategy: "squash", reviewers: [], issueFilter: { labels: ["agent-ready"] } });
+    expect(result.value[0]).toMatchObject({ intake: true, issueComments: true, briefComments: "trusted", issueOrder: "oldest", maxConcurrent: 2, mergeStrategy: "squash", reviewers: [], issueFilter: { labels: ["agent-ready"] } });
     expect(result.value[0].workflow).toBeUndefined();
+  });
+
+  it("takes the oldest issues first unless a repository asks for the newest", () => {
+    const parse = (extra: object) => parseRepos(JSON.stringify({ repos: [{ owner: "acme", repo: "app", projectId: "proj_1", ...extra }] }));
+    const order = (extra: object) => {
+      const result = parse(extra);
+      if (!result.ok) throw new Error(result.error);
+      return result.value[0].issueOrder;
+    };
+    expect(order({})).toBe("oldest");
+    expect(order({ issueOrder: "newest" })).toBe("newest");
+    expect(parse({ issueOrder: "updated" }).ok).toBe(false);
   });
 
   it("keeps issue comments on unless a repository turns them off", () => {

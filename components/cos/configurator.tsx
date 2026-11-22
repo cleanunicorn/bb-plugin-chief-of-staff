@@ -207,6 +207,21 @@ function RepoEditor({ repo, index, problems, open, onToggle, onChange, onRemove,
             <Field label="Assignee" hint={repo.intake ? "Optional GitHub login: only issues assigned to them." : "Not used while Pick up issues is off."}>
               {(id) => <div className={cn(!repo.intake && "opacity-60")}><TextInput id={id} value={repo.issueFilter.assignee ?? ""} onChange={(v) => set("issueFilter", { ...repo.issueFilter, assignee: v })} placeholder="anyone" /></div>}
             </Field>
+            <Field label="Pick up first" hint={repo.intake ? "Which matching issues get a free slot first, by when they were opened." : "Not used while Pick up issues is off."}>
+              {(id) => (
+                <div className={cn(!repo.intake && "opacity-60")}>
+                  <Select
+                    id={id}
+                    value={repo.issueOrder}
+                    onChange={(v) => set("issueOrder", v)}
+                    options={[
+                      { value: "oldest", label: "Oldest issues" },
+                      { value: "newest", label: "Newest issues" },
+                    ]}
+                  />
+                </div>
+              )}
+            </Field>
           </Group>
           <Group title="Agent and limits" icon="Bot" cols={2}>
             <Field label="Provider">{(id) => <ProviderPicker id={id} value={repo.providerId ?? ""} providers={providers} allowDefault={`Default (${defaultProvider || "bb default"})`} onChange={(v) => set("providerId", v)} />}</Field>
