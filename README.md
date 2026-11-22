@@ -607,6 +607,7 @@ The same settings, as stored:
       "issueComments": true,
       "briefComments": "trusted",
       "issueFilter": { "labels": ["agent-ready"], "assignee": null },
+      "issueOrder": "oldest",
       "maxConcurrent": 2,
       "providerId": "claude-code", "model": "claude-opus-5-5",
       "reviewers": ["alice"],
@@ -623,6 +624,11 @@ so `{ "projectId": "proj_..." }` is a complete entry. Issues are picked up only
 when they carry every label in `issueFilter.labels` and, if
 `issueFilter.assignee` is set, are assigned to that user. With neither set,
 no issue is picked up. Set `intake: false` to run only tasks you start.
+
+`issueOrder` (default `"oldest"`) is the order intake goes through matching
+issues, by when they were opened: `"oldest"` works the backlog first in, first
+out; `"newest"` takes the most recent first. It decides which issues get the
+free slots when more match than `maxConcurrent` allows.
 
 `maxConcurrent` (default 2) is how many tasks run at once in the repository.
 At 0 no new task starts there. Tasks holding a slot keep going, but one that

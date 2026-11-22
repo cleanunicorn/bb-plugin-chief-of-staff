@@ -63,6 +63,13 @@ describe("configModel", () => {
     expect(loaded.items[0]!.issueComments).toBe(false);
   });
 
+  it("round-trips a repository's issue order", () => {
+    const repo = { ...blankRepo("proj_1"), owner: "acme", repo: "app", issueOrder: "newest" as const };
+    const loaded = loadRepos(serializeRepos([repo]));
+    if (!loaded.ok) throw new Error(loaded.error);
+    expect(loaded.items[0]!.issueOrder).toBe("newest");
+  });
+
   it("round-trips a repository's choice of brief comments", () => {
     const repo = { ...blankRepo("proj_1"), owner: "acme", repo: "app", briefComments: "none" as const };
     const loaded = loadRepos(serializeRepos([repo]));
@@ -71,7 +78,7 @@ describe("configModel", () => {
   });
 
   it("starts new repos with defaults and a blank identity", () => {
-    expect(blankRepo()).toMatchObject({ owner: "", repo: "", projectId: "", intake: true, issueComments: true, briefComments: "trusted", maxConcurrent: 2 });
+    expect(blankRepo()).toMatchObject({ owner: "", repo: "", projectId: "", intake: true, issueComments: true, briefComments: "trusted", issueOrder: "oldest", maxConcurrent: 2 });
   });
 
   it("does not let the seeded placeholder entry block saving", () => {

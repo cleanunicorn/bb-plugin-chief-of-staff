@@ -326,8 +326,9 @@ export class GitHubClient {
     return this.request("GET", `/repos/${owner}/${repo}`);
   }
 
-  async listOpenIssues(owner: string, repo: string, filter: { labels?: string[]; assignee?: string }): Promise<GitHubIssue[]> {
-    const params = new URLSearchParams({ state: "open" });
+  /** Open issues (not PRs) matching the filter, by creation time: oldest first by default (GitHub's own default is newest). */
+  async listOpenIssues(owner: string, repo: string, filter: { labels?: string[]; assignee?: string; order?: "oldest" | "newest" }): Promise<GitHubIssue[]> {
+    const params = new URLSearchParams({ state: "open", sort: "created", direction: filter.order === "newest" ? "desc" : "asc" });
     if (filter.labels?.length) params.set("labels", filter.labels.join(","));
     if (filter.assignee) params.set("assignee", filter.assignee);
     const issues = await this.paginate<GitHubIssue>(`/repos/${owner}/${repo}/issues?${params.toString()}`);

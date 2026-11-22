@@ -21,6 +21,11 @@ export const repoConfigSchema = z.object({
   /** Pick up matching issues automatically. Off: only tasks you start. */
   intake: z.boolean().default(true),
   issueFilter: issueFilterSchema.default({ labels: ["agent-ready"] }),
+  /**
+   * Which matching issues intake takes first, by when they were opened:
+   * "oldest" (a first-in, first-out queue) or "newest".
+   */
+  issueOrder: z.enum(["oldest", "newest"]).default("oldest"),
   /** Comment on the GitHub issue when an agent starts and when a PR opens. Off: no issue comments. */
   issueComments: z.boolean().default(true),
   /**

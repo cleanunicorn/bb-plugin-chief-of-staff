@@ -39,6 +39,16 @@ function stallingBodyFetch() {
 }
 
 describe("GitHubClient requests", () => {
+  it("lists open issues oldest first by default, newest first on request, without pull requests", async () => {
+    const fetch = fakeFetch(() => ({ body: [{ number: 1 }, { number: 2, pull_request: {} }] }));
+    const client = new GitHubClient({ token: TOKEN, fetch: fetch as typeof globalThis.fetch });
+    const query = (call: number) => Object.fromEntries(new URL(String(fetch.mock.calls[call]![0])).searchParams);
+    expect((await client.listOpenIssues("acme", "app", { labels: ["agent-ready", "p1"] })).map((i) => i.number)).toEqual([1]);
+    expect(query(0)).toMatchObject({ state: "open", sort: "created", direction: "asc", labels: "agent-ready,p1" });
+    await client.listOpenIssues("acme", "app", { assignee: "bot", order: "newest" });
+    expect(query(1)).toMatchObject({ sort: "created", direction: "desc", assignee: "bot" });
+  });
+
   it("cuts a request that never answers at its deadline, naming the method and path", async () => {
     const client = new GitHubClient({ token: TOKEN, fetch: hangingFetch() as typeof fetch, timeoutMs: 50 });
     const error = await client.getIssue("acme", "app", 12).catch((e: unknown) => e);
